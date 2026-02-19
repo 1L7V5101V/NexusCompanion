@@ -1,1 +1,23 @@
+# 敏感配置（本地填写，不提交）
 /config.json
+
+# NcatBot 自动生成的配置文件
+config.yaml
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# 运行时产物
+logs/
+workspace/
+plugins/
+
+# NapCat 软链接（指向 ~/napcat，每台机器路径不同）
+/napcat
+
+# IDE
+.idea/
+.vscode/

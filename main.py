@@ -71,9 +71,18 @@ async def serve(config_path: str = "config.json") -> None:
         tg = config.channels.telegram
         tg_channel = TelegramChannel(token=tg.token, bus=bus, allow_from=tg.allow_from)
         await tg_channel.start()
-        # 注册推送工具，共享 bot 实例和 user_map 引用
         tools.register(TelegramPushTool(bot=tg_channel.bot, user_map=tg_channel.user_map))
         print(f"Telegram Bot 已启动")
+
+    qq_channel = None
+    if config.channels.qq:
+        from channels.qq_channel import QQChannel
+        from agent.tools.qq_push import QQPushTool
+        qq = config.channels.qq
+        qq_channel = QQChannel(bot_uin=qq.bot_uin, bus=bus, allow_from=qq.allow_from)
+        await qq_channel.start()
+        tools.register(QQPushTool(channel=qq_channel))
+        print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
     try:
         await asyncio.gather(
@@ -84,6 +93,8 @@ async def serve(config_path: str = "config.json") -> None:
         await ipc.stop()
         if tg_channel:
             await tg_channel.stop()
+        if qq_channel:
+            await qq_channel.stop()
 
 
 # ── 客户端 ────────────────────────────────────────────────────────

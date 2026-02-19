@@ -1,0 +1,17 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    restart: always
+    network_mode: host
+    mac_address: "ec:4c:8c:e2:ed:20"
+    privileged: true
+    environment:
+      - TZ=Asia/Shanghai
+      - NAPCAT_UID=1000
+      - NAPCAT_GID=1000
+      - ACCOUNT=1666567690
+    volumes:
+      - ~/.config/QQ:/app/.config/QQ
+      - ~/napcat/napcat-config:/app/napcat/config
+      - ~/napcat/logs:/app/napcat/logs

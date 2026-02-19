@@ -27,8 +27,15 @@ class TelegramChannelConfig:
 
 
 @dataclass
+class QQChannelConfig:
+    bot_uin: str                                          # Bot 的 QQ 号
+    allow_from: list[str] = field(default_factory=list)  # 空 = 允许所有人
+
+
+@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
+    qq: QQChannelConfig | None = None
     socket: str = DEFAULT_SOCKET        # IPC server 监听路径
 
 
@@ -58,8 +65,16 @@ class Config:
                 allow_from=[str(u) for u in tg.get("allowFrom", [])],
             )
 
+        qq = None
+        if qq_data := channels_data.get("qq"):
+            qq = QQChannelConfig(
+                bot_uin=str(qq_data["bot_uin"]),
+                allow_from=[str(u) for u in qq_data.get("allowFrom", [])],
+            )
+
         channels = ChannelsConfig(
             telegram=telegram,
+            qq=qq,
             socket=channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
         )
 
