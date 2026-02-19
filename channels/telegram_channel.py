@@ -6,11 +6,12 @@ Telegram Channel
 import logging
 
 from telegram import Update
-from telegram.constants import ChatAction, ParseMode
+from telegram.constants import ChatAction
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from channels.telegram_utils import send_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +96,4 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
-        try:
-            await self._app.bot.send_message(
-                chat_id=int(msg.chat_id),
-                text=msg.content,
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception:
-            logger.debug(f"[telegram] HTML 解析失败，降级为纯文本  chat_id={msg.chat_id}")
-            await self._app.bot.send_message(
-                chat_id=int(msg.chat_id),
-                text=msg.content,
-            )
+        await send_markdown(self._app.bot, msg.chat_id, msg.content)

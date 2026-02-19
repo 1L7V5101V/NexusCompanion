@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from agent.tools.base import Tool
+from channels.telegram_utils import send_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class TelegramPushTool(Tool):
             )
 
         try:
-            await self._bot.send_message(chat_id=int(chat_id), text=message)
+            await send_markdown(self._bot, chat_id, message)
             logger.info(f"[telegram_push] 已推送消息给 @{username}  chat_id={chat_id}")
             return f"消息已成功发送给 @{username}"
         except Exception as e:
