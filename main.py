@@ -47,6 +47,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     loop = AgentLoop(
         bus=bus, provider=provider, tools=tools,
         session_manager=session_manager,
+        workspace=workspace,
         model=config.model,
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,

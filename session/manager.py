@@ -23,6 +23,7 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    last_consolidated: int = 0  # Number of messages already consolidated to files
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to session."""
@@ -49,6 +50,7 @@ class Session:
     def clear(self) -> None:
         self.messages = []
         self.updated_at = datetime.now()
+        self.last_consolidated = 0
 
 class SessionManager:
     def __init__(self,workspace: Path):
@@ -82,6 +84,7 @@ class SessionManager:
             messages = []
             metadata = {}
             created_at = None
+            last_consolidated = 0
 
             with open(path) as f:
                 for line in f:
@@ -92,8 +95,9 @@ class SessionManager:
                     data = json.loads(line)
 
                     if data.get("_type") == "metadata":
-                        metadata = data.get("metadata",{})
+                        metadata = data.get("metadata", {})
                         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                        last_consolidated = data.get("last_consolidated", 0)
                     else:
                         messages.append(data)
             return Session(
@@ -101,6 +105,7 @@ class SessionManager:
                 messages=messages,
                 created_at=created_at or datetime.now(),
                 metadata=metadata,
+                last_consolidated=last_consolidated,
             )
         except Exception as e:
             logging.warning(f"Failed to load {key}: {e}")
@@ -115,6 +120,7 @@ class SessionManager:
                 "_type": "metadata",
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
+                "last_consolidated": session.last_consolidated,
                 "metadata": session.metadata
             }
             # 先写入元数据

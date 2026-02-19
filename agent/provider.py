@@ -40,10 +40,11 @@ class LLMProvider:
         model: str,
         max_tokens: int,
     ) -> LLMResponse:
-        # 系统提示作为第一条消息
+        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
+        already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
             [{"role": "system", "content": self._system}, *messages]
-            if self._system else messages
+            if self._system and not already_has_system else messages
         )
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:

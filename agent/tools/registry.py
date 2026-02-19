@@ -10,6 +10,14 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._context: dict[str, str] = {}
+
+    def set_context(self, **kwargs: str) -> None:
+        """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
+        self._context.update(kwargs)
+
+    def get_context(self) -> dict[str, str]:
+        return self._context
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
