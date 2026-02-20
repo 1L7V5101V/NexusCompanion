@@ -6,6 +6,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
+_RECENT_TOOL_ROUNDS = 3
+_CLEARED = "[已清除]"
+
 
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
@@ -37,14 +41,67 @@ class Session:
         self.updated_at = datetime.now()
 
 
-    def get_history(self,max_messages: int = 500) -> list[dict[str,Any]]:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, Any]]:
+        """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。
+
+        assistant 消息中的 tool_chain 会被展开为：
+          assistant(tool_calls) → tool(result) → ... → assistant(final_text)
+
+        近期 _RECENT_TOOL_ROUNDS 个 assistant 轮次保留完整 tool_result；
+        更早的轮次将 tool_result 内容替换为占位符，节省 token 同时保留因果结构。
+        """
+        messages = self.messages[-max_messages:]
+
+        # 找到"近期边界"：倒数第 _RECENT_TOOL_ROUNDS 个 assistant 消息的索引
+        assistant_indices = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+        if len(assistant_indices) > _RECENT_TOOL_ROUNDS:
+            recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
+        else:
+            recent_boundary = 0  # 全部视为近期
+
         out: list[dict[str, Any]] = []
-        for m in self.messages[-max_messages:]:
-            entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
-            for k in ("tool_calls", "tool_call_id", "name"):
-                if k in m:
-                    entry[k] = m[k]
-            out.append(entry)
+        for i, m in enumerate(messages):
+            role = m.get("role")
+            is_recent = i >= recent_boundary
+
+            if role == "user":
+                out.append({"role": "user", "content": m.get("content", "")})
+
+            elif role == "assistant":
+                tool_chain: list[dict] = m.get("tool_chain") or []
+
+                # 展开每个迭代组：assistant(tool_calls) + tool(results)
+                for group in tool_chain:
+                    calls: list[dict] = group.get("calls") or []
+                    if not calls:
+                        continue
+                    out.append({
+                        "role": "assistant",
+                        "content": group.get("text"),  # 可能为 None
+                        "tool_calls": [
+                            {
+                                "id": c["call_id"],
+                                "type": "function",
+                                "function": {
+                                    "name": c["name"],
+                                    "arguments": json.dumps(
+                                        c.get("arguments", {}), ensure_ascii=False
+                                    ),
+                                },
+                            }
+                            for c in calls
+                        ],
+                    })
+                    for c in calls:
+                        out.append({
+                            "role": "tool",
+                            "tool_call_id": c["call_id"],
+                            "content": c["result"] if is_recent else _CLEARED,
+                        })
+
+                # 最终文本回复
+                out.append({"role": "assistant", "content": m.get("content", "")})
+
         return out
 
     def clear(self) -> None:

@@ -111,7 +111,7 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
-        final_content, tools_used = await self._run_agent_loop(initial_messages)
+        final_content, tools_used, tool_chain = await self._run_agent_loop(initial_messages)
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
@@ -121,7 +121,8 @@ class AgentLoop:
 
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content,
-                            tools_used=tools_used if tools_used else None)
+                            tools_used=tools_used if tools_used else None,
+                            tool_chain=tool_chain if tool_chain else None)
         self.session_manager.save(session)
 
         return OutboundMessage(
@@ -134,10 +135,15 @@ class AgentLoop:
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
-    ) -> tuple[str, list[str]]:
-        """迭代调用 LLM，直到无工具调用或达到上限。返回 (final_content, tools_used)"""
+    ) -> tuple[str, list[str], list[dict]]:
+        """迭代调用 LLM，直到无工具调用或达到上限。返回 (final_content, tools_used, tool_chain)
+
+        tool_chain 是按迭代分组的工具调用记录，每个元素：
+          {"text": str|None, "calls": [{"call_id", "name", "arguments", "result"}]}
+        """
         messages = initial_messages
         tools_used: list[str] = []
+        tool_chain: list[dict] = []
 
         for iteration in range(self.max_iterations):
             logger.debug(f"LLM 调用  iteration={iteration + 1}")
@@ -168,6 +174,7 @@ class AgentLoop:
                         for tc in response.tool_calls
                     ],
                 })
+                iter_calls: list[dict] = []
                 for tc in response.tool_calls:
                     tools_used.append(tc.name)
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
@@ -176,6 +183,13 @@ class AgentLoop:
                     result_preview = result[:80] + "..." if len(result) > 80 else result
                     logger.info(f"  ← 工具 {tc.name}  结果: {result_preview!r}")
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                    iter_calls.append({
+                        "call_id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                        "result": result,
+                    })
+                tool_chain.append({"text": response.content, "calls": iter_calls})
 
                 # 工具结果注入后，提示 LLM 反思并决定下一步
                 messages.append({"role": "user", "content": _REFLECT_PROMPT})
@@ -188,10 +202,10 @@ class AgentLoop:
                     continue
                 logger.info(f"LLM 返回最终回复  iteration={iteration + 1}")
                 messages.append({"role": "assistant", "content": response.content})
-                return response.content or "（无响应）", tools_used
+                return response.content or "（无响应）", tools_used, tool_chain
 
         logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
-        return "（已达到最大迭代次数）", tools_used
+        return "（已达到最大迭代次数）", tools_used, tool_chain
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
         """Consolidate old messages into MEMORY.md + HISTORY.md.
