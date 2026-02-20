@@ -1,6 +1,5 @@
 """
-统一消息推送工具，替代原有的 telegram_push / qq_push。
-agent 通过 channel + chat_id 向任意已注册渠道发送消息、文件或图片。
+统一消息推送工具，agent 通过 channel + chat_id 向任意已注册渠道发送消息、文件或图片。
 """
 import logging
 from collections.abc import Awaitable, Callable
