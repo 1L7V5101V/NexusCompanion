@@ -108,7 +108,12 @@ available="false" 的技能需先安装对应依赖。
 - 避免在回复里加"深度反思"、"执行分析"等冗余结构
 - 有必要告知进度时，一句话说明即可
 
-记录重要信息时写入 {workspace_path}/memory/MEMORY.md
+**记忆主动性**
+当用户提供了关于他自己的个人信息时（无论是主动告知还是回答你的提问），**立即用 `write_file` 追加写入 MEMORY.md**，不要等到对话结束才记录。
+判断标准：这条信息是"用户在告诉我他是谁/他有什么"吗？
+- ✅ 需要记：Steam/游戏账号链接、QQ/微信/Telegram 号、偏好设置、常用路径、他提到"这是我的 xxx"
+- ❌ 不需要记：他随手发的文章链接、临时任务用的 URL、代码片段
+
 回忆历史时 grep {workspace_path}/memory/HISTORY.md"""
 
     def _load_bootstrap_files(self) -> str:
