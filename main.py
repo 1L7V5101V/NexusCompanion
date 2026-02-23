@@ -28,6 +28,7 @@ from feeds.registry import FeedRegistry
 from feeds.rss import RSSFeedSource
 from feeds.tools import FeedSubscribeTool, FeedUnsubscribeTool, FeedListTool
 from proactive.loop import ProactiveLoop
+from proactive.state import ProactiveStateStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,6 +137,7 @@ async def serve(config_path: str = "config.json") -> None:
     ]
 
     if config.proactive.enabled:
+        proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
         proactive_loop = ProactiveLoop(
             feed_registry=feed_registry,
             session_manager=session_manager,
@@ -144,6 +146,7 @@ async def serve(config_path: str = "config.json") -> None:
             config=config.proactive,
             model=config.model,
             max_tokens=config.max_tokens,
+            state_store=proactive_state,
         )
         tasks.append(proactive_loop.run())
         print(f"ProactiveLoop 已启动  间隔={config.proactive.interval_seconds}s")

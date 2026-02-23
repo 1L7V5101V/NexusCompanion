@@ -44,7 +44,10 @@
     "items_per_source": 3,
     "recent_chat_messages": 20,
     "default_channel": "telegram",
-    "default_chat_id": "your_numeric_chat_id"
+    "default_chat_id": "your_numeric_chat_id",
+    "dedupe_seen_ttl_hours": 336,
+    "delivery_dedupe_hours": 24,
+    "only_new_items_trigger": true
   },
 
   "_provider_presets": {

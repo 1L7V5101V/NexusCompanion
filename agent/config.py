@@ -111,6 +111,9 @@ class Config:
                 model=p.get("model", ""),
                 default_channel=p.get("default_channel", "telegram"),
                 default_chat_id=str(p.get("default_chat_id", "")),
+                dedupe_seen_ttl_hours=int(p.get("dedupe_seen_ttl_hours", 24 * 14)),
+                delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
+                only_new_items_trigger=bool(p.get("only_new_items_trigger", True)),
             )
 
         return cls(
