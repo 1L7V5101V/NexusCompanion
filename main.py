@@ -15,8 +15,10 @@ from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
+from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.message_push import MessagePushTool
+from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
@@ -36,7 +38,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── 服务端 ────────────────────────────────────────────────────────
 
-def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager]:
+def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager, SchedulerService]:
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
@@ -48,6 +50,15 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     tools.register(ListDirTool())
     push_tool = MessagePushTool()
     tools.register(push_tool)
+
+    tracker = LatencyTracker()
+    scheduler = SchedulerService(
+        store_path=workspace / "schedules.json",
+        push_tool=push_tool,
+        agent_loop=None,   # set after loop is created
+        tracker=tracker,
+    )
+
     provider = LLMProvider(
         api_key=config.api_key,
         base_url=config.base_url,
@@ -63,13 +74,22 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
     )
-    return loop, bus, tools, push_tool, session_manager
+
+    # Wire agent_loop back into scheduler (circular dependency resolved here)
+    scheduler.agent_loop = loop
+
+    # Register schedule tools
+    tools.register(ScheduleTool(scheduler))
+    tools.register(ListSchedulesTool(scheduler))
+    tools.register(CancelScheduleTool(scheduler))
+
+    return loop, bus, tools, push_tool, session_manager, scheduler
 
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
     workspace = Path.home() / ".akasic" / "workspace"
-    agent_loop, bus, tools, push_tool, session_manager = _build_agent(config, workspace)
+    agent_loop, bus, tools, push_tool, session_manager, scheduler = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
     ipc = IPCServerChannel(bus, config.channels.socket)
@@ -98,6 +118,7 @@ async def serve(config_path: str = "config.json") -> None:
         await asyncio.gather(
             agent_loop.run(),
             bus.dispatch_outbound(),
+            scheduler.run(),
         )
     finally:
         await ipc.stop()

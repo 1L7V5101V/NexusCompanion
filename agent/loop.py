@@ -99,6 +99,7 @@ class AgentLoop:
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            message_timestamp=msg.timestamp,
         )
         final_content, tools_used, tool_chain = await self._run_agent_loop(initial_messages)
 

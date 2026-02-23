@@ -19,10 +19,14 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        message_timestamp: "datetime | None" = None,
+    ) -> str:
         parts = []
         # 核心identity
-        parts.append(self._get_identity())
+        parts.append(self._get_identity(message_timestamp))
 
         # memory上下文
         memory = self.memory.get_memory_context()
@@ -53,9 +57,16 @@ available="false" 的技能需先安装对应依赖。
 
         return "\n\n---\n\n".join(parts)
 
-    def _get_identity(self) ->str :
-        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        tz = time.strftime("%Z") or "UTC"
+    def _get_identity(self, message_timestamp: "datetime | None" = None) -> str:
+        # 确保时区感知，naive datetime 转换为本地时区
+        ts = message_timestamp
+        if ts is None:
+            ts = datetime.now().astimezone()
+        elif ts.tzinfo is None:
+            ts = ts.astimezone()
+        now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
+        now_iso = ts.isoformat()   # e.g. "2025-06-01T15:48:40+08:00"
+        tz = ts.strftime("%Z") or "UTC"
         system = platform.system()
         runtime = platform.machine()
         python_version = platform.python_version()
@@ -69,8 +80,10 @@ available="false" 的技能需先安装对应依赖。
 - 抓取网页内容
 - 向聊天渠道发送消息、文件、图片
 
-## 当前时间
-{now}（{tz}）
+## 消息接收时间
+{now}
+request_time={now_iso}
+（调用 schedule 工具时，将上面的 request_time 值原样传入 request_time 字段）
 
 ## 运行环境
 {runtime}
@@ -136,6 +149,7 @@ available="false" 的技能需先安装对应依赖。
             skill_names: list[str] | None = None,
             channel: str | None = None,
             chat_id: str | None = None,
+            message_timestamp: "datetime | None" = None,
     ) -> list[dict[str, Any]]:
         """
                Build the complete message list for an LLM call.
@@ -151,7 +165,7 @@ available="false" 的技能需先安装对应依赖。
                    List of messages including system prompt.
                """
         messages = []
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(skill_names, message_timestamp)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         if channel == "telegram":
