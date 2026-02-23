@@ -36,6 +36,17 @@
     }
   },
 
+  "proactive": {
+    "_comment": "主动触达：定期拉取订阅信息流，LLM 判断是否值得主动发消息",
+    "enabled": false,
+    "interval_seconds": 1800,
+    "threshold": 0.70,
+    "items_per_source": 3,
+    "recent_chat_messages": 20,
+    "default_channel": "telegram",
+    "default_chat_id": "your_numeric_chat_id"
+  },
+
   "_provider_presets": {
     "_comment": "以下 provider 有内置 base_url，无需手动填写",
     "deepseek": "https://api.deepseek.com/v1",

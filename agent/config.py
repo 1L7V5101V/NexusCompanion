@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from proactive.loop import ProactiveConfig
+
 _PRESETS: dict[str, str] = {
     "qwen":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "deepseek": "https://api.deepseek.com/v1",
@@ -58,6 +60,7 @@ class Config:
     base_url: str | None = None
     extra_body: dict = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
+    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -96,6 +99,20 @@ class Config:
             socket=channels_data.get("cli", {}).get("socket", DEFAULT_SOCKET),
         )
 
+        # ── proactive ──
+        proactive = ProactiveConfig()
+        if p := data.get("proactive"):
+            proactive = ProactiveConfig(
+                enabled=p.get("enabled", False),
+                interval_seconds=p.get("interval_seconds", 1800),
+                threshold=p.get("threshold", 0.70),
+                items_per_source=p.get("items_per_source", 3),
+                recent_chat_messages=p.get("recent_chat_messages", 20),
+                model=p.get("model", ""),
+                default_channel=p.get("default_channel", "telegram"),
+                default_chat_id=str(p.get("default_chat_id", "")),
+            )
+
         return cls(
             provider=provider,
             model=data["model"],
@@ -106,6 +123,7 @@ class Config:
             base_url=data.get("base_url") or _PRESETS.get(provider),
             extra_body=data.get("extra_body", {}),
             channels=channels,
+            proactive=proactive,
         )
 
 

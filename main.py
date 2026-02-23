@@ -23,6 +23,11 @@ from agent.tools.shell import ShellTool
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
 from session.manager import SessionManager
+from feeds.store import FeedStore
+from feeds.registry import FeedRegistry
+from feeds.rss import RSSFeedSource
+from feeds.tools import FeedSubscribeTool, FeedUnsubscribeTool, FeedListTool
+from proactive.loop import ProactiveLoop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,7 +43,7 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── 服务端 ────────────────────────────────────────────────────────
 
-def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager, SchedulerService]:
+def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus, ToolRegistry, MessagePushTool, SessionManager, SchedulerService, FeedRegistry, FeedStore, LLMProvider]:
     bus = MessageBus()
     tools = ToolRegistry()
     tools.register(ShellTool())
@@ -83,13 +88,23 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
     tools.register(ListSchedulesTool(scheduler))
     tools.register(CancelScheduleTool(scheduler))
 
-    return loop, bus, tools, push_tool, session_manager, scheduler
+    # Feed store + registry
+    feed_store = FeedStore(workspace / "feeds.json")
+    feed_registry = FeedRegistry(feed_store)
+    feed_registry.register_source_type("rss", lambda sub: RSSFeedSource(sub))
+
+    # Register feed tools
+    tools.register(FeedSubscribeTool(feed_store))
+    tools.register(FeedUnsubscribeTool(feed_store))
+    tools.register(FeedListTool(feed_store))
+
+    return loop, bus, tools, push_tool, session_manager, scheduler, feed_registry, feed_store, provider
 
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
     workspace = Path.home() / ".akasic" / "workspace"
-    agent_loop, bus, tools, push_tool, session_manager, scheduler = _build_agent(config, workspace)
+    agent_loop, bus, tools, push_tool, session_manager, scheduler, feed_registry, feed_store, provider = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
     ipc = IPCServerChannel(bus, config.channels.socket)
@@ -114,12 +129,27 @@ async def serve(config_path: str = "config.json") -> None:
         push_tool.register_channel("qq", text=qq_channel.send, file=qq_channel.send_file, image=qq_channel.send_image)
         print(f"QQ Bot 已启动  |  QQ 号: {qq.bot_uin}")
 
-    try:
-        await asyncio.gather(
-            agent_loop.run(),
-            bus.dispatch_outbound(),
-            scheduler.run(),
+    tasks = [
+        agent_loop.run(),
+        bus.dispatch_outbound(),
+        scheduler.run(),
+    ]
+
+    if config.proactive.enabled:
+        proactive_loop = ProactiveLoop(
+            feed_registry=feed_registry,
+            session_manager=session_manager,
+            provider=provider,
+            push_tool=push_tool,
+            config=config.proactive,
+            model=config.model,
+            max_tokens=config.max_tokens,
         )
+        tasks.append(proactive_loop.run())
+        print(f"ProactiveLoop 已启动  间隔={config.proactive.interval_seconds}s")
+
+    try:
+        await asyncio.gather(*tasks)
     finally:
         await ipc.stop()
         if tg_channel:
