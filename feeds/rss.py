@@ -49,16 +49,47 @@ class RSSFeedSource(FeedSource):
             except Exception as e:
                 logger.warning(f"RSS local file read error [{self._sub.name}] path={local_path!r}: {e}")
                 return []
+        if "xcancel.com" in self._sub.url:
+            return await self._fetch_via_curl(limit)
         async with httpx.AsyncClient(
             timeout=_TIMEOUT,
             follow_redirects=True,
-            headers={"User-Agent": "Akasic-Agent/1.0 (feed reader)"},
+            headers={
+                "User-Agent": "FreshRSS/1.24.0",
+                "Accept": "application/rss+xml, application/atom+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5",
+            },
         ) as client:
             resp = await client.get(self._sub.url)
             resp.raise_for_status()
             return self._parse(resp.text, limit)
 
+    async def _fetch_via_curl(self, limit: int) -> list[FeedItem]:
+        """对 xcancel 等需要特定 TLS 指纹的源，使用系统 curl 获取。"""
+        import asyncio
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-s", "-L",
+                "--max-time", str(int(_TIMEOUT)),
+                "-A", "FreshRSS/1.24.0",
+                "-H", "Accept: */*",
+                self._sub.url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT + 5)
+            if proc.returncode != 0:
+                logger.warning(f"curl 请求失败 [{self._sub.name}] rc={proc.returncode} err={stderr.decode()[:200]}")
+                return []
+            return self._parse(stdout.decode("utf-8", errors="replace"), limit)
+        except Exception as e:
+            logger.warning(f"curl 子进程异常 [{self._sub.name}]: {e}")
+            return []
+
     def _parse(self, xml_text: str, limit: int) -> list[FeedItem]:
+        xml_text = _normalize_xml_text(xml_text)
+        if _is_xcancel_whitelist_feed(xml_text):
+            logger.warning(f"RSS source blocked by xcancel whitelist [{self._sub.name}]")
+            return []
         try:
             root = ET.fromstring(xml_text)
         except ET.ParseError as e:
@@ -175,3 +206,14 @@ def _parse_iso(s: str) -> datetime | None:
         return dt
     except Exception:
         return None
+
+
+def _normalize_xml_text(text: str) -> str:
+    if not text:
+        return ""
+    return text.lstrip("\ufeff\r\n\t ")
+
+
+def _is_xcancel_whitelist_feed(text: str) -> bool:
+    lower = text.lower()
+    return "rss reader not yet whitelisted" in lower
