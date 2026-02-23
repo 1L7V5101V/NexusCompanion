@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from proactive.loop import ProactiveConfig
+from proactive.interest import InterestFilterConfig
 
 _PRESETS: dict[str, str] = {
     "qwen":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -102,6 +103,7 @@ class Config:
         # ── proactive ──
         proactive = ProactiveConfig()
         if p := data.get("proactive"):
+            if_cfg = p.get("interest_filter", {}) or {}
             proactive = ProactiveConfig(
                 enabled=p.get("enabled", False),
                 interval_seconds=p.get("interval_seconds", 1800),
@@ -122,6 +124,15 @@ class Config:
                 semantic_dedupe_text_max_chars=int(p.get("semantic_dedupe_text_max_chars", 240)),
                 use_global_memory=bool(p.get("use_global_memory", True)),
                 global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
+                interest_filter=InterestFilterConfig(
+                    enabled=bool(if_cfg.get("enabled", False)),
+                    memory_max_chars=int(if_cfg.get("memory_max_chars", 4000)),
+                    keyword_max_count=int(if_cfg.get("keyword_max_count", 80)),
+                    min_token_len=int(if_cfg.get("min_token_len", 2)),
+                    min_score=float(if_cfg.get("min_score", 0.14)),
+                    top_k=int(if_cfg.get("top_k", 10)),
+                    exploration_ratio=float(if_cfg.get("exploration_ratio", 0.20)),
+                ),
                 # ── 多维打分 ──
                 score_weight_energy=float(p.get("score_weight_energy", 0.40)),
                 score_weight_content=float(p.get("score_weight_content", 0.40)),
@@ -130,6 +141,7 @@ class Config:
                 score_recent_scale=float(p.get("score_recent_scale", 10.0)),
                 score_llm_threshold=float(p.get("score_llm_threshold", 0.40)),
                 score_pre_threshold=float(p.get("score_pre_threshold", 0.05)),
+                decision_score_random_strength=float(p.get("decision_score_random_strength", 0.0)),
                 interrupt_weight_time=float(p.get("interrupt_weight_time", 0.25)),
                 interrupt_weight_reply=float(p.get("interrupt_weight_reply", 0.35)),
                 interrupt_weight_activity=float(p.get("interrupt_weight_activity", 0.25)),

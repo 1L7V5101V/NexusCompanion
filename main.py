@@ -31,6 +31,7 @@ from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
 from proactive.state import ProactiveStateStore
 from proactive.presence import PresenceStore
+from proactive.schedule import ScheduleStore
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 
 logging.basicConfig(
@@ -145,6 +146,7 @@ async def serve(config_path: str = "config.json") -> None:
 
     if config.proactive.enabled:
         proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
+        schedule_store = ScheduleStore(workspace / "schedule.json")
         proactive_loop = ProactiveLoop(
             feed_registry=feed_registry,
             session_manager=session_manager,
@@ -156,6 +158,7 @@ async def serve(config_path: str = "config.json") -> None:
             state_store=proactive_state,
             memory_store=memory_store,
             presence=presence,
+            schedule=schedule_store,
         )
         tasks.append(proactive_loop.run())
 

@@ -211,8 +211,6 @@ def _validate_url_target(url: str) -> str | None:
     host = (parsed.hostname or "").strip().lower()
     if not host:
         return "URL 缺少主机名"
-    if host == "localhost":
-        return "禁止访问 localhost"
 
     try:
         # IP 地址：禁止回环、私有、链路本地、保留地址

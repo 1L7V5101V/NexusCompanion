@@ -39,7 +39,9 @@ from proactive.energy import (
 )
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.presence import PresenceStore
+from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
+from proactive.interest import InterestFilterConfig, select_interesting_items
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ class ProactiveConfig:
     semantic_dedupe_text_max_chars: int = 240
     use_global_memory: bool = True
     global_memory_max_chars: int = 3000
+    interest_filter: InterestFilterConfig = field(default_factory=InterestFilterConfig)
     # ── 多维打分 ──
     score_weight_energy: float = 0.40    # D_energy 权重（互动饥渴度）
     score_weight_content: float = 0.40   # D_content 权重（信息流新鲜度）
@@ -74,6 +77,7 @@ class ProactiveConfig:
     score_recent_scale: float = 10.0     # D_recent 消息数归一化基数
     score_llm_threshold: float = 0.40    # draw_score 超过此值才调 LLM
     score_pre_threshold: float = 0.05    # pre_score 低于此值直接跳过（省 feed 拉取）
+    decision_score_random_strength: float = 0.0  # 最终发送分数随机扰动幅度（0=关闭）
     # ── Interruptibility（非硬拦截，作为软权重）──
     interrupt_weight_time: float = 0.25
     interrupt_weight_reply: float = 0.35
@@ -111,6 +115,27 @@ class _Decision:
     evidence_item_ids: list[str] = field(default_factory=list)
 
 
+def _decision_with_randomized_score(
+    decision: _Decision,
+    *,
+    strength: float,
+    rng: _random_module.Random | None = None,
+) -> tuple[_Decision, float]:
+    """对最终发送分数注入随机扰动，返回新 decision 与扰动值。"""
+    s = max(0.0, min(1.0, strength))
+    if s <= 0:
+        return decision, 0.0
+    delta = (rng or _random_module).uniform(-s, s)
+    score = max(0.0, min(1.0, decision.score + delta))
+    return _Decision(
+        score=score,
+        should_send=decision.should_send,
+        message=decision.message,
+        reasoning=decision.reasoning,
+        evidence_item_ids=decision.evidence_item_ids,
+    ), delta
+
+
 class ProactiveLoop:
     def __init__(
         self,
@@ -125,6 +150,7 @@ class ProactiveLoop:
         state_path: Path | None = None,
         memory_store: MemoryStore | None = None,
         presence: PresenceStore | None = None,
+        schedule: ScheduleStore | None = None,
         rng: _random_module.Random | None = None,
     ) -> None:
         self._feeds = feed_registry
@@ -137,6 +163,7 @@ class ProactiveLoop:
         self._state = state_store or ProactiveStateStore(state_path or Path("proactive_state.json"))
         self._memory = memory_store
         self._presence = presence
+        self._schedule = schedule
         self._rng = rng
         self._running = False
         logger.info(
@@ -150,6 +177,13 @@ class ProactiveLoop:
             self._cfg.semantic_dedupe_ngram,
             self._cfg.use_global_memory,
             self._cfg.global_memory_max_chars,
+        )
+        logger.info(
+            "[proactive] interest_filter enabled=%s min_score=%.2f top_k=%d explore=%.2f",
+            self._cfg.interest_filter.enabled,
+            self._cfg.interest_filter.min_score,
+            self._cfg.interest_filter.top_k,
+            self._cfg.interest_filter.exploration_ratio,
         )
 
     async def run(self) -> None:
@@ -194,6 +228,16 @@ class ProactiveLoop:
         chat_id = self._cfg.default_chat_id.strip()
         return f"{channel}:{chat_id}" if channel and chat_id else ""
 
+    def _quiet_hours(self) -> tuple[int, int, float]:
+        """从 schedule.json 读取静默时段配置，缺失时回退 cfg 默认值。"""
+        if self._schedule:
+            return (
+                self._schedule.quiet_hours_start(self._cfg.quiet_hours_start),
+                self._schedule.quiet_hours_end(self._cfg.quiet_hours_end),
+                self._schedule.quiet_hours_weight(self._cfg.quiet_hours_weight),
+            )
+        return self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight
+
     def stop(self) -> None:
         self._running = False
 
@@ -216,6 +260,14 @@ class ProactiveLoop:
         except Exception:
             return False
 
+    def _read_memory_text(self) -> str:
+        if not self._memory:
+            return ""
+        try:
+            return self._memory.read_long_term().strip()
+        except Exception:
+            return ""
+
     def _compute_energy(self) -> float:
         """计算目标 session 的当前电量（取目标与全局较高值）。"""
         if not self._presence:
@@ -235,11 +287,12 @@ class ProactiveLoop:
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]:
         """计算软打扰系数（0~1），并注入随机探索，避免长期锁死。"""
+        q_start, q_end, q_weight = self._quiet_hours()
         w_time = time_weight(
             now_hour,
-            self._cfg.quiet_hours_start,
-            self._cfg.quiet_hours_end,
-            self._cfg.quiet_hours_weight,
+            q_start,
+            q_end,
+            q_weight,
         )
         f_time = max(0.0, min(1.0, w_time))
 
@@ -383,6 +436,28 @@ class ProactiveLoop:
                 len(semantic_duplicate_entries),
             )
 
+        # memory 兴趣筛选：先压缩候选，再交给 LLM 反思
+        if self._cfg.interest_filter.enabled and new_items:
+            memory_text = self._read_memory_text()
+            if memory_text:
+                filtered_items, ranked = select_interesting_items(new_items, memory_text, self._cfg.interest_filter)
+                keep_ids = {_item_id(item) for item in filtered_items}
+                old_count = len(new_items)
+                new_items = filtered_items
+                new_entries = [(source_key, item_id) for source_key, item_id in new_entries if item_id in keep_ids]
+                top_preview = ", ".join(
+                    f"{(pair[0].title or '')[:28]}:{pair[1]:.2f}" for pair in ranked[:3]
+                )
+                logger.info(
+                    "[proactive] memory 兴趣筛选 old=%d kept=%d min_score=%.2f top=%s",
+                    old_count,
+                    len(new_items),
+                    self._cfg.interest_filter.min_score,
+                    top_preview or "-",
+                )
+            else:
+                logger.info("[proactive] memory 兴趣筛选跳过：memory 为空")
+
         has_memory = self._has_global_memory()
         if self._cfg.only_new_items_trigger and not new_items and not self._presence and not has_memory:
             logger.info("[proactive] 无新信息且 only_new_items_trigger=true（无 presence），跳过本轮反思")
@@ -400,6 +475,7 @@ class ProactiveLoop:
         draw_score = base_score * w_random
         session_key = self._target_session_key()
         target_last_user = self._presence.get_last_user_at(session_key) if self._presence and session_key else None
+        last_proactive_at = self._presence.get_last_proactive_at(session_key) if self._presence and session_key else None
         force_reflect = (
             energy < 0.05
             or (self._presence is not None and bool(session_key) and target_last_user is None)
@@ -420,13 +496,71 @@ class ProactiveLoop:
 
         # ── 第三阶段：LLM 反思 ────────────────────────────────────
         is_crisis = energy < 0.05
+        q_start, q_end, q_weight = self._quiet_hours()
+        in_quiet = (
+            (now_hour >= q_start or now_hour < q_end)
+            if q_start > q_end
+            else (q_start <= now_hour < q_end)
+        )
+        sent_24h = (
+            self._state.count_deliveries_in_window(session_key, 24, now=now_utc)
+            if session_key else 0
+        )
+        replied_after_last_proactive = (
+            bool(target_last_user and last_proactive_at and target_last_user > last_proactive_at)
+        )
+        mins_since_last_user = (
+            int((now_utc - target_last_user).total_seconds() / 60)
+            if target_last_user else None
+        )
+        mins_since_last_proactive = (
+            int((now_utc - last_proactive_at).total_seconds() / 60)
+            if last_proactive_at else None
+        )
+        fresh_items_24h = sum(
+            1
+            for item in new_items
+            if item.published_at and (now_utc - item.published_at).total_seconds() <= 24 * 3600
+        )
+        decision_signals: dict[str, object] = {
+            "quiet_window_local": f"{q_start:02d}:00-{q_end:02d}:00",
+            "in_quiet_hours": in_quiet,
+            "quiet_hours_weight": q_weight,
+            "minutes_since_last_user": mins_since_last_user,
+            "minutes_since_last_proactive": mins_since_last_proactive,
+            "user_replied_after_last_proactive": replied_after_last_proactive,
+            "proactive_sent_24h": sent_24h,
+            "interruptibility": round(interruptibility, 3),
+            "interrupt_breakdown": {
+                "time": round(interrupt_detail["f_time"], 3),
+                "reply": round(interrupt_detail["f_reply"], 3),
+                "activity": round(interrupt_detail["f_activity"], 3),
+                "fatigue": round(interrupt_detail["f_fatigue"], 3),
+            },
+            "scores": {
+                "pre_score": round(pre_score, 3),
+                "base_score": round(base_score, 3),
+                "draw_score": round(draw_score, 3),
+                "llm_threshold": round(self._cfg.score_llm_threshold, 3),
+                "send_threshold": round(self._cfg.threshold, 3),
+            },
+            "candidate_items": len(new_items),
+            "fresh_items_24h": fresh_items_24h,
+        }
         decision = await self._reflect(
             new_items, recent,
             energy=energy, urge=draw_score,
             is_crisis=is_crisis,
+            decision_signals=decision_signals,
+        )
+        decision, decision_delta = _decision_with_randomized_score(
+            decision,
+            strength=self._cfg.decision_score_random_strength,
+            rng=self._rng,
         )
         logger.info(
             f"[proactive] score={decision.score:.2f}  "
+            f"score_delta={decision_delta:+.2f}  "
             f"send={decision.should_send}  "
             f"reasoning={decision.reasoning[:80]!r}"
         )
@@ -624,6 +758,7 @@ class ProactiveLoop:
         energy: float = 0.0,
         urge: float = 0.0,
         is_crisis: bool = False,
+        decision_signals: dict[str, object] | None = None,
     ) -> _Decision:
         now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         feed_text = _format_items(items) or "（暂无订阅内容）"
@@ -674,6 +809,7 @@ class ProactiveLoop:
 
 当前电量（与用户的互动新鲜度）: {energy:.2f}  (0=完全冷却, 1=刚刚对话)
 主动冲动指数: {urge:.2f}  (0=不需要说, 1=非常需要联系){crisis_hint}
+{f"## 决策信号（系统计算）\n\n```json\n{json.dumps(decision_signals, ensure_ascii=False, indent=2)}\n```\n" if decision_signals else ""}
 
 ## 订阅信息流（最新内容）
 
