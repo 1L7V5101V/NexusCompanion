@@ -10,16 +10,19 @@ ProactiveLoop — 主动触达核心循环。
 from __future__ import annotations
 
 import asyncio
+import math
 import hashlib
 import json
 import logging
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from agent.provider import LLMProvider
+from agent.memory import MemoryStore
 from agent.tools.message_push import MessagePushTool
 from feeds.base import FeedItem
 from feeds.registry import FeedRegistry
@@ -42,6 +45,14 @@ class ProactiveConfig:
     dedupe_seen_ttl_hours: int = 24 * 14
     delivery_dedupe_hours: int = 24
     only_new_items_trigger: bool = True
+    semantic_dedupe_enabled: bool = True
+    semantic_dedupe_threshold: float = 0.90
+    semantic_dedupe_window_hours: int = 72
+    semantic_dedupe_max_candidates: int = 200
+    semantic_dedupe_ngram: int = 3
+    semantic_dedupe_text_max_chars: int = 240
+    use_global_memory: bool = True
+    global_memory_max_chars: int = 3000
 
 
 @dataclass
@@ -65,6 +76,7 @@ class ProactiveLoop:
         max_tokens: int = 1024,
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self._feeds = feed_registry
         self._sessions = session_manager
@@ -74,12 +86,19 @@ class ProactiveLoop:
         self._model = config.model or model
         self._max_tokens = max_tokens
         self._state = state_store or ProactiveStateStore(state_path or Path("proactive_state.json"))
+        self._memory = memory_store
         self._running = False
         logger.info(
-            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh only_new_items_trigger=%s",
+            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh only_new_items_trigger=%s semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
             self._cfg.dedupe_seen_ttl_hours,
             self._cfg.delivery_dedupe_hours,
             self._cfg.only_new_items_trigger,
+            self._cfg.semantic_dedupe_enabled,
+            self._cfg.semantic_dedupe_threshold,
+            self._cfg.semantic_dedupe_window_hours,
+            self._cfg.semantic_dedupe_ngram,
+            self._cfg.use_global_memory,
+            self._cfg.global_memory_max_chars,
         )
 
     async def run(self) -> None:
@@ -106,17 +125,24 @@ class ProactiveLoop:
         self._state.cleanup(
             seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
             delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
+            semantic_ttl_hours=max(self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours),
         )
 
         # 1. 并发拉取信息流
         items = await self._feeds.fetch_all(self._cfg.items_per_source)
         logger.info(f"[proactive] 拉取到 {len(items)} 条信息")
-        new_items, new_entries = self._filter_new_items(items)
+        new_items, new_entries, semantic_duplicate_entries = self._filter_new_items(items)
         logger.info(
             "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
             len(new_items),
             len(items) - len(new_items),
         )
+        if semantic_duplicate_entries:
+            self._state.mark_items_seen(semantic_duplicate_entries)
+            logger.info(
+                "[proactive] 已标记语义重复条目为 seen count=%d（避免跨源重复重试）",
+                len(semantic_duplicate_entries),
+            )
         if not new_items and self._cfg.only_new_items_trigger:
             logger.info("[proactive] 无新信息，按配置跳过本轮反思")
             return
@@ -154,12 +180,14 @@ class ProactiveLoop:
             ):
                 logger.info("[proactive] 命中发送去重，跳过发送")
                 self._state.mark_items_seen(new_entries)
+                self._state.mark_semantic_items(_semantic_entries(new_items, self._cfg.semantic_dedupe_text_max_chars))
                 logger.info("[proactive] 已按去重命中标记本轮条目为 seen（视为已送达过同等内容）")
                 return
             sent = await self._send(decision.message)
             if sent and session_key:
                 self._state.mark_delivery(session_key, delivery_key)
                 self._state.mark_items_seen(new_entries)
+                self._state.mark_semantic_items(_semantic_entries(new_items, self._cfg.semantic_dedupe_text_max_chars))
                 logger.info("[proactive] 已发送成功并标记本轮条目为 seen")
             else:
                 logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
@@ -167,13 +195,15 @@ class ProactiveLoop:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
 
-    def _filter_new_items(self, items: list[FeedItem]) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+    def _filter_new_items(
+        self, items: list[FeedItem]
+    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
         if not items:
             logger.info("[proactive] 本轮无 item，去重过滤跳过")
-            return [], []
+            return [], [], []
         now = datetime.now(timezone.utc)
-        new_items: list[FeedItem] = []
-        new_entries: list[tuple[str, str]] = []
+        source_fresh: list[FeedItem] = []
+        source_entries: list[tuple[str, str]] = []
         for item in items:
             source_key = _source_key(item)
             item_id = _item_id(item)
@@ -192,9 +222,101 @@ class ProactiveLoop:
             )
             if seen:
                 continue
-            new_items.append(item)
-            new_entries.append((source_key, item_id))
-        return new_items, new_entries
+            source_fresh.append(item)
+            source_entries.append((source_key, item_id))
+        if not self._cfg.semantic_dedupe_enabled or not source_fresh:
+            return source_fresh, source_entries, []
+        return self._semantic_dedupe(source_fresh, source_entries, now)
+
+    def _semantic_dedupe(
+        self,
+        source_fresh: list[FeedItem],
+        source_entries: list[tuple[str, str]],
+        now: datetime,
+    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
+        history = self._state.get_semantic_items(
+            window_hours=self._cfg.semantic_dedupe_window_hours,
+            max_candidates=self._cfg.semantic_dedupe_max_candidates,
+            now=now,
+        )
+        payload = [
+            {
+                "item": item,
+                "source_key": source_key,
+                "item_id": item_id,
+                "text": _semantic_text(item, self._cfg.semantic_dedupe_text_max_chars),
+            }
+            for item, (source_key, item_id) in zip(source_fresh, source_entries)
+        ]
+        if not payload:
+            return [], [], []
+        docs = [h["text"] for h in history] + [p["text"] for p in payload]
+        vectors = _build_tfidf_vectors(docs, self._cfg.semantic_dedupe_ngram)
+        history_vectors = vectors[: len(history)]
+        payload_vectors = vectors[len(history):]
+
+        keep_items: list[FeedItem] = []
+        keep_entries: list[tuple[str, str]] = []
+        duplicate_entries: list[tuple[str, str]] = []
+        accepted_vectors: list[dict[str, float]] = []
+        accepted_meta: list[dict[str, str]] = []
+        threshold = self._cfg.semantic_dedupe_threshold
+        for idx, p in enumerate(payload):
+            vec = payload_vectors[idx]
+            best_sim = 0.0
+            best_kind = ""
+            best_source = ""
+            best_item_id = ""
+
+            for h_idx, h_vec in enumerate(history_vectors):
+                sim = _cosine_sparse(vec, h_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_kind = "history"
+                    best_source = history[h_idx].get("source_key", "")
+                    best_item_id = history[h_idx].get("item_id", "")
+
+            for a_idx, a_vec in enumerate(accepted_vectors):
+                sim = _cosine_sparse(vec, a_vec)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_kind = "batch"
+                    best_source = accepted_meta[a_idx].get("source_key", "")
+                    best_item_id = accepted_meta[a_idx].get("item_id", "")
+
+            logger.info(
+                "[proactive] 语义去重检查 source=%s item_id=%s best_sim=%.4f threshold=%.2f matched_kind=%s matched_source=%s matched_item=%s title=%r",
+                p["source_key"],
+                p["item_id"][:16],
+                best_sim,
+                threshold,
+                best_kind or "-",
+                best_source or "-",
+                (best_item_id or "-")[:16],
+                (p["item"].title or "")[:80],
+            )
+
+            if best_sim >= threshold:
+                duplicate_entries.append((p["source_key"], p["item_id"]))
+                logger.info(
+                    "[proactive] 语义去重命中，过滤 item source=%s item_id=%s sim=%.4f",
+                    p["source_key"],
+                    p["item_id"][:16],
+                    best_sim,
+                )
+                continue
+
+            keep_items.append(p["item"])
+            keep_entries.append((p["source_key"], p["item_id"]))
+            accepted_vectors.append(vec)
+            accepted_meta.append({"source_key": p["source_key"], "item_id": p["item_id"]})
+        logger.info(
+            "[proactive] 语义去重结果 keep=%d duplicate=%d history_candidates=%d",
+            len(keep_items),
+            len(duplicate_entries),
+            len(history),
+        )
+        return keep_items, keep_entries, duplicate_entries
 
     def _collect_recent(self) -> list[dict]:
         """取目标会话最近 N 条消息（只取 user/assistant 文本）。"""
@@ -227,6 +349,7 @@ class ProactiveLoop:
         now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         feed_text = _format_items(items) or "（暂无订阅内容）"
         chat_text = _format_recent(recent) or "（无近期对话记录）"
+        memory_text = self._collect_global_memory()
 
         system_msg = (
             "你是一个陪伴型 AI 助手，正在决定是否主动联系用户。"
@@ -239,6 +362,10 @@ class ProactiveLoop:
 ## 订阅信息流（最新内容）
 
 {feed_text}
+
+## 长期记忆（用户画像/偏好）
+
+{memory_text}
 
 ## 近期对话
 
@@ -280,6 +407,29 @@ evidence_item_ids 从订阅信息流里挑选支持你判断的 item_id（可为
         except Exception as e:
             logger.error(f"[proactive] LLM 反思失败: {e}")
             return _Decision(score=0.0, should_send=False, message="", reasoning=str(e))
+
+    def _collect_global_memory(self) -> str:
+        if not self._cfg.use_global_memory:
+            logger.info("[proactive] 全局记忆已禁用（use_global_memory=false）")
+            return "（全局记忆已禁用）"
+        if not self._memory:
+            logger.info("[proactive] 未注入 MemoryStore，跳过全局记忆")
+            return "（无全局记忆）"
+        try:
+            raw = self._memory.get_memory_context().strip()
+            if not raw:
+                logger.info("[proactive] 全局记忆为空")
+                return "（无全局记忆）"
+            text = raw[: max(self._cfg.global_memory_max_chars, 256)]
+            logger.info(
+                "[proactive] 已注入全局记忆 chars=%d truncated=%s",
+                len(text),
+                len(raw) > len(text),
+            )
+            return text
+        except Exception as e:
+            logger.warning("[proactive] 读取全局记忆失败: %s", e)
+            return "（读取全局记忆失败）"
 
     async def _send(self, message: str) -> bool:
         channel = (self._cfg.default_channel or "").strip()
@@ -438,3 +588,74 @@ def _build_delivery_key(item_ids: list[str], message: str) -> str:
     canonical_msg = re.sub(r"\s+", " ", (message or "").strip().lower())
     raw = f"{canonical_ids}::{canonical_msg}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _semantic_text(item: FeedItem, max_chars: int) -> str:
+    title = (item.title or "").strip().lower()
+    content = (item.content or "").strip().lower()
+    merged = f"{title} {content}".strip()
+    merged = re.sub(r"\s+", " ", merged)
+    if not merged:
+        merged = _normalize_url(item.url)
+    return merged[: max(max_chars, 32)]
+
+
+def _semantic_entries(items: list[FeedItem], max_chars: int) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    for item in items:
+        entries.append(
+            {
+                "source_key": _source_key(item),
+                "item_id": _item_id(item),
+                "text": _semantic_text(item, max_chars),
+            }
+        )
+    return entries
+
+
+def _char_ngrams(text: str, n: int) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not cleaned:
+        return []
+    n = max(1, n)
+    if len(cleaned) <= n:
+        return [cleaned]
+    return [cleaned[i : i + n] for i in range(len(cleaned) - n + 1)]
+
+
+def _build_tfidf_vectors(texts: list[str], n: int) -> list[dict[str, float]]:
+    if not texts:
+        return []
+    tokenized: list[list[str]] = [_char_ngrams(t, n) for t in texts]
+    doc_freq: Counter[str] = Counter()
+    for toks in tokenized:
+        doc_freq.update(set(toks))
+
+    total_docs = len(tokenized)
+    vectors: list[dict[str, float]] = []
+    for toks in tokenized:
+        if not toks:
+            vectors.append({})
+            continue
+        tf = Counter(toks)
+        total = float(sum(tf.values()))
+        vec: dict[str, float] = {}
+        for tok, cnt in tf.items():
+            idf = math.log((1.0 + total_docs) / (1.0 + doc_freq[tok])) + 1.0
+            vec[tok] = (cnt / total) * idf
+        vectors.append(vec)
+    return vectors
+
+
+def _cosine_sparse(a: dict[str, float], b: dict[str, float]) -> float:
+    if not a or not b:
+        return 0.0
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    dot = 0.0
+    for k, v in small.items():
+        dot += v * large.get(k, 0.0)
+    norm_a = math.sqrt(sum(v * v for v in a.values()))
+    norm_b = math.sqrt(sum(v * v for v in b.values()))
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)

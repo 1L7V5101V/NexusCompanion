@@ -47,7 +47,15 @@
     "default_chat_id": "your_numeric_chat_id",
     "dedupe_seen_ttl_hours": 336,
     "delivery_dedupe_hours": 24,
-    "only_new_items_trigger": true
+    "only_new_items_trigger": true,
+    "semantic_dedupe_enabled": true,
+    "semantic_dedupe_threshold": 0.9,
+    "semantic_dedupe_window_hours": 72,
+    "semantic_dedupe_max_candidates": 200,
+    "semantic_dedupe_ngram": 3,
+    "semantic_dedupe_text_max_chars": 240,
+    "use_global_memory": true,
+    "global_memory_max_chars": 3000
   },
 
   "_provider_presets": {

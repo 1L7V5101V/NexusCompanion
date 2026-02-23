@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.memory import MemoryStore
 from feeds.base import FeedItem
 from proactive.loop import ProactiveConfig, ProactiveLoop, _parse_decision
 from session.manager import SessionManager
@@ -167,3 +168,95 @@ async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
 
     assert provider.chat.await_count == 2
     assert push_tool.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_semantic_dedupe_blocks_cross_source_duplicates(tmp_path):
+    push_tool = AsyncMock()
+    push_tool.execute = AsyncMock(return_value="文本已发送")
+
+    feed = _DummyFeedRegistry()
+    item_a = FeedItem(
+        source_name="SourceA",
+        source_type="rss",
+        title="Elden Ring DLC announced",
+        content="New trailer and release date window.",
+        url="https://a.example.com/post-1",
+        author=None,
+        published_at=None,
+    )
+    item_b = FeedItem(
+        source_name="SourceB",
+        source_type="rss",
+        title="Elden Ring DLC announced",
+        content="New trailer and release date window.",
+        url="https://b.example.com/news-77",
+        author=None,
+        published_at=None,
+    )
+    feed.fetch_all = AsyncMock(side_effect=[[item_a], [item_b]])
+
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.95,"should_send":true,"message":"ping"}')
+    )
+    session_manager = SessionManager(tmp_path)
+    loop = ProactiveLoop(
+        feed_registry=feed,
+        session_manager=session_manager,
+        provider=provider,
+        push_tool=push_tool,
+        config=ProactiveConfig(
+            enabled=True,
+            default_channel="telegram",
+            default_chat_id="7674283004",
+            only_new_items_trigger=True,
+            semantic_dedupe_enabled=True,
+            semantic_dedupe_threshold=0.90,
+            semantic_dedupe_window_hours=72,
+            semantic_dedupe_ngram=3,
+        ),
+        model="test-model",
+        state_path=tmp_path / "proactive_state.json",
+    )
+
+    await loop._tick()
+    await loop._tick()
+
+    assert provider.chat.await_count == 1
+    assert push_tool.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reflect_includes_global_memory(tmp_path):
+    push_tool = AsyncMock()
+    push_tool.execute = AsyncMock(return_value="文本已发送")
+
+    memory = MemoryStore(tmp_path)
+    memory.write_long_term("用户偏好：关注单机游戏发售与DLC，不爱电竞资讯。")
+
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.2,"should_send":false,"message":""}')
+    )
+    session_manager = SessionManager(tmp_path)
+    loop = ProactiveLoop(
+        feed_registry=_DummyFeedRegistry(),
+        session_manager=session_manager,
+        provider=provider,
+        push_tool=push_tool,
+        config=ProactiveConfig(
+            enabled=True,
+            use_global_memory=True,
+            global_memory_max_chars=3000,
+        ),
+        model="test-model",
+        state_path=tmp_path / "proactive_state.json",
+        memory_store=memory,
+    )
+
+    await loop._reflect(items=[], recent=[])
+
+    kwargs = provider.chat.await_args.kwargs
+    user_prompt = kwargs["messages"][1]["content"]
+    assert "用户偏好：关注单机游戏发售与DLC，不爱电竞资讯。" in user_prompt

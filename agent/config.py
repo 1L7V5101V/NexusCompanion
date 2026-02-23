@@ -114,6 +114,14 @@ class Config:
                 dedupe_seen_ttl_hours=int(p.get("dedupe_seen_ttl_hours", 24 * 14)),
                 delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
                 only_new_items_trigger=bool(p.get("only_new_items_trigger", True)),
+                semantic_dedupe_enabled=bool(p.get("semantic_dedupe_enabled", True)),
+                semantic_dedupe_threshold=float(p.get("semantic_dedupe_threshold", 0.90)),
+                semantic_dedupe_window_hours=int(p.get("semantic_dedupe_window_hours", 72)),
+                semantic_dedupe_max_candidates=int(p.get("semantic_dedupe_max_candidates", 200)),
+                semantic_dedupe_ngram=int(p.get("semantic_dedupe_ngram", 3)),
+                semantic_dedupe_text_max_chars=int(p.get("semantic_dedupe_text_max_chars", 240)),
+                use_global_memory=bool(p.get("use_global_memory", True)),
+                global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
             )
 
         return cls(

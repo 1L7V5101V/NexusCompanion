@@ -14,6 +14,7 @@ from bus.queue import MessageBus
 from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMProvider
+from agent.memory import MemoryStore
 from agent.tools.registry import ToolRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -146,6 +147,7 @@ async def serve(config_path: str = "config.json") -> None:
             model=config.model,
             max_tokens=config.max_tokens,
             state_store=proactive_state,
+            memory_store=MemoryStore(workspace),
         )
         tasks.append(proactive_loop.run())
         print(f"ProactiveLoop 已启动  间隔={config.proactive.interval_seconds}s")
