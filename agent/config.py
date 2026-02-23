@@ -62,6 +62,7 @@ class Config:
     extra_body: dict = field(default_factory=dict)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    memory_optimizer_enabled: bool = True
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -155,7 +156,7 @@ class Config:
                 interrupt_min_floor=float(p.get("interrupt_min_floor", 0.08)),
                 # ── 静默时间窗口（本地时间）──
                 quiet_hours_start=int(p.get("quiet_hours_start", 23)),
-                quiet_hours_end=int(p.get("quiet_hours_end", 8)),
+                quiet_hours_end=int(p.get("quiet_hours_end", 10)),
                 quiet_hours_weight=float(p.get("quiet_hours_weight", 0.0)),
                 # ── tick 间隔（秒，由 base_score 驱动）──
                 tick_interval_s0=int(p.get("tick_interval_s0", 4800)),
@@ -176,6 +177,7 @@ class Config:
             extra_body=data.get("extra_body", {}),
             channels=channels,
             proactive=proactive,
+            memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
         )
 
 

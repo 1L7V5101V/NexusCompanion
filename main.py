@@ -163,13 +163,16 @@ async def serve(config_path: str = "config.json") -> None:
         tasks.append(proactive_loop.run())
 
     # 每日 00:00 记忆质量优化 + 问题生成
-    mem_optimizer = MemoryOptimizer(
-        memory=memory_store,
-        provider=provider,
-        model=config.model,
-    )
-    tasks.append(MemoryOptimizerLoop(mem_optimizer).run())
-    print("MemoryOptimizerLoop 已启动，每日 00:00 执行")
+    if config.memory_optimizer_enabled:
+        mem_optimizer = MemoryOptimizer(
+            memory=memory_store,
+            provider=provider,
+            model=config.model,
+        )
+        tasks.append(MemoryOptimizerLoop(mem_optimizer).run())
+        print("MemoryOptimizerLoop 已启动，每日 00:00 执行")
+    else:
+        print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
 
     try:
         await asyncio.gather(*tasks)

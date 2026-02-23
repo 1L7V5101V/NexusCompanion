@@ -92,7 +92,7 @@ class ProactiveConfig:
     interrupt_min_floor: float = 0.08
     # ── 昼夜节律 ──
     quiet_hours_start: int = 23           # 静默开始（本地时间）
-    quiet_hours_end: int = 8              # 静默结束（本地时间）
+    quiet_hours_end: int = 10             # 静默结束（本地时间）
     quiet_hours_weight: float = 0.0      # 静默时段权重，0=完全不发，0.1=低概率仍可发
     # ── tick 间隔（由 base_score 驱动）──
     tick_interval_s0: int = 4800         # base_score ≤ 0.20 → ~80 min

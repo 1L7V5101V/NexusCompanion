@@ -214,7 +214,8 @@ class SkillsLoader:
             skill_config = self._get_skill_config(s["name"])
             available = self._check_requirements(skill_config)
 
-            lines.append(f"  <skill available=\"{str(available).lower()}\">")
+            source = s["source"]  # "workspace" or "builtin"
+            lines.append(f"  <skill available=\"{str(available).lower()}\" source=\"{source}\">")
             lines.append(f"    <name>{name}</name>")
             lines.append(f"    <description>{desc}</description>")
             lines.append(f"    <location>{path}</location>")

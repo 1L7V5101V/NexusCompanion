@@ -1,7 +1,7 @@
 ---
 name: update-schedule
 description: Update the user's quiet hours schedule (when they sleep/wake or adjust their routine).
-metadata: {"akasic":{}}
+metadata: {"akasic":{"always":true}}
 ---
 
 # Update Schedule
@@ -19,7 +19,7 @@ When the user signals a change in their routine — says goodnight, mentions the
 ```json
 {
   "quiet_hours_start": 23,
-  "quiet_hours_end": 8,
+  "quiet_hours_end": 10,
   "quiet_hours_weight": 0.1
 }
 ```
@@ -39,7 +39,7 @@ read_file("~/.akasic/workspace/schedule.json")
 # write with updated hours, weight always stays 0.1
 write_file("~/.akasic/workspace/schedule.json", '{
   "quiet_hours_start": 23,
-  "quiet_hours_end": 8,
+  "quiet_hours_end": 10,
   "quiet_hours_weight": 0.1
 }')
 ```

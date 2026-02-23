@@ -93,6 +93,7 @@ request_time={now_iso}
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 自定义技能：{workspace_path}/skills/{{skill-name}}/SKILL.md
+- 内置技能：预装在系统中，不在 workspace 目录，路径见 `<skills>` 块的 `<location>` 字段（source="builtin"）
 
 ## 行为准则
 
