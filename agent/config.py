@@ -63,6 +63,7 @@ class Config:
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
+    memory_optimizer_interval_seconds: int = 3600  # 默认每小时
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -178,6 +179,7 @@ class Config:
             channels=channels,
             proactive=proactive,
             memory_optimizer_enabled=bool(data.get("memory_optimizer_enabled", True)),
+            memory_optimizer_interval_seconds=int(data.get("memory_optimizer_interval_seconds", 3600)),
         )
 
 

@@ -5,11 +5,16 @@ from utils.helpers import ensure_dir
 
 
 class MemoryStore:
-    """Two-layer memory: MEMORY.md (long-term facts) + HISTORY.md (grep-searchable log)."""
+    """Three-layer memory:
+    - MEMORY.md   : stable user profile, append-only, sole writer = MemoryOptimizer
+    - PENDING.md  : incremental facts extracted during conversations, append-only
+    - HISTORY.md  : grep-searchable event log, permanent append
+    """
     def __init__(self,workspace: Path):
         self.memory_dir = ensure_dir(workspace/ "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
+        self.pending_file = self.memory_dir / "PENDING.md"
 
     def read_long_term(self) -> str:
         if self.memory_file.exists():
@@ -22,6 +27,24 @@ class MemoryStore:
     def append_history(self, entry: str) -> None:
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
+
+    # ── pending facts (conversation → optimizer buffer) ───────────
+
+    def read_pending(self) -> str:
+        if self.pending_file.exists():
+            return self.pending_file.read_text(encoding="utf-8")
+        return ""
+
+    def append_pending(self, facts: str) -> None:
+        """追加对话中提取的增量事实片段，不触碰 MEMORY.md。"""
+        if not facts or not facts.strip():
+            return
+        with open(self.pending_file, "a", encoding="utf-8") as f:
+            f.write(facts.rstrip() + "\n")
+
+    def clear_pending(self) -> None:
+        """optimizer 归档后清空 PENDING.md。"""
+        self.pending_file.write_text("", encoding="utf-8")
 
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()

@@ -248,25 +248,32 @@ class AgentLoop:
         current_memory = memory.read_long_term()
         current_questions = memory.read_questions()
 
-        prompt = f"""你是记忆压缩代理（Memory Consolidation Agent）。处理对话后返回 JSON，包含以下三个键：
+        prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中提取需要长期记住的新事实，返回 JSON。
+
+JSON 包含以下三个键：
 
 1. "history_entry"：2-5 句话的事件摘要，以 [YYYY-MM-DD HH:MM] 开头，保留足够细节便于未来 grep 检索。
 
-2. "memory_update"：在现有用户档案基础上**追加**新事实后的完整内容。规则：
-   - 保留现有档案的全部内容，不删除、不改写已有条目
-   - 仅将本次对话中发现的**新事实**以 bullet 追加到对应分类末尾
-   - 若本次对话无新事实，原样返回现有档案内容
-   - 新事实示例：用户提到的偏好、习惯、身份信息、项目进展、技术决策等持久信息
+2. "new_facts"：本次对话中出现的**新持久化事实**，格式为带分类标注的 bullet 列表。
+   规则：
+   - 只写现有档案中**没有**的新信息（对照下方档案查重）
+   - 只写持久性事实：姓名/设备/账号/偏好/技能/项目经历/游戏数据等
+   - 不写一次性操作记录（"帮用户执行了X"、"已完成Y"）
+   - 不写对话本身的过程描述
+   - 若无新事实，返回空字符串 ""
+   - 格式示例：
+     - [用户画像] 用户确认正在准备秋招
+     - [硬件与环境] 新增显示器：Dell U2723D
 
 3. "answered_question_indices"：从待了解问题列表中，本次对话**已得到解答**的问题序号列表（1-based int）。若无则返回 []。
 
-## 当前用户档案
+## 当前用户档案（用于查重，不要重复已有内容）
 {current_memory or "（空）"}
 
 ## 待了解的问题
 {current_questions or "（无）"}
 
-## 待压缩对话
+## 待处理对话
 {conversation}
 
 只返回合法 JSON，不要 markdown 代码块。"""
@@ -275,12 +282,12 @@ class AgentLoop:
             response = await self.provider.chat(
                 messages=[
                     {"role": "system",
-                     "content": "你是记忆压缩代理，只返回合法 JSON。"},
+                     "content": "你是记忆提取代理，只返回合法 JSON。"},
                     {"role": "user", "content": prompt},
                 ],
                 tools=[],
                 model=self.model,
-                max_tokens=2048,
+                max_tokens=1024,
             )
             text = (response.content or "").strip()
 
@@ -296,8 +303,12 @@ class AgentLoop:
 
             if "history_entry" in result:
                 memory.append_history(result["history_entry"])
-            if "memory_update" in result:
-                memory.write_long_term(result["memory_update"])
+            # 增量事实写入 PENDING.md，不触碰 MEMORY.md
+            # MEMORY.md 由夜间 MemoryOptimizer 统一合并维护
+            new_facts = result.get("new_facts", "")
+            if new_facts and isinstance(new_facts, str) and new_facts.strip():
+                memory.append_pending(new_facts)
+                logger.info(f"Memory consolidation: appended {len(new_facts.splitlines())} new facts to PENDING")
             answered = result.get("answered_question_indices", [])
             if answered and isinstance(answered, list):
                 indices = [int(i) for i in answered if str(i).isdigit() or isinstance(i, int)]

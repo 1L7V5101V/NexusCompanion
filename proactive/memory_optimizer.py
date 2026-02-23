@@ -20,51 +20,35 @@ logger = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────
 
-_REWRITE_SYSTEM = (
+_MERGE_SYSTEM = (
     "你是一个用户档案维护者（User Profile Curator），"
-    "帮助 AI 助手维护关于用户的凝练知识库。"
+    "负责将新事实合并进现有档案，只增不删。"
 )
 
-_REWRITE_PROMPT = """\
-将以下长期记忆和近期历史整理为一份用户档案。
+_MERGE_PROMPT = """\
+将「待合并事实」中的新条目插入「现有用户档案」对应分类。
 
-## 必须完整保留（绝对不能删除或缩写）
-- 姓名、生日、学校、专业、身份
-- 联系方式（QQ、Telegram、邮箱等）
-- 硬件设备型号（CPU、GPU、手机型号等具体型号）
-- 文件路径、目录结构（代码目录、工作区路径等）
-- 账号 ID、API Key 存储位置、Steam ID 等标识符
-- 实习/工作经历的具体项目名称、技术细节
-- 游戏具体数据（游戏时长、成就进度等）
+## 操作规则（严格执行）
+- **禁止删除**现有档案中的任何行
+- **禁止改写**现有档案中的任何行（包括措辞调整）
+- **禁止合并/压缩**现有条目
+- 只允许将「待合并事实」中**不重复**的条目追加到档案对应分类末尾
+- 若某条事实与现有档案内容高度重复，直接跳过（不添加）
+- 若「待合并事实」为空，原样输出现有档案，不做任何修改
 
-## 可以整理的内容
-- 合并重复/相似表述（保留信息量更大的那条）
-- 从事件推断持久特征（"玩 Nioh/Sekiro/CS2" → "PC 平台玩家，不关注主机内容"）
-- 将零散条目归入合适分类
+## 允许的操作
+- 在合适的已有分类末尾追加新 bullet
+- 若某条事实对应的分类在档案中不存在，在文末新建该分类并追加
 
-## 必须删除
-- 已完成的一次性操作任务（"帮我设置了 X"、"已执行 Y"）
-- 纯事件日志（"On YYYY-MM-DD 用户做了 Z"）
-- 明确过时的待定项（"将要做 X" 类，且已有结论的）
-
-格式：固定分类 Markdown，每条事实一行 bullet，只写有内容的分类。
-分类顺序：
-## 用户画像
-## 硬件与环境
-## 兴趣与偏好
-## 健康与习惯
-## 关系定位
-## 当前状态（动态，标注截至 YYYY-MM）
-
-直接输出 Markdown，不要 JSON，不要代码块。
+直接输出完整 Markdown 档案，不要 JSON，不要代码块。
 
 ---
 
-当前记忆：
+现有用户档案：
 {memory}
 
-近期历史摘要：
-{history}
+待合并事实（来自近期对话提取 + 历史摘要推断）：
+{pending}
 """
 
 _QUESTIONS_SYSTEM = (
@@ -127,39 +111,66 @@ class MemoryOptimizer:
         self._history_max_chars = history_max_chars
 
     async def optimize(self) -> None:
-        """重写记忆 + 生成问题列表，写回文件。"""
+        """合并 PENDING 事实到 MEMORY + 生成问题列表。"""
         current_memory = self._memory.read_long_term().strip()
+        pending = self._memory.read_pending().strip()
         recent_history = self._read_recent_history()
 
-        if not current_memory and not recent_history:
-            logger.info("[memory_optimizer] 记忆和历史均为空，跳过优化")
+        if not current_memory and not pending and not recent_history:
+            logger.info("[memory_optimizer] 记忆、pending 和历史均为空，跳过优化")
             return
 
-        # Step 1: Rewrite memory
-        new_memory = await self._rewrite_memory(current_memory, recent_history)
-        if new_memory:
-            self._memory.write_long_term(new_memory)
-            logger.info("[memory_optimizer] 记忆已重写 chars=%d", len(new_memory))
+        # Step 1: 合并 PENDING 到 MEMORY（只增不删）
+        merged_memory = await self._merge_memory(current_memory, pending, recent_history)
+        if merged_memory:
+            # 合并前备份
+            if current_memory:
+                self._memory.memory_file.with_suffix(".md.bak").write_text(
+                    current_memory, encoding="utf-8"
+                )
+            self._memory.write_long_term(merged_memory)
+            logger.info(
+                "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
+                len(current_memory), len(merged_memory),
+            )
+            # 归档 PENDING 到 HISTORY，清空
+            if pending:
+                self._memory.append_history(
+                    f"[memory_optimizer] PENDING 归档:\n{pending}"
+                )
+                self._memory.clear_pending()
+                logger.info("[memory_optimizer] PENDING 已归档并清空")
         else:
-            logger.warning("[memory_optimizer] 记忆重写返回空，保留原有内容")
+            logger.warning("[memory_optimizer] 合并返回空，保留原有内容")
 
-        # Step 2: Generate questions
+        # Step 2: 生成问题列表
         questions = await self._generate_questions(
-            new_memory or current_memory, recent_history
+            merged_memory or current_memory, recent_history
         )
         if questions:
             self._memory.write_questions(_format_questions(questions))
             logger.info("[memory_optimizer] 已写入 %d 个问题", len(questions))
 
-    async def _rewrite_memory(self, memory: str, history: str) -> str:
-        prompt = _REWRITE_PROMPT.format(
+    async def _merge_memory(self, memory: str, pending: str, history: str) -> str:
+        """将 pending 事实合并进 memory，只增不删。"""
+        # 构建待合并内容：PENDING + 从 history 推断的持久事实
+        merge_input_parts = []
+        if pending:
+            merge_input_parts.append(f"【对话提取的新事实】\n{pending}")
+        if history:
+            # 只取最近部分 history 避免 prompt 过长
+            recent = history[-2000:] if len(history) > 2000 else history
+            merge_input_parts.append(f"【近期历史摘要（供推断持久事实）】\n{recent}")
+        merge_input = "\n\n".join(merge_input_parts) or "（无新内容）"
+
+        prompt = _MERGE_PROMPT.format(
             memory=memory or "（空）",
-            history=history or "（无近期历史）",
+            pending=merge_input,
         )
         try:
             resp = await self._provider.chat(
                 messages=[
-                    {"role": "system", "content": _REWRITE_SYSTEM},
+                    {"role": "system", "content": _MERGE_SYSTEM},
                     {"role": "user", "content": prompt},
                 ],
                 tools=[],
@@ -168,7 +179,7 @@ class MemoryOptimizer:
             )
             return (resp.content or "").strip()
         except Exception as e:
-            logger.error("[memory_optimizer] 记忆重写失败: %s", e)
+            logger.error("[memory_optimizer] 记忆合并失败: %s", e)
             return ""
 
     async def _generate_questions(self, memory: str, history: str) -> list[str]:
@@ -205,21 +216,29 @@ class MemoryOptimizer:
 
 # ── MemoryOptimizerLoop ───────────────────────────────────────────
 
+_DEFAULT_INTERVAL_SECONDS = 3600  # 默认每小时整点
+
+
 class MemoryOptimizerLoop:
     def __init__(
         self,
         optimizer: MemoryOptimizer | None,
+        interval_seconds: int = _DEFAULT_INTERVAL_SECONDS,
         _now_fn: Callable[[], datetime] | None = None,
     ) -> None:
         self._optimizer = optimizer
+        self._interval = max(60, interval_seconds)
         self._now_fn = _now_fn or datetime.now
         self._running = False
 
     async def run(self) -> None:
         self._running = True
-        logger.info("[memory_optimizer] 优化循环已启动，每日 00:00 执行")
+        logger.info(
+            "[memory_optimizer] 优化循环已启动，间隔=%ds (%.1fh)，对齐整点",
+            self._interval, self._interval / 3600,
+        )
         while self._running:
-            secs = self._seconds_until_midnight()
+            secs = self._seconds_until_next_tick()
             logger.info(
                 "[memory_optimizer] 距下次优化 %.0f 秒 (%.1f 小时)",
                 secs, secs / 3600,
@@ -236,9 +255,14 @@ class MemoryOptimizerLoop:
     def stop(self) -> None:
         self._running = False
 
-    def _seconds_until_midnight(self) -> float:
+    def _seconds_until_next_tick(self) -> float:
+        """计算距下一个对齐整点的秒数。
+        例如间隔 3600s：现在 14:23 → 睡到 15:00，共 37 分钟。
+        例如间隔 7200s：现在 14:23 → 睡到 16:00，共 1h37m。
+        """
         now = self._now_fn()
-        tomorrow = (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        return max(1.0, (tomorrow - now).total_seconds())
+        # 当前时间距 epoch 的秒数（取整到分钟，忽略秒级抖动）
+        now_ts = now.replace(second=0, microsecond=0).timestamp()
+        # 下一个对齐 tick 的时间戳
+        next_ts = (now_ts // self._interval + 1) * self._interval
+        return max(1.0, next_ts - now.timestamp())

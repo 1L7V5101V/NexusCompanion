@@ -162,15 +162,16 @@ async def serve(config_path: str = "config.json") -> None:
         )
         tasks.append(proactive_loop.run())
 
-    # 每日 00:00 记忆质量优化 + 问题生成
+    # 记忆质量优化（定期合并 PENDING → MEMORY）
     if config.memory_optimizer_enabled:
         mem_optimizer = MemoryOptimizer(
             memory=memory_store,
             provider=provider,
             model=config.model,
         )
-        tasks.append(MemoryOptimizerLoop(mem_optimizer).run())
-        print("MemoryOptimizerLoop 已启动，每日 00:00 执行")
+        interval = config.memory_optimizer_interval_seconds
+        tasks.append(MemoryOptimizerLoop(mem_optimizer, interval_seconds=interval).run())
+        print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval/3600:.1f}h)")
     else:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
 
