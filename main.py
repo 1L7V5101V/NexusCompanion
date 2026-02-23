@@ -30,6 +30,7 @@ from feeds.rss import RSSFeedSource
 from feeds.tools import FeedManageTool, FeedQueryTool
 from proactive.loop import ProactiveLoop
 from proactive.state import ProactiveStateStore
+from proactive.presence import PresenceStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +74,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
         extra_body=config.extra_body,
     )
     session_manager = SessionManager(workspace)
+    presence = PresenceStore(workspace / "presence.json")
     loop = AgentLoop(
         bus=bus, provider=provider, tools=tools,
         session_manager=session_manager,
@@ -80,6 +82,7 @@ def _build_agent(config: Config, workspace: Path) -> tuple[AgentLoop, MessageBus
         model=config.model,
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
+        presence=presence,
     )
 
     # Wire agent_loop back into scheduler (circular dependency resolved here)

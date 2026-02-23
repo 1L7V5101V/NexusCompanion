@@ -12,6 +12,7 @@ from bus.queue import MessageBus
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
+from proactive.presence import PresenceStore
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class AgentLoop:
         max_iterations: int = 10,
         max_tokens: int = 8192,
         memory_window: int = 40,
+        presence: PresenceStore | None = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -48,6 +50,7 @@ class AgentLoop:
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self.memory_window = memory_window
+        self._presence = presence
         self._running = False
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
 
@@ -109,6 +112,8 @@ class AgentLoop:
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
 
+        if self._presence:
+            self._presence.record_user_message(key)
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content,
                             tools_used=tools_used if tools_used else None,
