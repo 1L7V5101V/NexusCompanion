@@ -9,10 +9,13 @@ from agent.context import ContextBuilder
 from agent.memory import MemoryStore
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
-from agent.provider import LLMProvider
+from agent.provider import ContentSafetyError, LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 from proactive.presence import PresenceStore
+
+# 安全拦截时递减历史窗口的倍率序列：全量 → 减半 → 清空
+_SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +76,52 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
 
+    async def _run_with_safety_retry(
+        self, msg: InboundMessage, session
+    ) -> tuple[str, list[str], list[dict]]:
+        """递减历史窗口重试，处理 LLM 安全拦截错误。
+
+        重试顺序：全量历史 → 减半 → 无历史。
+        降级成功后同步修剪 session，防止下次继续触发。
+        所有窗口均失败时说明当前消息本身违规，返回友好提示。
+        """
+        for attempt, ratio in enumerate(_SAFETY_RETRY_RATIOS):
+            window = int(self.memory_window * ratio)
+            initial_messages = self.context.build_messages(
+                history=session.get_history(max_messages=window),
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_timestamp=msg.timestamp,
+            )
+            try:
+                result = await self._run_agent_loop(initial_messages)
+                if attempt > 0:
+                    # 降级后成功：修剪 session，避免违规内容继续存在于历史
+                    logger.warning(
+                        f"安全拦截后以 window={window} 成功，修剪 session 历史"
+                    )
+                    if window == 0:
+                        session.messages.clear()
+                    else:
+                        session.messages = session.messages[-window:]
+                    session.last_consolidated = 0
+                    self.session_manager.save(session)
+                return result
+            except ContentSafetyError:
+                if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
+                    next_window = int(self.memory_window * _SAFETY_RETRY_RATIOS[attempt + 1])
+                    logger.warning(
+                        f"安全拦截 (attempt={attempt + 1})，"
+                        f"缩小历史窗口重试 {window} → {next_window}"
+                    )
+                else:
+                    logger.warning("安全拦截：所有窗口均失败，当前消息本身可能违规")
+                    return "你的消息触发了安全审查，无法处理。", [], []
+
+        return "（安全重试异常）", [], []
+
     def stop(self) -> None:
         self._running = False
         logger.info("AgentLoop 停止")
@@ -96,15 +145,9 @@ class AgentLoop:
             asyncio.create_task(self._consolidate_memory_bg(session, key))
 
         self._set_tool_context(msg.channel, msg.chat_id)
-        initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            message_timestamp=msg.timestamp,
+        final_content, tools_used, tool_chain = await self._run_with_safety_retry(
+            msg, session
         )
-        final_content, tools_used, tool_chain = await self._run_agent_loop(initial_messages)
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."

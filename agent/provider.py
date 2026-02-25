@@ -12,6 +12,17 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
+# 安全审查错误码（各厂商）
+_SAFETY_ERROR_CODES = {
+    "data_inspection_failed",  # Qwen / DashScope
+    "content_filter",          # Azure OpenAI
+    "content_policy_violation", # OpenAI
+}
+
+
+class ContentSafetyError(Exception):
+    """LLM provider 因内容安全审查拒绝请求"""
+
 
 @dataclass
 class ToolCall:
@@ -86,6 +97,8 @@ class LLMProvider:
                 )
             except Exception as e:
                 last_err = e
+                if self._is_safety_error(e):
+                    raise ContentSafetyError(str(e)) from e
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
                 if (not retryable) or exhausted:
@@ -102,6 +115,11 @@ class LLMProvider:
         if last_err:
             raise last_err
         raise RuntimeError("LLM request failed without exception")
+
+    @staticmethod
+    def _is_safety_error(err: Exception) -> bool:
+        text = str(err)
+        return any(code in text for code in _SAFETY_ERROR_CODES)
 
     @staticmethod
     def _is_retryable(err: Exception) -> bool:
