@@ -11,7 +11,6 @@ from agent.skills import SkillsLoader
 
 
 class ContextBuilder:
-
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
 
     def __init__(self, workspace: Path):
@@ -65,20 +64,24 @@ available="false" 的技能需先安装对应依赖。
         elif ts.tzinfo is None:
             ts = ts.astimezone()
         now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
-        now_iso = ts.isoformat()   # e.g. "2025-06-01T15:48:40+08:00"
+        now_iso = ts.isoformat()  # e.g. "2025-06-01T15:48:40+08:00"
         tz = ts.strftime("%Z") or "UTC"
         system = platform.system()
         runtime = platform.machine()
         python_version = platform.python_version()
         workspace_path = str(self.workspace.expanduser().resolve())
 
-        return f"""# akasic-bot
+        return f"""# Nexus
 
-你是 akasic-bot，一个有实际执行能力的 AI 助手。你可以通过工具：
+你是Nexus，一个有实际执行能力的 AI 助手，也是用户的专属 AI 伴侣。你可以通过工具：
 - 读写、编辑文件
 - 执行 shell 命令
 - 抓取网页内容
 - 向聊天渠道发送消息、文件、图片
+
+ ## 说话方式
+
+用中文，口语，干脆。做完事情说"好了"或"搞定了"，不展开不解释。不列"你现在可以做什么"，不写操作指南。遇到奇怪的需求可以吐槽一句，但还是去做。不用 emoji，不用加粗标题，不用分条列结果，直接说话。
 
 ## 消息接收时间
 {now}
@@ -118,9 +121,10 @@ request_time={now_iso}
 - 普通对话直接回复文本，不调用 message_push
 
 **风格**
-- 回复简洁，不用过度解释执行过程
-- 避免在回复里加"深度反思"、"执行分析"等冗余结构
+- 回复简洁，语气自然，像在说话而不是在写报告
+- 不展开操作指南、不列"接下来你可以……"、不加执行过程说明
 - 有必要告知进度时，一句话说明即可
+- 工具调用完成后，直接给结果，不做总结性复述
 
 **记忆主动性**
 当用户提供了关于他自己的个人信息时（无论是主动告知还是回答你的提问），**立即用 `write_file` 追加写入 MEMORY.md**，不要等到对话结束才记录。
@@ -143,32 +147,34 @@ request_time={now_iso}
         return "\n\n".join(parts) if parts else ""
 
     def build_messages(
-            self,
-            history: list[dict[str, Any]],
-            current_message: str,
-            media: list[str] | None = None,
-            skill_names: list[str] | None = None,
-            channel: str | None = None,
-            chat_id: str | None = None,
-            message_timestamp: "datetime | None" = None,
+        self,
+        history: list[dict[str, Any]],
+        current_message: str,
+        media: list[str] | None = None,
+        skill_names: list[str] | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+        message_timestamp: "datetime | None" = None,
     ) -> list[dict[str, Any]]:
         """
-               Build the complete message list for an LLM call.
+        Build the complete message list for an LLM call.
 
-               Args:
-                   history: Previous conversation messages.
-                   current_message: The new user message.
-                   media: Optional list of local file paths for images/media.
-                   channel: Current channel (telegram, feishu, etc.).
-                   chat_id: Current chat/user ID.
+        Args:
+            history: Previous conversation messages.
+            current_message: The new user message.
+            media: Optional list of local file paths for images/media.
+            channel: Current channel (telegram, feishu, etc.).
+            chat_id: Current chat/user ID.
 
-               Returns:
-                   List of messages including system prompt.
-               """
+        Returns:
+            List of messages including system prompt.
+        """
         messages = []
         system_prompt = self.build_system_prompt(skill_names, message_timestamp)
         if channel and chat_id:
-            system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+            system_prompt += (
+                f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+            )
         if channel == "telegram":
             system_prompt += (
                 "\n\n## Telegram 渲染限制（硬性规则）\n"
@@ -189,7 +195,9 @@ request_time={now_iso}
 
         return messages
 
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
+    def _build_user_content(
+        self, text: str, media: list[str] | None
+    ) -> str | list[dict[str, Any]]:
         """Build user message content with optional images (local paths or HTTP URLs)."""
         if not media:
             return text
@@ -204,18 +212,23 @@ request_time={now_iso}
                 if not p.is_file() or not mime or not mime.startswith("image/"):
                     continue
                 b64 = base64.b64encode(open(p, "rb").read()).decode()
-                images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+                images.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    }
+                )
 
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
 
     def add_tool_result(
-            self,
-            messages: list[dict[str, Any]],
-            tool_call_id: str,
-            tool_name: str,
-            result: str
+        self,
+        messages: list[dict[str, Any]],
+        tool_call_id: str,
+        tool_name: str,
+        result: str,
     ) -> list[dict[str, Any]]:
         """
         Add a tool result to the message list.
@@ -229,20 +242,22 @@ request_time={now_iso}
         Returns:
             Updated message list.
         """
-        messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": tool_name,
-            "content": result
-        })
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": result,
+            }
+        )
         return messages
 
     def add_assistant_message(
-            self,
-            messages: list[dict[str, Any]],
-            content: str | None,
-            tool_calls: list[dict[str, Any]] | None = None,
-            reasoning_content: str | None = None,
+        self,
+        messages: list[dict[str, Any]],
+        content: str | None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        reasoning_content: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Add an assistant message to the message list.

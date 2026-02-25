@@ -135,11 +135,11 @@ class ProactiveEngine:
         )
         if pre_score < self._cfg.score_pre_threshold:
             logger.info(
-                "[proactive] pre_score 过低（%.3f < %.2f），跳过本轮",
+                "[proactive] pre_score 过低（%.3f < %.2f），跳过 chat，尝试 skill action",
                 pre_score,
                 self._cfg.score_pre_threshold,
             )
-            logger.info("[proactive] selected_action=idle reason=pre_score")
+            await self._try_skill_action(now_utc=now_utc)
             return pre_score
 
         items = await self._sense.fetch_items(self._cfg.items_per_source)
