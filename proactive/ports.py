@@ -14,9 +14,11 @@ from agent.memory import MemoryStore
 from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
+from feeds.store import FeedStore
 from proactive.energy import compute_energy, d_recent, time_weight
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
+from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -68,7 +70,9 @@ class DecidePort(Protocol):
         decision_signals: dict[str, object] | None = None,
     ) -> Any: ...
     def randomize_decision(self, decision: Any) -> tuple[Any, float]: ...
-    def resolve_evidence_item_ids(self, decision: Any, items: list[FeedItem]) -> list[str]: ...
+    def resolve_evidence_item_ids(
+        self, decision: Any, items: list[FeedItem]
+    ) -> list[str]: ...
     def build_delivery_key(self, item_ids: list[str], message: str) -> str: ...
     def semantic_entries(self, items: list[FeedItem]) -> list[dict[str, str]]: ...
     def item_id_for(self, item: FeedItem) -> str: ...
@@ -92,6 +96,8 @@ class DefaultSensePort:
         schedule: ScheduleStore | None,
         rng: Any,
         feed_buffer: FeedBuffer | None = None,
+        source_scorer: SourceScorer | None = None,
+        feed_store: FeedStore | None = None,
     ) -> None:
         self._cfg = cfg
         self._feeds = feeds
@@ -103,6 +109,8 @@ class DefaultSensePort:
         self._schedule = schedule
         self._rng = rng
         self._feed_buffer = feed_buffer
+        self._source_scorer = source_scorer
+        self._feed_store = feed_store
 
     def target_session_key(self) -> str:
         channel = (self._cfg.default_channel or "").strip()
@@ -116,7 +124,11 @@ class DefaultSensePort:
                 self._schedule.quiet_hours_end(self._cfg.quiet_hours_end),
                 self._schedule.quiet_hours_weight(self._cfg.quiet_hours_weight),
             )
-        return self._cfg.quiet_hours_start, self._cfg.quiet_hours_end, self._cfg.quiet_hours_weight
+        return (
+            self._cfg.quiet_hours_start,
+            self._cfg.quiet_hours_end,
+            self._cfg.quiet_hours_weight,
+        )
 
     def read_memory_text(self) -> str:
         if not self._memory:
@@ -157,7 +169,7 @@ class DefaultSensePort:
         key = f"{channel}:{chat_id}"
         try:
             session = self._sessions.get_or_create(key)
-            msgs = session.messages[-self._cfg.recent_chat_messages:]
+            msgs = session.messages[-self._cfg.recent_chat_messages :]
             return [
                 {"role": m["role"], "content": str(m.get("content", ""))[:200]}
                 for m in msgs
@@ -248,9 +260,40 @@ class DefaultSensePort:
         if self._feed_buffer is not None:
             n = getattr(self._cfg, "feed_poller_read_limit", 50)
             items = self._feed_buffer.get_all(n=n)
-            logger.debug("[sense] fetch_items from buffer items=%d read_limit=%d", len(items), n)
+            logger.debug(
+                "[sense] fetch_items from buffer items=%d read_limit=%d", len(items), n
+            )
             return items
-        return await self._feeds.fetch_all(limit_per_source)
+
+        # direct mode：尝试用 source_scorer 动态分配配额
+        per_source_limits: dict[str, int] | None = None
+        scorer_enabled = getattr(self._cfg, "source_scorer_enabled", False)
+        if (
+            scorer_enabled
+            and self._source_scorer is not None
+            and self._feed_store is not None
+        ):
+            try:
+                subs = self._feed_store.list_enabled()
+                memory_text = self.read_memory_text()
+                total_budget = getattr(self._cfg, "source_scorer_total_budget", 60)
+                min_per = getattr(self._cfg, "source_scorer_min_per_source", 2)
+                max_per = getattr(self._cfg, "source_scorer_max_per_source", 20)
+                per_source_limits = await self._source_scorer.get_limits(
+                    subscriptions=subs,
+                    memory_text=memory_text,
+                    total_budget=total_budget,
+                    min_per_source=min_per,
+                    max_per_source=max_per,
+                )
+            except Exception as e:
+                logger.warning("[sense] source_scorer 失败，回退均等分配: %s", e)
+                per_source_limits = None
+
+        return await self._feeds.fetch_all(
+            limit_per_source=limit_per_source,
+            per_source_limits=per_source_limits,
+        )
 
     def collect_recent_proactive(self, n: int = 5) -> list[str]:
         """从目标 session 取最近 n 条 proactive=True 的助手消息内容（按时间升序）。"""
@@ -263,7 +306,11 @@ class DefaultSensePort:
             session = self._sessions.get_or_create(key)
             results: list[str] = []
             for m in reversed(session.messages):
-                if m.get("role") == "assistant" and m.get("proactive") and m.get("content"):
+                if (
+                    m.get("role") == "assistant"
+                    and m.get("proactive")
+                    and m.get("content")
+                ):
                     results.append(str(m["content"]))
                     if len(results) >= n:
                         break
@@ -353,7 +400,9 @@ class DefaultDecidePort:
     def item_id_for(self, item: FeedItem) -> str:
         return self._item_id(item)
 
-    def resolve_evidence_item_ids(self, decision: Any, items: list[FeedItem]) -> list[str]:
+    def resolve_evidence_item_ids(
+        self, decision: Any, items: list[FeedItem]
+    ) -> list[str]:
         valid = {self._item_id(i) for i in items}
         selected = [x for x in getattr(decision, "evidence_item_ids", []) if x in valid]
         if selected:

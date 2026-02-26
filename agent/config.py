@@ -287,6 +287,18 @@ class Config:
                 # ── Skill Action ──
                 skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
                 skill_actions_path=str(p.get("skill_actions_path", "")),
+                # ── SourceScorer ──
+                source_scorer_enabled=bool(p.get("source_scorer_enabled", False)),
+                source_scorer_total_budget=max(
+                    1, int(p.get("source_scorer_total_budget", 60))
+                ),
+                source_scorer_min_per_source=max(
+                    0, int(p.get("source_scorer_min_per_source", 2))
+                ),
+                source_scorer_max_per_source=max(
+                    1, int(p.get("source_scorer_max_per_source", 20))
+                ),
+                source_scorer_cache_path=str(p.get("source_scorer_cache_path", "")),
             )
 
         return cls(
@@ -311,6 +323,13 @@ class Config:
 
 
 def _resolve(value: str) -> str:
-    return re.sub(
+    resolved = re.sub(
         r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), m.group(0)), value
     )
+    # 若仍是未展开的占位符，尝试从 workspace/memory/<VAR_NAME> 文件读取
+    m = re.fullmatch(r"\$\{(\w+)\}", resolved)
+    if m:
+        key_file = Path.home() / ".akasic" / "workspace" / "memory" / m.group(1)
+        if key_file.exists():
+            resolved = key_file.read_text(encoding="utf-8").strip()
+    return resolved

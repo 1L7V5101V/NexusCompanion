@@ -9,6 +9,7 @@ FeedSubscribeTool / FeedUnsubscribeTool / FeedListTool
   用户："不太关注这个了"
   → Agent 调用 feed_unsubscribe(name="Paul Graham")
 """
+
 from __future__ import annotations
 
 import json
@@ -62,8 +63,9 @@ class FeedSubscribeTool(Tool):
         "required": ["name", "url"],
     }
 
-    def __init__(self, store: FeedStore) -> None:
+    def __init__(self, store: FeedStore, source_scorer: Any | None = None) -> None:
         self._store = store
+        self._source_scorer = source_scorer
 
     async def execute(self, **kwargs: Any) -> str:
         name: str = kwargs.get("name", "").strip()
@@ -83,7 +85,27 @@ class FeedSubscribeTool(Tool):
 
         sub = FeedSubscription.new(type=source_type, name=name, url=url, note=note)
         self._store.add(sub)
+
+        # 触发 SourceScorer 增量打分（异步，失败不影响订阅）
+        if self._source_scorer is not None:
+            try:
+                import asyncio
+
+                asyncio.ensure_future(self._trigger_score_new(sub))
+            except Exception as e:
+                logger.warning("[feed_subscribe] source_scorer 增量打分调度失败: %s", e)
+
         return f"已订阅 {name!r}（类型={source_type} {url}），下次主动巡检时开始收集"
+
+    async def _trigger_score_new(self, sub: FeedSubscription) -> None:
+        """后台异步触发新源打分，写入 SourceScorer 缓存。"""
+        try:
+            # read_memory_text 需要 memory，这里通过 scorer 的 _cache 拿现有分数即可
+            # 真正的 memory 注入在 DefaultSensePort.fetch_items 里；
+            # 这里只做"提前打一个分"以便缓存预热，memory_text 为空也可接受
+            await self._source_scorer.score_new_source(sub, memory_text="")
+        except Exception as e:
+            logger.warning("[feed_subscribe] source_scorer 增量打分失败: %s", e)
 
 
 class FeedUnsubscribeTool(Tool):
@@ -103,8 +125,9 @@ class FeedUnsubscribeTool(Tool):
         "required": ["name"],
     }
 
-    def __init__(self, store: FeedStore) -> None:
+    def __init__(self, store: FeedStore, source_scorer: Any | None = None) -> None:
         self._store = store
+        self._source_scorer = source_scorer
 
     async def execute(self, **kwargs: Any) -> str:
         name: str = kwargs.get("name", "").strip()
@@ -117,6 +140,15 @@ class FeedUnsubscribeTool(Tool):
 
         for sub in matches:
             self._store.remove(sub.id)
+            # 触发 SourceScorer 缓存失效（同步，直接 pop）
+            if self._source_scorer is not None:
+                try:
+                    self._source_scorer.invalidate_source(sub.id)
+                except Exception as e:
+                    logger.warning(
+                        "[feed_unsubscribe] source_scorer 缓存失效失败: %s", e
+                    )
+
         names = "、".join(f"「{s.name}」" for s in matches)
         return f"已取消订阅：{names}"
 
@@ -218,13 +250,17 @@ class FeedGenerateSubscribeTool(Tool):
         # 现代优先策略：先尝试站点结构化发现（sitemap / VitePress）并本地生成 RSS。
         local_entries = await self._discover_entries_from_site(page_url)
         if len(local_entries) >= 3:
-            local_rss_url = self._write_local_rss(name=name, source_page=page_url, entries=local_entries)
+            local_rss_url = self._write_local_rss(
+                name=name, source_page=page_url, entries=local_entries
+            )
             logger.info(
                 "[feed_generate_subscribe] 本地发现成功 entries=%d local_rss=%s",
                 len(local_entries),
                 local_rss_url,
             )
-            sub_result = self._save_subscription_if_new(name=name, url=local_rss_url, note=note)
+            sub_result = self._save_subscription_if_new(
+                name=name, url=local_rss_url, note=note
+            )
             if sub_result.startswith("已"):
                 return f"{sub_result}（来源：站点结构发现，共 {len(local_entries)} 条）"
             return sub_result
@@ -317,8 +353,12 @@ class FeedGenerateSubscribeTool(Tool):
         item_count = len(re.findall(r"<item\\b", lower))
         entry_count = len(re.findall(r"<entry\\b", lower))
         total_entries = item_count + entry_count
-        links = re.findall(r"<link>\\s*([^<\\s]+)\\s*</link>", text, flags=re.IGNORECASE)
-        atom_links = re.findall(r"<link[^>]+href=[\"']([^\"']+)[\"'][^>]*/?>", text, flags=re.IGNORECASE)
+        links = re.findall(
+            r"<link>\\s*([^<\\s]+)\\s*</link>", text, flags=re.IGNORECASE
+        )
+        atom_links = re.findall(
+            r"<link[^>]+href=[\"']([^\"']+)[\"'][^>]*/?>", text, flags=re.IGNORECASE
+        )
         all_links = [x.strip() for x in (links + atom_links) if x.strip()]
         unique_links = len(set(all_links))
 
@@ -344,17 +384,26 @@ class FeedGenerateSubscribeTool(Tool):
 
         sitemap_entries = await self._discover_from_sitemap(base)
         if len(sitemap_entries) >= 3:
-            logger.info("[feed_generate_subscribe] 使用 sitemap 结果 entries=%d", len(sitemap_entries))
+            logger.info(
+                "[feed_generate_subscribe] 使用 sitemap 结果 entries=%d",
+                len(sitemap_entries),
+            )
             return sitemap_entries
 
         crawl_entries = await self._discover_by_crawl(start_url=input_url, base=base)
         if len(crawl_entries) >= 3:
-            logger.info("[feed_generate_subscribe] 使用树状爬取结果 entries=%d", len(crawl_entries))
+            logger.info(
+                "[feed_generate_subscribe] 使用树状爬取结果 entries=%d",
+                len(crawl_entries),
+            )
             return crawl_entries
 
         vp_entries = await self._discover_from_vitepress(base)
         if len(vp_entries) >= 3:
-            logger.info("[feed_generate_subscribe] 使用 VitePress 结果 entries=%d", len(vp_entries))
+            logger.info(
+                "[feed_generate_subscribe] 使用 VitePress 结果 entries=%d",
+                len(vp_entries),
+            )
             return vp_entries
 
         logger.info(
@@ -374,7 +423,11 @@ class FeedGenerateSubscribeTool(Tool):
         sitemap_url = urljoin(base, "/sitemap.xml")
         ok, xml_text, detail = await self._page_fetcher(sitemap_url)
         if not ok:
-            logger.info("[feed_generate_subscribe] sitemap 不可用 url=%s detail=%r", sitemap_url, detail)
+            logger.info(
+                "[feed_generate_subscribe] sitemap 不可用 url=%s detail=%r",
+                sitemap_url,
+                detail,
+            )
             return []
         logger.info("[feed_generate_subscribe] sitemap 命中 url=%s", sitemap_url)
         try:
@@ -400,12 +453,16 @@ class FeedGenerateSubscribeTool(Tool):
                 lm_el = u.find("sm:lastmod", ns)
                 if lm_el is None:
                     lm_el = u.find("lastmod")
-                entries.append({
-                    "title": _title_from_url(loc),
-                    "url": loc,
-                    "summary": "from sitemap",
-                    "published_at": _parse_dt((lm_el.text or "").strip() if lm_el is not None else ""),
-                })
+                entries.append(
+                    {
+                        "title": _title_from_url(loc),
+                        "url": loc,
+                        "summary": "from sitemap",
+                        "published_at": _parse_dt(
+                            (lm_el.text or "").strip() if lm_el is not None else ""
+                        ),
+                    }
+                )
 
         tag = root.tag.lower()
         if "urlset" in tag:
@@ -421,13 +478,21 @@ class FeedGenerateSubscribeTool(Tool):
                 loc = (loc_el.text or "").strip()
                 ok2, xml2, detail2 = await self._page_fetcher(loc)
                 if not ok2:
-                    logger.info("[feed_generate_subscribe] 子 sitemap 抓取失败 url=%s detail=%r", loc, detail2)
+                    logger.info(
+                        "[feed_generate_subscribe] 子 sitemap 抓取失败 url=%s detail=%r",
+                        loc,
+                        detail2,
+                    )
                     continue
                 try:
                     sub_root = ET.fromstring(xml2)
                     add_from_urlset(sub_root)
                 except Exception as e:
-                    logger.warning("[feed_generate_subscribe] 子 sitemap 解析失败 url=%s err=%s", loc, e)
+                    logger.warning(
+                        "[feed_generate_subscribe] 子 sitemap 解析失败 url=%s err=%s",
+                        loc,
+                        e,
+                    )
                     continue
         dedup = _dedup_entries(entries)
         logger.info("[feed_generate_subscribe] sitemap 发现 entries=%d", len(dedup))
@@ -436,7 +501,11 @@ class FeedGenerateSubscribeTool(Tool):
     async def _discover_from_vitepress(self, base: str) -> list[dict[str, Any]]:
         ok, html, detail = await self._page_fetcher(base)
         if not ok:
-            logger.info("[feed_generate_subscribe] VitePress 探测失败 base=%s detail=%r", base, detail)
+            logger.info(
+                "[feed_generate_subscribe] VitePress 探测失败 base=%s detail=%r",
+                base,
+                detail,
+            )
             return []
         site_data = _extract_vp_json(html, "__VP_SITE_DATA__")
         if not site_data:
@@ -451,13 +520,22 @@ class FeedGenerateSubscribeTool(Tool):
             text = str(n.get("text", "")).strip() if isinstance(n, dict) else ""
             url = _vp_link_to_url(base, link)
             if url and _looks_like_article_url(url, base_host=urlparse(base).netloc):
-                entries.append({"title": text or _title_from_url(url), "url": url, "summary": "from vitepress nav", "published_at": None})
+                entries.append(
+                    {
+                        "title": text or _title_from_url(url),
+                        "url": url,
+                        "summary": "from vitepress nav",
+                        "published_at": None,
+                    }
+                )
         self._collect_sidebar_entries(base, sidebar, entries)
         dedup = _dedup_entries(entries)
         logger.info("[feed_generate_subscribe] VitePress 发现 entries=%d", len(dedup))
         return dedup
 
-    async def _discover_by_crawl(self, start_url: str, base: str) -> list[dict[str, Any]]:
+    async def _discover_by_crawl(
+        self, start_url: str, base: str
+    ) -> list[dict[str, Any]]:
         base_host = urlparse(base).netloc
         start = _normalize_page_url(start_url, base)
         queue: deque[tuple[str, int]] = deque([(start, 0)])
@@ -501,13 +579,17 @@ class FeedGenerateSubscribeTool(Tool):
                     continue
                 norm = _normalize_page_url(link_url, base)
                 if _looks_like_article_url(norm, base_host=base_host):
-                    entries.append({
-                        "title": link_text or _title_from_url(norm),
-                        "url": norm,
-                        "summary": f"from crawl {current}",
-                        "published_at": None,
-                    })
-                if depth < self._CRAWL_MAX_DEPTH and _is_crawlable_page(norm, base_host):
+                    entries.append(
+                        {
+                            "title": link_text or _title_from_url(norm),
+                            "url": norm,
+                            "summary": f"from crawl {current}",
+                            "published_at": None,
+                        }
+                    )
+                if depth < self._CRAWL_MAX_DEPTH and _is_crawlable_page(
+                    norm, base_host
+                ):
                     if norm not in visited:
                         queue.append((norm, depth + 1))
 
@@ -520,7 +602,9 @@ class FeedGenerateSubscribeTool(Tool):
         )
         return dedup
 
-    def _collect_sidebar_entries(self, base: str, node: Any, out: list[dict[str, Any]]) -> None:
+    def _collect_sidebar_entries(
+        self, base: str, node: Any, out: list[dict[str, Any]]
+    ) -> None:
         if isinstance(node, list):
             for x in node:
                 self._collect_sidebar_entries(base, x, out)
@@ -530,16 +614,20 @@ class FeedGenerateSubscribeTool(Tool):
             text = str(node.get("text", "")).strip()
             url = _vp_link_to_url(base, link)
             if url and _looks_like_article_url(url, base_host=urlparse(base).netloc):
-                out.append({
-                    "title": text or _title_from_url(url),
-                    "url": url,
-                    "summary": "from vitepress sidebar",
-                    "published_at": None,
-                })
+                out.append(
+                    {
+                        "title": text or _title_from_url(url),
+                        "url": url,
+                        "summary": "from vitepress sidebar",
+                        "published_at": None,
+                    }
+                )
             if "items" in node:
                 self._collect_sidebar_entries(base, node.get("items"), out)
 
-    def _write_local_rss(self, name: str, source_page: str, entries: list[dict[str, Any]]) -> str:
+    def _write_local_rss(
+        self, name: str, source_page: str, entries: list[dict[str, Any]]
+    ) -> str:
         key = re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:60]
         if not key:
             key = "generated"
@@ -550,22 +638,34 @@ class FeedGenerateSubscribeTool(Tool):
         ch = ET.SubElement(rss, "channel")
         ET.SubElement(ch, "title").text = f"{name} (generated)"
         ET.SubElement(ch, "link").text = source_page
-        ET.SubElement(ch, "description").text = f"Auto generated feed from {source_page}"
-        ET.SubElement(ch, "lastBuildDate").text = format_datetime(datetime.now(timezone.utc))
+        ET.SubElement(
+            ch, "description"
+        ).text = f"Auto generated feed from {source_page}"
+        ET.SubElement(ch, "lastBuildDate").text = format_datetime(
+            datetime.now(timezone.utc)
+        )
 
         for e in entries[:300]:
             item = ET.SubElement(ch, "item")
-            ET.SubElement(item, "title").text = str(e.get("title") or _title_from_url(str(e.get("url") or "")))
+            ET.SubElement(item, "title").text = str(
+                e.get("title") or _title_from_url(str(e.get("url") or ""))
+            )
             ET.SubElement(item, "link").text = str(e.get("url") or "")
             ET.SubElement(item, "guid").text = str(e.get("url") or "")
             ET.SubElement(item, "description").text = str(e.get("summary") or "")
             dt = e.get("published_at")
             if isinstance(dt, datetime):
-                ET.SubElement(item, "pubDate").text = format_datetime(dt.astimezone(timezone.utc))
+                ET.SubElement(item, "pubDate").text = format_datetime(
+                    dt.astimezone(timezone.utc)
+                )
 
         xml_text = ET.tostring(rss, encoding="utf-8", xml_declaration=True)
         file_path.write_bytes(xml_text)
-        logger.info("[feed_generate_subscribe] 本地 RSS 已写入 path=%s entries=%d", file_path, len(entries))
+        logger.info(
+            "[feed_generate_subscribe] 本地 RSS 已写入 path=%s entries=%d",
+            file_path,
+            len(entries),
+        )
         return file_path.as_uri()
 
     async def _discover_best_page(self, input_url: str) -> str:
@@ -581,7 +681,11 @@ class FeedGenerateSubscribeTool(Tool):
         for url in candidates:
             ok, html, detail = await self._page_fetcher(url)
             if not ok:
-                logger.info("[feed_generate_subscribe] 候选抓取失败 url=%s detail=%r", url, detail)
+                logger.info(
+                    "[feed_generate_subscribe] 候选抓取失败 url=%s detail=%r",
+                    url,
+                    detail,
+                )
                 continue
             score, reason = self._score_page(url, html)
             logger.info(
@@ -609,7 +713,9 @@ class FeedGenerateSubscribeTool(Tool):
         root_like = parsed.path in ("", "/")
         if root_like:
             for p in ("/archive.html", "/archives", "/blog", "/posts", "/main.html"):
-                out.append(urljoin(base if base.endswith("/") else base + "/", p.lstrip("/")))
+                out.append(
+                    urljoin(base if base.endswith("/") else base + "/", p.lstrip("/"))
+                )
         # preserve order and dedupe
         return list(dict.fromkeys(out))
 
@@ -686,11 +792,29 @@ def _is_crawlable_page(url: str, base_host: str) -> bool:
     if p.netloc != base_host:
         return False
     path = (p.path or "").lower()
-    if any(path.endswith(ext) for ext in (
-        ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ico", ".pdf", ".zip", ".mp4",
-    )):
+    if any(
+        path.endswith(ext)
+        for ext in (
+            ".css",
+            ".js",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".svg",
+            ".woff",
+            ".woff2",
+            ".ico",
+            ".pdf",
+            ".zip",
+            ".mp4",
+        )
+    ):
         return False
-    if any(path.startswith(prefix) for prefix in ("/assets/", "/images/", "/img/", "/public/", "/static/")):
+    if any(
+        path.startswith(prefix)
+        for prefix in ("/assets/", "/images/", "/img/", "/public/", "/static/")
+    ):
         return False
     return True
 
@@ -724,14 +848,43 @@ def _looks_like_article_url(url: str, base_host: str) -> bool:
     path = (p.path or "").lower()
     if path in ("", "/", "/index.html", "/main.html", "/labs.html", "/archive.html"):
         return False
-    if any(path.startswith(prefix) for prefix in ("/assets/", "/images/", "/img/", "/public/", "/static/")):
+    if any(
+        path.startswith(prefix)
+        for prefix in ("/assets/", "/images/", "/img/", "/public/", "/static/")
+    ):
         return False
-    if path.endswith((".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ico", ".pdf")):
+    if path.endswith(
+        (
+            ".css",
+            ".js",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".svg",
+            ".woff",
+            ".woff2",
+            ".ico",
+            ".pdf",
+        )
+    ):
         return False
     # 允许 .html 页面和常见文章路由
     if ".html" in path:
         return True
-    if any(seg in path for seg in ("/notes/", "/post/", "/posts/", "/blog/", "/article/", "/tech/", "/cs", "/mysql/")):
+    if any(
+        seg in path
+        for seg in (
+            "/notes/",
+            "/post/",
+            "/posts/",
+            "/blog/",
+            "/article/",
+            "/tech/",
+            "/cs",
+            "/mysql/",
+        )
+    ):
         return True
     return False
 
@@ -756,7 +909,7 @@ def _extract_vp_json(html: str, var_name: str) -> dict[str, Any]:
         return {}
     escaped = m.group(1)
     try:
-        unescaped = json.loads(f"\"{escaped}\"")
+        unescaped = json.loads(f'"{escaped}"')
         data = json.loads(unescaped)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -783,7 +936,11 @@ def _vp_link_to_url(base: str, link: str) -> str:
 
 def _extract_anchor_links(base_url: str, html: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    for m in re.finditer(r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>([\s\S]*?)</a>", html, flags=re.IGNORECASE):
+    for m in re.finditer(
+        r"<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>([\s\S]*?)</a>",
+        html,
+        flags=re.IGNORECASE,
+    ):
         href = (m.group(1) or "").strip()
         if not href or href.startswith(("javascript:", "mailto:", "#")):
             continue
@@ -809,27 +966,55 @@ class FeedManageTool(Tool):
                 "enum": ["discover", "preview", "subscribe", "list", "unsubscribe"],
                 "description": "操作类型",
             },
-            "name": {"type": "string", "description": "订阅名称或用于取消订阅的名称关键词"},
-            "url": {"type": "string", "description": "已知 RSS/Atom URL，或 novel-kb 时填 file:///path/to/kb"},
-            "source_type": {"type": "string", "description": "信息源类型：rss（默认）或 novel-kb", "enum": ["rss", "novel-kb"]},
-            "page_url": {"type": "string", "description": "网页地址（discover/preview/subscribe）"},
+            "name": {
+                "type": "string",
+                "description": "订阅名称或用于取消订阅的名称关键词",
+            },
+            "url": {
+                "type": "string",
+                "description": "已知 RSS/Atom URL，或 novel-kb 时填 file:///path/to/kb",
+            },
+            "source_type": {
+                "type": "string",
+                "description": "信息源类型：rss（默认）或 novel-kb",
+                "enum": ["rss", "novel-kb"],
+            },
+            "page_url": {
+                "type": "string",
+                "description": "网页地址（discover/preview/subscribe）",
+            },
             "note": {"type": "string", "description": "订阅备注（subscribe 可选）"},
-            "validate_feed": {"type": "boolean", "description": "是否校验 feed（默认 true）"},
-            "auto_discover": {"type": "boolean", "description": "是否自动发现页面（默认 true）"},
+            "validate_feed": {
+                "type": "boolean",
+                "description": "是否校验 feed（默认 true）",
+            },
+            "auto_discover": {
+                "type": "boolean",
+                "description": "是否自动发现页面（默认 true）",
+            },
         },
         "required": ["action"],
     }
 
-    def __init__(self, store: FeedStore) -> None:
+    def __init__(self, store: FeedStore, source_scorer: Any | None = None) -> None:
         self._store = store
         self._list_tool = FeedListTool(store)
-        self._sub_tool = FeedSubscribeTool(store)
-        self._unsub_tool = FeedUnsubscribeTool(store)
+        self._sub_tool = FeedSubscribeTool(store, source_scorer=source_scorer)
+        self._unsub_tool = FeedUnsubscribeTool(store, source_scorer=source_scorer)
         self._gen_tool = FeedGenerateSubscribeTool(store)
+
+    def set_scorer(self, source_scorer: Any | None) -> None:
+        """事后注入 SourceScorer（main.py 在 ProactiveLoop 构建后调用）。"""
+        self._sub_tool._source_scorer = source_scorer
+        self._unsub_tool._source_scorer = source_scorer
 
     async def execute(self, **kwargs: Any) -> str:
         action = str(kwargs.get("action", "")).strip().lower()
-        logger.info("[feed_manage] action=%s kwargs=%s", action, {k: v for k, v in kwargs.items() if k != "note"})
+        logger.info(
+            "[feed_manage] action=%s kwargs=%s",
+            action,
+            {k: v for k, v in kwargs.items() if k != "note"},
+        )
 
         if action == "list":
             return await self._list_tool.execute()
@@ -846,7 +1031,15 @@ class FeedManageTool(Tool):
                 return "错误：discover 需要 page_url"
             chosen = await self._gen_tool._discover_best_page(page_url)
             entries = await self._gen_tool._discover_entries_from_site(page_url)
-            sample = "\n".join([f"- {e.get('title','')} | {e.get('url','')}" for e in entries[:5]]) or "（无）"
+            sample = (
+                "\n".join(
+                    [
+                        f"- {e.get('title', '')} | {e.get('url', '')}"
+                        for e in entries[:5]
+                    ]
+                )
+                or "（无）"
+            )
             return (
                 f"发现完成\n"
                 f"输入页面: {page_url}\n"
@@ -901,7 +1094,8 @@ class FeedManageTool(Tool):
             url = str(kwargs.get("url", "")).strip()
             if url:
                 return await self._sub_tool.execute(
-                    name=name, url=url,
+                    name=name,
+                    url=url,
                     source_type=kwargs.get("source_type", "rss"),
                     note=kwargs.get("note"),
                 )
@@ -933,11 +1127,28 @@ class FeedQueryTool(Tool):
                 "enum": ["latest", "search", "summary", "catalog"],
                 "description": "查询动作",
             },
-            "source": {"type": "string", "description": "按来源名筛选（可选，模糊匹配）"},
+            "source": {
+                "type": "string",
+                "description": "按来源名筛选（可选，模糊匹配）",
+            },
             "keyword": {"type": "string", "description": "search 用关键词"},
-            "limit": {"type": "integer", "description": "返回条数（默认 5）", "minimum": 1, "maximum": 30},
-            "page": {"type": "integer", "description": "catalog 页码（从 1 开始）", "minimum": 1},
-            "page_size": {"type": "integer", "description": "catalog 每页条数（默认 20）", "minimum": 1, "maximum": 100},
+            "limit": {
+                "type": "integer",
+                "description": "返回条数（默认 5）",
+                "minimum": 1,
+                "maximum": 30,
+            },
+            "page": {
+                "type": "integer",
+                "description": "catalog 页码（从 1 开始）",
+                "minimum": 1,
+            },
+            "page_size": {
+                "type": "integer",
+                "description": "catalog 每页条数（默认 20）",
+                "minimum": 1,
+                "maximum": 100,
+            },
         },
         "required": ["action"],
     }
@@ -976,7 +1187,10 @@ class FeedQueryTool(Tool):
         items = await self._registry.fetch_all(limit_per_source=fetch_limit)
         if source:
             items = [i for i in items if source in (i.source_name or "").lower()]
-        items.sort(key=lambda x: x.published_at or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+        items.sort(
+            key=lambda x: x.published_at or datetime(1970, 1, 1, tzinfo=timezone.utc),
+            reverse=True,
+        )
 
         if action == "summary":
             source_names = sorted({i.source_name for i in items if i.source_name})
@@ -998,8 +1212,10 @@ class FeedQueryTool(Tool):
             if not keyword:
                 return "错误：search 需要 keyword"
             items = [
-                i for i in items
-                if keyword in (i.title or "").lower() or keyword in (i.content or "").lower()
+                i
+                for i in items
+                if keyword in (i.title or "").lower()
+                or keyword in (i.content or "").lower()
             ]
 
         if action == "catalog":
@@ -1029,7 +1245,9 @@ class FeedQueryTool(Tool):
                         "source": i.source_name,
                         "title": i.title or "(无标题)",
                         "url": i.url or "",
-                        "published_at": i.published_at.isoformat() if i.published_at else None,
+                        "published_at": i.published_at.isoformat()
+                        if i.published_at
+                        else None,
                     }
                 )
             has_more = end < total
@@ -1055,7 +1273,11 @@ class FeedQueryTool(Tool):
             return "没有找到匹配条目"
         lines = []
         for i in picked:
-            ts = i.published_at.astimezone().strftime("%Y-%m-%d %H:%M") if i.published_at else "未知时间"
+            ts = (
+                i.published_at.astimezone().strftime("%Y-%m-%d %H:%M")
+                if i.published_at
+                else "未知时间"
+            )
             title = i.title or "(无标题)"
             lines.append(f"- [{i.source_name}] {title} ({ts})")
             if i.url:

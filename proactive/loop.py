@@ -21,6 +21,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from agent.provider import LLMProvider
 from agent.memory import MemoryStore
@@ -49,6 +50,7 @@ from proactive.memory_sampler import sample_memory_chunks
 from proactive.ports import DefaultDecidePort, DefaultSensePort
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
+from proactive.source_scorer import SourceScorer
 from proactive.state import ProactiveStateStore
 from proactive.interest import InterestFilterConfig
 from proactive.skill_action import SkillActionRegistry, SkillActionRunner
@@ -149,6 +151,14 @@ class ProactiveConfig:
     # ── Skill Action（chat idle 时后台执行 skill 任务）──
     skill_actions_enabled: bool = False  # 是否启用 skill action
     skill_actions_path: str = ""  # skill_actions.json 路径（空=禁用）
+    # ── SourceScorer（基于 memory 的 feed 源动态配比）──
+    source_scorer_enabled: bool = False  # 是否启用动态配额
+    source_scorer_total_budget: int = 60  # 所有源共享的总拉取条数
+    source_scorer_min_per_source: int = 2  # 每源最少拉取条数（保底）
+    source_scorer_max_per_source: int = 20  # 每源最多拉取条数（封顶）
+    source_scorer_cache_path: str = (
+        ""  # 缓存文件路径（空=自动用 workspace/source_scores.json）
+    )
     # ── 旧参数兼容（当前主流程不再使用）──
     energy_cool_threshold: float = 0.20
     energy_crisis_threshold: float = 0.05
@@ -201,6 +211,10 @@ class ProactiveLoop:
         presence: PresenceStore | None = None,
         schedule: ScheduleStore | None = None,
         rng: _random_module.Random | None = None,
+        light_provider: LLMProvider | None = None,
+        light_model: str = "",
+        feed_store: Any | None = None,
+        source_scorer: SourceScorer | None = None,
     ) -> None:
         self._feeds = feed_registry
         self._sessions = session_manager
@@ -216,6 +230,36 @@ class ProactiveLoop:
         self._presence = presence
         self._schedule = schedule
         self._rng = rng
+        self._feed_store = feed_store
+
+        # ── SourceScorer（动态配额）──
+        if source_scorer is not None:
+            # 外部传入（由 main.py 构建，同时共享给 FeedManageTool）
+            self._source_scorer: SourceScorer | None = source_scorer
+        elif config.source_scorer_enabled:
+            _light_provider = light_provider or provider
+            _light_model = light_model or (config.model or model)
+            # 缓存路径：优先用 config 指定，否则用 state 同目录
+            if config.source_scorer_cache_path:
+                _cache_path = Path(config.source_scorer_cache_path).expanduser()
+            elif hasattr(self._state, "path"):
+                _cache_path = self._state.path.parent / "source_scores.json"
+            else:
+                _cache_path = Path("source_scores.json")
+            self._source_scorer = SourceScorer(
+                light_provider=_light_provider,
+                light_model=_light_model,
+                cache_path=_cache_path,
+            )
+            logger.info(
+                "[proactive] SourceScorer 已初始化 model=%s cache=%s total_budget=%d",
+                _light_model,
+                _cache_path,
+                config.source_scorer_total_budget,
+            )
+        else:
+            self._source_scorer = None
+
         self._running = False
         # FeedBuffer：feed_poller_enabled=True 时由 FeedPoller 写入；False 则为 None（直接拉取）
         self.feed_buffer: FeedBuffer | None = (
@@ -319,6 +363,8 @@ class ProactiveLoop:
             schedule=self._schedule,
             rng=self._rng,
             feed_buffer=self.feed_buffer,
+            source_scorer=self._source_scorer,
+            feed_store=self._feed_store,
         )
         self._decide = DefaultDecidePort(
             reflector=self._reflector,

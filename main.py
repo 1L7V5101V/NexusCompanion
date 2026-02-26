@@ -74,6 +74,8 @@ def _build_agent(
     FeedRegistry,
     FeedStore,
     LLMProvider,
+    LLMProvider | None,
+    "FeedManageTool",
 ]:
     bus = MessageBus()
     tools = ToolRegistry()
@@ -110,13 +112,18 @@ def _build_agent(
 
     # 轻量 provider（用于 self-check）：若配了独立 key/url 则单独构建，否则复用主 provider
     if config.light_model and (config.light_api_key or config.light_base_url):
+        _light_url = config.light_base_url or config.base_url or ""
+        # Gemini 不支持 enable_thinking，只对非 Google 端点传该字段
+        _light_extra: dict = (
+            {}
+            if "googleapis.com" in _light_url or "generativelanguage" in _light_url
+            else {"enable_thinking": False}
+        )
         light_provider = LLMProvider(
             api_key=config.light_api_key or config.api_key,
             base_url=config.light_base_url or config.base_url,
             system_prompt=config.system_prompt,
-            extra_body={
-                "enable_thinking": False
-            },  # 显式关闭 thinking，避免 token 混入 content
+            extra_body=_light_extra,
         )
     else:
         light_provider = None  # AgentLoop 内部会降级到主 provider
@@ -152,7 +159,8 @@ def _build_agent(
     feed_registry.register_source_type("novel-kb", lambda sub: NovelKBFeedSource(sub))
 
     # Register feed tools
-    tools.register(FeedManageTool(feed_store))
+    feed_manage_tool = FeedManageTool(feed_store)  # scorer 稍后由 serve() 注入
+    tools.register(feed_manage_tool)
     tools.register(FeedQueryTool(feed_store, feed_registry))
 
     return (
@@ -165,6 +173,8 @@ def _build_agent(
         feed_registry,
         feed_store,
         provider,
+        light_provider,
+        feed_manage_tool,
     )
 
 
@@ -181,6 +191,8 @@ async def serve(config_path: str = "config.json") -> None:
         feed_registry,
         feed_store,
         provider,
+        light_provider,
+        feed_manage_tool,
     ) = _build_agent(config, workspace)
 
     from channels.ipc_server import IPCServerChannel
@@ -258,18 +270,30 @@ async def serve(config_path: str = "config.json") -> None:
             memory_store=memory_store,
             presence=presence,
             schedule=schedule_store,
+            light_provider=light_provider,
+            light_model=config.light_model,
+            feed_store=feed_store,
         )
+        # 将 SourceScorer 注入 FeedManageTool，使 subscribe/unsubscribe 可触发增量打分
+        if proactive_loop._source_scorer is not None:
+            feed_manage_tool.set_scorer(proactive_loop._source_scorer)
         tasks.append(proactive_loop.run())
         if (
             config.proactive.feed_poller_enabled
             and proactive_loop.feed_buffer is not None
         ):
             feed_poller = FeedPoller(
-                feed_registry, proactive_loop.feed_buffer, config.proactive
+                feed_registry,
+                proactive_loop.feed_buffer,
+                config.proactive,
+                source_scorer=proactive_loop._source_scorer,
+                feed_store=feed_store,
+                memory_provider=memory_store,
             )
             tasks.append(feed_poller.run())
             print(
                 f"FeedPoller 已启动  |  间隔={config.proactive.feed_poller_interval_seconds}s"
+                + (f"  source_scorer=enabled" if proactive_loop._source_scorer else "")
             )
 
     # 记忆质量优化（定期合并 PENDING → MEMORY）
