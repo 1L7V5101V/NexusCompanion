@@ -5,6 +5,7 @@ proactive/memory_optimizer.py — 每日记忆质量优化器
   1. 重写 MEMORY.md：把事件日志 → 凝练用户档案（提炼、推断、删除冗余）
   2. 生成 QUESTIONS.md：5 个朋友视角的待确认问题，覆盖式写入
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,33 +22,54 @@ logger = logging.getLogger(__name__)
 # ── Prompts ──────────────────────────────────────────────────────
 
 _MERGE_SYSTEM = (
-    "你是一个用户档案维护者（User Profile Curator），"
-    "负责将新事实合并进现有档案，只增不删。"
+    "你是一个用户档案蒸馏器（User Profile Distiller），"
+    "负责将现有档案提炼为高密度、无冗余的长期记忆，同时合并新事实。"
 )
 
 _MERGE_PROMPT = """\
-将「待合并事实」中的新条目插入「现有用户档案」对应分类。
+你的任务是将「现有用户档案」重新蒸馏为一份精炼版本，同时合并「待合并事实」中的新内容。
 
-## 操作规则（严格执行）
-- **禁止删除**现有档案中的任何行
-- **禁止改写**现有档案中的任何行（包括措辞调整）
-- **禁止合并/压缩**现有条目
-- 只允许将「待合并事实」中**不重复**的条目追加到档案对应分类末尾
-- 若某条事实与现有档案内容高度重复，直接跳过（不添加）
-- 若「待合并事实」为空，原样输出现有档案，不做任何修改
+## 核心原则
 
-## 允许的操作
-- 在合适的已有分类末尾追加新 bullet
-- 若某条事实对应的分类在档案中不存在，在文末新建该分类并追加
+**保留**（高价值、长期有效的信息）：
+- 用户画像：身份/生日/设备/联系方式/账号等基础信息
+- 稳定偏好：游戏口味、审美、厌恶清单、交互风格禁忌
+- 工具与配置：文件路径、服务地址、API key 存放位置、技能调用方法
+- 已确认的重要结论（保留结论，删去推导过程）
+- 技术能力与项目经历概要
+- 订阅源分类体系及当前订阅状态
 
-直接输出完整 Markdown 档案，不要 JSON，不要代码块。
+**压缩/合并**（同类信息只保留最终结论）：
+- 多条重复表述同一事实的 bullet → 合并为一条
+- "性能认知/对比/补充/更新"系列 → 只保留最终结论
+- 同一事件的多次更新记录 → 只保留最终状态
+
+**动态数据改写为工具调用指引**（不存具体值，只记录获取方式）：
+- 订阅源列表 → 不列具体源名称，改写为："当前订阅源可通过 `feed_list` 工具获取"
+- feed 分数/配额 → 改写为："source 分数存于 `~/.akasic/workspace/source_scores.json`"
+- 健康/运动数据 → 改写为："实时健康数据通过 Fitbit API 获取"
+- Steam 游戏时长 → 改写为："游戏数据通过 Steam API 获取（API Key 存于 `STEAM_API_KEY`）"
+- 凡是"有工具或文件可实时查询"的数据，均用一行工具指引代替，不展开罗列具体值
+
+**删除**（低价值、过期、临时性信息）：
+- 历史调试过程记录（已解决的 bug、已完成的技术探索）
+- 临时状态（"正在确认"、"等待验证"、"暂不计划"之类已过期的中间状态）
+- 游戏剧情/角色细节考据（对 agent 行为无实际指导价值）
+- 重复的推理链条（只留结论）
+- 「近期开发与调试动态」类章节（已完成的历史，无需长期存档）
+
+## 输出格式
+- 保持 Markdown 格式，分类清晰
+- 每个分类内用 bullet 列表
+- 总长度控制在原文的 50%-70%（宁可精炼，不要堆砌）
+- 直接输出完整档案，不要 JSON，不要代码块，不要任何解释
 
 ---
 
 现有用户档案：
 {memory}
 
-待合并事实（来自近期对话提取 + 历史摘要推断）：
+待合并事实（若有新内容则合并进去，若为空则忽略）：
 {pending}
 """
 
@@ -74,6 +96,7 @@ _QUESTIONS_PROMPT = """\
 
 # ── helpers ───────────────────────────────────────────────────────
 
+
 def _format_questions(questions: list[str]) -> str:
     lines = ["## 想了解的问题", ""]
     for i, q in enumerate(questions, 1):
@@ -95,13 +118,14 @@ def _parse_questions_json(text: str) -> list[str]:
 
 # ── MemoryOptimizer ───────────────────────────────────────────────
 
+
 class MemoryOptimizer:
     def __init__(
         self,
         memory: MemoryStore,
         provider: LLMProvider,
         model: str,
-        max_tokens: int = 8192,
+        max_tokens: int = 16384,
         history_max_chars: int = 6000,
     ) -> None:
         self._memory = memory
@@ -109,7 +133,6 @@ class MemoryOptimizer:
         self._model = model
         self._max_tokens = max_tokens
         self._history_max_chars = history_max_chars
-
 
     async def optimize(self) -> None:
         """合并 PENDING 事实到 MEMORY + 生成问题列表。"""
@@ -122,7 +145,9 @@ class MemoryOptimizer:
             return
 
         # Step 1: 合并 PENDING 到 MEMORY（只增不删）
-        merged_memory = await self._merge_memory(current_memory, pending, recent_history)
+        merged_memory = await self._merge_memory(
+            current_memory, pending, recent_history
+        )
         if merged_memory:
             # 合并前备份
             if current_memory:
@@ -132,7 +157,8 @@ class MemoryOptimizer:
             self._memory.write_long_term(merged_memory)
             logger.info(
                 "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
-                len(current_memory), len(merged_memory),
+                len(current_memory),
+                len(merged_memory),
             )
             # 归档 PENDING 到 HISTORY，清空
             if pending:
@@ -209,7 +235,7 @@ class MemoryOptimizer:
                 return ""
             text = self._memory.history_file.read_text(encoding="utf-8")
             if len(text) > self._history_max_chars:
-                return text[-self._history_max_chars:]
+                return text[-self._history_max_chars :]
             return text
         except Exception:
             return ""
@@ -236,13 +262,15 @@ class MemoryOptimizerLoop:
         self._running = True
         logger.info(
             "[memory_optimizer] 优化循环已启动，间隔=%ds (%.1fh)，对齐整点",
-            self._interval, self._interval / 3600,
+            self._interval,
+            self._interval / 3600,
         )
         while self._running:
             secs = self._seconds_until_next_tick()
             logger.info(
                 "[memory_optimizer] 距下次优化 %.0f 秒 (%.1f 小时)",
-                secs, secs / 3600,
+                secs,
+                secs / 3600,
             )
             await asyncio.sleep(secs)
             if not self._running:
