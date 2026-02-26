@@ -49,10 +49,15 @@ class QuotaStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state = self._load()
 
-    def snapshot(self, *, now_utc: datetime, reset_hour: int, timezone_name: str) -> QuotaSnapshot:
+    def snapshot(
+        self, *, now_utc: datetime, reset_hour: int, timezone_name: str
+    ) -> QuotaSnapshot:
         tz = _safe_zone(timezone_name)
         window_key, next_reset_at_local = self._window_meta(now_utc, reset_hour, tz)
-        self._rollover_if_needed(window_key=window_key, next_reset_at=next_reset_at_local.astimezone(timezone.utc))
+        self._rollover_if_needed(
+            window_key=window_key,
+            next_reset_at=next_reset_at_local.astimezone(timezone.utc),
+        )
         return QuotaSnapshot(
             window_key=self._state["window_key"],
             next_reset_at=_parse_iso(self._state["next_reset_at"]) or now_utc,
@@ -60,17 +65,25 @@ class QuotaStore:
             last_action_at=_parse_iso(self._state.get("last_action_at")),
         )
 
-    def record_action(self, *, now_utc: datetime, reset_hour: int, timezone_name: str) -> None:
-        snap = self.snapshot(now_utc=now_utc, reset_hour=reset_hour, timezone_name=timezone_name)
+    def record_action(
+        self, *, now_utc: datetime, reset_hour: int, timezone_name: str
+    ) -> None:
+        snap = self.snapshot(
+            now_utc=now_utc, reset_hour=reset_hour, timezone_name=timezone_name
+        )
         self._state["window_key"] = snap.window_key
         self._state["next_reset_at"] = snap.next_reset_at.isoformat()
         self._state["used"] = int(self._state.get("used", 0)) + 1
         self._state["last_action_at"] = now_utc.isoformat()
         self._save()
 
-    def _window_meta(self, now_utc: datetime, reset_hour: int, tz: ZoneInfo) -> tuple[str, datetime]:
+    def _window_meta(
+        self, now_utc: datetime, reset_hour: int, tz: ZoneInfo
+    ) -> tuple[str, datetime]:
         local_now = now_utc.astimezone(tz)
-        reset_today = local_now.replace(hour=reset_hour, minute=0, second=0, microsecond=0)
+        reset_today = local_now.replace(
+            hour=reset_hour, minute=0, second=0, microsecond=0
+        )
         if local_now >= reset_today:
             start = reset_today
             next_reset = reset_today + timedelta(days=1)
@@ -121,19 +134,25 @@ class QuotaStore:
 
     def _save(self) -> None:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         tmp.replace(self.path)
 
 
 class AnyActionGate:
     """后台 AnyAction 通用层：硬规则 + 概率门。"""
 
-    def __init__(self, *, cfg, quota_store: QuotaStore, rng: _random_module.Random | None = None) -> None:
+    def __init__(
+        self, *, cfg, quota_store: QuotaStore, rng: _random_module.Random | None = None
+    ) -> None:
         self._cfg = cfg
         self._quota = quota_store
         self._rng = rng
 
-    def should_act(self, *, now_utc: datetime, last_user_at: datetime | None) -> tuple[bool, dict[str, float | int | str]]:
+    def should_act(
+        self, *, now_utc: datetime, last_user_at: datetime | None
+    ) -> tuple[bool, dict[str, float | int | str]]:
         snap = self._quota.snapshot(
             now_utc=now_utc,
             reset_hour=self._cfg.anyaction_reset_hour_local,
@@ -162,12 +181,20 @@ class AnyActionGate:
             if last_user_at is not None
             else self._cfg.anyaction_idle_scale_minutes * 2.0
         )
-        idle_factor = 1.0 - math.exp(-idle_min / max(self._cfg.anyaction_idle_scale_minutes, 1.0))
+        idle_factor = 1.0 - math.exp(
+            -idle_min / max(self._cfg.anyaction_idle_scale_minutes, 1.0)
+        )
         local_hour = now_utc.astimezone(_safe_zone(self._cfg.anyaction_timezone)).hour
         time_factor = self._time_factor(local_hour)
-        p = self._cfg.anyaction_probability_min + (
-            self._cfg.anyaction_probability_max - self._cfg.anyaction_probability_min
-        ) * idle_factor * time_factor
+        p = (
+            self._cfg.anyaction_probability_min
+            + (
+                self._cfg.anyaction_probability_max
+                - self._cfg.anyaction_probability_min
+            )
+            * idle_factor
+            * time_factor
+        )
         p = max(0.0, min(1.0, p))
         draw = (self._rng or _random_module).random()
         return draw < p, {
@@ -189,10 +216,4 @@ class AnyActionGate:
 
     @staticmethod
     def _time_factor(local_hour: int) -> float:
-        if 9 <= local_hour < 23:
-            return 1.0
-        if 7 <= local_hour < 9:
-            return 0.75
-        if 23 <= local_hour or local_hour < 2:
-            return 0.55
-        return 0.35
+        return 1.0
