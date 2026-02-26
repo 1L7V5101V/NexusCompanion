@@ -80,6 +80,11 @@ class Config:
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
     memory_optimizer_interval_seconds: int = 3600  # 默认每小时
+    # 轻量模型：用于 self-check pass 和 eval judge，默认退化到主模型
+    # 可配置独立的 provider（不同 base_url / api_key）
+    light_model: str = ""
+    light_api_key: str = ""
+    light_base_url: str = ""
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -299,6 +304,9 @@ class Config:
             memory_optimizer_interval_seconds=int(
                 data.get("memory_optimizer_interval_seconds", 3600)
             ),
+            light_model=data.get("light_model", ""),
+            light_api_key=_resolve(data.get("light_api_key", "")),
+            light_base_url=data.get("light_base_url", ""),
         )
 
 

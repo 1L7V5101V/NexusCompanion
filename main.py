@@ -107,6 +107,20 @@ def _build_agent(
         system_prompt=config.system_prompt,
         extra_body=config.extra_body,
     )
+
+    # 轻量 provider（用于 self-check）：若配了独立 key/url 则单独构建，否则复用主 provider
+    if config.light_model and (config.light_api_key or config.light_base_url):
+        light_provider = LLMProvider(
+            api_key=config.light_api_key or config.api_key,
+            base_url=config.light_base_url or config.base_url,
+            system_prompt=config.system_prompt,
+            extra_body={
+                "enable_thinking": False
+            },  # 显式关闭 thinking，避免 token 混入 content
+        )
+    else:
+        light_provider = None  # AgentLoop 内部会降级到主 provider
+
     session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")
     loop = AgentLoop(
@@ -119,6 +133,8 @@ def _build_agent(
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
         presence=presence,
+        light_model=config.light_model,
+        light_provider=light_provider,
     )
 
     # Wire agent_loop back into scheduler (circular dependency resolved here)
