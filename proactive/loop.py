@@ -558,13 +558,8 @@ class ProactiveLoop:
             if not raw:
                 logger.info("[proactive] 全局记忆为空")
                 return "（无全局记忆）"
-            text = raw[: max(self._cfg.global_memory_max_chars, 256)]
-            logger.info(
-                "[proactive] 已注入全局记忆 chars=%d truncated=%s",
-                len(text),
-                len(raw) > len(text),
-            )
-            return text
+            logger.info("[proactive] 已注入全局记忆 chars=%d", len(raw))
+            return raw
         except Exception as e:
             logger.warning("[proactive] 读取全局记忆失败: %s", e)
             return "（读取全局记忆失败）"
@@ -602,9 +597,9 @@ def _format_recent(msgs: list[dict]) -> str:
     if not msgs:
         return ""
     lines = []
-    for m in msgs[-10:]:  # 最多展示最近 10 条
+    for m in msgs[-20:]:  # 最多展示最近 20 条，完整内容不截断
         role = "用户" if m["role"] == "user" else "助手"
-        content = str(m.get("content", ""))[:150]
+        content = str(m.get("content", ""))
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
 

@@ -8,8 +8,12 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from agent.memory import MemoryStore
-from agent.provider import LLMProvider
+from agent.provider import LLMProvider, LLMResponse
+from agent.tools.base import Tool
 from agent.tools.message_push import MessagePushTool
+from agent.tools.filesystem import ReadFileTool
+from agent.tools.web_fetch import WebFetchTool
+from agent.tools.web_search import WebSearchTool
 from feeds.base import FeedItem
 from proactive.presence import PresenceStore
 from proactive.state import ProactiveStateStore
@@ -58,7 +62,9 @@ class ProactiveReflector:
         is_crisis: bool = False,
         decision_signals: dict[str, object] | None = None,
     ) -> Any:
-        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        now = datetime.now().astimezone()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+        now_iso = now.isoformat()
         feed_text = self._hooks.format_items(items) or "（暂无订阅内容）"
         chat_text = self._hooks.format_recent(recent) or "（无近期对话记录）"
         memory_text = self._hooks.collect_global_memory()
@@ -75,14 +81,17 @@ class ProactiveReflector:
             topic_chunks = self._hooks.sample_random_memory(1)
             topic_hint = topic_chunks[0] if topic_chunks else ""
             session_key = self._hooks.target_session_key()
-            last_at = self._presence.get_last_user_at(session_key) if self._presence else None
+            last_at = (
+                self._presence.get_last_user_at(session_key) if self._presence else None
+            )
             elapsed = ""
             if last_at:
                 hours = (datetime.now(timezone.utc) - last_at).total_seconds() / 3600
                 elapsed = f"距离上次对话已超过 {hours:.0f} 小时。"
             topic_section = (
                 f"\n\n## 随机话题建议（危机开场用）\n\n{topic_hint}"
-                if topic_hint else ""
+                if topic_hint
+                else ""
             )
             crisis_hint = (
                 f"\n[危机模式] {elapsed}"
@@ -97,6 +106,7 @@ class ProactiveReflector:
             "你的目标是在恰当的时机分享有价值的信息，而不是频繁打扰用户。"
         )
         user_msg = f"""当前时间：{now_str}
+（ISO格式：{now_iso}）
 
 ## 主动性上下文
 
@@ -173,7 +183,9 @@ class ProactiveSender:
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
         if not channel or not chat_id:
-            logger.warning("[proactive] default_channel/default_chat_id 未配置，跳过发送")
+            logger.warning(
+                "[proactive] default_channel/default_chat_id 未配置，跳过发送"
+            )
             return False
         logger.info(
             "[proactive] 准备发送主动消息 channel=%s chat_id=%s message_len=%d",
@@ -266,7 +278,9 @@ class ProactiveItemFilter:
             ):
                 logger.debug(
                     "[proactive] rejection_cooldown 跳过 source=%s item_id=%s ttl_hours=%d",
-                    source_key, item_id[:16], cooldown_hours,
+                    source_key,
+                    item_id[:16],
+                    cooldown_hours,
                 )
                 continue
             source_fresh.append(item)
@@ -291,7 +305,9 @@ class ProactiveItemFilter:
                 "item": item,
                 "source_key": source_key,
                 "item_id": item_id,
-                "text": self._semantic_text(item, self._cfg.semantic_dedupe_text_max_chars),
+                "text": self._semantic_text(
+                    item, self._cfg.semantic_dedupe_text_max_chars
+                ),
             }
             for item, (source_key, item_id) in zip(source_fresh, source_entries)
         ]
@@ -300,7 +316,7 @@ class ProactiveItemFilter:
         docs = [h["text"] for h in history] + [p["text"] for p in payload]
         vectors = self._build_tfidf_vectors(docs, self._cfg.semantic_dedupe_ngram)
         history_vectors = vectors[: len(history)]
-        payload_vectors = vectors[len(history):]
+        payload_vectors = vectors[len(history) :]
 
         keep_items: list[FeedItem] = []
         keep_entries: list[tuple[str, str]] = []
@@ -356,7 +372,9 @@ class ProactiveItemFilter:
             keep_items.append(p["item"])
             keep_entries.append((p["source_key"], p["item_id"]))
             accepted_vectors.append(vec)
-            accepted_meta.append({"source_key": p["source_key"], "item_id": p["item_id"]})
+            accepted_meta.append(
+                {"source_key": p["source_key"], "item_id": p["item_id"]}
+            )
         logger.info(
             "[proactive] 语义去重结果 keep=%d duplicate=%d history_candidates=%d",
             len(keep_items),
@@ -462,6 +480,7 @@ class ProactiveFeatureScorer:
             except Exception:
                 v = default
             return max(0.0, min(1.0, v))
+
         def reason(name: str) -> str:
             try:
                 text = str(raw.get(name, "")).strip()
@@ -543,7 +562,9 @@ class ProactiveMessageDeduper:
             d = json.loads(match.group())
             is_dup = bool(d.get("is_duplicate", False))
             reason = str(d.get("reason", ""))
-            logger.info("[proactive.deduper] is_duplicate=%s reason=%r", is_dup, reason[:80])
+            logger.info(
+                "[proactive.deduper] is_duplicate=%s reason=%r", is_dup, reason[:80]
+            )
             return is_dup, reason
         except Exception as e:
             logger.warning("[proactive.deduper] 检测失败，放行: %s", e)
@@ -551,7 +572,28 @@ class ProactiveMessageDeduper:
 
 
 class ProactiveMessageComposer:
-    """特征模式下的消息生成器：只负责生成 message，不做是否发送决策。"""
+    """特征模式下的消息生成器：只负责生成 message，不做是否发送决策。
+
+    具备工具调用能力（read_file / web_fetch / web_search），最多 10 轮迭代，
+    以避免直接依赖截断 memory 导致的幻觉。
+    """
+
+    # PRE_FLIGHT：生成前强制自检，对齐主循环策略
+    _PRE_FLIGHT = (
+        "【生成消息前必须完成以下自检，无需在消息中说明】\n"
+        "1. 消息中是否涉及用户的实时状态数据（游戏时长、健康指标、订阅源列表等）？"
+        "若涉及，必须先调用对应工具获取真实数据，禁止凭记忆臆断。\n"
+        "2. 消息中是否有可能已过期的事实（如某游戏发布日期、某 DLC 上线状态）？"
+        "若不确定，先用 web_search 确认，或用推测语气表达。\n"
+        "3. 若两条均不适用，直接生成消息即可。"
+    )
+
+    # REFLECT：工具结果后反思
+    _REFLECT = (
+        "根据上述工具结果，决定下一步操作。\n"
+        "【自检】即将生成的消息中，有无工具结果支撑的事实？"
+        "无支撑的必须用推测语气（'我猜'/'可能'/'好像'），禁止强断言。"
+    )
 
     def __init__(
         self,
@@ -562,6 +604,7 @@ class ProactiveMessageComposer:
         format_items: Callable[[list[FeedItem]], str],
         format_recent: Callable[[list[dict]], str],
         collect_global_memory: Callable[[], str],
+        max_tool_iterations: int = 10,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -569,6 +612,25 @@ class ProactiveMessageComposer:
         self._format_items = format_items
         self._format_recent = format_recent
         self._collect_global_memory = collect_global_memory
+        self._max_tool_iterations = max_tool_iterations
+        # 工具实例（无路径限制，composer 有查询任意文件和网络的权限）
+        self._tools: list[Tool] = [
+            ReadFileTool(),
+            WebFetchTool(),
+            WebSearchTool(),
+        ]
+        self._tool_schemas = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
+            }
+            for t in self._tools
+        ]
+        self._tool_map = {t.name: t for t in self._tools}
 
     async def compose_message(
         self,
@@ -577,15 +639,22 @@ class ProactiveMessageComposer:
         recent: list[dict],
         decision_signals: dict[str, object],
     ) -> str:
-        now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+        now = datetime.now().astimezone()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S %Z")
+        now_iso = now.isoformat()
         feed_text = self._format_items(items) or "（暂无订阅内容）"
         chat_text = self._format_recent(recent) or "（无近期对话记录）"
         memory_text = self._collect_global_memory()
+
         system_msg = (
-            "你是陪伴型助手。系统已经决定可以主动发送，请只生成一条自然、简短、可直接发送给用户的中文消息。"
-            "不要输出JSON，不要解释。"
+            "你是陪伴型助手。系统已经决定可以主动发送消息给用户。\n"
+            "你可以调用工具查询实时数据（文件/网页/搜索）以确保消息内容准确。\n"
+            "最终只输出一条自然、简短、可直接发送给用户的中文消息，不超过120字。\n"
+            "不要输出JSON，不要解释，不要前缀。"
         )
         user_msg = f"""当前时间：{now_str}
+（ISO格式：{now_iso}）
+
 ## 决策信号
 ```json
 {json.dumps(decision_signals, ensure_ascii=False, indent=2)}
@@ -596,17 +665,80 @@ class ProactiveMessageComposer:
 {memory_text}
 ## 近期对话
 {chat_text}
-请给出一条可发送消息（不超过120字）。"""
+
+请生成一条可发送给用户的消息（不超过120字）。"""
+
+        messages: list[dict] = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg},
+            {"role": "user", "content": self._PRE_FLIGHT},
+        ]
+
         try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                tools=[],
-                model=self._model,
-                max_tokens=min(256, self._max_tokens),
+            for iteration in range(self._max_tool_iterations):
+                resp = await self._provider.chat(
+                    messages=messages,
+                    tools=self._tool_schemas,
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                )
+
+                if not resp.tool_calls:
+                    # 无工具调用，最终消息
+                    result = (resp.content or "").strip()
+                    logger.info(
+                        "[composer] 消息生成完成 iterations=%d chars=%d",
+                        iteration + 1,
+                        len(result),
+                    )
+                    return result
+
+                # 执行工具调用
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": resp.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": json.dumps(
+                                        tc.arguments, ensure_ascii=False
+                                    ),
+                                },
+                            }
+                            for tc in resp.tool_calls
+                        ],
+                    }
+                )
+                for tc in resp.tool_calls:
+                    tool = self._tool_map.get(tc.name)
+                    if tool:
+                        logger.info(
+                            "[composer] 调用工具 %s args=%s",
+                            tc.name,
+                            str(tc.arguments)[:80],
+                        )
+                        result = await tool.execute(**tc.arguments)
+                        logger.info("[composer] 工具结果 %s: %s", tc.name, result[:100])
+                    else:
+                        result = f"未知工具：{tc.name}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        }
+                    )
+
+                messages.append({"role": "user", "content": self._REFLECT})
+
+            logger.warning(
+                "[composer] 已达到最大工具迭代次数 %d", self._max_tool_iterations
             )
-            return (resp.content or "").strip()
-        except Exception:
+            return ""
+        except Exception as e:
+            logger.warning("[composer] 消息生成失败: %s", e)
             return ""
