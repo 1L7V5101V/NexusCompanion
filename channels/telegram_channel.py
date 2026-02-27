@@ -113,12 +113,16 @@ class TelegramChannel:
 
         await self._safe_send_typing(context, chat.id)
 
+        inbound_text, reply_meta = _build_inbound_text_with_reply(msg.text, msg.reply_to_message)
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=str(user.id),
             chat_id=str(chat.id),
-            content=msg.text,
-            metadata={"username": user.username or ""},
+            content=inbound_text,
+            metadata={
+                "username": user.username or "",
+                **reply_meta,
+            },
         ))
 
     async def _on_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -151,13 +155,18 @@ class TelegramChannel:
         await tg_file.download_to_drive(tmp)
         logger.info(f"[telegram] 收到图片  chat_id={chat.id}  user=@{user.username or user.id}  tmp={tmp}")
 
+        caption_text = msg.caption or ""
+        inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
         await self._bus.publish_inbound(InboundMessage(
             channel=_CHANNEL,
             sender=str(user.id),
             chat_id=str(chat.id),
-            content=msg.caption or "",
+            content=inbound_text,
             media=[tmp],
-            metadata={"username": user.username or ""},
+            metadata={
+                "username": user.username or "",
+                **reply_meta,
+            },
         ))
 
     def _resolve_chat_id(self, chat_id: str) -> str:
@@ -225,3 +234,36 @@ class TelegramChannel:
             except Exception as e:
                 logger.warning("[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s", chat_id, e)
                 return
+
+
+def _build_inbound_text_with_reply(
+    user_text: str,
+    reply_msg,
+) -> tuple[str, dict[str, str | int]]:
+    """将 Telegram 的 reply 上下文合并进入站文本，避免 agent 丢失引用信息。"""
+    text = (user_text or "").strip()
+    if not reply_msg:
+        return text, {}
+
+    reply_text = (reply_msg.text or reply_msg.caption or "").strip()
+    if not reply_text:
+        # 保守处理：非文本被回复消息只保留结构化元信息，不污染正文。
+        return text, {"reply_to_message_id": int(reply_msg.message_id)}
+
+    reply_sender = ""
+    from_user = getattr(reply_msg, "from_user", None)
+    if from_user:
+        reply_sender = from_user.username or str(from_user.id)
+    sender_label = f"@{reply_sender}" if reply_sender else "未知发送者"
+
+    merged = (
+        "【你正在回复一条历史消息】\n"
+        f"被回复消息（来自 {sender_label}）：\n"
+        f"{reply_text}\n\n"
+        "【你当前新消息】\n"
+        f"{text}"
+    ).strip()
+    return merged, {
+        "reply_to_message_id": int(reply_msg.message_id),
+        "reply_to_sender": sender_label,
+    }
