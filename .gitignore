@@ -19,3 +19,4 @@ plugins/
 .idea/
 .vscode/
 /evals/
+/tests/regression/
