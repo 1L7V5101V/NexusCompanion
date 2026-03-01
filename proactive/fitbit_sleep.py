@@ -44,7 +44,14 @@ class SleepContext:
         if self.state == "sleeping":
             return 0.20  # chat 概率降约 80%
         if self.state == "uncertain":
-            return 0.50  # chat 概率降约 50%
+            # 睡眠高概率的 uncertain 也按睡眠保护处理，减少夜间/午睡打扰。
+            if (
+                self.prob is not None
+                and self.prob >= 0.60
+                and (self.data_lag_min is None or self.data_lag_min <= 15)
+            ):
+                return 0.20
+            return 0.50  # 普通 uncertain：chat 概率降约 50%
         if self.state == "awake":
             return 1.0
         return 0.88      # unknown：轻微保守

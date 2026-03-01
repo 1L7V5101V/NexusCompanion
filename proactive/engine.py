@@ -38,12 +38,14 @@ class _PseudoDecision:
         self.evidence_item_ids: list[str] = []
 
 
-def _sleep_policy_note(state: str, available: bool) -> str:
+def _sleep_policy_note(state: str, available: bool, prob: float | None = None) -> str:
     if not available:
         return "fitbit_unavailable: 不调整 chat/idle 概率"
     if state == "sleeping":
         return "sleeping_protect: chat 概率×0.20，idle 概率显著上升"
     if state == "uncertain":
+        if prob is not None and prob >= 0.60:
+            return "uncertain_high_prob_protect: chat 概率×0.20（按睡眠保护），idle 概率显著上升"
         return "cautious: chat 概率×0.50，idle 概率上升"
     if state == "awake":
         return "normal: 不降低 chat 概率"
@@ -223,7 +225,11 @@ class ProactiveEngine:
             (sleep_ctx.prob if sleep_ctx is not None else None),
             (sleep_ctx.data_lag_min if sleep_ctx is not None else None),
             sleep_mod,
-            _sleep_policy_note(sleep_state, sleep_available),
+            _sleep_policy_note(
+                sleep_state,
+                sleep_available,
+                (sleep_ctx.prob if sleep_ctx is not None else None),
+            ),
         )
 
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
