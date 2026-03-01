@@ -53,7 +53,8 @@ class ShellTool(Tool):
         "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
         "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
         "- 输出超过 30000 字符时自动截断\n"
-        "- 超时默认 60 秒，最大 600 秒"
+        "- 超时默认 60 秒，最大 600 秒\n"
+        "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），必须用 `timeout 5 <命令> 2>&1` 包裹以快速获取启动日志，禁止直接运行导致阻塞"
     )
     parameters = {
         "type": "object",

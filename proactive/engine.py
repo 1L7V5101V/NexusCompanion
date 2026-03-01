@@ -756,7 +756,7 @@ def _feature_final_score(
 def _health_priority_bonus(*, alert_count: int, notify_count: int) -> float:
     """健康信号优先级加分：notify > alert。"""
     if notify_count > 0:
-        return min(0.22, 0.10 + 0.06 * min(notify_count, 2))
+        return min(0.08, 0.04 + 0.02 * min(notify_count, 2))
     if alert_count > 0:
-        return min(0.10, 0.05 + 0.02 * min(alert_count, 2))
+        return min(0.03, 0.01 + 0.01 * min(alert_count, 2))
     return 0.0
