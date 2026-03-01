@@ -376,6 +376,7 @@ class ProactiveEngine:
         if draw_score < self._cfg.score_llm_threshold and not force_reflect:
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=draw_score")
+            await self._try_skill_action(now_utc=now_utc)
             return base_score
         if draw_score < self._cfg.score_llm_threshold and force_reflect:
             logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")

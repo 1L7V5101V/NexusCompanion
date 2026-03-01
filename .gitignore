@@ -24,3 +24,7 @@ plugins/
 /scripts/fitbit-monitor/sleep_labels.json
 /scripts/fitbit-monitor/sleep_log.jsonl
 /scripts/fitbit-monitor/fitbit-swagger.json
+/config.backup.20260301-063714.json
+/scripts/fitbit-monitor/monitor.config.toml
+/scripts/fitbit-monitor/monitor.runtime.log
+/docs/
