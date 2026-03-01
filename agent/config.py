@@ -67,6 +67,16 @@ class ChannelsConfig:
 
 
 @dataclass
+class MemoryV2Config:
+    enabled: bool = False
+    db_path: str = ""                   # 空则用 workspace/memory/memory2.db
+    embed_model: str = "text-embedding-v3"
+    retrieve_top_k: int = 8
+    score_threshold: float = 0.45
+    disable_full_memory: bool = False   # True 时不再注入全量 MEMORY.md
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -85,6 +95,8 @@ class Config:
     light_model: str = ""
     light_api_key: str = ""
     light_base_url: str = ""
+    memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
+    query_analyzer_enabled: bool = True
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -306,6 +318,16 @@ class Config:
                 source_scorer_cache_path=str(p.get("source_scorer_cache_path", "")),
             )
 
+        mv2 = data.get("memory_v2", {})
+        memory_v2 = MemoryV2Config(
+            enabled=bool(mv2.get("enabled", False)),
+            db_path=mv2.get("db_path", ""),
+            embed_model=mv2.get("embed_model", "text-embedding-v3"),
+            retrieve_top_k=int(mv2.get("retrieve_top_k", 8)),
+            score_threshold=float(mv2.get("score_threshold", 0.45)),
+            disable_full_memory=bool(mv2.get("disable_full_memory", False)),
+        )
+
         return cls(
             provider=provider,
             model=data["model"],
@@ -324,6 +346,8 @@ class Config:
             light_model=data.get("light_model", ""),
             light_api_key=_resolve(data.get("light_api_key", "")),
             light_base_url=data.get("light_base_url", ""),
+            memory_v2=memory_v2,
+            query_analyzer_enabled=bool(data.get("query_analyzer_enabled", True)),
         )
 
 

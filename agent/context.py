@@ -23,27 +23,40 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         relevant_sops: list[str] | None = None,
         message_timestamp: "datetime | None" = None,
+        retrieved_memory_block: str = "",
+        disable_full_memory: bool = False,
     ) -> str:
         parts = []
         # 核心identity
         parts.append(self._get_identity(message_timestamp))
 
-        # 用户长期记忆
-        memory = self.memory.get_memory_context()
-        if memory:
-            parts.append(memory)
+        # memory v2 检索命中块（紧接 identity 后，高优先级）
+        if retrieved_memory_block:
+            parts.append(retrieved_memory_block)
+
+        # 用户长期记忆（disable_full_memory=True 时跳过）
+        if not disable_full_memory:
+            memory = self.memory.get_memory_context()
+            if memory:
+                parts.append(memory)
 
         # Nexus 自我认知（人格/关系理解）
         self_content = self.memory.read_self()
         if self_content:
             parts.append(f"## Nexus 自我认知\n\n{self_content}")
 
-        # SOP 索引（最高优先级，永远注入）
+        # SOP 索引（用于维护：新增/修改 SOP 时必须对照此索引操作）
+        # 注意：SOP 执行内容已由 memory2 向量检索注入，无需在此 read_file 读取 SOP 全文
         sop_readme = self.workspace / "sop" / "README.md"
         if sop_readme.exists():
             try:
                 sop_index = sop_readme.read_text(encoding="utf-8").strip()
-                parts.append(f"# SOP 规范索引（最高优先级）\n\n{sop_index}")
+                parts.append(
+                    f"# SOP 文件索引\n\n"
+                    f"**执行任务**：SOP 相关内容已由系统检索注入到本 prompt，直接参照执行，无需 read_file。\n"
+                    f"**新增/修改 SOP**：必须先 read_file 读取对应文件全文，按要求修改后 write_file 写回，并更新本 README 索引。\n\n"
+                    f"{sop_index}"
+                )
             except Exception:
                 pass
 
@@ -204,6 +217,8 @@ request_time={now_iso}
         channel: str | None = None,
         chat_id: str | None = None,
         message_timestamp: "datetime | None" = None,
+        retrieved_memory_block: str = "",
+        disable_full_memory: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -214,6 +229,8 @@ request_time={now_iso}
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            retrieved_memory_block: memory v2 检索命中块。
+            disable_full_memory: True 时不注入全量 MEMORY.md。
 
         Returns:
             List of messages including system prompt.
@@ -223,6 +240,8 @@ request_time={now_iso}
             skill_names=skill_names,
             relevant_sops=relevant_sops,
             message_timestamp=message_timestamp,
+            retrieved_memory_block=retrieved_memory_block,
+            disable_full_memory=disable_full_memory,
         )
         if channel and chat_id:
             system_prompt += (

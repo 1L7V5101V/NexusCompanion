@@ -88,8 +88,6 @@ def _build_agent(
     tools.register(WebSearchTool())
     tools.register(WebFetchTool())
     tools.register(ReadFileTool())
-    tools.register(WriteFileTool())
-    tools.register(EditFileTool())
     tools.register(ListDirTool())
     push_tool = MessagePushTool()
     tools.register(push_tool)
@@ -141,6 +139,45 @@ def _build_agent(
     session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")
     processing_state = ProcessingState()
+
+    # memory v2 初始化（可选）
+    memorizer = None
+    retriever = None
+    if config.memory_v2.enabled:
+        from memory2.store import MemoryStore2
+        from memory2.embedder import Embedder
+        from memory2.memorizer import Memorizer
+        from memory2.retriever import Retriever
+        from agent.tools.memorize import MemorizeTool
+
+        db_path = (
+            Path(config.memory_v2.db_path)
+            if config.memory_v2.db_path
+            else workspace / "memory" / "memory2.db"
+        )
+        mem2_store = MemoryStore2(db_path)
+        embedder = Embedder(
+            base_url=config.light_base_url or config.base_url or "",
+            api_key=config.light_api_key or config.api_key,
+            model=config.memory_v2.embed_model,
+        )
+        memorizer = Memorizer(mem2_store, embedder)
+        retriever = Retriever(
+            mem2_store,
+            embedder,
+            top_k=config.memory_v2.retrieve_top_k,
+            score_threshold=config.memory_v2.score_threshold,
+        )
+        tools.register(MemorizeTool(memorizer))
+
+        from memory2.sop_indexer import SopIndexer
+        sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
+        tools.register(WriteFileTool(sop_indexer=sop_indexer))
+        tools.register(EditFileTool(sop_indexer=sop_indexer))
+    else:
+        tools.register(WriteFileTool())
+        tools.register(EditFileTool())
+
     loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -154,6 +191,10 @@ def _build_agent(
         light_model=config.light_model,
         light_provider=light_provider,
         processing_state=processing_state,
+        memorizer=memorizer,
+        retriever=retriever,
+        disable_full_memory=config.memory_v2.disable_full_memory,
+        query_analyzer_enabled=config.query_analyzer_enabled,
     )
 
     # Wire agent_loop back into scheduler (circular dependency resolved here)

@@ -1,9 +1,16 @@
 """文件系统工具：读取、写入、编辑文件，以及列举目录。"""
 
+import asyncio
+import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent.tools.base import Tool
+
+if TYPE_CHECKING:
+    from memory2.sop_indexer import SopIndexer
+
+logger = logging.getLogger(__name__)
 
 
 def _read_xlsx(file_path: Path) -> str:
@@ -91,8 +98,9 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """将内容写入文件，自动创建所需的父目录。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None):
         self._allowed_dir = allowed_dir
+        self._sop_indexer = sop_indexer
 
     @property
     def name(self) -> str:
@@ -124,18 +132,29 @@ class WriteFileTool(Tool):
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
-            return f"已写入 {len(content)} 字节到 {path}"
+            result = f"已写入 {len(content)} 字节到 {path}"
+            if self._sop_indexer and self._sop_indexer.is_sop_file(file_path):
+                asyncio.create_task(self._reindex(file_path))
+            return result
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:
             return f"写入文件失败：{e}"
 
+    async def _reindex(self, file_path: Path) -> None:
+        try:
+            summary = await self._sop_indexer.reindex(file_path)
+            logger.info(f"write_file sop reindex: {summary}")
+        except Exception as e:
+            logger.warning(f"write_file sop reindex 失败: {e}")
+
 
 class EditFileTool(Tool):
     """精确替换文件中的指定文本片段。"""
 
-    def __init__(self, allowed_dir: Path | None = None):
+    def __init__(self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None):
         self._allowed_dir = allowed_dir
+        self._sop_indexer = sop_indexer
 
     @property
     def name(self) -> str:
@@ -185,11 +204,20 @@ class EditFileTool(Tool):
             new_content = content.replace(old_text, new_text, 1)
             file_path.write_text(new_content, encoding="utf-8")
 
+            if self._sop_indexer and self._sop_indexer.is_sop_file(file_path):
+                asyncio.create_task(self._reindex(file_path))
             return f"已成功编辑 {path}"
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:
             return f"编辑文件失败：{e}"
+
+    async def _reindex(self, file_path: Path) -> None:
+        try:
+            summary = await self._sop_indexer.reindex(file_path)
+            logger.info(f"edit_file sop reindex: {summary}")
+        except Exception as e:
+            logger.warning(f"edit_file sop reindex 失败: {e}")
 
 
 class ListDirTool(Tool):

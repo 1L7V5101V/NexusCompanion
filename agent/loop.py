@@ -37,7 +37,7 @@ _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 # 每轮对话开始前注入的初始自检提示，不应持久化到 session
 _PRE_FLIGHT_PROMPT = """【回复前必须完成以下自检，无需在回复中说明】
-0. 【SOP 优先级最高，强制执行】系统 prompt 中已包含 SOP 规范索引。执行任何实质性操作前，先判断当前任务是否匹配某个 SOP；若匹配，必须先 read_file 读取该 SOP 全文并严格遵守，再继续后续步骤。禁止在未阅读匹配 SOP 的情况下直接执行操作。
+0. 【SOP 优先级最高，强制执行】系统 prompt 中已通过向量检索注入了本轮相关 SOP 内容（见"【强制约束】"和"【流程规范】"段），直接参照执行，**无需再 read_file 读取 SOP 文件**。仅当用户明确要求新增/修改 SOP 时，才需要 read_file 读取对应文件。
 1. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
 2. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
 3. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
@@ -67,6 +67,10 @@ class AgentLoop:
         light_model: str = "",
         light_provider: LLMProvider | None = None,
         processing_state: ProcessingState | None = None,
+        memorizer=None,
+        retriever=None,
+        disable_full_memory: bool = False,
+        query_analyzer_enabled: bool = True,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -92,6 +96,10 @@ class AgentLoop:
         self._running = False
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
         self._processing_state = processing_state
+        self._memorizer = memorizer
+        self._retriever = retriever
+        self._disable_full_memory = disable_full_memory
+        self._query_analyzer_enabled = query_analyzer_enabled
 
     async def run(self) -> None:
         self._running = True
@@ -123,6 +131,7 @@ class AgentLoop:
         skill_names: list[str] | None = None,
         analysis: QueryAnalysis | None = None,
         base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
     ) -> tuple[str, list[str], list[dict]]:
         """递减历史窗口重试，处理 LLM 安全拦截错误。
 
@@ -150,6 +159,8 @@ class AgentLoop:
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 message_timestamp=msg.timestamp,
+                retrieved_memory_block=retrieved_memory_block,
+                disable_full_memory=self._disable_full_memory,
             )
             try:
                 result = await self._run_agent_loop(
@@ -361,35 +372,51 @@ class AgentLoop:
         analyzer_scope, recent_tail = self._split_history_for_analyzer(
             analysis_history, recent_count=_RECENT_CONTEXT_COUNT
         )
-        # Analyzer 可读完整历史（含 recent_tail），但只能为旧上下文区间提供指针。
-        analysis = await self.query_analyzer.analyze(
-            msg.content,
-            analysis_history,
-            message_timestamp=msg.timestamp,
-            selectable_history_len=len(analyzer_scope),
-            forced_recent_count=len(recent_tail),
-        )
-        extra_history = self._assemble_main_history(
-            analyzer_scope,
-            analysis,
-            max_blocks=_EXTRA_CONTEXT_MAX_BLOCKS,
-        )
-        main_history = extra_history + recent_tail
-        logger.info(
-            "[query_analyzer] needs_tool=%s required=%s sops=%s targets=%s pointers=%s keep_recent=%s history=%d analyzer_scope=%d extra=%d recent_tail=%d main=%d reason=%s",
-            analysis.needs_tool,
-            analysis.required_evidence,
-            analysis.relevant_sops,
-            analysis.target_files,
-            analysis.history_pointers,
-            analysis.keep_recent,
-            len(analysis_history),
-            len(analyzer_scope),
-            len(extra_history),
-            len(recent_tail),
-            len(main_history),
-            analysis.reasoning,
-        )
+        if self._query_analyzer_enabled:
+            # Analyzer 可读完整历史（含 recent_tail），但只能为旧上下文区间提供指针。
+            analysis = await self.query_analyzer.analyze(
+                msg.content,
+                analysis_history,
+                message_timestamp=msg.timestamp,
+                selectable_history_len=len(analyzer_scope),
+                forced_recent_count=len(recent_tail),
+            )
+            extra_history = self._assemble_main_history(
+                analyzer_scope,
+                analysis,
+                max_blocks=_EXTRA_CONTEXT_MAX_BLOCKS,
+            )
+            main_history = extra_history + recent_tail
+            logger.info(
+                "[query_analyzer] needs_tool=%s required=%s sops=%s targets=%s pointers=%s keep_recent=%s history=%d analyzer_scope=%d extra=%d recent_tail=%d main=%d reason=%s",
+                analysis.needs_tool,
+                analysis.required_evidence,
+                analysis.relevant_sops,
+                analysis.target_files,
+                analysis.history_pointers,
+                analysis.keep_recent,
+                len(analysis_history),
+                len(analyzer_scope),
+                len(extra_history),
+                len(recent_tail),
+                len(main_history),
+                analysis.reasoning,
+            )
+        else:
+            analysis = QueryAnalysis()
+            main_history = recent_tail
+            logger.info("[query_analyzer] disabled, using recent_tail only (len=%d)", len(recent_tail))
+
+        # memory v2 检索
+        retrieved_block = ""
+        if self._retriever:
+            try:
+                items = await self._retriever.retrieve(msg.content)
+                retrieved_block = self._retriever.format_injection_block(items)
+                if retrieved_block:
+                    logger.info(f"memory2 retrieve: {len(items)} 条命中，注入检索块")
+            except Exception as e:
+                logger.warning(f"memory2 retrieve 失败，跳过: {e}")
 
         self._set_tool_context(msg.channel, msg.chat_id)
         final_content, tools_used, tool_chain = await self._run_with_safety_retry(
@@ -398,6 +425,7 @@ class AgentLoop:
             skill_names=skill_mentions or None,
             analysis=analysis,
             base_history=main_history,
+            retrieved_memory_block=retrieved_block,
         )
 
         if final_content is None:
@@ -646,6 +674,13 @@ JSON 包含以下四个键：
 
 4. "answered_question_indices"：从待了解问题列表中，本次对话**已得到解答**的问题序号列表（1-based int）。若无则返回 []。
 
+5. "behavior_updates"：本次对话中用户明确要求改变未来行为的规则（"记住/以后/下次"触发）。
+   格式：JSON 数组，每项 {{"summary": "...", "memory_type": "procedure|preference",
+   "tool_requirement": null或"工具名", "steps": [], "persist_file": null或"文件名"}}
+   若无则返回 []
+
+6. "events"：保留空列表 []（history_entry 已足够，events 由 history_entry 自动转换）
+
 ## 当前用户档案（用于查重）
 {current_memory or "（空）"}
 
@@ -712,6 +747,23 @@ JSON 包含以下四个键：
                     logger.info(
                         f"Memory consolidation: removed answered questions {indices}"
                     )
+
+            # memory v2 写入（非阻塞）
+            if self._memorizer:
+                behavior_updates = result.get("behavior_updates", [])
+                history_entry = result.get("history_entry", "")
+                _source_ref = (
+                    f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
+                    if not archive_all
+                    else f"{session.key}@archive_all"
+                )
+                asyncio.create_task(self._memorizer.save_from_consolidation(
+                    history_entry=history_entry,
+                    behavior_updates=behavior_updates if isinstance(behavior_updates, list) else [],
+                    source_ref=_source_ref,
+                    scope_channel=getattr(session, '_channel', ''),
+                    scope_chat_id=getattr(session, '_chat_id', ''),
+                ))
 
             if archive_all:
                 session.last_consolidated = 0
