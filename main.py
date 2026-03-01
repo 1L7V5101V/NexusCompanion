@@ -36,6 +36,7 @@ from agent.tools.skill_action_tool import (
     SkillActionListTool,
 )
 from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
+from agent.tools.update_now import UpdateNowTool
 from agent.mcp.registry import McpServerRegistry
 from agent.mcp.manage_tools import McpAddTool, McpRemoveTool, McpListTool
 from session.manager import SessionManager
@@ -89,6 +90,7 @@ def _build_agent(
     tools.register(WebFetchTool())
     tools.register(ReadFileTool())
     tools.register(ListDirTool())
+    tools.register(UpdateNowTool(workspace))
     push_tool = MessagePushTool()
     tools.register(push_tool)
 

@@ -28,7 +28,8 @@ logger = logging.getLogger(__name__)
 _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 【自检，无需在回复中说明，只用于内部决策】
-1. 当前任务是否有匹配的技能尚未读取 SKILL.md？若有，必须先 read_file 读取完整指令再继续。
+1. 用户原始消息在表达行为偏好/操作规范（以后遇到 X 就做 Y），且本轮尚未调用 memorize？若是，立即调用 memorize，不得推迟到回复后。
+2. 当前任务是否有匹配的技能尚未读取 SKILL.md？若有，必须先 read_file 读取完整指令再继续。
 2. 即将输出的结论是否有本轮工具返回的事实支撑？无支撑时允许合理推断，但必须显式标注“我推测/可能/更像是”，并保持可追溯到本轮事实；禁止把推断写成事实。
 3. 涉及用户状态/数据/画像的陈述，若未经本轮工具验证，禁止以事实语气输出。
 4. 禁止把历史会话中的旧工具结果冒充本轮实测——若用户问的是"现在/当前"的数据，必须本轮重新调用工具。
@@ -37,12 +38,13 @@ _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 # 每轮对话开始前注入的初始自检提示，不应持久化到 session
 _PRE_FLIGHT_PROMPT = """【回复前必须完成以下自检，无需在回复中说明】
-0. 【SOP 优先级最高，强制执行】系统 prompt 中已通过向量检索注入了本轮相关 SOP 内容（见"【强制约束】"和"【流程规范】"段），直接参照执行，**无需再 read_file 读取 SOP 文件**。仅当用户明确要求新增/修改 SOP 时，才需要 read_file 读取对应文件。
-1. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
-2. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
-3. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
-4. 回答允许做合理联想，但必须显式标注推测语气，不得冒充事实；必要时给出”待确认”。
-5. 确认以上规则均满足后，才允许输出最终回复。"""
+0. 【SOP 优先级最高，强制执行】系统 prompt 中已通过向量检索注入了本轮相关 SOP 内容（见”【强制约束】”和”【流程规范】”段），直接参照执行，**无需再 read_file 读取 SOP 文件**。仅当用户明确要求新增/修改 SOP 时，才需要 read_file 读取对应文件。
+1. 用户是否在表达**行为偏好或操作规范**——即希望 agent 以后（不止这一次）按某种方式行动？判断标志：含「记住/以后/下次/每次/当我…的时候你要/你最好先…」等，或语义上是"我希望你以后遇到 X 就做 Y"。若是，**必须在本轮第一个工具调用中先执行 memorize**，写入该规则/偏好，再执行其他操作。禁止跳过 memorize 直接执行任务。
+2. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
+3. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
+4. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
+5. 回答允许做合理联想，但必须显式标注推测语气，不得冒充事实；必要时给出”待确认”。
+6. 确认以上规则均满足后，才允许输出最终回复。"""
 
 
 class AgentLoop:
@@ -649,7 +651,6 @@ class AgentLoop:
             )
         conversation = "\n".join(lines)
         current_memory = memory.read_long_term()
-        current_ongoing = memory.read_now_ongoing()
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -666,7 +667,7 @@ class AgentLoop:
 ✗ 不写：工具或系统的限制、bug、API 状态（不是用户事实）
 ✗ 不写：一次性操作记录（"用户执行了X"、"已完成Y"）
 ✗ 不写：对话过程描述
-✗ 不写：短期/临时状态（改用 now_updates 字段）
+✗ 不写：短期/临时状态（由 agent 通过 update_now 工具实时维护）
 ✗ 不写：agent 行为规则（改用 behavior_updates 字段）
 ✗ 不写：某次任务的操作性细节（配置参数、具体数值、当次选择的方案）——这些不是用户画像
 ✗ 不写：知识库内容本体（世界观细节、剧情、角色设定）——内容留在 KB 文件，这里只存用户反应
@@ -691,28 +692,14 @@ class AgentLoop:
 格式示例：
 - [纠正] 主力机显示器：档案记录 Dell U2723D → 用户确认实际为 LG 27GP950
 
-### 4. "now_updates" → 直接更新 NOW.md"近期进行中"
-包含两个子字段（均为字符串列表）：
-- "add_ongoing"：新增到"近期进行中"的条目（自然语言一句话，不带 bullet 符号）
-  - ✓ 只写跨对话持续存在的进行中状态，如"正在阅读《西历2236》TE线"、"课表导入待验证"
-  - ✗ 不写对话内的中间状态（"等待用户确认/回复/决定"——当轮就会消解，无需持久化）
-  - ✗ 不写已完成的事项
-  - ✗ 不写技术坐标（chunk 号等）
-  - ✗ 不写故障排查/修复类任务——除非对话末尾明确仍处于未解决状态，否则默认已完成，不写入
-  - ✗ **严禁生成任何涉及"上次向花月汇报至"的 add/remove 操作**——该坐标由 novel-reporting-sop 专项管理，只能由 edit_file 工具调用更新，consolidation 绝对不能触碰
-- "remove_ongoing_keywords"：要从"近期进行中"删除的条目关键词（模糊匹配，命中即删）
-  - ✗ 同上：禁止用关键词匹配删除含"上次向花月汇报至"的行
-
-均无变化时两者返回 []。
-
-### 5. "self_insights" → SELF.md 候选洞察
+### 4. "self_insights" → SELF.md 候选洞察
 agent 从本次对话中发现的用户**行为模式新规律**，格式为带 [SELF] 标注的 bullet 列表。
 必须是跨对话可泛化的规律，不是描述这次发生了什么。若无新洞察，返回 []。
 格式示例：
 - [SELF] 用户在涉及日程/课表时要求精确时间，拒绝模糊描述
 - [SELF] 用户对工具调用中间步骤不感兴趣，只关心最终结论
 
-### 6. "behavior_updates" → memory2 DB
+### 5. "behavior_updates" → memory2 DB
 用户明确要求改变 agent 未来行为的规则（"记住/以后/下次"等触发词才写）。
 格式：JSON 数组，每项 {{"summary": "...", "memory_type": "procedure|preference",
 "tool_requirement": null或"工具名", "steps": [], "persist_file": null或"文件名"}}
@@ -722,9 +709,6 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
 
 ## 当前用户档案（用于 user_facts 查重）
 {current_memory or "（空）"}
-
-## 当前进行中事项（用于 now_updates 去重）
-{current_ongoing or "（无）"}
 
 ## 待处理对话
 {conversation}
@@ -790,23 +774,6 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                     logger.info(
                         f"Memory consolidation: appended {len(insight_lines)} self_insights to PENDING"
                     )
-
-            # now_updates → 直接写入 NOW.md，不经过 PENDING
-            now_updates = result.get("now_updates", {})
-            if isinstance(now_updates, dict):
-                add_ongoing = now_updates.get("add_ongoing", [])
-                remove_kws = now_updates.get("remove_ongoing_keywords", [])
-                if (add_ongoing or remove_kws):
-                    try:
-                        memory.update_now_ongoing(
-                            add=[s for s in add_ongoing if isinstance(s, str)],
-                            remove_keywords=[s for s in remove_kws if isinstance(s, str)],
-                        )
-                        logger.info(
-                            f"Memory consolidation: now_updates add={add_ongoing} remove={remove_kws}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Memory consolidation: now_updates 写入失败: {e}")
 
             # memory v2 写入（非阻塞）
             if self._memorizer:

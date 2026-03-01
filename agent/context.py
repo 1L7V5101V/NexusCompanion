@@ -163,6 +163,12 @@ request_time={now_iso}
 - 长期记忆：{workspace_path}/memory/MEMORY.md
 - 自我认知：{workspace_path}/memory/SELF.md
 - 短期状态：{workspace_path}/memory/NOW.md（进行中事项/日程/待问问题；坐标类数据须用工具实时查询，不可直接信任）
+  NOW.md 由你实时维护，**以下情况必须在本轮调用 `update_now` 工具**：
+  - 开始一项跨对话持续存在的新任务（非当轮即完成的操作）
+  - 进行中事项完成或取消
+  - 阅读/任务坐标推进（如章节推进、阶段切换）
+  - 待确认事项产生或消解
+  禁止触碰含"上次向花月汇报至"的条目，该行由 novel-reporting-sop 专项管理。
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 知识库：{workspace_path}/kb/
 - SOP 索引：{workspace_path}/sop/README.md
