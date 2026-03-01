@@ -38,6 +38,66 @@ class _PseudoDecision:
         self.evidence_item_ids: list[str] = []
 
 
+def _sleep_policy_note(state: str, available: bool) -> str:
+    if not available:
+        return "fitbit_unavailable: 不调整 chat/idle 概率"
+    if state == "sleeping":
+        return "sleeping_protect: chat 概率×0.20，idle 概率显著上升"
+    if state == "uncertain":
+        return "cautious: chat 概率×0.50，idle 概率上升"
+    if state == "awake":
+        return "normal: 不降低 chat 概率"
+    return "unknown: chat 概率轻微下调(×0.88)"
+
+
+def _normalize_health_alerts(raw: object) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _to_float(v: object) -> float | None:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _current_health_snapshot(health_summary: object) -> tuple[float | None, float | None, float | None]:
+    if not isinstance(health_summary, dict):
+        return None, None, None
+    latest = health_summary.get("latest")
+    if not isinstance(latest, dict):
+        return None, None, None
+    latest_hr = _to_float(latest.get("heart_rate"))
+    latest_spo2 = _to_float(latest.get("spo2"))
+    latest_lag = _to_float(latest.get("data_lag_min"))
+    return latest_hr, latest_spo2, latest_lag
+
+
+def _filter_alerts_by_current_round(
+    alerts: list[dict],
+    *,
+    latest_hr: float | None,
+    latest_spo2: float | None,
+) -> list[dict]:
+    out: list[dict] = []
+    for a in alerts:
+        kind = str((a or {}).get("type") or "")
+        if kind == "high_hr" and latest_hr is None:
+            continue
+        if kind == "low_spo2" and latest_spo2 is None:
+            continue
+        out.append(a)
+    return out
+
+
 class ProactiveEngine:
     """主动循环引擎：编排一次完整 tick，不直接依赖 ProactiveLoop。"""
 
@@ -90,6 +150,38 @@ class ProactiveEngine:
             ),
         )
         now_utc = datetime.now(timezone.utc)
+        refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
+        if refreshed:
+            logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
+        sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
+        raw_health_alerts = _normalize_health_alerts(
+            getattr(sleep_ctx, "health_alerts", []) if sleep_ctx is not None else []
+        )
+        raw_health_notify_alerts = _normalize_health_alerts(
+            getattr(sleep_ctx, "health_notify_alerts", []) if sleep_ctx is not None else []
+        )
+        raw_health_summary = (
+            getattr(sleep_ctx, "health_summary", {}) if sleep_ctx is not None else {}
+        )
+        latest_hr, latest_spo2, latest_lag = _current_health_snapshot(raw_health_summary)
+        has_current_round_health = latest_lag is not None and (
+            latest_hr is not None or latest_spo2 is not None
+        )
+        health_summary = raw_health_summary if has_current_round_health else {}
+        if has_current_round_health:
+            health_alerts = _filter_alerts_by_current_round(
+                raw_health_alerts,
+                latest_hr=latest_hr,
+                latest_spo2=latest_spo2,
+            )
+            health_notify_alerts = _filter_alerts_by_current_round(
+                raw_health_notify_alerts,
+                latest_hr=latest_hr,
+                latest_spo2=latest_spo2,
+            )
+        else:
+            health_alerts = []
+            health_notify_alerts = []
         if self._cfg.anyaction_enabled and self._anyaction:
             should_act, meta = self._anyaction.should_act(
                 now_utc=now_utc,
@@ -117,6 +209,23 @@ class ProactiveEngine:
             recent_msg_count=len(recent),
         )
         interrupt_factor = 0.6 + 0.4 * interruptibility
+
+        # Fitbit 睡眠修正：乘以 sleep_modifier 偏移概率分布（不硬拦截）
+        sleep_mod = sleep_ctx.sleep_modifier if sleep_ctx is not None else 1.0
+        if sleep_mod != 1.0:
+            interrupt_factor *= sleep_mod
+        sleep_state = sleep_ctx.state if sleep_ctx is not None else "unavailable"
+        sleep_available = bool(sleep_ctx is not None and getattr(sleep_ctx, "available", False))
+        logger.info(
+            "[proactive][sleep-policy] state=%s available=%s prob=%s lag=%s sleep_mod=%.2f policy=%s",
+            sleep_state,
+            sleep_available,
+            (sleep_ctx.prob if sleep_ctx is not None else None),
+            (sleep_ctx.data_lag_min if sleep_ctx is not None else None),
+            sleep_mod,
+            _sleep_policy_note(sleep_state, sleep_available),
+        )
+
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
         pre_score = (
             (self._cfg.score_weight_energy * de + self._cfg.score_weight_recent * dr)
@@ -126,12 +235,13 @@ class ProactiveEngine:
         ) * interrupt_factor
 
         logger.info(
-            "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f"
+            "[proactive] pre_score=%.3f interrupt=%.3f factor=%.3f sleep_mod=%.2f"
             " (time=%.2f reply=%.2f activity=%.2f fatigue=%.2f rand=%+.2f)"
             " D_energy=%.3f D_recent=%.3f energy=%.3f msg_count=%d",
             pre_score,
             interruptibility,
             interrupt_factor,
+            sleep_mod,
             interrupt_detail["f_time"],
             interrupt_detail["f_reply"],
             interrupt_detail["f_activity"],
@@ -321,7 +431,40 @@ class ProactiveEngine:
             },
             "candidate_items": len(new_items),
             "fresh_items_24h": fresh_items_24h,
+            "fitbit_sleep": {
+                "state": sleep_ctx.state if sleep_ctx is not None else "unavailable",
+                "prob": sleep_ctx.prob if sleep_ctx is not None else None,
+                "prob_source": sleep_ctx.prob_source if sleep_ctx is not None else "unavailable",
+                "data_lag_min": sleep_ctx.data_lag_min if sleep_ctx is not None else None,
+                "sleep_modifier": round(sleep_mod, 2),
+            },
         }
+        if health_alerts:
+            decision_signals["fitbit_health_alerts"] = health_alerts[:3]
+        if health_notify_alerts:
+            decision_signals["fitbit_health_notify"] = health_notify_alerts[:3]
+        if isinstance(health_summary, dict) and health_summary:
+            decision_signals["fitbit_health_summary"] = health_summary
+        logger.info(
+            "[proactive] fitbit_signal has_summary=%s current_round=%s alerts=%d notify=%d raw_alerts=%d raw_notify=%d sleep_state=%s lag=%s",
+            bool(isinstance(raw_health_summary, dict) and raw_health_summary),
+            has_current_round_health,
+            len(health_alerts),
+            len(health_notify_alerts),
+            len(raw_health_alerts),
+            len(raw_health_notify_alerts),
+            sleep_ctx.state if sleep_ctx is not None else "unavailable",
+            latest_lag if has_current_round_health else None,
+        )
+        if has_current_round_health and isinstance(health_summary, dict) and health_summary:
+            baseline = health_summary.get("baseline_30d") if isinstance(health_summary, dict) else {}
+            logger.info(
+                "[proactive] fitbit_values latest_hr=%s latest_spo2=%s base_hr=%s base_spo2=%s",
+                latest_hr,
+                latest_spo2,
+                (baseline or {}).get("hr_30d_median"),
+                (baseline or {}).get("spo2_30d_median"),
+            )
         feature_final_score: float | None = None
         feature_payload: dict[str, float | str] = {}
         if self._cfg.feature_scoring_enabled:
@@ -331,7 +474,7 @@ class ProactiveEngine:
                 decision_signals=decision_signals,
             )
             feature_payload = features or {}
-            feature_final_score = _feature_final_score(
+            feature_final_base = _feature_final_score(
                 cfg=self._cfg,
                 features=feature_payload,
                 de=de,
@@ -339,8 +482,15 @@ class ProactiveEngine:
                 dr=dr,
                 interruptibility=interruptibility,
             )
+            health_bonus = _health_priority_bonus(
+                alert_count=len(health_alerts),
+                notify_count=len(health_notify_alerts),
+            )
+            feature_final_score = min(1.0, feature_final_base + health_bonus)
             logger.info(
-                "[proactive] feature_score enabled final=%.3f threshold=%.3f features=%s",
+                "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
+                feature_final_base,
+                health_bonus,
                 feature_final_score,
                 self._cfg.feature_send_threshold,
                 feature_payload,
@@ -595,3 +745,12 @@ def _feature_final_score(
     raw = utility - risk + system_bonus
     conf_adjusted = raw * (0.7 + 0.3 * confidence)
     return max(0.0, min(1.0, conf_adjusted))
+
+
+def _health_priority_bonus(*, alert_count: int, notify_count: int) -> float:
+    """健康信号优先级加分：notify > alert。"""
+    if notify_count > 0:
+        return min(0.22, 0.10 + 0.06 * min(notify_count, 2))
+    if alert_count > 0:
+        return min(0.10, 0.05 + 0.02 * min(alert_count, 2))
+    return 0.0

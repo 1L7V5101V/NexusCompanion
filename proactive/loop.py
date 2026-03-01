@@ -151,6 +151,11 @@ class ProactiveConfig:
     # ── Skill Action（chat idle 时后台执行 skill 任务）──
     skill_actions_enabled: bool = False  # 是否启用 skill action
     skill_actions_path: str = ""  # skill_actions.json 路径（空=禁用）
+    # ── Fitbit 睡眠感知 ──
+    fitbit_enabled: bool = False
+    fitbit_url: str = "http://127.0.0.1:18765"
+    fitbit_poll_seconds: int = 300
+    fitbit_monitor_path: str = ""  # fitbit-monitor 目录路径，非空时随 agent 自动启动
     # ── SourceScorer（基于 memory 的 feed 源动态配比）──
     source_scorer_enabled: bool = False  # 是否启用动态配额
     source_scorer_total_budget: int = 60  # 所有源共享的总拉取条数
@@ -354,6 +359,17 @@ class ProactiveLoop:
             quota_store=QuotaStore(quota_path),
             rng=self._rng,
         )
+        _fitbit_provider = None
+        if getattr(self._cfg, "fitbit_enabled", False):
+            from proactive.fitbit_sleep import FitbitSleepProvider
+            _fitbit_provider = FitbitSleepProvider(
+                url=self._cfg.fitbit_url,
+                poll_interval=self._cfg.fitbit_poll_seconds,
+            )
+            logger.info(
+                "[proactive] FitbitSleepProvider 已启动 url=%s interval=%ds",
+                self._cfg.fitbit_url, self._cfg.fitbit_poll_seconds,
+            )
         self._sense = DefaultSensePort(
             cfg=self._cfg,
             feeds=self._feeds,
@@ -367,6 +383,7 @@ class ProactiveLoop:
             feed_buffer=self.feed_buffer,
             source_scorer=self._source_scorer,
             feed_store=self._feed_store,
+            fitbit=_fitbit_provider,
         )
         self._decide = DefaultDecidePort(
             reflector=self._reflector,

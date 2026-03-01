@@ -5,6 +5,11 @@ from typing import Any
 class Tool(ABC):
     """工具抽象基类"""
 
+    # 场景路由提示：描述"什么情况下应该调用这个工具"。
+    # 非空时会被 QueryAnalyzer 收集并注入到分析提示中，
+    # 帮助 LLM 在多工具场景下准确路由，无需关键词匹配。
+    routing_hint: str = ""
+
     # JSON Schema 类型 → Python 类型映射
     _TYPE_MAP = {
         "string": str,
@@ -83,11 +88,11 @@ class Tool(ABC):
 
     def to_schema(self) -> dict[str, Any]:
         """转换为 OpenAI function calling 格式"""
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
+        fn: dict[str, Any] = {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
         }
+        if self.routing_hint:
+            fn["routing_hint"] = self.routing_hint
+        return {"type": "function", "function": fn}

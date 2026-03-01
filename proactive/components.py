@@ -149,6 +149,10 @@ class ProactiveReflector:
 - 现在说点什么是否自然、不唐突
 - 与近期对话有无关联或延伸
 - 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
+- 若决策信号中存在 fitbit_health_summary/fitbit_health_alerts，结合其时效性判断是否值得提及健康关怀
+- 若存在 fitbit_health_notify，优先考虑健康提醒，即使没有新资讯也可以发送简短关怀
+- 若存在 fitbit_health_summary，先比较 latest 与 recent_window/baseline_30d，再给出“偏高/偏低/平稳”等诊断及原因
+- 若不存在 fitbit_health_summary 或 latest 缺失，不要引用具体健康数值
 
 只输出 JSON，不要其他内容：
 {{
@@ -161,6 +165,10 @@ class ProactiveReflector:
 
 score 说明：0.0=完全没必要  0.5=有点想说  0.7=比较值得  1.0=非常值得立刻说
 message 若 should_send=true，写要发给用户的话（口语化，不要像系统通知）
+若有 fitbit_health_summary 且 should_send=true，message 中必须包含：
+1) 当前值（latest）
+2) 平均基线（recent_window 或 baseline_30d）
+3) 诊断结论与原因（基于上述对比）
 写 message 时必须直接表达你的判断/观点，不要把结尾写成征求用户看法的反问句。
 禁止使用“你怎么看/你觉得呢/你怎么想/要不要我继续”这类收尾。
 除非必须让用户做明确选择（如确认日程、权限、付款），否则不要主动提问。
@@ -439,6 +447,10 @@ class ProactiveFeatureScorer:
         system_msg = (
             "你是主动触达特征评估器。只输出固定JSON字段。"
             "每个分数字段必须是0到1的小数；同时给每个字段一句简短理由。"
+            "若决策信号包含 fitbit 健康摘要或异常信号，应纳入评估。"
+            "若存在 fitbit_health_notify，健康相关触达优先级高于普通资讯触达。"
+            "其中 message_readiness_reason 必须体现对当前值与平均值（recent_window/baseline_30d）的比较结论。"
+            "若 fitbit_health_summary 缺失或 latest 缺失，不得使用具体健康数值作结论。"
             "不要给最终决策，不要输出额外文本。"
         )
         user_msg = f"""当前时间：{now_str}
@@ -672,6 +684,10 @@ class ProactiveMessageComposer:
             "最终只输出一条自然、简短、可直接发送给用户的中文消息，不超过120字。\n"
             "消息要自然表达你的判断，不要用“你怎么看/你觉得呢”等征求看法的反问句收尾。\n"
             "除非必须让用户做明确选择，否则不要主动提问。\n"
+            "若决策信号含 fitbit_health_notify，应优先围绕健康风险给出建议，再考虑资讯话题。\n"
+            "若决策信号含 fitbit_health_summary，必须比较当前值(latest)与平均值(recent_window/baseline_30d)，并在消息中写出诊断结论和原因。\n"
+            "若决策信号不含 fitbit_health_summary 或 latest 缺失，禁止引用具体健康数值。\n"
+            "无有效健康数据则不要硬提健康。\n"
             "## 身份（与主循环一致）\n"
             f"{NEXUS_IDENTITY}\n"
             "## 性格（与主循环一致）\n"
@@ -692,6 +708,11 @@ class ProactiveMessageComposer:
 {memory_text}
 ## 近期对话
 {chat_text}
+
+若决策信号中存在 fitbit_health_summary，请在这条消息中明确包含：
+- 至少一个当前值（latest）
+- 对应平均值（recent_window 或 baseline_30d）
+- 诊断结论与原因（说明为何判断偏高/偏低/平稳）
 
 请生成一条可发送给用户的消息（不超过120字）。"""
 

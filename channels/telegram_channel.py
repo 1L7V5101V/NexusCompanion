@@ -9,7 +9,7 @@ import asyncio
 
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from bus.events import InboundMessage, OutboundMessage
@@ -44,6 +44,7 @@ class TelegramChannel:
         bus.subscribe_outbound(_CHANNEL, self._on_response)
         # username.lower() → chat_id，启动时从 session 重建，运行时实时更新
         self.user_map: dict[str, str] = {}
+        self._polling_conflict_task: asyncio.Task[None] | None = None
 
     @property
     def bot(self):
@@ -53,11 +54,17 @@ class TelegramChannel:
         self._rebuild_user_map()
         await self._app.initialize()
         await self._app.start()
-        await self._app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        await self._app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            error_callback=self._on_polling_error,
+        )
         logger.info(f"TelegramChannel 已启动  已知用户: {len(self.user_map)}")
 
     async def stop(self) -> None:
-        await self._app.updater.stop()
+        if self._polling_conflict_task and not self._polling_conflict_task.done():
+            await self._polling_conflict_task
+        if self._app.updater.running:
+            await self._app.updater.stop()
         await self._app.stop()
         await self._app.shutdown()
         logger.info("TelegramChannel 已停止")
@@ -255,6 +262,30 @@ class TelegramChannel:
             except Exception as e:
                 logger.warning("[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s", chat_id, e)
                 return
+
+    def _on_polling_error(self, exc: TelegramError) -> None:
+        """处理 Telegram polling 异常，避免 Conflict 场景下持续刷屏。"""
+        if isinstance(exc, Conflict):
+            if self._polling_conflict_task is None:
+                logger.error(
+                    "[telegram] 检测到 getUpdates 冲突，已暂停 Telegram 接收。"
+                    "请确保同一 bot token 仅运行一个轮询实例。"
+                )
+                self._polling_conflict_task = asyncio.create_task(
+                    self._disable_polling_on_conflict()
+                )
+            return
+        logger.warning("[telegram] polling 异常，框架将自动重试: %s", exc)
+
+    async def _disable_polling_on_conflict(self) -> None:
+        """Conflict 时关闭 updater 轮询，保留 bot 发送能力。"""
+        if not self._app.updater.running:
+            return
+        try:
+            await self._app.updater.stop()
+            logger.warning("[telegram] polling 已停止；当前进程不再接收 Telegram 消息。")
+        except Exception as e:
+            logger.warning("[telegram] 停止 polling 失败: %s", e)
 
 
 def _build_inbound_text_with_reply(

@@ -16,14 +16,19 @@ logger = logging.getLogger(__name__)
 
 _ANALYZER_TOOL_ALLOWLIST = {"read_file", "list_dir"}
 
+
 _ANALYZER_SYSTEM_PROMPT = """你是 QueryAnalyzer（前置分析器）。
-你的任务是轻量预分析：为主模型筛选“旧上下文中的 extra context”，并给出可选取证建议。
+你的任务是轻量预分析：为主模型筛选"旧上下文中的 extra context"，并给出可选取证建议。
 
 硬规则：
 1. 你必须输出 history_pointers（历史消息编号，1-based），用于挑选 extra context。
-2. required_evidence 是“建议”，不是“强制指令”；可以为空。
+2. required_evidence 是"建议"，不是"强制指令"；可以为空。
 3. relevant_sops 只填你确信与本次用户请求直接相关的 SOP；填入后系统会强制 read_file 读取并注入主循环，产生不可撤销的额外开销。不确定是否相关时，留空即可，主循环会自行判断。
 4. 只输出 JSON，不要 markdown，不要解释。
+5. 当用户消息与"特定场景工具路由"区块中某个工具匹配时：
+   - 必须将该工具名直接填入 required_evidence（tool 字段填工具名，hint 字段说明调用意图）
+   - 这类工具是独立服务，不属于 feed 订阅源，无需用 feed_query 前置验证
+   - 该场景不相关的 SOP 不要填入 relevant_sops
 """
 
 
@@ -155,6 +160,20 @@ class QueryAnalyzer:
             selectable_history_len=selectable_len,
         )
 
+    def _build_tool_routing_section(self) -> str:
+        """收集所有已注册 tool 的 routing_hint，生成路由提示区块。"""
+        hints: list[str] = []
+        for schema in self._get_tool_schemas():
+            fn = schema.get("function", {})
+            name = fn.get("name", "")
+            # routing_hint 存放在 schema 扩展字段中（由 ToolRegistry 注入）
+            hint = fn.get("routing_hint", "")
+            if name and hint:
+                hints.append(f"- {name}：{hint}")
+        if not hints:
+            return ""
+        return "## 特定场景工具路由（required_evidence 中直接使用工具名）\n" + "\n".join(hints)
+
     def _build_user_prompt(
         self,
         message: str,
@@ -165,6 +184,7 @@ class QueryAnalyzer:
     ) -> str:
         tools = json.dumps(self._tool_schemas, ensure_ascii=False)
         all_tools = json.dumps(self._build_tool_summary(list(self._get_tool_schemas())), ensure_ascii=False)
+        tool_routing = self._build_tool_routing_section()
         history_index = self._build_history_index_guide(history)
         editable_docs = self._build_editable_docs_index()
         index_entries = self._build_index_entry_points()
@@ -174,7 +194,7 @@ class QueryAnalyzer:
             "## 本轮时间锚点（必须作为时间判断基准）\n"
             f"{ts}\n\n"
             "## 历史窗口说明\n"
-            "你拿到的是“完整历史”（含最近对话），但最近尾部是主循环保底只读区，不属于 extra 候选。\n"
+            "你拿到的是「完整历史」（含最近对话），但最近尾部是主循环保底只读区，不属于 extra 候选。\n"
             f"- 可用于 extra 筛选的编号范围：1..{selectable_history_len}\n"
             f"- 主循环保底区（只读，不可指示为 extra）：{selectable_history_len + 1}..{len(history)}"
             f"（最近 {forced_recent_count} 条）\n\n"
@@ -191,9 +211,10 @@ class QueryAnalyzer:
             f"{tools}\n\n"
             "## 主循环已注册工具（只读清单，用于理解工具能力边界）\n"
             f"{all_tools}\n\n"
-            "## 用户消息\n"
+            + (f"{tool_routing}\n\n" if tool_routing else "")
+            + "## 用户消息\n"
             f"{message}\n\n"
-            "你的输出主要用于“筛选旧上下文中的 extra context”，而不是替主循环决定完整执行计划。\n\n"
+            '你的输出主要用于"筛选旧上下文中的 extra context"，而不是替主循环决定完整执行计划。\n\n'
             "返回 JSON（无 markdown）：\n"
             "{\n"
             '  "required_evidence": [{"tool": "shell", "hint": "具体提示"}],\n'
@@ -476,7 +497,7 @@ class QueryAnalyzer:
                 ]
             )
 
-        # 轻分析模式：不再对 required_evidence 做强制补齐，保持“建议”属性
+        # 轻分析模式：不再对 required_evidence 做强制补齐，保持"建议"属性
 
         return QueryAnalysis(
             required_evidence=required,

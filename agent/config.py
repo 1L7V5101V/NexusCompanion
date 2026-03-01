@@ -287,6 +287,11 @@ class Config:
                 # ── Skill Action ──
                 skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
                 skill_actions_path=str(p.get("skill_actions_path", "")),
+                # ── Fitbit 睡眠感知 ──
+                fitbit_enabled=bool(p.get("fitbit_enabled", False)),
+                fitbit_url=str(p.get("fitbit_url", "http://127.0.0.1:18765")),
+                fitbit_poll_seconds=max(1, int(p.get("fitbit_poll_seconds", 300))),
+                fitbit_monitor_path=str(p.get("fitbit_monitor_path", "")),
                 # ── SourceScorer ──
                 source_scorer_enabled=bool(p.get("source_scorer_enabled", False)),
                 source_scorer_total_budget=max(

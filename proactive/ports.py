@@ -41,6 +41,7 @@ class SensePort(Protocol):
     def read_memory_text(self) -> str: ...
     def has_global_memory(self) -> bool: ...
     def last_user_at(self) -> datetime | None: ...
+    def refresh_sleep_context(self) -> bool: ...
     def target_session_key(self) -> str: ...
     def quiet_hours(self) -> tuple[int, int, float]: ...
 
@@ -98,6 +99,7 @@ class DefaultSensePort:
         feed_buffer: FeedBuffer | None = None,
         source_scorer: SourceScorer | None = None,
         feed_store: FeedStore | None = None,
+        fitbit: Any | None = None,
     ) -> None:
         self._cfg = cfg
         self._feeds = feeds
@@ -111,6 +113,25 @@ class DefaultSensePort:
         self._feed_buffer = feed_buffer
         self._source_scorer = source_scorer
         self._feed_store = feed_store
+        self._fitbit = fitbit
+
+    def sleep_context(self) -> Any:
+        """返回最新的 SleepContext，未配置时返回 None。"""
+        if self._fitbit is None:
+            return None
+        return self._fitbit.get()
+
+    def refresh_sleep_context(self) -> bool:
+        """主动刷新一次 Fitbit SleepContext（本地 /api/data），失败时返回 False。"""
+        if self._fitbit is None:
+            return False
+        refresh = getattr(self._fitbit, "refresh_now", None)
+        if not callable(refresh):
+            return False
+        try:
+            return bool(refresh())
+        except Exception:
+            return False
 
     def target_session_key(self) -> str:
         channel = (self._cfg.default_channel or "").strip()

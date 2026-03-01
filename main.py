@@ -35,6 +35,7 @@ from agent.tools.skill_action_tool import (
     SkillActionUnregisterTool,
     SkillActionListTool,
 )
+from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
 from agent.mcp.registry import McpServerRegistry
 from agent.mcp.manage_tools import McpAddTool, McpRemoveTool, McpListTool
 from session.manager import SessionManager
@@ -98,6 +99,11 @@ def _build_agent(
     tools.register(SkillActionRegisterTool(skill_actions_path))
     tools.register(SkillActionUnregisterTool(skill_actions_path))
     tools.register(SkillActionListTool(skill_actions_path))
+
+    _fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
+    if getattr(config.proactive, "fitbit_enabled", False):
+        tools.register(FitbitHealthSnapshotTool(_fitbit_url))
+        tools.register(FitbitSleepReportTool(_fitbit_url))
 
     tracker = LatencyTracker()
     scheduler = SchedulerService(
@@ -297,6 +303,11 @@ async def serve(config_path: str = "config.json") -> None:
         if proactive_loop._source_scorer is not None:
             feed_manage_tool.set_scorer(proactive_loop._source_scorer)
         tasks.append(proactive_loop.run())
+        _fitbit_path = getattr(config.proactive, "fitbit_monitor_path", "").strip()
+        if config.proactive.fitbit_enabled and _fitbit_path:
+            from proactive.fitbit_sleep import run_fitbit_monitor
+            tasks.append(run_fitbit_monitor(_fitbit_path, config.proactive.fitbit_url))
+            print(f"fitbit-monitor 已启动  |  路径={_fitbit_path}")
         if (
             config.proactive.feed_poller_enabled
             and proactive_loop.feed_buffer is not None
