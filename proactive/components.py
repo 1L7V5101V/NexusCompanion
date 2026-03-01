@@ -70,14 +70,9 @@ class ProactiveReflector:
         chat_text = self._hooks.format_recent(recent) or "（无近期对话记录）"
         memory_text = self._hooks.collect_global_memory()
 
-        questions_text = ""
         self_text = ""
         now_ongoing_text = ""
         if self._memory:
-            try:
-                questions_text = self._memory.read_questions().strip()
-            except Exception:
-                pass
             try:
                 self_text = self._memory.read_self().strip()
             except Exception:
@@ -137,7 +132,7 @@ class ProactiveReflector:
 ## 长期记忆（用户画像/偏好）
 
 {memory_text}
-{f"## 用户近期状态\n\n{now_ongoing_text}\n" if now_ongoing_text else ""}{f"## 待了解的话题（可作为开场素材）\n\n{questions_text}\n" if questions_text else ""}
+{f"## 用户近期状态\n\n{now_ongoing_text}\n" if now_ongoing_text else ""}
 ## 近期对话
 
 {chat_text}

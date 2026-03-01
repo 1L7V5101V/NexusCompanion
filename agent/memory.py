@@ -6,8 +6,7 @@ from utils.helpers import ensure_dir
 
 logger = logging.getLogger(__name__)
 
-_QUESTIONS_SECTION = "## 想了解的问题"
-_NOW_SECTIONS_ORDER = ["## 近期进行中", "## 待确认事项", _QUESTIONS_SECTION]
+_NOW_SECTIONS_ORDER = ["## 近期进行中", "## 待确认事项"]
 
 
 class MemoryStore:
@@ -182,52 +181,6 @@ class MemoryStore:
         long_term = self.read_long_term()
         return f"## Long-term Memory\n{long_term}" if long_term else ""
 
-    # ── questions（操作 NOW.md 中的 '## 想了解的问题' section）────
-
-    def read_questions(self) -> str:
-        """从 NOW.md 读取 '## 想了解的问题' section 内容。"""
-        _, questions, _ = self._split_now_questions(self.read_now())
-        if not questions:
-            return ""
-        lines = [_QUESTIONS_SECTION, ""]
-        for i, q in enumerate(questions, 1):
-            lines.append(f"{i}. {q}")
-        return "\n".join(lines) + "\n"
-
-    def write_questions(self, content: str) -> None:
-        """覆写 NOW.md 中的 '## 想了解的问题' section，保留其他 section。"""
-        text = self.read_now()
-        prefix, _, suffix = self._split_now_questions(text)
-        parts = []
-        if prefix.strip():
-            parts.append(prefix.rstrip())
-        if content.strip():
-            parts.append(content.strip())
-        if suffix.strip():
-            parts.append(suffix.strip())
-        self.write_now("\n\n".join(parts) + "\n")
-
-    def remove_questions_by_indices(self, indices: list[int]) -> None:
-        """从 NOW.md 的问题 section 移除 1-based 指定序号，剩余问题重新编号。"""
-        text = self.read_now()
-        prefix, questions, suffix = self._split_now_questions(text)
-        if not questions or not indices:
-            return
-        remove_set = {int(i) for i in indices if int(i) > 0}
-        remaining = [q for i, q in enumerate(questions, 1) if i not in remove_set]
-
-        section_lines = [_QUESTIONS_SECTION, ""]
-        section_lines += [f"{i}. {q}" for i, q in enumerate(remaining, 1)]
-        section = "\n".join(section_lines)
-
-        parts = []
-        if prefix.strip():
-            parts.append(prefix.rstrip())
-        parts.append(section)
-        if suffix.strip():
-            parts.append(suffix.strip())
-        self.write_now("\n\n".join(parts) + "\n")
-
     def _extract_now_section(self, text: str, header: str) -> str:
         """提取 NOW.md 中指定 ## 标题 section 的正文（不含标题行本身）。"""
         pattern = re.compile(
@@ -266,34 +219,3 @@ class MemoryStore:
         lines = [l for l in body.splitlines() if l.strip()]
         return before, lines, after
 
-    def _split_now_questions(self, text: str) -> tuple[str, list[str], str]:
-        """把 NOW.md 文本拆成 (questions_section 之前的内容, 问题列表, section 之后的内容)。"""
-        # 找到 ## 想了解的问题 section 的起始位置
-        pattern = re.compile(
-            r"^(## 想了解的问题)\s*$",
-            re.MULTILINE,
-        )
-        m = pattern.search(text)
-        if not m:
-            # 没有该 section，prefix = 全文，suffix = 空
-            return text, [], ""
-
-        prefix = text[: m.start()]
-
-        # 找下一个同级 ## 标题（section 结束）
-        rest = text[m.end():]
-        next_section = re.search(r"^## ", rest, re.MULTILINE)
-        if next_section:
-            body = rest[: next_section.start()]
-            suffix = rest[next_section.start():]
-        else:
-            body = rest
-            suffix = ""
-
-        questions: list[str] = []
-        for line in body.splitlines():
-            mo = re.match(r"^\d+\.\s+(.+)", line)
-            if mo:
-                questions.append(mo.group(1).strip())
-
-        return prefix, questions, suffix

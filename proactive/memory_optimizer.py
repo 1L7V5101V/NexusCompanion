@@ -75,34 +75,6 @@ _MERGE_PROMPT = """\
 {pending}
 """
 
-_QUESTIONS_SYSTEM = (
-    "你是一个关心朋友的陪伴型 AI，根据对用户的了解生成想确认或深入了解的问题。"
-)
-
-_QUESTIONS_PROMPT = """\
-根据以下用户档案和近期历史，以真正了解这个人的朋友视角生成 5 个问题。
-
-## 核心要求
-
-**好问题的标准**：
-- 从用户说过的某件具体的事出发——某个决定、某段经历、某个矛盾——你真的想知道后续或更深的那一层
-- 问的是"他自己可能没主动说但值得聊"的东西，不是已知事实的确认
-- 口语化、有温度，像随口问出来的，而不是采访提纲
-- 允许多个问题都聚焦同一件近期重要的事——深度比广度更有价值
-
-**差问题的特征（避免）**：
-- 为了"覆盖不同方面"而凑出来的、没有具体来源的泛泛关心
-- 可以问任何人的通用问题（"最近状态怎么样？"）
-- 明知道答案还去问的（已在档案中有明确记录的事实）
-
-只输出 JSON：{{"questions": ["问题1", "问题2", "问题3", "问题4", "问题5"]}}
-
-用户档案：
-{memory}
-
-近期历史：
-{history}
-"""
 
 _SELF_SYSTEM = (
     "你是 Nexus，一个有自我认知的陪伴型 AI。"
@@ -150,25 +122,6 @@ NOW.md 当前内容：
 
 
 # ── helpers ───────────────────────────────────────────────────────
-
-
-def _format_questions(questions: list[str]) -> str:
-    lines = ["## 想了解的问题", ""]
-    for i, q in enumerate(questions, 1):
-        lines.append(f"{i}. {q}")
-    return "\n".join(lines) + "\n"
-
-
-def _parse_questions_json(text: str) -> list[str]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    try:
-        data = json.loads(text)
-        qs = data.get("questions", [])
-        return [str(q).strip() for q in qs if str(q).strip()][:5]
-    except Exception:
-        return []
 
 
 def _parse_cleanup_json(text: str) -> tuple[list[str], list[str]]:
@@ -264,13 +217,7 @@ class MemoryOptimizer:
         await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._update_self(recent_history)
 
-        # ── Step 3: NOW.md 更新（生成问题 + 清理过期条目）──────────
-        await asyncio.sleep(self._STEP_DELAY_SECONDS)
-        questions = await self._generate_questions(effective_memory, recent_history)
-        if questions:
-            self._memory.write_questions(_format_questions(questions))
-            logger.info("[memory_optimizer] 已写入 %d 个问题", len(questions))
-
+        # ── Step 3: NOW.md 清理过期条目 ───────────────────────────
         await asyncio.sleep(self._STEP_DELAY_SECONDS)
         await self._cleanup_now(recent_history)
 
@@ -330,26 +277,6 @@ class MemoryOptimizer:
                 logger.info("[memory_optimizer] SELF.md 已更新")
         except Exception as e:
             logger.error("[memory_optimizer] SELF.md 更新失败: %s", e)
-
-    async def _generate_questions(self, memory: str, history: str) -> list[str]:
-        prompt = _QUESTIONS_PROMPT.format(
-            memory=memory or "（空）",
-            history=history or "（无近期历史）",
-        )
-        try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": _QUESTIONS_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
-                max_tokens=512,
-            )
-            return _parse_questions_json(resp.content or "")
-        except Exception as e:
-            logger.error("[memory_optimizer] 问题生成失败: %s", e)
-            return []
 
     async def _cleanup_now(self, history: str) -> None:
         """扫描 NOW.md，清理已过期或已完结的条目。"""
