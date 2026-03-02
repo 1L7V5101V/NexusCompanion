@@ -28,3 +28,4 @@ plugins/
 /scripts/fitbit-monitor/monitor.config.toml
 /scripts/fitbit-monitor/monitor.runtime.log
 /docs/
+/scripts/fitbit-monitor/backups/
