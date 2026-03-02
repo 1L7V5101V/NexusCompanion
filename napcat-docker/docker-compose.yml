@@ -12,6 +12,7 @@ services:
       - NAPCAT_GID=1000
       - ACCOUNT=1666567690
     volumes:
+      - ../.codex-temp/napcat-entrypoint.custom.sh:/app/entrypoint.sh:ro
       - ~/.config/QQ:/app/.config/QQ
       - ~/napcat/napcat-config:/app/napcat/config
       - ~/napcat/logs:/app/napcat/logs
