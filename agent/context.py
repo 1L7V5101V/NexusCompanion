@@ -282,6 +282,7 @@ request_time={now_iso}
 
         images = []
         for item in media:
+            item = str(item)
             if item.startswith(("http://", "https://")):
                 images.append({"type": "image_url", "image_url": {"url": item}})
             else:

@@ -29,9 +29,7 @@ class SleepContext:
     data_lag_min: int | None
     fetched_at: float       # time.time()
     available: bool         # False=服务不可达或数据过期
-    health_alerts: list[dict[str, Any]] = field(default_factory=list)
-    health_notify_alerts: list[dict[str, Any]] = field(default_factory=list)
-    health_summary: dict[str, Any] = field(default_factory=dict)
+    health_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def sleep_modifier(self) -> float:
@@ -57,12 +55,12 @@ class SleepContext:
         return 0.88      # unknown：轻微保守
 
     @property
-    def has_urgent_health_alert(self) -> bool:
-        """是否存在高优先级健康提醒（需要主动触达）。"""
-        for a in self.health_notify_alerts:
-            if str((a or {}).get("severity", "")).lower() == "high":
-                return True
-        return False
+    def has_urgent_health_event(self) -> bool:
+        """是否存在高优先级健康事件（需要主动触达）。"""
+        return any(
+            str((e or {}).get("severity", "")).lower() == "high"
+            for e in self.health_events
+        )
 
 
 _FALLBACK = SleepContext(
@@ -70,9 +68,7 @@ _FALLBACK = SleepContext(
     prob=None,
     prob_source="unavailable",
     data_lag_min=None,
-    health_alerts=[],
-    health_notify_alerts=[],
-    health_summary={},
+    health_events=[],
     fetched_at=0.0,
     available=False,
 )
@@ -148,7 +144,7 @@ class FitbitSleepProvider:
             time.sleep(sleep_sec)
 
     def refresh_now(self, timeout: float = 2.5) -> bool:
-        """主动刷新一次本地 /api/data 缓存，供 proactive 决策前调用。"""
+        """主动刷新一次本地 /api/agent 缓存，供 proactive 决策前调用。"""
         try:
             self._fetch_once(timeout=timeout)
             return True
@@ -156,39 +152,45 @@ class FitbitSleepProvider:
             logger.debug("[fitbit_sleep] 主动刷新失败: %s", e)
             return False
 
+    def acknowledge_events(self, event_ids: list[str]) -> None:
+        """通知 fitbit-monitor 服务，事件已被 LLM 处理（fire-and-forget）。"""
+        import requests
+        for eid in event_ids:
+            try:
+                r = requests.post(
+                    f"{self._url}/api/agent/acknowledge/{eid}", timeout=3
+                )
+                r.raise_for_status()
+                logger.debug("[fitbit_sleep] acknowledged event_id=%s", eid)
+            except Exception as e:
+                logger.warning("[fitbit_sleep] acknowledge 失败 event_id=%s: %s", eid, e)
+
     def _fetch_once(self, timeout: float | None = None) -> None:
         import requests
 
         req_timeout = float(timeout) if timeout is not None else float(self._timeout)
-        r = requests.get(f"{self._url}/api/data", timeout=req_timeout)
+        r = requests.get(f"{self._url}/api/agent", timeout=req_timeout)
         r.raise_for_status()
         d = r.json()
 
         sleep = d.get("sleep", {}) or {}
-        signals = d.get("signals", {}) or {}
-        meta = d.get("data_meta", {}) or {}
-        health_ctx = d.get("health_context", {}) or {}
-        alerts = health_ctx.get("alerts") or []
-        notify_alerts = health_ctx.get("notify_alerts") or []
-        health_summary = health_ctx.get("summary_for_agent") or {}
+        health_events = d.get("health_events") or []
 
         ctx = SleepContext(
             state=sleep.get("state", "unknown"),
-            prob=signals.get("sleep_prob"),
-            prob_source=signals.get("prob_source", "unavailable"),
-            data_lag_min=meta.get("data_lag_min"),
-            health_alerts=alerts if isinstance(alerts, list) else [],
-            health_notify_alerts=notify_alerts if isinstance(notify_alerts, list) else [],
-            health_summary=health_summary if isinstance(health_summary, dict) else {},
+            prob=sleep.get("prob"),
+            prob_source=sleep.get("prob_source", "unavailable"),
+            data_lag_min=sleep.get("data_lag_min"),
+            health_events=health_events if isinstance(health_events, list) else [],
             fetched_at=time.time(),
             available=True,
         )
         with self._lock:
             self._cached = ctx
         logger.debug(
-            "[fitbit_sleep] 已更新 state=%s prob=%s source=%s lag=%s alerts=%d notify=%d",
+            "[fitbit_sleep] 已更新 state=%s prob=%s source=%s lag=%s health_events=%d",
             ctx.state, ctx.prob, ctx.prob_source, ctx.data_lag_min,
-            len(ctx.health_alerts), len(ctx.health_notify_alerts),
+            len(ctx.health_events),
         )
 
 

@@ -144,9 +144,9 @@ class ProactiveReflector:
 - 现在说点什么是否自然、不唐突
 - 与近期对话有无关联或延伸
 - 电量越低越需要主动联系，危机模式时哪怕简单关心也有价值
-- 若存在 fitbit_health_notify，优先考虑健康提醒，即使没有新资讯也可以发送简短关怀
-- 若不存在 fitbit_health_notify，禁止在消息正文中引用具体健康数值（心率、血氧等），健康数据仅作背景参考
-- 若不存在 fitbit_health_summary 或 latest 缺失，不要引用具体健康数值
+- 若存在 health_events，优先考虑健康提醒，即使没有新资讯也可以发送简短关怀
+- 若不存在 health_events，禁止在消息正文中引用具体健康数值（心率、血氧等）
+- 提及健康时只能转述 health_events[*].message 的文字描述，不要推断或编造具体数值
 
 只输出 JSON，不要其他内容：
 {{
@@ -437,10 +437,9 @@ class ProactiveFeatureScorer:
         system_msg = (
             "你是主动触达特征评估器。只输出固定JSON字段。"
             "每个分数字段必须是0到1的小数；同时给每个字段一句简短理由。"
-            "若决策信号包含 fitbit 健康摘要，可用于辅助判断用户当前状态，但健康数值不是触达内容的主体。"
-            "若存在 fitbit_health_notify，健康相关触达优先级高于普通资讯触达。"
+            "若决策信号含 health_events，健康相关触达优先级高于普通资讯触达。"
             "message_readiness_reason 应基于用户整体状态（时间、活跃度、对话节奏等）综合判断，无需引用具体健康数值。"
-            "若 fitbit_health_summary 缺失或 latest 缺失，不得使用具体健康数值作结论。"
+            "若决策信号不含 health_events，不得用健康状况作为触达理由。"
             "不要给最终决策，不要输出额外文本。"
         )
         user_msg = f"""当前时间：{now_str}
@@ -674,9 +673,8 @@ class ProactiveMessageComposer:
             "最终只输出一条自然、简短、可直接发送给用户的中文消息，不超过120字。\n"
             "消息要自然表达你的判断，不要用“你怎么看/你觉得呢”等征求看法的反问句收尾。\n"
             "除非必须让用户做明确选择，否则不要主动提问。\n"
-            "若决策信号含 fitbit_health_notify，优先围绕健康状况给出关怀，再考虑资讯话题。\n"
-            "若决策信号不含 fitbit_health_notify，禁止在消息正文中引用具体健康数值（心率、血氧等），健康数据仅作背景参考。\n"
-            "若决策信号不含 fitbit_health_summary 或 latest 缺失，禁止引用具体健康数值。\n"
+            "若决策信号含 health_events，优先围绕健康事件给出关怀，再考虑资讯话题；只能引用 health_events[*].message，不要编造数值。\n"
+            "若决策信号不含 health_events，禁止在消息正文中引用具体健康数值（心率、血氧等）。\n"
             "## 身份（与主循环一致）\n"
             f"{NEXUS_IDENTITY}\n"
             "## 性格（与主循环一致）\n"

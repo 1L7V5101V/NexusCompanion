@@ -200,7 +200,7 @@ class TelegramChannel:
 
         caption_text = msg.caption or ""
         inbound_text, reply_meta = _build_inbound_text_with_reply(caption_text, msg.reply_to_message)
-        media = [tmp]
+        media = [str(tmp)]
         if msg.reply_to_message and getattr(msg.reply_to_message, "photo", None):
             try:
                 reply_file = await context.bot.get_file(msg.reply_to_message.photo[-1].file_id)

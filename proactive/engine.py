@@ -156,34 +156,11 @@ class ProactiveEngine:
         if refreshed:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
         sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
-        raw_health_alerts = _normalize_health_alerts(
-            getattr(sleep_ctx, "health_alerts", []) if sleep_ctx is not None else []
+        health_events: list[dict] = (
+            getattr(sleep_ctx, "health_events", []) if sleep_ctx is not None else []
         )
-        raw_health_notify_alerts = _normalize_health_alerts(
-            getattr(sleep_ctx, "health_notify_alerts", []) if sleep_ctx is not None else []
-        )
-        raw_health_summary = (
-            getattr(sleep_ctx, "health_summary", {}) if sleep_ctx is not None else {}
-        )
-        latest_hr, latest_spo2, latest_lag = _current_health_snapshot(raw_health_summary)
-        has_current_round_health = latest_lag is not None and (
-            latest_hr is not None or latest_spo2 is not None
-        )
-        health_summary = raw_health_summary if has_current_round_health else {}
-        if has_current_round_health:
-            health_alerts = _filter_alerts_by_current_round(
-                raw_health_alerts,
-                latest_hr=latest_hr,
-                latest_spo2=latest_spo2,
-            )
-            health_notify_alerts = _filter_alerts_by_current_round(
-                raw_health_notify_alerts,
-                latest_hr=latest_hr,
-                latest_spo2=latest_spo2,
-            )
-        else:
-            health_alerts = []
-            health_notify_alerts = []
+        if not isinstance(health_events, list):
+            health_events = []
         if self._cfg.anyaction_enabled and self._anyaction:
             should_act, meta = self._anyaction.should_act(
                 now_utc=now_utc,
@@ -446,32 +423,16 @@ class ProactiveEngine:
                 "sleep_modifier": round(sleep_mod, 2),
             },
         }
-        if health_alerts:
-            decision_signals["fitbit_health_alerts"] = health_alerts[:3]
-        if health_notify_alerts:
-            decision_signals["fitbit_health_notify"] = health_notify_alerts[:3]
-        if isinstance(health_summary, dict) and health_summary:
-            decision_signals["fitbit_health_summary"] = health_summary
+        # 只有 StatEngine 检测到事件时才向 LLM 暴露健康信息，避免正常数值触发无关提及
+        if health_events:
+            decision_signals["health_events"] = health_events
+        high_events = [e for e in health_events if str((e or {}).get("severity", "")) == "high"]
         logger.info(
-            "[proactive] fitbit_signal has_summary=%s current_round=%s alerts=%d notify=%d raw_alerts=%d raw_notify=%d sleep_state=%s lag=%s",
-            bool(isinstance(raw_health_summary, dict) and raw_health_summary),
-            has_current_round_health,
-            len(health_alerts),
-            len(health_notify_alerts),
-            len(raw_health_alerts),
-            len(raw_health_notify_alerts),
+            "[proactive] fitbit_signal events=%d high=%d sleep_state=%s",
+            len(health_events),
+            len(high_events),
             sleep_ctx.state if sleep_ctx is not None else "unavailable",
-            latest_lag if has_current_round_health else None,
         )
-        if has_current_round_health and isinstance(health_summary, dict) and health_summary:
-            baseline = health_summary.get("baseline_30d") if isinstance(health_summary, dict) else {}
-            logger.info(
-                "[proactive] fitbit_values latest_hr=%s latest_spo2=%s base_hr=%s base_spo2=%s",
-                latest_hr,
-                latest_spo2,
-                (baseline or {}).get("hr_30d_median"),
-                (baseline or {}).get("spo2_30d_median"),
-            )
         feature_final_score: float | None = None
         feature_payload: dict[str, float | str] = {}
         if self._cfg.feature_scoring_enabled:
@@ -490,8 +451,8 @@ class ProactiveEngine:
                 interruptibility=interruptibility,
             )
             health_bonus = _health_priority_bonus(
-                alert_count=len(health_alerts),
-                notify_count=len(health_notify_alerts),
+                alert_count=len(health_events),
+                notify_count=len(high_events),
             )
             feature_final_score = min(1.0, feature_final_base + health_bonus)
             logger.info(
@@ -629,6 +590,16 @@ class ProactiveEngine:
                 # delivery 去重：仅 chat 类 action 有 session_key
                 if session_key:
                     self._state.mark_delivery(session_key, delivery_key)
+                # 健康事件 ACK：只消费 high 级别事件（medium 事件让其自然过期）
+                # 仅当有 high 事件时才 ACK，避免非健康话题消息误清掉待提醒事件
+                if high_events:
+                    acked_ids = [
+                        e["id"] for e in high_events
+                        if isinstance(e, dict) and e.get("id")
+                    ]
+                    if acked_ids:
+                        getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
+                        logger.info("[proactive] acknowledged %d high 健康事件 ids=%s", len(acked_ids), acked_ids)
                 logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
                 logger.debug("[proactive] selected_action=chat")
             else:
@@ -755,9 +726,7 @@ def _feature_final_score(
 
 
 def _health_priority_bonus(*, alert_count: int, notify_count: int) -> float:
-    """健康信号优先级加分：notify > alert。"""
+    """健康信号优先级加分：仅高优先级 notify 才加分，普通 alert 不影响决策。"""
     if notify_count > 0:
         return min(0.08, 0.04 + 0.02 * min(notify_count, 2))
-    if alert_count > 0:
-        return min(0.03, 0.01 + 0.01 * min(alert_count, 2))
     return 0.0
