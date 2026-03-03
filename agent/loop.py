@@ -8,7 +8,6 @@ from pathlib import Path
 
 from agent.context import ContextBuilder
 from agent.memory import MemoryStore
-from agent.query_analyzer import QueryAnalysis, QueryAnalyzer
 from bus.events import InboundMessage, OutboundMessage
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -19,8 +18,6 @@ from proactive.presence import PresenceStore
 
 # 安全拦截时递减历史窗口的倍率序列：全量 → 减半 → 清空
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
-_RECENT_CONTEXT_COUNT = 10
-_EXTRA_CONTEXT_MAX_BLOCKS = 8
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +69,6 @@ class AgentLoop:
         memorizer=None,
         retriever=None,
         disable_full_memory: bool = False,
-        query_analyzer_enabled: bool = True,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -84,13 +80,6 @@ class AgentLoop:
         # light_model / light_provider 保留接口兼容，不再用于 self-check
         self.light_model = light_model or model
         self.light_provider = light_provider or provider
-        self.query_analyzer = QueryAnalyzer(
-            provider=self.light_provider,
-            model=self.light_model,
-            workspace=workspace,
-            get_tool_schemas=self.tools.get_schemas,
-            tool_executor=self.tools.execute,
-        )
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self.memory_window = memory_window
@@ -101,7 +90,6 @@ class AgentLoop:
         self._memorizer = memorizer
         self._retriever = retriever
         self._disable_full_memory = disable_full_memory
-        self._query_analyzer_enabled = query_analyzer_enabled
 
     async def run(self) -> None:
         self._running = True
@@ -131,7 +119,6 @@ class AgentLoop:
         msg: InboundMessage,
         session,
         skill_names: list[str] | None = None,
-        analysis: QueryAnalysis | None = None,
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
     ) -> tuple[str, list[str], list[dict]]:
@@ -141,7 +128,9 @@ class AgentLoop:
         降级成功后同步修剪 session，防止下次继续触发。
         所有窗口均失败时说明当前消息本身违规，返回友好提示。
         """
-        source_history = base_history or session.get_history(max_messages=self.memory_window)
+        source_history = base_history or session.get_history(
+            max_messages=self.memory_window
+        )
         total_history = len(source_history)
 
         for attempt, ratio in enumerate(_SAFETY_RETRY_RATIOS):
@@ -157,7 +146,6 @@ class AgentLoop:
                 current_message=msg.content,
                 media=msg.media if msg.media else None,
                 skill_names=skill_names,
-                relevant_sops=analysis.relevant_sops if analysis else None,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 message_timestamp=msg.timestamp,
@@ -167,7 +155,6 @@ class AgentLoop:
             try:
                 result = await self._run_agent_loop(
                     initial_messages,
-                    analysis=analysis,
                     request_time=msg.timestamp,
                 )
                 if attempt > 0:
@@ -185,9 +172,7 @@ class AgentLoop:
                 return result
             except ContentSafetyError:
                 if attempt < len(_SAFETY_RETRY_RATIOS) - 1:
-                    next_window = int(
-                        total_history * _SAFETY_RETRY_RATIOS[attempt + 1]
-                    )
+                    next_window = int(total_history * _SAFETY_RETRY_RATIOS[attempt + 1])
                     logger.warning(
                         f"安全拦截 (attempt={attempt + 1})，"
                         f"缩小历史窗口重试 {window} → {next_window}"
@@ -229,113 +214,6 @@ class AgentLoop:
                 result.append(name)
         return result
 
-    def _assemble_main_history(
-        self,
-        history: list[dict],
-        analysis: QueryAnalysis,
-        max_blocks: int | None = _EXTRA_CONTEXT_MAX_BLOCKS,
-    ) -> list[dict]:
-        """根据 QueryAnalyzer 指针拼装上下文，并保证 tool 调用链合法。"""
-        if not history:
-            return []
-
-        n = len(history)
-        # 将历史分组成“合法块”：
-        # - 普通消息块：单条 user/assistant
-        # - 工具块：assistant(tool_calls) + 紧随其后的 tool 结果
-        blocks: list[list[int]] = []
-        index_to_block: dict[int, int] = {}
-
-        i = 0
-        while i < n:
-            msg = history[i]
-            role = msg.get("role")
-
-            if role == "assistant" and msg.get("tool_calls"):
-                block = [i]
-                j = i + 1
-                while j < n and history[j].get("role") == "tool":
-                    block.append(j)
-                    j += 1
-                # 不完整工具块（assistant 有 tool_calls 但缺 tool 回包）会触发 provider 400，直接丢弃
-                if len(block) == 1:
-                    i = j
-                    continue
-                block_id = len(blocks)
-                blocks.append(block)
-                for idx in block:
-                    index_to_block[idx] = block_id
-                i = j
-                continue
-
-            if role == "tool":
-                # 孤立 tool（没有前置 assistant tool_calls）会触发 provider 400，直接丢弃
-                i += 1
-                continue
-
-            block_id = len(blocks)
-            blocks.append([i])
-            index_to_block[i] = block_id
-            i += 1
-
-        if not blocks:
-            return []
-
-        selected_blocks: set[int] = set()
-
-        for idx in analysis.history_pointers:
-            if isinstance(idx, int) and 0 <= idx < n and idx in index_to_block:
-                selected_blocks.add(index_to_block[idx])
-
-        if not selected_blocks:
-            tail_blocks = min(8, len(blocks))
-            selected_blocks.update(range(len(blocks) - tail_blocks, len(blocks)))
-
-        # extra context 限流：仅保留靠近当前的若干块，避免再次撑爆主上下文
-        selected_sorted = sorted(selected_blocks)
-        if max_blocks is not None and max_blocks > 0 and len(selected_sorted) > max_blocks:
-            selected_sorted = selected_sorted[-max_blocks:]
-
-        assembled: list[dict] = []
-        for bid in selected_sorted:
-            for idx in blocks[bid]:
-                assembled.append(history[idx])
-        return assembled
-
-    @staticmethod
-    def _split_history_for_analyzer(
-        history: list[dict],
-        recent_count: int = _RECENT_CONTEXT_COUNT,
-    ) -> tuple[list[dict], list[dict]]:
-        """拆分历史：旧上下文给 analyzer 选 extra，最近 N 条始终保留给主循环。"""
-        if not history:
-            return [], []
-        k = max(0, int(recent_count))
-        if k <= 0:
-            return history, []
-        n = len(history)
-        if n <= k:
-            return [], history
-        split_idx = n - k
-
-        # 避免在 tool chain 中间切断：
-        # 1) 若切分点落在 tool 消息上，回退到对应 assistant(tool_calls) 起点
-        if split_idx < n and history[split_idx].get("role") == "tool":
-            j = split_idx - 1
-            while j >= 0 and history[j].get("role") == "tool":
-                j -= 1
-            if j >= 0 and history[j].get("role") == "assistant" and history[j].get("tool_calls"):
-                split_idx = j
-
-        # 2) 若切分点刚好落在 assistant(tool_calls) 之后，也回退一位，保持整块在 recent_tail
-        if split_idx > 0:
-            prev = history[split_idx - 1]
-            if prev.get("role") == "assistant" and prev.get("tool_calls"):
-                split_idx -= 1
-
-        split_idx = max(0, min(split_idx, n))
-        return history[:split_idx], history[split_idx:]
-
     async def _process(
         self, msg: InboundMessage, session_key: str | None = None
     ) -> OutboundMessage:
@@ -351,9 +229,7 @@ class AgentLoop:
             if self._processing_state:
                 self._processing_state.exit(key)
 
-    async def _process_inner(
-        self, msg: InboundMessage, key: str
-    ) -> OutboundMessage:
+    async def _process_inner(self, msg: InboundMessage, key: str) -> OutboundMessage:
         session = self.session_manager.get_or_create(key)
 
         # 超过记忆窗口时后台压缩（不阻塞当前消息处理）
@@ -369,45 +245,7 @@ class AgentLoop:
         if skill_mentions:
             logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
 
-        # QueryAnalyzer 仅筛选旧上下文；最近 N 条始终作为保底上下文传给主循环
-        analysis_history = session.get_history(max_messages=self.memory_window)
-        analyzer_scope, recent_tail = self._split_history_for_analyzer(
-            analysis_history, recent_count=_RECENT_CONTEXT_COUNT
-        )
-        if self._query_analyzer_enabled:
-            # Analyzer 可读完整历史（含 recent_tail），但只能为旧上下文区间提供指针。
-            analysis = await self.query_analyzer.analyze(
-                msg.content,
-                analysis_history,
-                message_timestamp=msg.timestamp,
-                selectable_history_len=len(analyzer_scope),
-                forced_recent_count=len(recent_tail),
-            )
-            extra_history = self._assemble_main_history(
-                analyzer_scope,
-                analysis,
-                max_blocks=_EXTRA_CONTEXT_MAX_BLOCKS,
-            )
-            main_history = extra_history + recent_tail
-            logger.info(
-                "[query_analyzer] needs_tool=%s required=%s sops=%s targets=%s pointers=%s keep_recent=%s history=%d analyzer_scope=%d extra=%d recent_tail=%d main=%d reason=%s",
-                analysis.needs_tool,
-                analysis.required_evidence,
-                analysis.relevant_sops,
-                analysis.target_files,
-                analysis.history_pointers,
-                analysis.keep_recent,
-                len(analysis_history),
-                len(analyzer_scope),
-                len(extra_history),
-                len(recent_tail),
-                len(main_history),
-                analysis.reasoning,
-            )
-        else:
-            analysis = QueryAnalysis()
-            main_history = recent_tail
-            logger.info("[query_analyzer] disabled, using recent_tail only (len=%d)", len(recent_tail))
+        main_history = session.get_history(max_messages=self.memory_window)
 
         # memory v2 检索
         retrieved_block = ""
@@ -425,7 +263,6 @@ class AgentLoop:
             msg,
             session,
             skill_names=skill_mentions or None,
-            analysis=analysis,
             base_history=main_history,
             retrieved_memory_block=retrieved_block,
         )
@@ -466,7 +303,6 @@ class AgentLoop:
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
-        analysis: QueryAnalysis | None = None,
         request_time: datetime | None = None,
     ) -> tuple[str, list[str], list[dict]]:
         """迭代调用 LLM，直到无工具调用或达到上限。返回 (final_content, tools_used, tool_chain)
@@ -484,38 +320,7 @@ class AgentLoop:
             "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
             + _PRE_FLIGHT_PROMPT
         )
-        # 将前置分析器的取证建议注入预检提示，主模型必须按顺序执行后再作答
-        if analysis and analysis.required_evidence:
-            evidence_lines = "\n".join(
-                f"- [{e.get('tool', 'tool')}] {e.get('hint', '')}"
-                for e in analysis.required_evidence
-            )
-            preflight_prompt += (
-                "\n\n【前置分析器取证建议（高优先级，请按顺序执行，收集事实依据后再作答）】\n"
-                + evidence_lines
-            )
-        if analysis and analysis.relevant_sops:
-            sop_lines = "\n".join(f"- {s}" for s in analysis.relevant_sops)
-            preflight_prompt += (
-                "\n\n【前置分析器判定本轮相关 SOP，必须优先 read_file 读取并遵循】\n"
-                + sop_lines
-            )
-        # target_files 中的 SOP 文件：注入必读提示，是否修改由 agent 根据用户意图判断
-        if analysis and analysis.target_files:
-            sop_targets = [
-                t for t in analysis.target_files
-                if "/sop/" in t and t.endswith(".md") and not t.endswith("README.md")
-            ]
-            if sop_targets:
-                sop_lines = "\n".join(f"- {t}" for t in sop_targets)
-                preflight_prompt += (
-                    "\n\n【本轮涉及以下 SOP 文件，必须先 read_file 读取】\n"
-                    + sop_lines
-                    + "\n若用户要求修改/改进/优化该 SOP，读取后按要求改写并 write_file 写回；"
-                    "若用户是要执行某项操作，读取后按规范行动。"
-                )
         messages = messages + [{"role": "user", "content": preflight_prompt}]
-        first_tool_choice = "required" if (analysis and analysis.needs_tool) else "auto"
 
         for iteration in range(self.max_iterations):
             logger.debug(f"LLM 调用  iteration={iteration + 1}")
@@ -524,7 +329,7 @@ class AgentLoop:
                 tools=self.tools.get_schemas(),
                 model=self.model,
                 max_tokens=self.max_tokens,
-                tool_choice=first_tool_choice if iteration == 0 else "auto",
+                tool_choice="auto",
             )
 
             if response.tool_calls:
@@ -630,7 +435,9 @@ class AgentLoop:
             # 在所有 await 之前捕获边界索引，避免 LLM call 期间新消息追加后
             # 用错误的 len(session.messages) 回写 last_consolidated。
             consolidate_up_to = len(session.messages) - keep_count
-            old_messages = session.messages[session.last_consolidated : consolidate_up_to]
+            old_messages = session.messages[
+                session.last_consolidated : consolidate_up_to
+            ]
             if not old_messages:
                 return
             logger.info(
@@ -646,9 +453,7 @@ class AgentLoop:
             # 跳过纯工具结果消息（role=tool），它们是内部往返，不是对话内容
             if m["role"] == "tool":
                 continue
-            lines.append(
-                f"[{m.get('timestamp', '?')[:16]}] {role}: {m['content']}"
-            )
+            lines.append(f"[{m.get('timestamp', '?')[:16]}] {role}: {m['content']}")
         conversation = "\n".join(lines)
         current_memory = memory.read_long_term()
 
@@ -784,13 +589,17 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                     if not archive_all
                     else f"{session.key}@archive_all"
                 )
-                asyncio.create_task(self._memorizer.save_from_consolidation(
-                    history_entry=history_entry,
-                    behavior_updates=behavior_updates if isinstance(behavior_updates, list) else [],
-                    source_ref=_source_ref,
-                    scope_channel=getattr(session, '_channel', ''),
-                    scope_chat_id=getattr(session, '_chat_id', ''),
-                ))
+                asyncio.create_task(
+                    self._memorizer.save_from_consolidation(
+                        history_entry=history_entry,
+                        behavior_updates=behavior_updates
+                        if isinstance(behavior_updates, list)
+                        else [],
+                        source_ref=_source_ref,
+                        scope_channel=getattr(session, "_channel", ""),
+                        scope_chat_id=getattr(session, "_chat_id", ""),
+                    )
+                )
 
             if archive_all:
                 session.last_consolidated = 0

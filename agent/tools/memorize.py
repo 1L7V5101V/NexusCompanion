@@ -1,6 +1,7 @@
 """
 memorize 工具：用户主动写记忆
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _append_to_sop_file(persist_file: str, summary: str, steps: list[str] | None) -> None:
+def _append_to_sop_file(
+    persist_file: str, summary: str, steps: list[str] | None
+) -> None:
     """将规则追加写入 workspace/sop/ 下的对应文件"""
     workspace = Path.home() / ".akasic" / "workspace"
     sop_dir = workspace / "sop"
@@ -34,8 +37,7 @@ def _append_to_sop_file(persist_file: str, summary: str, steps: list[str] | None
 class MemorizeTool(Tool):
     name = "memorize"
     description = (
-        "将重要规则/流程/偏好永久写入记忆。"
-        "用户说「记住/以后/下次」等时必须调用。"
+        "将重要规则/流程/偏好永久写入记忆。用户说「记住/以后/下次」等时必须调用。"
     )
     parameters = {
         "type": "object",
@@ -65,8 +67,6 @@ class MemorizeTool(Tool):
         },
         "required": ["summary", "memory_type"],
     }
-
-    routing_hint = "用户要求记住某条规则、偏好或流程时调用"
 
     def __init__(self, memorizer: "Memorizer") -> None:
         self._memorizer = memorizer

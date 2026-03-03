@@ -24,11 +24,6 @@ class FitbitHealthSnapshotTool(Tool):
     """获取当前健康快照（心率 / 血氧 / 步数 / 睡眠状态）"""
 
     name = "fitbit_health_snapshot"
-    routing_hint = (
-        "用户询问当前身体/健康状态、心率、血氧、今日步数、"
-        "是否在睡觉、现在精力/状态怎么样等实时生理信息时使用。"
-        "此工具是独立本地服务，直接调用即可，无需 feed_query 前置检查。"
-    )
     description = (
         "获取用户当前实时健康状态快照，包括：当前心率（bpm）、血氧（SpO₂）、"
         "今日步数、睡眠状态（sleeping/awake/uncertain）及睡眠概率。"
@@ -56,27 +51,35 @@ class FitbitHealthSnapshotTool(Tool):
             return f"[fitbit_health_snapshot] 无法连接 Fitbit monitor：{e}"
 
         summary = data.get("summary", {})
-        sleep   = data.get("sleep", {})
+        sleep = data.get("sleep", {})
         signals = data.get("signals", {}) or {}
-        meta    = data.get("data_meta", {}) or {}
+        meta = data.get("data_meta", {}) or {}
 
-        hr       = summary.get("heart_rate")
-        spo2     = summary.get("spo2")
-        steps    = summary.get("steps")
-        state    = sleep.get("state", "unknown")
-        reason   = sleep.get("reason", "")
-        since    = sleep.get("since")
-        prob     = signals.get("sleep_prob")
-        source   = signals.get("prob_source", "")
-        lag      = meta.get("data_lag_min")
-        hr_time  = meta.get("latest_hr_time")
-        updated  = data.get("last_updated", "")
+        hr = summary.get("heart_rate")
+        spo2 = summary.get("spo2")
+        steps = summary.get("steps")
+        state = sleep.get("state", "unknown")
+        reason = sleep.get("reason", "")
+        since = sleep.get("since")
+        prob = signals.get("sleep_prob")
+        source = signals.get("prob_source", "")
+        lag = meta.get("data_lag_min")
+        hr_time = meta.get("latest_hr_time")
+        updated = data.get("last_updated", "")
 
         lines = [f"【Fitbit 健康快照】{updated}"]
-        lines.append(f"心率：{'%d bpm' % hr if hr else '无数据'}"
-                     + (f"（数据时间 {hr_time}，延迟约 {lag} 分钟）" if hr_time and lag is not None else ""))
+        lines.append(
+            f"心率：{'%d bpm' % hr if hr else '无数据'}"
+            + (
+                f"（数据时间 {hr_time}，延迟约 {lag} 分钟）"
+                if hr_time and lag is not None
+                else ""
+            )
+        )
         lines.append(f"血氧：{'%.1f%%' % spo2 if spo2 else '无数据'}")
-        lines.append(f"今日步数：{int(steps):,} 步" if steps is not None else "今日步数：无数据")
+        lines.append(
+            f"今日步数：{int(steps):,} 步" if steps is not None else "今日步数：无数据"
+        )
 
         prob_str = f"{prob:.0%}" if prob is not None else "—"
         source_str = f"，{source}模型" if source and source != "unavailable" else ""
@@ -94,11 +97,6 @@ class FitbitSleepReportTool(Tool):
     """获取最近 N 天的睡眠质量报告（时长、效率、深睡、REM、HRV）"""
 
     name = "fitbit_sleep_report"
-    routing_hint = (
-        "用户询问睡眠质量、昨晚/最近睡了多久、深睡/REM比例、"
-        "HRV、作息规律、睡眠效率、疲劳恢复情况时使用。"
-        "此工具是独立本地服务，直接调用即可，无需 feed_query 前置检查。"
-    )
     description = (
         "获取用户最近 N 天的睡眠质量报告，包含每晚：入睡/起床时间、"
         "总时长、效率、深睡/REM/浅睡分钟数、HRV（心率变异性，反映恢复质量）。"
@@ -128,7 +126,9 @@ class FitbitSleepReportTool(Tool):
 
         try:
             async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.get(f"{self._url}/api/sleep_report", params={"days": days})
+                r = await client.get(
+                    f"{self._url}/api/sleep_report", params={"days": days}
+                )
                 if r.status_code == 401:
                     return "[fitbit_sleep_report] Fitbit 未授权，请先完成 OAuth 授权。"
                 r.raise_for_status()
@@ -136,7 +136,7 @@ class FitbitSleepReportTool(Tool):
         except Exception as e:
             return f"[fitbit_sleep_report] 无法连接 Fitbit monitor：{e}"
 
-        sm      = data.get("summary", {})
+        sm = data.get("summary", {})
         entries = data.get("days", [])
 
         lines = [f"【Fitbit 睡眠报告 · 最近 {days} 天】"]
@@ -149,15 +149,15 @@ class FitbitSleepReportTool(Tool):
                 lines.append(f"{date_str}  无睡眠记录{hrv_str}")
                 continue
 
-            start   = d.get("start_time") or "—"
-            end     = d.get("end_time")   or "—"
-            dur     = _fmt_duration(d.get("duration_min"))
-            eff     = d.get("efficiency")
-            deep    = _fmt_duration(d.get("deep_min"))
-            rem     = _fmt_duration(d.get("rem_min"))
-            light   = _fmt_duration(d.get("light_min"))
-            wake    = _fmt_duration(d.get("wake_min"))
-            hrv     = d.get("hrv_ms")
+            start = d.get("start_time") or "—"
+            end = d.get("end_time") or "—"
+            dur = _fmt_duration(d.get("duration_min"))
+            eff = d.get("efficiency")
+            deep = _fmt_duration(d.get("deep_min"))
+            rem = _fmt_duration(d.get("rem_min"))
+            light = _fmt_duration(d.get("light_min"))
+            wake = _fmt_duration(d.get("wake_min"))
+            hrv = d.get("hrv_ms")
 
             eff_str = f"  效率 {eff}%" if eff is not None else ""
             hrv_str = f"  HRV {hrv} ms" if hrv is not None else ""
@@ -168,12 +168,12 @@ class FitbitSleepReportTool(Tool):
 
         # 均值摘要
         lines.append("─" * 36)
-        avg_dur  = _fmt_duration(sm.get("avg_duration_min"))
-        avg_eff  = sm.get("avg_efficiency")
+        avg_dur = _fmt_duration(sm.get("avg_duration_min"))
+        avg_eff = sm.get("avg_efficiency")
         avg_deep = _fmt_duration(sm.get("avg_deep_min"))
-        avg_rem  = _fmt_duration(sm.get("avg_rem_min"))
-        avg_hrv  = sm.get("avg_hrv_ms")
-        valid_n  = sm.get("days_with_data", 0)
+        avg_rem = _fmt_duration(sm.get("avg_rem_min"))
+        avg_hrv = sm.get("avg_hrv_ms")
+        valid_n = sm.get("days_with_data", 0)
 
         eff_str = f"  效率 {avg_eff}%" if avg_eff is not None else ""
         hrv_str = f"  HRV {avg_hrv} ms" if avg_hrv is not None else ""

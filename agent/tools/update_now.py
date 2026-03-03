@@ -1,4 +1,5 @@
 """update_now 工具：agent 主动更新 NOW.md「近期进行中」状态。"""
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,6 @@ class UpdateNowTool(Tool):
         },
         "required": [],
     }
-
-    routing_hint = "任务状态变化（开始/完成/取消）或阅读坐标推进时调用"
 
     def __init__(self, workspace: Path) -> None:
         self._workspace = workspace

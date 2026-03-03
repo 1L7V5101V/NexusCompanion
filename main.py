@@ -173,6 +173,7 @@ def _build_agent(
         tools.register(MemorizeTool(memorizer))
 
         from memory2.sop_indexer import SopIndexer
+
         sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
         tools.register(WriteFileTool(sop_indexer=sop_indexer))
         tools.register(EditFileTool(sop_indexer=sop_indexer))
@@ -196,7 +197,6 @@ def _build_agent(
         memorizer=memorizer,
         retriever=retriever,
         disable_full_memory=config.memory_v2.disable_full_memory,
-        query_analyzer_enabled=config.query_analyzer_enabled,
     )
 
     # Wire agent_loop back into scheduler (circular dependency resolved here)
@@ -340,7 +340,9 @@ async def serve(config_path: str = "config.json") -> None:
             light_provider=light_provider,
             light_model=config.light_model,
             feed_store=feed_store,
-            passive_busy_fn=agent_loop.processing_state.is_busy if agent_loop.processing_state else None,
+            passive_busy_fn=agent_loop.processing_state.is_busy
+            if agent_loop.processing_state
+            else None,
         )
         # 将 SourceScorer 注入 FeedManageTool，使 subscribe/unsubscribe 可触发增量打分
         if proactive_loop._source_scorer is not None:
@@ -349,6 +351,7 @@ async def serve(config_path: str = "config.json") -> None:
         _fitbit_path = getattr(config.proactive, "fitbit_monitor_path", "").strip()
         if config.proactive.fitbit_enabled and _fitbit_path:
             from proactive.fitbit_sleep import run_fitbit_monitor
+
             tasks.append(run_fitbit_monitor(_fitbit_path, config.proactive.fitbit_url))
             print(f"fitbit-monitor 已启动  |  路径={_fitbit_path}")
         if (

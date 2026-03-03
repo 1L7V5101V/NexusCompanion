@@ -69,11 +69,11 @@ class ChannelsConfig:
 @dataclass
 class MemoryV2Config:
     enabled: bool = False
-    db_path: str = ""                   # 空则用 workspace/memory/memory2.db
+    db_path: str = ""  # 空则用 workspace/memory/memory2.db
     embed_model: str = "text-embedding-v3"
     retrieve_top_k: int = 8
     score_threshold: float = 0.45
-    disable_full_memory: bool = False   # True 时不再注入全量 MEMORY.md
+    disable_full_memory: bool = False  # True 时不再注入全量 MEMORY.md
 
 
 @dataclass
@@ -96,7 +96,6 @@ class Config:
     light_api_key: str = ""
     light_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
-    query_analyzer_enabled: bool = True
 
     @classmethod
     def load(cls, path: str | Path = "config.json") -> Config:
@@ -347,7 +346,6 @@ class Config:
             light_api_key=_resolve(data.get("light_api_key", "")),
             light_base_url=data.get("light_base_url", ""),
             memory_v2=memory_v2,
-            query_analyzer_enabled=bool(data.get("query_analyzer_enabled", True)),
         )
 
 

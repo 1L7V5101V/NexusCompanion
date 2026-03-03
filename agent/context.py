@@ -21,7 +21,6 @@ class ContextBuilder:
     def build_system_prompt(
         self,
         skill_names: list[str] | None = None,
-        relevant_sops: list[str] | None = None,
         message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
         disable_full_memory: bool = False,
@@ -75,11 +74,6 @@ class ContextBuilder:
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
 
-        # relevant_sops 是 QueryAnalyzer 产出的 SOP 文件路径列表，按需注入正文片段
-        sop_content = self._load_relevant_sops_for_context(relevant_sops or [])
-        if sop_content:
-            parts.append(f"# Relevant SOPs\n\n{sop_content}")
-
         # 第二步：其余技能注入摘要（名称/描述/路径/可用状态），
         # 模型识别到任务匹配时，通过 read_file 读取对应 SKILL.md 获取完整指令
         skills_summary = self.skills.build_skills_summary()
@@ -99,35 +93,6 @@ class ContextBuilder:
 {skills_summary}""")
 
         return "\n\n---\n\n".join(parts)
-
-    def _load_relevant_sops_for_context(self, sop_paths: list[str]) -> str:
-        if not sop_paths:
-            return ""
-        sop_root = (self.workspace / "sop").resolve()
-        blocks: list[str] = []
-        seen: set[str] = set()
-        for raw in sop_paths:
-            if not raw:
-                continue
-            p = Path(raw).expanduser()
-            try:
-                p = p.resolve()
-            except Exception:
-                continue
-            if str(p) in seen:
-                continue
-            if not p.exists() or not p.is_file() or p.suffix.lower() != ".md":
-                continue
-            # 只允许加载 workspace/sop 下的文件，防止越界注入。
-            if sop_root not in p.parents:
-                continue
-            try:
-                content = p.read_text(encoding="utf-8").strip()
-            except Exception:
-                continue
-            seen.add(str(p))
-            blocks.append(f"## {p.name}\n\n{content}")
-        return "\n\n---\n\n".join(blocks)
 
     def _get_identity(self, message_timestamp: "datetime | None" = None) -> str:
         # 确保时区感知，naive datetime 转换为本地时区
@@ -173,11 +138,6 @@ request_time={now_iso}
 - 知识库：{workspace_path}/kb/
 - SOP 索引：{workspace_path}/sop/README.md
 
-## 与前置分析器协同（高优先级）
-- 系统会先由 QueryAnalyzer 产出 `required_evidence` 与 `relevant_sops`。
-- 若本轮被标记为必须取证，先调用工具，再作答。
-- 这些内部字段仅用于决策，最终回复不要泄露 `required_evidence/history_pointers` 等内部结构。
-
 ## 行为准则
 - 执行类动作必须走工具；无工具结果不得声称“已完成/已发送/已查询”。
 - 本轮没调用对应工具，禁止说“根据刚才实测/工具返回”。
@@ -219,7 +179,6 @@ request_time={now_iso}
         current_message: str,
         media: list[str] | None = None,
         skill_names: list[str] | None = None,
-        relevant_sops: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
         message_timestamp: "datetime | None" = None,
@@ -244,7 +203,6 @@ request_time={now_iso}
         messages = []
         system_prompt = self.build_system_prompt(
             skill_names=skill_names,
-            relevant_sops=relevant_sops,
             message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
             disable_full_memory=disable_full_memory,
