@@ -11,6 +11,7 @@ from typing import Any, TYPE_CHECKING
 from agent.tools.base import Tool
 
 if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
     from memory2.memorizer import Memorizer
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,8 @@ class MemorizeTool(Tool):
         "required": ["summary", "memory_type"],
     }
 
-    def __init__(self, memorizer: "Memorizer") -> None:
+    def __init__(self, memorizer: "MemoryPort | Memorizer") -> None:
+        # Accept either a unified MemoryPort or the legacy Memorizer directly
         self._memorizer = memorizer
 
     async def execute(

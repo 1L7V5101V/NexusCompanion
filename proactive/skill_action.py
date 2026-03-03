@@ -10,7 +10,6 @@ skill_action.py — Skill Action 注册表与执行器
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random as _random_module
 import shlex
@@ -19,6 +18,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
+from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
@@ -92,24 +94,27 @@ class SkillActionRegistry:
         if not self._path.exists():
             self._actions = []
             return
-        try:
-            mtime = self._path.stat().st_mtime
-            if mtime == self._mtime:
-                return
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-            self._actions = [
-                SkillActionDef.from_dict(a)
-                for a in raw.get("actions", [])
-                if a.get("id") and a.get("command")
-            ]
-            self._mtime = mtime
-            logger.info(
-                "[skill_action] 已加载 %d 个 skill actions from %s",
-                len(self._actions),
-                self._path,
-            )
-        except Exception as e:
-            logger.warning("[skill_action] 加载 skill_actions.json 失败: %s", e)
+
+        # 1. 检查文件是否变更（mtime 缓存）
+        mtime = self._path.stat().st_mtime
+        if mtime == self._mtime:
+            return
+
+        # 2. 读取并解析
+        raw = load_json(self._path, default=None, domain="skill_action.registry")
+        if raw is None:
+            return
+        self._actions = [
+            SkillActionDef.from_dict(a)
+            for a in raw.get("actions", [])
+            if a.get("id") and a.get("command")
+        ]
+        self._mtime = mtime
+        logger.info(
+            "[skill_action] 已加载 %d 个 skill actions from %s",
+            len(self._actions),
+            self._path,
+        )
 
     def list_enabled(self) -> list[SkillActionDef]:
         """返回所有已启用的 action（每次调用会检查文件是否变更）。"""
@@ -296,44 +301,37 @@ class SkillActionRunner:
     # ── 持久化（可选）───────────────────────────────────────────
 
     def _load_state(self) -> None:
-        if not self._state_path or not self._state_path.exists():
+        if not self._state_path:
             return
-        try:
-            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-            for action_id, entry in raw.items():
-                last_run = entry.get("last_run_at")
-                rec = _ActionRecord(
-                    last_run_at=datetime.fromisoformat(last_run).replace(
-                        tzinfo=timezone.utc
-                    )
-                    if last_run
-                    else None,
-                    runs_today=int(entry.get("runs_today", 0)),
-                    window_key=str(entry.get("window_key", "")),
-                )
-                self._records[action_id] = rec
-            logger.info("[skill_action] 已加载运行状态 from %s", self._state_path)
-        except Exception as e:
-            logger.warning("[skill_action] 加载运行状态失败: %s", e)
+
+        # 1. 从磁盘读取
+        raw = load_json(self._state_path, default=None, domain="skill_action.runner")
+        if raw is None:
+            return
+
+        # 2. 解析运行记录
+        for action_id, entry in raw.items():
+            last_run = entry.get("last_run_at")
+            rec = _ActionRecord(
+                last_run_at=_parse_iso(last_run),
+                runs_today=int(entry.get("runs_today", 0)),
+                window_key=str(entry.get("window_key", "")),
+            )
+            self._records[action_id] = rec
+        logger.info("[skill_action] 已加载运行状态 from %s", self._state_path)
 
     def _save_state(self) -> None:
         if not self._state_path:
             return
-        try:
-            self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
-            for action_id, rec in self._records.items():
-                data[action_id] = {
-                    "last_run_at": rec.last_run_at.isoformat()
-                    if rec.last_run_at
-                    else None,
-                    "runs_today": rec.runs_today,
-                    "window_key": rec.window_key,
-                }
-            tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
-            tmp.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            tmp.replace(self._state_path)
-        except Exception as e:
-            logger.warning("[skill_action] 保存运行状态失败: %s", e)
+
+        # 1. 序列化运行记录
+        data = {}
+        for action_id, rec in self._records.items():
+            data[action_id] = {
+                "last_run_at": rec.last_run_at.isoformat() if rec.last_run_at else None,
+                "runs_today": rec.runs_today,
+                "window_key": rec.window_key,
+            }
+
+        # 2. 原子写入
+        atomic_save_json(self._state_path, data, domain="skill_action.runner")

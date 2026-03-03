@@ -8,31 +8,18 @@ ProactiveStateStore — 主动消息流的去重状态持久化。
 4) rejection_cooldown: LLM 拒绝后的软冷却（可配置 TTL，默认 12h）
    独立于 seen_items，防止拒绝误判造成永久压制。
 """
+
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
+from infra.persistence.json_store import load_json, save_json
+
 logger = logging.getLogger(__name__)
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _parse_iso(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
 
 
 class ProactiveStateStore:
@@ -270,7 +257,13 @@ class ProactiveStateStore:
             hours,
         )
 
-    def cleanup(self, seen_ttl_hours: int, delivery_ttl_hours: int, semantic_ttl_hours: int, rejection_cooldown_ttl_hours: int = 0) -> None:
+    def cleanup(
+        self,
+        seen_ttl_hours: int,
+        delivery_ttl_hours: int,
+        semantic_ttl_hours: int,
+        rejection_cooldown_ttl_hours: int = 0,
+    ) -> None:
         now = _utcnow()
         seen_cutoff = now - timedelta(hours=max(seen_ttl_hours, 1))
         delivery_cutoff = now - timedelta(hours=max(delivery_ttl_hours, 1))
@@ -302,7 +295,11 @@ class ProactiveStateStore:
         self._state["semantic_items"] = [
             x
             for x in self._state["semantic_items"]
-            if (_parse_iso(str(x.get("ts", ""))) or datetime.min.replace(tzinfo=timezone.utc)) >= semantic_cutoff
+            if (
+                _parse_iso(str(x.get("ts", "")))
+                or datetime.min.replace(tzinfo=timezone.utc)
+            )
+            >= semantic_cutoff
             and str(x.get("text", "")).strip()
         ]
         removed_semantic = before_semantic - len(self._state["semantic_items"])
@@ -330,27 +327,28 @@ class ProactiveStateStore:
         )
 
     def _load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {"version": 3, "seen_items": {}, "deliveries": {}, "semantic_items": [], "rejection_cooldown": {}}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            state = {
-                "version": int(raw.get("version", 2)),
-                "seen_items": dict(raw.get("seen_items", {})),
-                "deliveries": dict(raw.get("deliveries", {})),
-                "semantic_items": list(raw.get("semantic_items", [])),
-                # 向后兼容：旧文件无此字段时自动初始化
-                "rejection_cooldown": dict(raw.get("rejection_cooldown", {})),
+        # 1. 从磁盘读取原始数据
+        raw = load_json(self.path, default=None, domain="proactive.state")
+        if raw is None:
+            return {
+                "version": 3,
+                "seen_items": {},
+                "deliveries": {},
+                "semantic_items": [],
+                "rejection_cooldown": {},
             }
-            logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
-            return state
-        except Exception as e:
-            logger.warning("[proactive.state] 加载失败，回退空状态: %s", e)
-            return {"version": 3, "seen_items": {}, "deliveries": {}, "semantic_items": [], "rejection_cooldown": {}}
+
+        # 2. 规范化字段（向后兼容）
+        state: dict[str, Any] = {
+            "version": int(raw.get("version", 2)),
+            "seen_items": dict(raw.get("seen_items", {})),
+            "deliveries": dict(raw.get("deliveries", {})),
+            "semantic_items": list(raw.get("semantic_items", [])),
+            "rejection_cooldown": dict(raw.get("rejection_cooldown", {})),
+        }
+        logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
+        return state
 
     def _save(self) -> None:
-        self.path.write_text(
-            json.dumps(self._state, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        save_json(self.path, self._state, domain="proactive.state")
         logger.debug("[proactive.state] 状态已保存 path=%s", self.path)

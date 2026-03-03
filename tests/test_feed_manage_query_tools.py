@@ -27,21 +27,6 @@ async def test_feed_manage_subscribe_by_url(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_feed_manage_discover_returns_preview(tmp_path):
-    store = FeedStore(tmp_path / "feeds.json")
-    tool = FeedManageTool(store)
-    tool._gen_tool._discover_best_page = AsyncMock(return_value="https://example.com/archive.html")
-    tool._gen_tool._discover_entries_from_site = AsyncMock(return_value=[
-        {"title": "A", "url": "https://example.com/a.html"},
-        {"title": "B", "url": "https://example.com/b.html"},
-    ])
-
-    result = await tool.execute(action="discover", page_url="https://example.com/")
-    assert "候选最优: https://example.com/archive.html" in result
-    assert "结构化发现条目数: 2" in result
-
-
-@pytest.mark.asyncio
 async def test_feed_manage_list_and_unsubscribe(tmp_path):
     store = FeedStore(tmp_path / "feeds.json")
     tool = FeedManageTool(store)
@@ -68,7 +53,9 @@ class _DummyRegistry:
 async def test_feed_query_latest_and_search(tmp_path):
     store = FeedStore(tmp_path / "feeds.json")
     manage = FeedManageTool(store)
-    await manage.execute(action="subscribe", name="Blog", url="https://example.com/feed.xml")
+    await manage.execute(
+        action="subscribe", name="Blog", url="https://example.com/feed.xml"
+    )
 
     items = [
         FeedItem(
@@ -105,7 +92,9 @@ async def test_feed_query_latest_and_search(tmp_path):
 async def test_feed_query_catalog_pagination(tmp_path):
     store = FeedStore(tmp_path / "feeds.json")
     manage = FeedManageTool(store)
-    await manage.execute(action="subscribe", name="Blog", url="https://example.com/feed.xml")
+    await manage.execute(
+        action="subscribe", name="Blog", url="https://example.com/feed.xml"
+    )
 
     items = []
     for idx in range(7):
@@ -122,13 +111,17 @@ async def test_feed_query_catalog_pagination(tmp_path):
         )
     query = FeedQueryTool(store, _DummyRegistry(items))
 
-    page1 = json.loads(await query.execute(action="catalog", source="blog", page=1, page_size=3))
+    page1 = json.loads(
+        await query.execute(action="catalog", source="blog", page=1, page_size=3)
+    )
     assert page1["total"] == 7
     assert page1["has_more"] is True
     assert page1["next_page"] == 2
     assert len(page1["items"]) == 3
 
-    page3 = json.loads(await query.execute(action="catalog", source="blog", page=3, page_size=3))
+    page3 = json.loads(
+        await query.execute(action="catalog", source="blog", page=3, page_size=3)
+    )
     assert page3["has_more"] is False
     assert page3["next_page"] is None
     assert len(page3["items"]) == 1

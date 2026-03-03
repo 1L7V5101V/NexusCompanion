@@ -6,11 +6,13 @@ import math
 import random as _random_module
 import re
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
-from agent.memory import MemoryStore
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
+
 from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
@@ -93,7 +95,7 @@ class DefaultSensePort:
         sessions: SessionManager,
         state: ProactiveStateStore,
         item_filter: Any,
-        memory: MemoryStore | None,
+        memory: "MemoryPort | None",
         presence: PresenceStore | None,
         schedule: ScheduleStore | None,
         rng: Any,

@@ -12,6 +12,7 @@ NovelKBFeedSource — 将 novel-reader KB 的 chunk 摘要作为 FeedItem 暴露
 将摘要文本包装成 FeedItem 返回。
 去重由 ProactiveLoop 的 seen_items（14天）+ 语义去重统一负责。
 """
+
 from __future__ import annotations
 
 import json
@@ -20,11 +21,12 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core.common.timekit import parse_iso as _parse_iso
 from feeds.base import FeedItem, FeedSource, FeedSubscription
 
 logger = logging.getLogger(__name__)
 
-_SUMMARY_MAX_CHARS = 400   # FeedItem.content 截断长度
+_SUMMARY_MAX_CHARS = 400  # FeedItem.content 截断长度
 
 
 class NovelKBFeedSource(FeedSource):
@@ -63,7 +65,9 @@ class NovelKBFeedSource(FeedSource):
             return []
 
         # 按 created_at 倒序，取最新 N 条
-        recent = sorted(chunks, key=lambda c: c.get("created_at", ""), reverse=True)[:limit]
+        recent = sorted(chunks, key=lambda c: c.get("created_at", ""), reverse=True)[
+            :limit
+        ]
 
         items: list[FeedItem] = []
         kb_name = self._kb_root.name
@@ -99,15 +103,17 @@ class NovelKBFeedSource(FeedSource):
             # url 字段作为去重 key；格式固定，不依赖文件路径
             stable_url = f"novel://{kb_name}/{chunk_id}"
 
-            items.append(FeedItem(
-                source_name=self._sub.name,
-                source_type="novel-kb",
-                title=f"[{self._sub.name}·{segment}] {chunk_id}",
-                content=content,
-                url=stable_url,
-                author=None,
-                published_at=published_at,
-            ))
+            items.append(
+                FeedItem(
+                    source_name=self._sub.name,
+                    source_type="novel-kb",
+                    title=f"[{self._sub.name}·{segment}] {chunk_id}",
+                    content=content,
+                    url=stable_url,
+                    author=None,
+                    published_at=published_at,
+                )
+            )
 
         return items
 
@@ -120,7 +126,7 @@ def _resolve_kb_root(url: str) -> Path | None:
     if not url:
         return None
     if url.startswith("file://"):
-        path_str = url[len("file://"):]
+        path_str = url[len("file://") :]
     else:
         path_str = url
     p = Path(path_str)
@@ -148,15 +154,3 @@ def _extract_body(text: str, max_chars: int) -> str:
     if len(body) <= max_chars:
         return body
     return body[:max_chars].rstrip() + "…"
-
-
-def _parse_iso(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None

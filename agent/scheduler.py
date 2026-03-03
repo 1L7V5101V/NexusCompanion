@@ -12,8 +12,8 @@ Scheduler: 定时任务核心模块
   JobStore           — JSON 持久化
   SchedulerService   — 主调度服务（asyncio tick 循环）
 """
+
 import asyncio
-import json
 import logging
 import re
 import statistics
@@ -27,10 +27,14 @@ from typing import Any, Callable
 
 from zoneinfo import ZoneInfo
 
+from core.common.timekit import parse_iso as _parse_iso
+from infra.persistence.json_store import load_json, save_json
+
 logger = logging.getLogger(__name__)
 
 
 # ── LatencyTracker ───────────────────────────────────────────────
+
 
 class LatencyTracker:
     """滑动窗口 P90 延迟追踪，用于 SOFT tier 预触发偏移量自适应。"""
@@ -52,7 +56,7 @@ class LatencyTracker:
 
 # ── Time Parsing ─────────────────────────────────────────────────
 
-_DURATION_RE = re.compile(r'^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$')
+_DURATION_RE = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
 
 
 def parse_duration(s: str) -> timedelta:
@@ -76,7 +80,7 @@ def parse_when_at(
     s = s.strip()
 
     # HH:MM 格式
-    if re.match(r'^\d{1,2}:\d{2}$', s):
+    if re.match(r"^\d{1,2}:\d{2}$", s):
         now = now_fn()
         t = datetime.strptime(s, "%H:%M").time()
         dt = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
@@ -109,6 +113,7 @@ def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
     # APScheduler 3.x 兼容：优先用 pytz，回退到 ZoneInfo
     try:
         import pytz
+
         tzinfo = pytz.timezone(tz)
     except Exception:
         tzinfo = ZoneInfo(tz)
@@ -124,6 +129,7 @@ def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
 
 
 # ── fire_at Computation ──────────────────────────────────────────
+
 
 def compute_fire_at(
     trigger: str,
@@ -181,32 +187,32 @@ def compute_actual_trigger(
 
 # ── ScheduledJob ─────────────────────────────────────────────────
 
+
 @dataclass
 class ScheduledJob:
-    trigger: str           # "at" | "after" | "every"
-    tier: str              # "instant" | "soft"
-    fire_at: datetime      # 下次名义触发时间（UTC-aware）
+    trigger: str  # "at" | "after" | "every"
+    tier: str  # "instant" | "soft"
+    fire_at: datetime  # 下次名义触发时间（UTC-aware）
     channel: str
     chat_id: str
 
-    interval_seconds: int | None = None   # every + interval 模式
-    cron_expr: str | None = None          # every + cron 模式
+    interval_seconds: int | None = None  # every + interval 模式
+    cron_expr: str | None = None  # every + cron 模式
 
-    message: str | None = None            # instant tier
-    prompt: str | None = None             # soft tier
+    message: str | None = None  # instant tier
+    prompt: str | None = None  # soft tier
 
     name: str | None = None
     timezone: str = "UTC"
 
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     run_count: int = 0
     enabled: bool = True
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 # ── JobStore ─────────────────────────────────────────────────────
+
 
 class JobStore:
     """JSON 文件持久化，读写 ScheduledJob 列表。"""
@@ -216,21 +222,19 @@ class JobStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> list[ScheduledJob]:
-        if not self.path.exists():
-            return []
+        # 1. 读取原始列表
+        raw = load_json(self.path, default=[], domain="job_store")
+
+        # 2. 反序列化
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
             return [self._from_dict(d) for d in raw]
         except Exception as e:
-            logger.warning(f"JobStore load failed: {e}")
+            logger.warning("[job_store] 反序列化失败: %s", e)
             return []
 
     def save(self, jobs: dict[str, ScheduledJob]) -> None:
         data = [self._to_dict(j) for j in jobs.values()]
-        self.path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        save_json(self.path, data, domain="job_store")
 
     # ── private ──
 
@@ -248,13 +252,11 @@ class JobStore:
 
     @staticmethod
     def _parse_dt(s: str) -> datetime:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+        return _parse_iso(s) or datetime.now(timezone.utc)
 
 
 # ── SchedulerService ─────────────────────────────────────────────
+
 
 class SchedulerService:
     """
@@ -372,7 +374,9 @@ class SchedulerService:
             actual_trigger = compute_actual_trigger(job.fire_at, job.tier, self.tracker)
             if actual_trigger <= now:
                 label = job.name or job.id[:8]
-                logger.info(f"[scheduler] 触发任务 {label!r}  tier={job.tier}  channel={job.channel}:{job.chat_id}")
+                logger.info(
+                    f"[scheduler] 触发任务 {label!r}  tier={job.tier}  channel={job.channel}:{job.chat_id}"
+                )
                 self._in_flight.add(job.id)
                 asyncio.create_task(self._execute_and_reschedule(job))
 
@@ -411,7 +415,9 @@ class SchedulerService:
             )
             elapsed = time.monotonic() - t0
             self.tracker.record(elapsed)
-            logger.info(f"[scheduler] soft AI 完成 {label!r}  耗时={elapsed:.1f}s  P90={self.tracker.lead:.1f}s")
+            logger.info(
+                f"[scheduler] soft AI 完成 {label!r}  耗时={elapsed:.1f}s  P90={self.tracker.lead:.1f}s"
+            )
             if content:
                 result = await self.push_tool.execute(
                     channel=job.channel,

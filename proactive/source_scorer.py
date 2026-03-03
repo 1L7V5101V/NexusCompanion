@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
 
+from core.common.timekit import utcnow as _utcnow
 from feeds.base import FeedSubscription
+from infra.persistence.json_store import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -272,22 +274,16 @@ class SourceScorer:
         """懒加载缓存文件到内存。"""
         if self._cache:
             return
-        if not self._cache_path.exists():
-            self._cache = {"version": _CACHE_VERSION, "sources_hash": "", "scores": {}}
-            return
-        try:
-            data = json.loads(self._cache_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("version") == _CACHE_VERSION:
-                self._cache = data
-            else:
+
+        # 1. 读取磁盘数据
+        data = load_json(self._cache_path, default=None, domain="source_scorer")
+
+        # 2. 版本校验，不匹配则丢弃旧缓存
+        if isinstance(data, dict) and data.get("version") == _CACHE_VERSION:
+            self._cache = data
+        else:
+            if data is not None:
                 logger.warning("[source_scorer] 缓存版本不匹配，忽略旧缓存")
-                self._cache = {
-                    "version": _CACHE_VERSION,
-                    "sources_hash": "",
-                    "scores": {},
-                }
-        except Exception as e:
-            logger.warning("[source_scorer] 缓存读取失败: %s", e)
             self._cache = {"version": _CACHE_VERSION, "sources_hash": "", "scores": {}}
 
     def _update_cache(self, sources_hash: str, scores: dict[str, float]) -> None:
@@ -295,22 +291,14 @@ class SourceScorer:
         self._cache = {
             "version": _CACHE_VERSION,
             "sources_hash": sources_hash,
-            "scored_at": datetime.now(timezone.utc).isoformat(),
+            "scored_at": _utcnow().isoformat(),
             "scores": scores,
         }
         self._save_cache()
 
     def _save_cache(self) -> None:
         """将内存缓存写入文件。"""
-        try:
-            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self._cache_path.write_text(
-                json.dumps(self._cache, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            logger.debug("[source_scorer] 缓存已写入 path=%s", self._cache_path)
-        except Exception as e:
-            logger.warning("[source_scorer] 缓存写入失败: %s", e)
+        save_json(self._cache_path, self._cache, domain="source_scorer")
 
 
 # ── helpers ──────────────────────────────────────────────────────────

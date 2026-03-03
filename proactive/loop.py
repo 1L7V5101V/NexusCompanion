@@ -21,10 +21,12 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
 
 from agent.provider import LLMProvider
-from agent.memory import MemoryStore
 from agent.tools.message_push import MessagePushTool
 from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
@@ -212,7 +214,7 @@ class ProactiveLoop:
         max_tokens: int = 1024,
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
-        memory_store: MemoryStore | None = None,
+        memory_store: "MemoryPort | None" = None,
         presence: PresenceStore | None = None,
         schedule: ScheduleStore | None = None,
         rng: _random_module.Random | None = None,
@@ -362,13 +364,15 @@ class ProactiveLoop:
         _fitbit_provider = None
         if getattr(self._cfg, "fitbit_enabled", False):
             from proactive.fitbit_sleep import FitbitSleepProvider
+
             _fitbit_provider = FitbitSleepProvider(
                 url=self._cfg.fitbit_url,
                 poll_interval=self._cfg.fitbit_poll_seconds,
             )
             logger.info(
                 "[proactive] FitbitSleepProvider 已启动 url=%s interval=%ds",
-                self._cfg.fitbit_url, self._cfg.fitbit_poll_seconds,
+                self._cfg.fitbit_url,
+                self._cfg.fitbit_poll_seconds,
             )
         self._sense = DefaultSensePort(
             cfg=self._cfg,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import math
 import random as _random_module
@@ -9,28 +8,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from core.common.timekit import parse_iso as _parse_iso, safe_zone as _safe_zone
+from infra.persistence.json_store import atomic_save_json, load_json
+
 logger = logging.getLogger(__name__)
-
-
-def _safe_zone(name: str) -> ZoneInfo:
-    """解析时区，非法时区回退到 UTC 并记录警告。"""
-    try:
-        return ZoneInfo(name)
-    except Exception:
-        logger.warning("[anyaction] 无效时区 %r，回退到 UTC", name)
-        return ZoneInfo("UTC")
-
-
-def _parse_iso(ts: str | None) -> datetime | None:
-    if not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
 
 
 @dataclass
@@ -106,24 +87,9 @@ class QuotaStore:
         self._save()
 
     def _load(self) -> dict:
-        if not self.path.exists():
-            return {
-                "version": 1,
-                "window_key": "",
-                "next_reset_at": "",
-                "used": 0,
-                "last_action_at": "",
-            }
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            return {
-                "version": int(raw.get("version", 1)),
-                "window_key": str(raw.get("window_key", "")),
-                "next_reset_at": str(raw.get("next_reset_at", "")),
-                "used": int(raw.get("used", 0)),
-                "last_action_at": str(raw.get("last_action_at", "")),
-            }
-        except Exception:
+        # 1. 读取磁盘数据
+        raw = load_json(self.path, default=None, domain="anyaction.quota")
+        if raw is None:
             return {
                 "version": 1,
                 "window_key": "",
@@ -132,12 +98,17 @@ class QuotaStore:
                 "last_action_at": "",
             }
 
+        # 2. 规范化字段
+        return {
+            "version": int(raw.get("version", 1)),
+            "window_key": str(raw.get("window_key", "")),
+            "next_reset_at": str(raw.get("next_reset_at", "")),
+            "used": int(raw.get("used", 0)),
+            "last_action_at": str(raw.get("last_action_at", "")),
+        }
+
     def _save(self) -> None:
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(
-            json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        tmp.replace(self.path)
+        atomic_save_json(self.path, self._state, domain="anyaction.quota")
 
 
 class AnyActionGate:

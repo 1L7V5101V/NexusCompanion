@@ -11,30 +11,27 @@ skill_action_tool.py — LLM 管理后台 skill actions 的工具
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any
 
 from agent.tools.base import Tool
+from infra.persistence.json_store import atomic_save_json, load_json
 
 logger = logging.getLogger(__name__)
 
+_DOMAIN = "skill_action_tool"
+
 
 def _load(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {"version": 1, "actions": []}
+    data = load_json(path, default=None, domain=_DOMAIN)
+    if not isinstance(data, dict):
+        return {"version": 1, "actions": []}
+    return data
 
 
 def _save(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_save_json(path, data, domain=_DOMAIN)
 
 
 class SkillActionRegisterTool(Tool):

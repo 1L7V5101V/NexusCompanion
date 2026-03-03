@@ -2,6 +2,7 @@
 LLM Provider — OpenAI 兼容格式
 支持所有兼容 OpenAI Chat Completions API 的服务：DeepSeek、Qwen、OpenAI 等。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,8 +16,8 @@ logger = logging.getLogger(__name__)
 # 安全审查错误码（各厂商）
 _SAFETY_ERROR_CODES = {
     "data_inspection_failed",  # Qwen / DashScope
-    "content_filter",          # Azure OpenAI
-    "content_policy_violation", # OpenAI
+    "content_filter",  # Azure OpenAI
+    "content_policy_violation",  # OpenAI
 }
 
 
@@ -38,14 +39,13 @@ class LLMResponse:
 
 
 class LLMProvider:
-
     def __init__(
         self,
         api_key: str,
         base_url: str | None = None,
         system_prompt: str = "",
         extra_body: dict | None = None,
-        request_timeout_s: float = 180.0,
+        request_timeout_s: float = 90.0,
         max_retries: int = 1,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -66,7 +66,8 @@ class LLMProvider:
         already_has_system = messages and messages[0].get("role") == "system"
         full_messages = (
             [{"role": "system", "content": self._system}, *messages]
-            if self._system and not already_has_system else messages
+            if self._system and not already_has_system
+            else messages
         )
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
@@ -81,11 +82,13 @@ class LLMProvider:
         tool_calls = []
         if msg.tool_calls:
             for tc in msg.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
-                ))
+                tool_calls.append(
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=json.loads(tc.function.arguments),
+                    )
+                )
 
         return LLMResponse(content=msg.content, tool_calls=tool_calls)
 

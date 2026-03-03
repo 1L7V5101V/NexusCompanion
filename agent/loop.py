@@ -5,9 +5,9 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
-from agent.memory import MemoryStore
 from bus.events import InboundMessage, OutboundMessage
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -15,6 +15,9 @@ from agent.provider import ContentSafetyError, LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 from proactive.presence import PresenceStore
+
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
 
 # 安全拦截时递减历史窗口的倍率序列：全量 → 减半 → 清空
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
@@ -69,13 +72,13 @@ class AgentLoop:
         memorizer=None,
         retriever=None,
         disable_full_memory: bool = False,
+        memory_port: "MemoryPort | None" = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
         self.tools = tools
         self.session_manager = session_manager
         self.workspace = workspace
-        self.context = ContextBuilder(workspace)
         self.model = model
         # light_model / light_provider 保留接口兼容，不再用于 self-check
         self.light_model = light_model or model
@@ -87,9 +90,27 @@ class AgentLoop:
         self._running = False
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
         self._processing_state = processing_state
+        self._disable_full_memory = disable_full_memory
+
+        # 1. Build or accept a unified MemoryPort
+        if memory_port is not None:
+            self._memory_port = memory_port
+        else:
+            from agent.memory import MemoryStore
+            from core.memory.port import DefaultMemoryPort
+
+            self._memory_port: "MemoryPort" = DefaultMemoryPort(
+                MemoryStore(workspace),
+                memorizer=memorizer,
+                retriever=retriever,
+            )
+
+        # 2. Wire ContextBuilder with the unified memory port
+        self.context = ContextBuilder(workspace, memory=self._memory_port)
+
+        # 3. Keep legacy references for callers that may still use them directly
         self._memorizer = memorizer
         self._retriever = retriever
-        self._disable_full_memory = disable_full_memory
 
     async def run(self) -> None:
         self._running = True
@@ -214,6 +235,9 @@ class AgentLoop:
                 result.append(name)
         return result
 
+    # 单条消息处理的总超时（秒）。覆盖工具挂起、LLM 超时累积等极端场景。
+    _MESSAGE_TIMEOUT_S: float = 300.0
+
     async def _process(
         self, msg: InboundMessage, session_key: str | None = None
     ) -> OutboundMessage:
@@ -224,7 +248,20 @@ class AgentLoop:
         if self._processing_state:
             self._processing_state.enter(key)
         try:
-            return await self._process_inner(msg, key)
+            return await asyncio.wait_for(
+                self._process_inner(msg, key),
+                timeout=self._MESSAGE_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"消息处理超时 ({self._MESSAGE_TIMEOUT_S}s)  "
+                f"channel={msg.channel} chat_id={msg.chat_id}"
+            )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="（处理超时，请重试）",
+            )
         finally:
             if self._processing_state:
                 self._processing_state.exit(key)
@@ -249,14 +286,13 @@ class AgentLoop:
 
         # memory v2 检索
         retrieved_block = ""
-        if self._retriever:
-            try:
-                items = await self._retriever.retrieve(msg.content)
-                retrieved_block = self._retriever.format_injection_block(items)
-                if retrieved_block:
-                    logger.info(f"memory2 retrieve: {len(items)} 条命中，注入检索块")
-            except Exception as e:
-                logger.warning(f"memory2 retrieve 失败，跳过: {e}")
+        try:
+            items = await self._memory_port.retrieve_related(msg.content)
+            retrieved_block = self._memory_port.format_injection_block(items)
+            if retrieved_block:
+                logger.info(f"memory2 retrieve: {len(items)} 条命中，注入检索块")
+        except Exception as e:
+            logger.warning(f"memory2 retrieve 失败，跳过: {e}")
 
         self._set_tool_context(msg.channel, msg.chat_id)
         final_content, tools_used, tool_chain = await self._run_with_safety_retry(
@@ -412,7 +448,7 @@ class AgentLoop:
                        If False, only write to files without modifying session.
         """
 
-        memory = MemoryStore(self.workspace)
+        memory = self._memory_port
         if archive_all:
             old_messages = list(session.messages)
             keep_count = 0
@@ -580,26 +616,25 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                         f"Memory consolidation: appended {len(insight_lines)} self_insights to PENDING"
                     )
 
-            # memory v2 写入（非阻塞）
-            if self._memorizer:
-                behavior_updates = result.get("behavior_updates", [])
-                history_entry = result.get("history_entry", "")
-                _source_ref = (
-                    f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
-                    if not archive_all
-                    else f"{session.key}@archive_all"
+            # memory v2 写入（非阻塞）：通过 MemoryPort 统一写口
+            behavior_updates = result.get("behavior_updates", [])
+            history_entry = result.get("history_entry", "")
+            _source_ref = (
+                f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
+                if not archive_all
+                else f"{session.key}@archive_all"
+            )
+            asyncio.create_task(
+                self._memory_port.save_from_consolidation(
+                    history_entry=history_entry,
+                    behavior_updates=behavior_updates
+                    if isinstance(behavior_updates, list)
+                    else [],
+                    source_ref=_source_ref,
+                    scope_channel=getattr(session, "_channel", ""),
+                    scope_chat_id=getattr(session, "_chat_id", ""),
                 )
-                asyncio.create_task(
-                    self._memorizer.save_from_consolidation(
-                        history_entry=history_entry,
-                        behavior_updates=behavior_updates
-                        if isinstance(behavior_updates, list)
-                        else [],
-                        source_ref=_source_ref,
-                        scope_channel=getattr(session, "_channel", ""),
-                        scope_chat_id=getattr(session, "_chat_id", ""),
-                    )
-                )
+            )
 
             if archive_all:
                 session.last_consolidated = 0

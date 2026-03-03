@@ -2,6 +2,7 @@
 RSS/Atom 信息源。支持 RSS 2.0 和 Atom 1.0 格式。
 使用 httpx（已有依赖）+ 标准库 xml.etree.ElementTree。
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,13 +15,14 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
+from core.common.timekit import parse_iso as _parse_iso
 from feeds.base import FeedItem, FeedSource, FeedSubscription
 
 logger = logging.getLogger(__name__)
 
 _ATOM_NS = "http://www.w3.org/2005/Atom"
 _TIMEOUT = 15.0
-_MAX_CONTENT = 300   # 正文截断字数
+_MAX_CONTENT = 300  # 正文截断字数
 
 
 class RSSFeedSource(FeedSource):
@@ -47,7 +49,9 @@ class RSSFeedSource(FeedSource):
                 text = Path(local_path).read_text(encoding="utf-8")
                 return self._parse(text, limit)
             except Exception as e:
-                logger.warning(f"RSS local file read error [{self._sub.name}] path={local_path!r}: {e}")
+                logger.warning(
+                    f"RSS local file read error [{self._sub.name}] path={local_path!r}: {e}"
+                )
                 return []
         if "xcancel.com" in self._sub.url:
             return await self._fetch_via_curl(limit)
@@ -66,19 +70,29 @@ class RSSFeedSource(FeedSource):
     async def _fetch_via_curl(self, limit: int) -> list[FeedItem]:
         """对 xcancel 等需要特定 TLS 指纹的源，使用系统 curl 获取。"""
         import asyncio
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                "curl", "-s", "-L",
-                "--max-time", str(int(_TIMEOUT)),
-                "-A", "FreshRSS/1.24.0",
-                "-H", "Accept: */*",
+                "curl",
+                "-s",
+                "-L",
+                "--max-time",
+                str(int(_TIMEOUT)),
+                "-A",
+                "FreshRSS/1.24.0",
+                "-H",
+                "Accept: */*",
                 self._sub.url,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT + 5)
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=_TIMEOUT + 5
+            )
             if proc.returncode != 0:
-                logger.warning(f"curl 请求失败 [{self._sub.name}] rc={proc.returncode} err={stderr.decode()[:200]}")
+                logger.warning(
+                    f"curl 请求失败 [{self._sub.name}] rc={proc.returncode} err={stderr.decode()[:200]}"
+                )
                 return []
             return self._parse(stdout.decode("utf-8", errors="replace"), limit)
         except Exception as e:
@@ -88,7 +102,9 @@ class RSSFeedSource(FeedSource):
     def _parse(self, xml_text: str, limit: int) -> list[FeedItem]:
         xml_text = _normalize_xml_text(xml_text)
         if _is_xcancel_whitelist_feed(xml_text):
-            logger.warning(f"RSS source blocked by xcancel whitelist [{self._sub.name}]")
+            logger.warning(
+                f"RSS source blocked by xcancel whitelist [{self._sub.name}]"
+            )
             return []
         try:
             root = ET.fromstring(xml_text)
@@ -114,15 +130,17 @@ class RSSFeedSource(FeedSource):
             author = _text(item, "author") or _text(item, "dc:creator")
             pub_date = _parse_rfc822(_text(item, "pubDate"))
             content = _strip_html(desc)[:_MAX_CONTENT]
-            items.append(FeedItem(
-                source_name=self._sub.name,
-                source_type="rss",
-                title=title,
-                content=content,
-                url=link,
-                author=author,
-                published_at=pub_date,
-            ))
+            items.append(
+                FeedItem(
+                    source_name=self._sub.name,
+                    source_type="rss",
+                    title=title,
+                    content=content,
+                    url=link,
+                    author=author,
+                    published_at=pub_date,
+                )
+            )
         return items
 
     def _parse_atom(self, feed: ET.Element, limit: int) -> list[FeedItem]:
@@ -152,19 +170,22 @@ class RSSFeedSource(FeedSource):
             )
             published_at = _parse_iso(updated_str)
             content = _strip_html(summary)[:_MAX_CONTENT]
-            items.append(FeedItem(
-                source_name=self._sub.name,
-                source_type="rss",
-                title=title,
-                content=content,
-                url=link,
-                author=author,
-                published_at=published_at,
-            ))
+            items.append(
+                FeedItem(
+                    source_name=self._sub.name,
+                    source_type="rss",
+                    title=title,
+                    content=content,
+                    url=link,
+                    author=author,
+                    published_at=published_at,
+                )
+            )
         return items
 
 
 # ── helpers ──────────────────────────────────────────────────────
+
 
 def _text(el: ET.Element, tag: str) -> str | None:
     child = el.find(tag)
@@ -192,18 +213,6 @@ def _parse_rfc822(s: str | None) -> datetime | None:
         return None
     try:
         return parsedate_to_datetime(s)
-    except Exception:
-        return None
-
-
-def _parse_iso(s: str) -> datetime | None:
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
     except Exception:
         return None
 

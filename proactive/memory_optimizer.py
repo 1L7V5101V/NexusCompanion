@@ -14,9 +14,11 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
-from agent.memory import MemoryStore
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
+
 from agent.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -99,9 +101,7 @@ _SELF_PROMPT = """\
 {history}
 """
 
-_NOW_CLEANUP_SYSTEM = (
-    "你是记忆管理助手，负责清理 NOW.md 中已过期或已完成的条目。"
-)
+_NOW_CLEANUP_SYSTEM = "你是记忆管理助手，负责清理 NOW.md 中已过期或已完成的条目。"
 
 _NOW_CLEANUP_PROMPT = """\
 今天日期：{today}
@@ -137,7 +137,9 @@ def _parse_cleanup_json(text: str) -> tuple[list[str], list[str]]:
         return [], []
 
 
-def _remove_items_from_section(text: str, section_header: str, items_to_remove: list[str]) -> str:
+def _remove_items_from_section(
+    text: str, section_header: str, items_to_remove: list[str]
+) -> str:
     """从 NOW.md 指定 section 中删除匹配的 bullet 条目。"""
     if not items_to_remove:
         return text
@@ -162,12 +164,19 @@ def _remove_items_from_section(text: str, section_header: str, items_to_remove: 
 class MemoryOptimizer:
     def __init__(
         self,
-        memory: MemoryStore,
+        memory: "MemoryPort",
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,
         history_max_chars: int = 6000,
     ) -> None:
+        # Auto-wrap bare MemoryStore in DefaultMemoryPort for backward compat
+        from agent.memory import MemoryStore as _MemoryStore
+
+        if isinstance(memory, _MemoryStore):
+            from core.memory.port import DefaultMemoryPort
+
+            memory = DefaultMemoryPort(memory)
         self._memory = memory
         self._provider = provider
         self._model = model
@@ -189,12 +198,18 @@ class MemoryOptimizer:
             logger.info("[memory_optimizer] 记忆、pending 和历史均为空，跳过优化")
             return
 
-        merged_memory = await self._merge_memory(current_memory, pending, recent_history)
+        merged_memory = await self._merge_memory(
+            current_memory, pending, recent_history
+        )
         if merged_memory:
             if current_memory:
-                self._memory.memory_file.with_suffix(".md.bak").write_text(
-                    current_memory, encoding="utf-8"
-                )
+                # Back up MEMORY.md via the underlying v1 store's file path
+                v1 = getattr(self._memory, "_v1_store", self._memory)
+                memory_file = getattr(v1, "memory_file", None)
+                if memory_file is not None:
+                    memory_file.with_suffix(".md.bak").write_text(
+                        current_memory, encoding="utf-8"
+                    )
             self._memory.write_long_term(merged_memory)
             logger.info(
                 "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
@@ -209,7 +224,9 @@ class MemoryOptimizer:
             logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
         else:
             self._memory.rollback_pending_snapshot()
-            logger.warning("[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚")
+            logger.warning(
+                "[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚"
+            )
 
         effective_memory = merged_memory or current_memory
 
@@ -299,11 +316,15 @@ class MemoryOptimizer:
                 model=self._model,
                 max_tokens=256,
             )
-            remove_ongoing, remove_pending_items = _parse_cleanup_json(resp.content or "")
+            remove_ongoing, remove_pending_items = _parse_cleanup_json(
+                resp.content or ""
+            )
             if remove_ongoing or remove_pending_items:
                 text = self._memory.read_now()
                 text = _remove_items_from_section(text, "## 近期进行中", remove_ongoing)
-                text = _remove_items_from_section(text, "## 待确认事项", remove_pending_items)
+                text = _remove_items_from_section(
+                    text, "## 待确认事项", remove_pending_items
+                )
                 self._memory.write_now(text)
                 logger.info(
                     "[memory_optimizer] NOW.md 清理完成: ongoing=%d pending=%d",
@@ -315,12 +336,7 @@ class MemoryOptimizer:
 
     def _read_recent_history(self) -> str:
         try:
-            if not self._memory.history_file.exists():
-                return ""
-            text = self._memory.history_file.read_text(encoding="utf-8")
-            if len(text) > self._history_max_chars:
-                return text[-self._history_max_chars:]
-            return text
+            return self._memory.read_history(max_chars=self._history_max_chars)
         except Exception:
             return ""
 

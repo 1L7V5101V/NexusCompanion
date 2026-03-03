@@ -3,20 +3,31 @@ import mimetypes
 import platform
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from agent.memory import MemoryStore
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
 from agent.skills import SkillsLoader
+
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
 
 
 class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, memory: "MemoryPort | None" = None):
+        # 1. Store workspace and skills loader
         self.workspace = workspace
-        self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+
+        # 2. Accept injected MemoryPort, or fall back to a v1-only DefaultMemoryPort
+        if memory is not None:
+            self.memory = memory
+        else:
+            from agent.memory import MemoryStore
+            from core.memory.port import DefaultMemoryPort
+
+            self.memory = DefaultMemoryPort(MemoryStore(workspace))
 
     def build_system_prompt(
         self,

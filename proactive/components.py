@@ -5,9 +5,11 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from agent.memory import MemoryStore
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
+
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.base import Tool
@@ -42,7 +44,7 @@ class ProactiveReflector:
         model: str,
         max_tokens: int,
         cfg: Any,
-        memory_store: MemoryStore | None,
+        memory_store: "MemoryPort | None",
         presence: PresenceStore | None,
         hooks: ReflectHooks,
     ) -> None:
