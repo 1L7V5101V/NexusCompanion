@@ -1,6 +1,7 @@
 """
 WebFetch 工具
 """
+
 import ipaddress
 import json
 from typing import Any
@@ -14,15 +15,16 @@ from lxml.etree import ParserError
 from agent.tools.base import Tool
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5MB，与 OpenCode 一致
-_DEFAULT_TIMEOUT = 30          # 秒
-_MAX_TIMEOUT = 120             # 秒，与 OpenCode 一致
+_DEFAULT_TIMEOUT = 30  # 秒
+_MAX_TIMEOUT = 120  # 秒，与 OpenCode 一致
 _USER_AGENT = "akasic/1.0"
+_MAX_TEXT_CHARS = 50_000  # 返回给 LLM 的文本字符上限（约 ~12K tokens）
 
 # 根据 format 设置 Accept header，引导服务端返回更合适的格式
 _ACCEPT = {
     "markdown": "text/markdown;q=1.0, text/x-markdown;q=0.9, text/plain;q=0.8, text/html;q=0.7, */*;q=0.1",
-    "text":     "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
-    "html":     "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1",
+    "text": "text/plain;q=1.0, text/markdown;q=0.9, text/html;q=0.8, */*;q=0.1",
+    "html": "text/html;q=1.0, application/xhtml+xml;q=0.9, text/plain;q=0.8, */*;q=0.1",
 }
 
 
@@ -70,7 +72,9 @@ class WebFetchTool(Tool):
             return _err(url, ssrf_err)
 
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=timeout
+            ) as client:
                 resp = await client.get(
                     url,
                     headers={
@@ -101,6 +105,21 @@ class WebFetchTool(Tool):
         content_type = resp.headers.get("content-type", "")
         encoding = resp.encoding or "utf-8"
         is_html = "text/html" in content_type
+        is_binary = any(
+            ct in content_type
+            for ct in (
+                "application/pdf",
+                "application/octet-stream",
+                "image/",
+                "video/",
+                "audio/",
+            )
+        )
+
+        if is_binary:
+            return _err(
+                url, f"不支持二进制内容（{content_type}），请使用能处理该格式的专用工具"
+            )
 
         if fmt == "html":
             text = body.decode(encoding, errors="replace")
@@ -112,21 +131,32 @@ class WebFetchTool(Tool):
             # 非 HTML 内容（JSON、纯文本等）直接返回原文
             text = body.decode(encoding, errors="replace")
 
-        return json.dumps(
-            {
-                "url": url,
-                "final_url": str(resp.url),
-                "status": resp.status_code,
-                "content_type": content_type,
-                "format": fmt,
-                "length": len(text),
-                "text": text,
-            },
-            ensure_ascii=False,
-        )
+        # 截断过长文本，避免撑爆 LLM 上下文
+        truncated = False
+        if len(text) > _MAX_TEXT_CHARS:
+            text = text[:_MAX_TEXT_CHARS]
+            truncated = True
+
+        result: dict[str, Any] = {
+            "url": url,
+            "final_url": str(resp.url),
+            "status": resp.status_code,
+            "content_type": content_type,
+            "format": fmt,
+            "length": len(text),
+            "text": text,
+        }
+        if truncated:
+            result["truncated"] = True
+            result["note"] = (
+                f"内容已截断至 {_MAX_TEXT_CHARS} 字符，如需更多内容请缩小范围或使用其他工具"
+            )
+
+        return json.dumps(result, ensure_ascii=False)
 
 
 # ── 模块级工具函数 ────────────────────────────────────────────
+
 
 def _err(url: str, msg: str) -> str:
     return json.dumps({"error": msg, "url": url}, ensure_ascii=False)
@@ -153,8 +183,8 @@ def _to_markdown(raw_html: str) -> str:
     h = html2text.HTML2Text()
     h.ignore_links = False
     h.ignore_images = False
-    h.body_width = 0        # 禁止自动折行
-    h.unicode_snob = True   # 保留 Unicode 字符
+    h.body_width = 0  # 禁止自动折行
+    h.unicode_snob = True  # 保留 Unicode 字符
     h.protect_links = True  # 防止链接被转义
     return h.handle(raw_html).strip()
 

@@ -46,6 +46,37 @@ _CLEANUP_PROMPT = (
     "你必须调用 {tool_name}，如实汇报当前进度（已完成的步骤、产出路径、未完成的原因）。"
 )
 _WARN_THRESHOLD = 5  # 剩余步数 <= 此值时开始提示
+_MAX_TOOL_RESULT_CHARS = 100_000  # 单条工具结果字符上限（约 ~25K tokens）
+_RECENT_TOOL_ROUNDS = 3  # 保留完整 tool result 的最近轮次数
+_CLEARED = "[已清除]"  # 旧 tool result 的占位符
+
+
+def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将旧轮次的 tool result 替换为占位符，防止长对话累积撑爆上下文。
+
+    保留最近 _RECENT_TOOL_ROUNDS 个 assistant(tool_calls) 轮次的完整结果；
+    更早轮次的 tool result 替换为 _CLEARED，保留因果结构供 LLM 理解调用链。
+    """
+    # 找到所有含 tool_calls 的 assistant 消息索引（即每轮工具调用的起点）
+    tool_round_indices = [
+        i
+        for i, m in enumerate(messages)
+        if m.get("role") == "assistant" and m.get("tool_calls")
+    ]
+    if len(tool_round_indices) <= _RECENT_TOOL_ROUNDS:
+        return messages  # 轮次不多，无需清理
+
+    # 需要清理的轮次边界：第 (len - _RECENT_TOOL_ROUNDS) 个之前的所有轮次
+    cutoff = tool_round_indices[-_RECENT_TOOL_ROUNDS]
+
+    out = []
+    for i, m in enumerate(messages):
+        if m.get("role") == "tool" and i < cutoff:
+            # 找到这条 tool 消息对应的 assistant 轮次起点（往前找最近的含 tool_calls 的 assistant）
+            out.append({**m, "content": _CLEARED})
+        else:
+            out.append(m)
+    return out
 
 
 class SubAgent:
@@ -97,7 +128,7 @@ class SubAgent:
         for iteration in range(self._max_iterations):
             try:
                 response = await self._provider.chat(
-                    messages=messages,
+                    messages=_trim_tool_results(messages),
                     tools=self._tool_schemas,
                     model=self._model,
                     max_tokens=self._max_tokens,
@@ -148,6 +179,18 @@ class SubAgent:
                     logger.info("[subagent] 工具结果 %s: %s", tc.name, result[:120])
                 else:
                     result = f"未知工具: {tc.name}"
+                # 兜底截断：防止超长结果撑爆 LLM 上下文
+                if len(result) > _MAX_TOOL_RESULT_CHARS:
+                    original_len = len(result)
+                    result = (
+                        result[:_MAX_TOOL_RESULT_CHARS]
+                        + f"\n...[结果已截断，原始长度 {original_len} 字符，超出上限 {_MAX_TOOL_RESULT_CHARS}]"
+                    )
+                    logger.warning(
+                        "[subagent] 工具结果 %s 过长已截断 original=%d",
+                        tc.name,
+                        original_len,
+                    )
                 messages.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": result}
                 )
@@ -199,7 +242,9 @@ class SubAgent:
                             "type": "function",
                             "function": {
                                 "name": tc.name,
-                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                                "arguments": json.dumps(
+                                    tc.arguments, ensure_ascii=False
+                                ),
                             },
                         }
                     ],
@@ -211,7 +256,9 @@ class SubAgent:
                     result = await tool.execute(**tc.arguments)
                 except Exception as e:
                     result = f"工具执行出错: {e}"
-                logger.info("[subagent] mandatory_exit %s 结果: %s", tc.name, str(result)[:120])
+                logger.info(
+                    "[subagent] mandatory_exit %s 结果: %s", tc.name, str(result)[:120]
+                )
             else:
                 result = f"未知工具: {tc.name}"
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})

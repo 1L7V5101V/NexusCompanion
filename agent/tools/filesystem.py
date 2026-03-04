@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 def _read_xlsx(file_path: Path) -> str:
     import openpyxl
+
     wb = openpyxl.load_workbook(file_path, data_only=True)
     parts = []
     for sheet in wb.sheetnames:
@@ -24,11 +25,18 @@ def _read_xlsx(file_path: Path) -> str:
             cells = [str(c) if c is not None else "" for c in row]
             if any(cells):
                 parts.append("\t".join(cells))
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    if len(text) > _XLSX_MAX_CHARS:
+        text = (
+            text[:_XLSX_MAX_CHARS]
+            + f"\n\n[已截断：表格内容过长，仅返回前 {_XLSX_MAX_CHARS} 字符]"
+        )
+    return text
 
 
 def _read_xls(file_path: Path) -> str:
     import xlrd
+
     wb = xlrd.open_workbook(str(file_path))
     parts = []
     for sheet in wb.sheets():
@@ -36,7 +44,13 @@ def _read_xls(file_path: Path) -> str:
         for row_idx in range(sheet.nrows):
             cells = [str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
             parts.append("\t".join(cells))
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    if len(text) > _XLSX_MAX_CHARS:
+        text = (
+            text[:_XLSX_MAX_CHARS]
+            + f"\n\n[已截断：表格内容过长，仅返回前 {_XLSX_MAX_CHARS} 字符]"
+        )
+    return text
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
@@ -47,7 +61,8 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     return resolved
 
 
-_READ_MAX_CHARS = 10_000   # 默认单次最多返回 10K 字符，大文件须分页读取
+_READ_MAX_CHARS = 10_000  # 默认单次最多返回 10K 字符，大文件须分页读取
+_XLSX_MAX_CHARS = 30_000  # xlsx/xls 表格内容上限（表格行通常比代码行长）
 
 
 class ReadFileTool(Tool):
@@ -114,7 +129,7 @@ class ReadFileTool(Tool):
             total_lines = len(lines)
 
             # 按行分页
-            sliced = lines[offset:] if limit is None else lines[offset: offset + limit]
+            sliced = lines[offset:] if limit is None else lines[offset : offset + limit]
             text = "".join(sliced)
 
             # 字符上限截断
@@ -133,7 +148,7 @@ class ReadFileTool(Tool):
                 )
             elif offset > 0 or limit is not None:
                 suffix_note = (
-                    f"\n\n[第 {offset+1}–{end_line} 行 / 共 {total_lines} 行]"
+                    f"\n\n[第 {offset + 1}–{end_line} 行 / 共 {total_lines} 行]"
                 )
             elif total_lines > len(sliced):
                 suffix_note = f"\n\n[共 {total_lines} 行]"
@@ -148,7 +163,9 @@ class ReadFileTool(Tool):
 class WriteFileTool(Tool):
     """将内容写入文件，自动创建所需的父目录。"""
 
-    def __init__(self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None):
+    def __init__(
+        self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None
+    ):
         self._allowed_dir = allowed_dir
         self._sop_indexer = sop_indexer
 
@@ -165,16 +182,10 @@ class WriteFileTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要写入的文件路径"
-                },
-                "content": {
-                    "type": "string",
-                    "description": "要写入的文本内容"
-                }
+                "path": {"type": "string", "description": "要写入的文件路径"},
+                "content": {"type": "string", "description": "要写入的文本内容"},
             },
-            "required": ["path", "content"]
+            "required": ["path", "content"],
         }
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
@@ -202,7 +213,9 @@ class WriteFileTool(Tool):
 class EditFileTool(Tool):
     """精确替换文件中的指定文本片段。"""
 
-    def __init__(self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None):
+    def __init__(
+        self, allowed_dir: Path | None = None, sop_indexer: "SopIndexer | None" = None
+    ):
         self._allowed_dir = allowed_dir
         self._sop_indexer = sop_indexer
 
@@ -219,23 +232,19 @@ class EditFileTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要编辑的文件路径"
-                },
+                "path": {"type": "string", "description": "要编辑的文件路径"},
                 "old_text": {
                     "type": "string",
-                    "description": "要查找并替换的原始文本（必须与文件内容完全一致）"
+                    "description": "要查找并替换的原始文本（必须与文件内容完全一致）",
                 },
-                "new_text": {
-                    "type": "string",
-                    "description": "替换后的新文本"
-                }
+                "new_text": {"type": "string", "description": "替换后的新文本"},
             },
-            "required": ["path", "old_text", "new_text"]
+            "required": ["path", "old_text", "new_text"],
         }
 
-    async def execute(self, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
+    async def execute(
+        self, path: str, old_text: str, new_text: str, **kwargs: Any
+    ) -> str:
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -289,12 +298,9 @@ class ListDirTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "要列举的目录路径"
-                }
+                "path": {"type": "string", "description": "要列举的目录路径"}
             },
-            "required": ["path"]
+            "required": ["path"],
         }
 
     async def execute(self, path: str, **kwargs: Any) -> str:
