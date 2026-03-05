@@ -325,11 +325,13 @@ class SkillActionRunner:
                     f"{action.task_prompt}"
                 )
             result = await subagent.run(augmented_prompt)
-            success = bool(result)
+            exit_reason = getattr(subagent, "last_exit_reason", "completed")
+            success = bool(result) and exit_reason == "completed"
             logger.info(
-                "[skill_action] agent 任务完成 id=%s success=%s result_len=%d",
+                "[skill_action] agent 任务完成 id=%s success=%s exit_reason=%s result_len=%d",
                 action.id,
                 success,
+                exit_reason,
                 len(result),
             )
             self._record_run(action.id, now, success=success)

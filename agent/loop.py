@@ -23,6 +23,8 @@ if TYPE_CHECKING:
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 # 单条工具结果的字符上限，防止大文件/长网页撑爆当轮上下文
 _MAX_TOOL_RESULT_CHARS = 100_000
+_TOOL_LOOP_REPEAT_LIMIT = 3  # 连续同签名工具调用达到该次数时判定循环
+_SUMMARY_MAX_TOKENS = 512
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
 【自检，无需在回复中说明，只用于内部决策】
-1. 用户原始消息在表达行为偏好/操作规范（以后遇到 X 就做 Y），且本轮尚未调用 memorize？若是，立即调用 memorize，不得推迟到回复后。
+1. 用户原始消息是否对 **agent（你）** 明确表达行为偏好/操作规范（要求 agent 以后遇到 X 就做 Y），且本轮尚未调用 memorize？注意：描述第三方行为规律、用户自述观察/印象，均不属于此类。若确认是对 agent 的指令，立即调用 memorize，不得推迟到回复后。
 2. 当前任务是否有匹配的技能尚未读取 SKILL.md？若有，必须先 read_file 读取完整指令再继续。
 2. 即将输出的结论是否有本轮工具返回的事实支撑？无支撑时允许合理推断，但必须显式标注“我推测/可能/更像是”，并保持可追溯到本轮事实；禁止把推断写成事实。
 3. 涉及用户状态/数据/画像的陈述，若未经本轮工具验证，禁止以事实语气输出。
@@ -41,12 +43,28 @@ _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 # 每轮对话开始前注入的初始自检提示，不应持久化到 session
 _PRE_FLIGHT_PROMPT = """【回复前必须完成以下自检，无需在回复中说明】
 0. 【SOP 优先级最高，强制执行】系统 prompt 中已通过向量检索注入了本轮相关 SOP 内容（见”【强制约束】”和”【流程规范】”段），直接参照执行，**无需再 read_file 读取 SOP 文件**。仅当用户明确要求新增/修改 SOP 时，才需要 read_file 读取对应文件。
-1. 用户是否在表达**行为偏好或操作规范**——即希望 agent 以后（不止这一次）按某种方式行动？判断标志：含「记住/以后/下次/每次/当我…的时候你要/你最好先…」等，或语义上是"我希望你以后遇到 X 就做 Y"。若是，**必须在本轮第一个工具调用中先执行 memorize**，写入该规则/偏好，再执行其他操作。禁止跳过 memorize 直接执行任务。
+1. 用户是否在对 **agent（你）** 表达行为偏好或操作规范——即明确要求 agent 以后按某种方式行动？判断标志：**主语必须是"你/agent"**，且含「记住/以后/下次/每次/你要/你最好/帮我…」等显式指令词。以下情况**不触发 memorize**：① 用户在描述第三方（大厂/竞品/他人）的行为规律；② 用户在陈述自己的观察/印象（"我印象里…""我觉得…"）；③ 纯粹的讨论/提问/知识分享。若满足触发条件，**必须在本轮第一个工具调用中先执行 memorize**，写入该规则/偏好，再执行其他操作。禁止跳过 memorize 直接执行任务。
 2. 用户是否要求执行某项操作，且该操作与 # Skills 中某个技能的描述明确匹配？若是，禁止在未调用工具的情况下直接回答——必须先 read_file 读取对应 SKILL.md，再按指令执行工具，最后基于工具返回结果作答。（注意：用户只是询问技能列表/能力范围，不触发此规则，直接根据摘要回答即可。）
 3. 用户问的内容是否需要实时/当前数据（订阅列表、天气、最新动态、用户状态等）？若需要，同样禁止凭记忆直接回答，必须本轮调用工具获取。
 4. 遇到”现在/当前/最新/今天/是否已发生”等时间敏感判断，先以 request_time 锚定时间，再给结论；若缺少可核验事实，明确说不确定。
 5. 回答允许做合理联想，但必须显式标注推测语气，不得冒充事实；必要时给出”待确认”。
 6. 确认以上规则均满足后，才允许输出最终回复。"""
+
+_INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输出给用户的中文收尾说明（不要提及系统/工具内部细节）。
+必须包含三点：
+1) 已完成到哪一步（基于当前上下文的事实）；
+2) 目前还缺什么信息或步骤；
+3) 下一步你会怎么继续。
+禁止输出“已达到最大迭代次数”这类模板句；不要输出 JSON。"""
+
+
+def _tool_call_signature(tool_calls) -> str:
+    """生成本轮 tool_calls 的稳定签名，用于检测循环调用。"""
+    parts: list[str] = []
+    for tc in tool_calls:
+        args = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
+        parts.append(f"{tc.name}:{args}")
+    return "|".join(parts)
 
 
 class AgentLoop:
@@ -361,6 +379,8 @@ class AgentLoop:
         messages = initial_messages
         tools_used: list[str] = []
         tool_chain: list[dict] = []
+        last_tool_signature = ""
+        repeat_count = 0
 
         # 第一轮调用前注入预检提示，让 LLM 在未调用任何工具时也做技能匹配自检
         preflight_prompt = (
@@ -381,6 +401,27 @@ class AgentLoop:
             )
 
             if response.tool_calls:
+                signature = _tool_call_signature(response.tool_calls)
+                if signature and signature == last_tool_signature:
+                    repeat_count += 1
+                else:
+                    repeat_count = 1
+                    last_tool_signature = signature
+
+                if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
+                    logger.warning(
+                        "检测到工具调用循环 signature=%s repeat=%d，提前收尾",
+                        signature[:160],
+                        repeat_count,
+                    )
+                    summary = await self._summarize_incomplete_progress(
+                        messages,
+                        reason="tool_call_loop",
+                        iteration=iteration + 1,
+                        tools_used=tools_used,
+                    )
+                    return summary, tools_used, tool_chain
+
                 logger.info(
                     f"LLM 请求调用 {len(response.tool_calls)} 个工具: "
                     f"{[tc.name for tc in response.tool_calls]}"
@@ -404,6 +445,7 @@ class AgentLoop:
                         ],
                     }
                 )
+
                 iter_calls: list[dict] = []
                 for tc in response.tool_calls:
                     tools_used.append(tc.name)
@@ -433,7 +475,47 @@ class AgentLoop:
                 return response.content or "（无响应）", tools_used, tool_chain
 
         logger.warning(f"已达到最大迭代次数 {self.max_iterations}")
-        return "（已达到最大迭代次数）", tools_used, tool_chain
+        summary = await self._summarize_incomplete_progress(
+            messages,
+            reason="max_iterations",
+            iteration=self.max_iterations,
+            tools_used=tools_used,
+        )
+        return summary, tools_used, tool_chain
+
+    async def _summarize_incomplete_progress(
+        self,
+        messages: list[dict],
+        *,
+        reason: str,
+        iteration: int,
+        tools_used: list[str],
+    ) -> str:
+        """预算耗尽/循环时额外生成进度总结，避免模板化失败回复。"""
+        summary_prompt = (
+            f"[收尾原因] {reason}\n"
+            f"[已执行轮次] {iteration}\n"
+            f"[已调用工具] {', '.join(tools_used[-8:]) if tools_used else '无'}\n\n"
+            + _INCOMPLETE_SUMMARY_PROMPT
+        )
+        try:
+            resp = await self.provider.chat(
+                messages=messages + [{"role": "user", "content": summary_prompt}],
+                tools=[],
+                model=self.model,
+                max_tokens=min(_SUMMARY_MAX_TOKENS, self.max_tokens),
+            )
+            text = (resp.content or "").strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("生成预算收尾总结失败: %s", e)
+
+        done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次。"
+        return (
+            f"这次任务还没完全收束。{done}"
+            "我先停在当前进度，后续会继续补齐缺失信息并给你最终结论。"
+        )
 
     @staticmethod
     def _format_request_time_anchor(ts: datetime | None) -> str:

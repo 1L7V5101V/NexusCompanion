@@ -24,6 +24,17 @@ from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
+_TOOL_LOOP_REPEAT_LIMIT = 3
+_SUMMARY_MAX_TOKENS = 384
+
+
+def _tool_call_signature(tool_calls) -> str:
+    parts: list[str] = []
+    for tc in tool_calls:
+        args = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
+        parts.append(f"{tc.name}:{args}")
+    return "|".join(parts)
+
 
 @dataclass
 class ReflectHooks:
@@ -431,7 +442,7 @@ class ProactiveFeatureScorer:
         items: list[FeedItem],
         recent: list[dict],
         decision_signals: dict[str, object],
-    ) -> dict[str, float]:
+    ) -> dict[str, float | str]:
         now_str = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
         feed_text = self._format_items(items) or "（暂无订阅内容）"
         chat_text = self._format_recent(recent) or "（无近期对话记录）"
@@ -709,6 +720,8 @@ class ProactiveMessageComposer:
             {"role": "user", "content": user_msg},
             {"role": "user", "content": self._PRE_FLIGHT},
         ]
+        last_tool_signature = ""
+        repeat_count = 0
 
         try:
             for iteration in range(self._max_tool_iterations):
@@ -728,6 +741,25 @@ class ProactiveMessageComposer:
                         len(result),
                     )
                     return result
+
+                signature = _tool_call_signature(resp.tool_calls)
+                if signature and signature == last_tool_signature:
+                    repeat_count += 1
+                else:
+                    repeat_count = 1
+                    last_tool_signature = signature
+
+                if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
+                    logger.warning(
+                        "[composer] 检测到工具调用循环 signature=%s repeat=%d，提前收尾",
+                        signature[:160],
+                        repeat_count,
+                    )
+                    return await self._summarize_incomplete_progress(
+                        messages,
+                        reason="tool_call_loop",
+                        iteration=iteration + 1,
+                    )
 
                 # 执行工具调用
                 messages.append(
@@ -749,6 +781,7 @@ class ProactiveMessageComposer:
                         ],
                     }
                 )
+
                 for tc in resp.tool_calls:
                     tool = self._tool_map.get(tc.name)
                     if tool:
@@ -774,7 +807,39 @@ class ProactiveMessageComposer:
             logger.warning(
                 "[composer] 已达到最大工具迭代次数 %d", self._max_tool_iterations
             )
-            return ""
+            return await self._summarize_incomplete_progress(
+                messages,
+                reason="max_iterations",
+                iteration=self._max_tool_iterations,
+            )
         except Exception as e:
             logger.warning("[composer] 消息生成失败: %s", e)
             return ""
+
+    async def _summarize_incomplete_progress(
+        self,
+        messages: list[dict],
+        *,
+        reason: str,
+        iteration: int,
+    ) -> str:
+        prompt = (
+            f"[收尾原因] {reason}\n"
+            f"[已执行轮次] {iteration}\n"
+            "你没能在预算内完成全部工具链，请输出一条可直接发给用户的中文消息。\n"
+            "要求：先简短说明你已核对到的进展，再给出下一步会继续做什么；"
+            "不要出现“达到最大迭代次数”等模板句，不要 JSON。"
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=messages + [{"role": "user", "content": prompt}],
+                tools=[],
+                model=self._model,
+                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+            )
+            text = (resp.content or "").strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("[composer] 生成收尾总结失败: %s", e)
+        return "我先整理到当前可确认的信息，后续补齐核验后再给你更完整的结论。"

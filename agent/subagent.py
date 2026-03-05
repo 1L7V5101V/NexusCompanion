@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, Sequence
 
 from agent.provider import LLMProvider
 from agent.tools.base import Tool
@@ -49,6 +49,21 @@ _WARN_THRESHOLD = 5  # 剩余步数 <= 此值时开始提示
 _MAX_TOOL_RESULT_CHARS = 100_000  # 单条工具结果字符上限（约 ~25K tokens）
 _RECENT_TOOL_ROUNDS = 3  # 保留完整 tool result 的最近轮次数
 _CLEARED = "[已清除]"  # 旧 tool result 的占位符
+_TOOL_LOOP_REPEAT_LIMIT = 3  # 连续同签名工具调用达到该次数时判定循环
+_SUMMARY_MAX_TOKENS = 512
+_INCOMPLETE_SUMMARY_PROMPT = (
+    "当前任务未在步骤预算内完成，请直接输出中文进度总结，不要 JSON。\n"
+    "必须覆盖：1) 已完成内容；2) 当前未完成点；3) 下一步计划。\n"
+    "禁止输出模板句“已达到最大迭代次数”。"
+)
+
+
+def _tool_call_signature(tool_calls) -> str:
+    parts: list[str] = []
+    for tc in tool_calls:
+        args = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
+        parts.append(f"{tc.name}:{args}")
+    return "|".join(parts)
 
 
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -97,7 +112,7 @@ class SubAgent:
         system_prompt: str = "",
         max_iterations: int = 30,
         max_tokens: int = 8192,
-        mandatory_exit_tools: list[str] = (),
+        mandatory_exit_tools: Sequence[str] = (),
     ) -> None:
         self._provider = provider
         self._model = model
@@ -105,6 +120,7 @@ class SubAgent:
         self._max_iterations = max_iterations
         self._max_tokens = max_tokens
         self._mandatory_exit_tools = list(mandatory_exit_tools)
+        self.last_exit_reason: str = "idle"
         self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
         self._tool_schemas: list[dict[str, Any]] = [
             {
@@ -119,11 +135,19 @@ class SubAgent:
         ]
 
     async def run(self, task: str) -> str:
-        """执行任务，返回最终文本结果。失败时返回空字符串。"""
+        """执行任务并返回文本结果。
+
+        - 任务正常完成：返回最终结果文本
+        - 命中循环保护或达到最大迭代：返回进度收尾总结
+        - LLM 调用等硬错误：返回空字符串
+        """
         messages: list[dict[str, Any]] = []
+        self.last_exit_reason = "running"
         if self._system_prompt:
             messages.append({"role": "system", "content": self._system_prompt})
         messages.append({"role": "user", "content": task})
+        last_tool_signature = ""
+        repeat_count = 0
 
         for iteration in range(self._max_iterations):
             try:
@@ -136,11 +160,35 @@ class SubAgent:
                 )
             except Exception as e:
                 logger.error("[subagent] LLM 调用失败 iteration=%d: %s", iteration, e)
+                self.last_exit_reason = "error"
                 return ""
 
             if not response.tool_calls:
                 logger.info("[subagent] 任务完成 iterations=%d", iteration + 1)
+                self.last_exit_reason = "completed"
                 return (response.content or "").strip()
+
+            signature = _tool_call_signature(response.tool_calls)
+            if signature and signature == last_tool_signature:
+                repeat_count += 1
+            else:
+                repeat_count = 1
+                last_tool_signature = signature
+
+            if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
+                logger.warning(
+                    "[subagent] 检测到工具调用循环 signature=%s repeat=%d，提前收尾",
+                    signature[:160],
+                    repeat_count,
+                )
+                self.last_exit_reason = "tool_loop"
+                if self._mandatory_exit_tools:
+                    await self._run_mandatory_exit(messages)
+                return await self._summarize_incomplete_progress(
+                    messages,
+                    reason="tool_call_loop",
+                    iteration=iteration + 1,
+                )
 
             # 追加 assistant 消息（含 tool_calls）
             messages.append(
@@ -205,9 +253,39 @@ class SubAgent:
             messages.append({"role": "user", "content": reflect})
 
         logger.warning("[subagent] 已达到最大迭代次数 %d", self._max_iterations)
+        self.last_exit_reason = "max_iterations"
         if self._mandatory_exit_tools:
             await self._run_mandatory_exit(messages)
-        return ""
+        return await self._summarize_incomplete_progress(
+            messages,
+            reason="max_iterations",
+            iteration=self._max_iterations,
+        )
+
+    async def _summarize_incomplete_progress(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        reason: str,
+        iteration: int,
+    ) -> str:
+        prompt = (
+            f"[收尾原因] {reason}\n"
+            f"[已执行轮次] {iteration}\n\n" + _INCOMPLETE_SUMMARY_PROMPT
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=messages + [{"role": "user", "content": prompt}],
+                tools=[],
+                model=self._model,
+                max_tokens=min(_SUMMARY_MAX_TOKENS, self._max_tokens),
+            )
+            text = (resp.content or "").strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("[subagent] 生成收尾总结失败: %s", e)
+        return "本轮步骤预算已用完：已完成部分关键步骤，但仍有未完成项，下一轮将从当前检查点继续推进。"
 
     async def _run_mandatory_exit(self, messages: list[dict[str, Any]]) -> None:
         """强制收尾：逐个调用 mandatory_exit_tools 中的工具。"""
