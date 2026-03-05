@@ -368,7 +368,7 @@ class ProactiveItemFilter:
                     best_source = accepted_meta[a_idx].get("source_key", "")
                     best_item_id = accepted_meta[a_idx].get("item_id", "")
 
-            logger.info(
+            logger.debug(
                 "[proactive] 语义去重检查 source=%s item_id=%s best_sim=%.4f threshold=%.2f matched_kind=%s matched_source=%s matched_item=%s title=%r",
                 p["source_key"],
                 p["item_id"][:16],

@@ -69,7 +69,9 @@ def _clear_task_notes(db_path: Path, namespace: str) -> None:
         conn.commit()
         conn.close()
     except Exception as e:
-        logger.warning("[skill_action_tool] 清除 task_notes 失败 namespace=%s: %s", namespace, e)
+        logger.warning(
+            "[skill_action_tool] 清除 task_notes 失败 namespace=%s: %s", namespace, e
+        )
 
 
 class SkillActionRegisterTool(Tool):
@@ -141,7 +143,9 @@ class SkillActionRegisterTool(Tool):
         "required": ["id", "name"],
     }
 
-    def __init__(self, skill_actions_path: Path, agent_tasks_dir: Path | None = None) -> None:
+    def __init__(
+        self, skill_actions_path: Path, agent_tasks_dir: Path | None = None
+    ) -> None:
         self._path = skill_actions_path
         self._agent_tasks_dir = agent_tasks_dir
 
@@ -201,11 +205,19 @@ class SkillActionRegisterTool(Tool):
                 )
                 task_md_note = f"\n已创建任务文档：agent-tasks/{action_id}/TASK.md"
             else:
-                task_md_note = f"\n（TASK.md 已存在，未覆盖。如需修改请用 skill_action_update。）"
+                task_md_note = (
+                    f"\n（TASK.md 已存在，未覆盖。如需修改请用 skill_action_update。）"
+                )
 
         verb = "更新" if updated else "注册"
-        logger.info("[skill_action_tool] %s action id=%s type=%s", verb, action_id, action_type)
-        detail = f"  命令: {command}" if action_type == "shell" else f"  任务文档: agent-tasks/{action_id}/TASK.md"
+        logger.info(
+            "[skill_action_tool] %s action id=%s type=%s", verb, action_id, action_type
+        )
+        detail = (
+            f"  命令: {command}"
+            if action_type == "shell"
+            else f"  任务文档: agent-tasks/{action_id}/TASK.md"
+        )
         return (
             f"已{verb} skill action：{name}\n"
             f"  id: {action_id}\n"
@@ -275,7 +287,9 @@ class SkillActionListTool(Tool):
     description = "列出当前所有已注册的后台 skill actions（包括已停用的）。"
     parameters = {"type": "object", "properties": {}}
 
-    def __init__(self, skill_actions_path: Path, agent_tasks_dir: Path | None = None) -> None:
+    def __init__(
+        self, skill_actions_path: Path, agent_tasks_dir: Path | None = None
+    ) -> None:
         self._path = skill_actions_path
         self._agent_tasks_dir = agent_tasks_dir
 
@@ -290,12 +304,16 @@ class SkillActionListTool(Tool):
             action_id = a.get("id", "")
             if not a.get("enabled", True):
                 status = "停用"
-            elif self._agent_tasks_dir and (self._agent_tasks_dir / action_id / ".done").exists():
+            elif (
+                self._agent_tasks_dir
+                and (self._agent_tasks_dir / action_id / ".done").exists()
+            ):
                 status = "已完成"
             else:
                 status = "启用"
             has_task_md = (
-                self._agent_tasks_dir and (self._agent_tasks_dir / action_id / "TASK.md").exists()
+                self._agent_tasks_dir
+                and (self._agent_tasks_dir / action_id / "TASK.md").exists()
             )
             task_md_hint = " [有TASK.md]" if has_task_md else ""
             lines.append(
@@ -497,12 +515,95 @@ class SkillActionRestartTool(Tool):
                         pass
             cleared.append(f"产出文件 ({len(deleted_files)} 个)")
 
-        logger.info("[skill_action_tool] restart id=%s clear_outputs=%s", action_id, clear_outputs)
+        logger.info(
+            "[skill_action_tool] restart id=%s clear_outputs=%s",
+            action_id,
+            clear_outputs,
+        )
         cleared_str = "、".join(cleared) if cleared else "无需清理"
         return (
             f"已重置 skill action id={action_id}：\n"
             f"  清除内容：{cleared_str}\n"
             "下次空闲时将重新执行（TASK.md 中的用户补充说明会被遵循）。"
+        )
+
+
+class SkillActionRewriteTool(Tool):
+    """完整替换某个 agent action 的 TASK.md 内容，并可选重置执行状态。"""
+
+    name = "skill_action_rewrite"
+    description = (
+        "完整替换某个 agent action 的 TASK.md 内容。\n"
+        "适用场景：任务方向发生重大变化、旧 TASK.md 积累了太多矛盾的补充说明、需要从零重新定义任务目标。\n"
+        "与 skill_action_update（追加）不同，本工具会用新内容完全覆盖旧 TASK.md。\n"
+        "默认同时重置执行状态（清除 .done 和 task_note 进度记录），让任务立即重新可运行。\n"
+        "如果只是修正笔误而不需要重跑，可将 restart 设为 false。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "action ID"},
+            "content": {
+                "type": "string",
+                "description": (
+                    "新的 TASK.md 完整内容（Markdown 格式）。"
+                    "建议保留 '## 用户补充说明' 和 '## 运行历史' 区块，供后续追加使用。"
+                ),
+            },
+            "restart": {
+                "type": "boolean",
+                "description": "是否同时重置执行状态（清除 .done 完成标记和 task_note 进度记录）。默认 true。",
+                "default": True,
+            },
+        },
+        "required": ["id", "content"],
+    }
+
+    def __init__(self, agent_tasks_dir: Path, db_path: Path) -> None:
+        self._agent_tasks_dir = agent_tasks_dir
+        self._db_path = db_path
+
+    async def execute(self, **kwargs: Any) -> str:
+        action_id = kwargs["id"].strip()
+        content = kwargs["content"]
+        do_restart = bool(kwargs.get("restart", True))
+
+        if not content.strip():
+            return "错误：content 不能为空。"
+
+        action_dir = self._agent_tasks_dir / action_id
+        task_md = action_dir / "TASK.md"
+
+        if not action_dir.exists():
+            return f"错误：找不到 agent-tasks/{action_id}/，请先注册该任务。"
+        if not task_md.exists():
+            return f"错误：找不到 agent-tasks/{action_id}/TASK.md，请先注册该任务。"
+
+        # 覆盖写入 TASK.md
+        task_md.write_text(content, encoding="utf-8")
+        logger.info("[skill_action_tool] rewrite TASK.md id=%s", action_id)
+
+        cleared: list[str] = ["TASK.md 内容"]
+
+        if do_restart:
+            # 清除 .done
+            done_file = action_dir / ".done"
+            if done_file.exists():
+                done_file.unlink()
+                cleared.append(".done 完成标记")
+
+            # 清除 task_note
+            _clear_task_notes(self._db_path, action_id)
+            cleared.append("task_note 进度记录")
+
+        cleared_str = "、".join(cleared)
+        restart_note = (
+            "下次空闲时将以新 TASK.md 重新执行。" if do_restart else "执行状态未变更。"
+        )
+        return (
+            f"已重写 agent-tasks/{action_id}/TASK.md\n"
+            f"  操作内容：{cleared_str}\n"
+            f"{restart_note}"
         )
 
 

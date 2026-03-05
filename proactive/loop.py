@@ -270,6 +270,10 @@ class ProactiveLoop:
             self._source_scorer = None
 
         self._running = False
+        # 手动触发 skill action 的信号量：set() 时唤醒正在 sleep 的 run() 循环
+        self._manual_trigger_event: asyncio.Event = asyncio.Event()
+        # 防止手动触发并发执行
+        self._manual_trigger_lock: asyncio.Lock = asyncio.Lock()
         # FeedBuffer：feed_poller_enabled=True 时由 FeedPoller 写入；False 则为 None（直接拉取）
         self.feed_buffer: FeedBuffer | None = (
             FeedBuffer(
@@ -495,14 +499,16 @@ class ProactiveLoop:
         db_path = agent_tasks_dir / "task_notes.db"
         shell_tool = _build_sandboxed_shell(agent_tasks_dir)
 
-        def factory(action_id: str, shared_config_dir: str = str(shared_dir)) -> SubAgent:
+        def factory(
+            action_id: str, shared_config_dir: str = str(shared_dir)
+        ) -> SubAgent:
             action_dir = agent_tasks_dir / action_id
             action_dir.mkdir(parents=True, exist_ok=True)
             tools = [
                 WebSearchTool(),
                 WebFetchTool(),
-                ReadFileTool(),
-                ListDirTool(),
+                ReadFileTool(allowed_dir=agent_tasks_dir),  # 相对路径基于 agent-tasks/
+                ListDirTool(allowed_dir=agent_tasks_dir),  # 相对路径基于 agent-tasks/
                 WriteFileTool(allowed_dir=agent_tasks_dir),  # 可写整个 agent-tasks/
                 shell_tool,
                 TaskNoteTool(db_path),
@@ -515,7 +521,7 @@ class ProactiveLoop:
                 model=model,
                 tools=tools,
                 system_prompt=_AGENT_SYSTEM_PROMPT,
-                max_iterations=20,
+                max_iterations=40,
                 max_tokens=max_tokens,
                 # 不再强制 task_done：避免步骤预算耗尽时误标“已完成”(.done)
                 mandatory_exit_tools=["task_note", "notify_owner"],
@@ -533,7 +539,17 @@ class ProactiveLoop:
         while self._running:
             interval = self._next_interval(last_base_score)
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)
-            await asyncio.sleep(interval)
+            # 等待 interval 秒，或被手动触发事件提前唤醒
+            try:
+                await asyncio.wait_for(
+                    self._manual_trigger_event.wait(), timeout=interval
+                )
+                # 事件被 set：手动触发了 skill action，不执行正常 tick，继续等下次
+                self._manual_trigger_event.clear()
+                logger.info("[proactive] 正常 tick 被手动触发事件中断，跳过本轮 tick")
+                continue
+            except asyncio.TimeoutError:
+                pass  # 正常超时，执行正常 tick
             try:
                 last_base_score = await self._tick()
             except Exception:
@@ -569,6 +585,74 @@ class ProactiveLoop:
 
     def stop(self) -> None:
         self._running = False
+
+    async def trigger_skill_action(
+        self, action_id: str | None = None
+    ) -> tuple[bool, str]:
+        """
+        手动触发一次 skill action，与正常 idle 路径完全一致。
+
+        - 阻塞 proactive 正常 tick（唤醒正在等待的 sleep，跳过本轮 tick）
+        - 若 action_id 指定，则直接执行该 action；否则按权重随机抽取
+        - 返回 (success, message)：success=True 时 message 为结果描述；False 时为错误原因
+
+        注意：同一时刻只允许一个手动触发并发执行，额外的调用会立即返回 (False, "busy")。
+        """
+        if not self._cfg.skill_actions_enabled:
+            return False, "skill_actions 未启用（skill_actions_enabled=false）"
+
+        runner = self._engine._skill_action_runner
+        if runner is None:
+            return False, "SkillActionRunner 未初始化"
+
+        if self._manual_trigger_lock.locked():
+            return False, "已有手动触发正在执行，请稍后再试"
+
+        async with self._manual_trigger_lock:
+            # 唤醒正在 sleep 的 run() 循环，阻断本轮正常 tick
+            self._manual_trigger_event.set()
+
+            now_utc = datetime.now(timezone.utc)
+
+            if action_id:
+                # 按指定 action_id 查找
+                registry = runner._registry
+                action = registry.get(action_id)
+                if action is None:
+                    return False, f"找不到 action_id={action_id!r}"
+                if not action.enabled:
+                    return False, f"action_id={action_id!r} 已禁用"
+            else:
+                # 按权重随机抽取（与 idle 时完全一致）
+                action = runner.pick()
+                if action is None:
+                    return False, "当前无可用 skill action（配额已满或间隔未到）"
+
+            logger.info(
+                "[proactive] 手动触发 skill_action id=%s name=%r",
+                action.id,
+                action.name,
+            )
+
+            # 消耗 anyaction 配额（与正常 idle 触发一致）
+            if self._cfg.anyaction_enabled and self._engine._anyaction:
+                self._engine._anyaction.record_action(now_utc=now_utc)
+
+            success, stdout_str = await runner.run(action)
+            logger.info(
+                "[proactive] 手动触发 skill_action 完成 id=%s success=%s",
+                action.id,
+                success,
+            )
+
+            # 如有 proactive_text，直接发送（与正常 idle 路径一致）
+            if success and stdout_str:
+                await self._engine._try_send_proactive_text(action.id, stdout_str)
+
+            if success:
+                return True, f"skill_action {action.id!r} 已完成"
+            else:
+                return False, f"skill_action {action.id!r} 执行失败"
 
     def _sample_random_memory(self, n: int = 2) -> list[str]:
         """随机抽取 n 条记忆片段，无记忆时返回 []。"""
@@ -871,9 +955,11 @@ def _build_sandboxed_shell(workspace_dir: Path):
 
         async def execute(self, **kwargs):
             import shlex as _shlex
+
             command = kwargs.get("command", "").strip()
             if not command:
                 import json
+
                 return json.dumps({"error": "命令不能为空"}, ensure_ascii=False)
             sandboxed = (
                 "firejail --quiet "
@@ -884,7 +970,9 @@ def _build_sandboxed_shell(workspace_dir: Path):
             kwargs["command"] = sandboxed
             return await super().execute(**kwargs)
 
-    logger.info("[proactive] SubAgent ShellTool 已启用 firejail 沙箱 dir=%s", workspace_dir)
+    logger.info(
+        "[proactive] SubAgent ShellTool 已启用 firejail 沙箱 dir=%s", workspace_dir
+    )
     return _FirejailShellTool()
 
 

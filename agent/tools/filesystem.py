@@ -54,8 +54,17 @@ def _read_xls(file_path: Path) -> str:
 
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
-    """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。"""
-    resolved = Path(path).expanduser().resolve()
+    """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。
+
+    相对路径规则：
+    - 若提供了 allowed_dir，相对路径基于 allowed_dir 解析（工作目录为 allowed_dir）
+    - 否则相对路径基于进程 cwd 解析
+    """
+    p = Path(path).expanduser()
+    if not p.is_absolute() and allowed_dir is not None:
+        resolved = (allowed_dir / p).resolve()
+    else:
+        resolved = p.resolve()
     if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
         raise PermissionError(f"路径 {path} 超出允许目录 {allowed_dir}")
     return resolved

@@ -39,6 +39,7 @@ from agent.tools.skill_action_tool import (
     SkillActionRegisterTool,
     SkillActionResetTool,
     SkillActionRestartTool,
+    SkillActionRewriteTool,
     SkillActionStatusTool,
     SkillActionUnregisterTool,
     SkillActionUpdateTool,
@@ -89,6 +90,7 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
         base_url=config.base_url,
         system_prompt=config.system_prompt,
         extra_body=config.extra_body,
+        request_timeout_s=180.0,
     )
 
     # 2. 构建轻量 provider（若已配置独立 key/url，否则 AgentLoop 内部降级到主 provider）
@@ -210,13 +212,18 @@ def build_core_runtime(
     skill_actions_path = workspace / "skill_actions.json"
     agent_tasks_dir = workspace / "agent-tasks"
     db_path = agent_tasks_dir / "task_notes.db"
-    tools.register(SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir))
+    tools.register(
+        SkillActionRegisterTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir)
+    )
     tools.register(SkillActionUnregisterTool(skill_actions_path))
-    tools.register(SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir))
+    tools.register(
+        SkillActionListTool(skill_actions_path, agent_tasks_dir=agent_tasks_dir)
+    )
     tools.register(SkillActionStatusTool(agent_tasks_dir))
     tools.register(SkillActionUpdateTool(agent_tasks_dir))
     tools.register(SkillActionRestartTool(agent_tasks_dir, db_path=db_path))
     tools.register(SkillActionResetTool(agent_tasks_dir))
+    tools.register(SkillActionRewriteTool(agent_tasks_dir, db_path=db_path))
 
     _fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
     if getattr(config.proactive, "fitbit_enabled", False):
@@ -332,9 +339,10 @@ def build_proactive_runtime(
     memory_store: "MemoryPort | None" = None,
     presence: PresenceStore,
     agent_loop: AgentLoop,
-) -> list:
+) -> tuple[list, "ProactiveLoop | None"]:
     """
-    构建主动循环运行时，返回需要并发运行的 asyncio 任务列表。
+    构建主动循环运行时，返回 (需要并发运行的 asyncio 任务列表, ProactiveLoop 实例)。
+    若 proactive 未启用则返回 ([], None)。
 
     # 1. 检查 proactive 开关
     # 2. 初始化 ProactiveLoop
@@ -347,7 +355,7 @@ def build_proactive_runtime(
 
     # 1. 检查开关
     if not config.proactive.enabled:
-        return tasks
+        return tasks, None
 
     # 2. 初始化 ProactiveLoop
     proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
@@ -405,8 +413,8 @@ def build_proactive_runtime(
         tasks.append(run_fitbit_monitor(_fitbit_path, config.proactive.fitbit_url))
         print(f"fitbit-monitor 已启动  |  路径={_fitbit_path}")
 
-    # 6. 返回任务列表
-    return tasks
+    # 6. 返回任务列表和 ProactiveLoop 实例
+    return tasks, proactive_loop
 
 
 async def serve(config_path: str = "config.json") -> None:
@@ -494,22 +502,25 @@ async def serve(config_path: str = "config.json") -> None:
 
     memory_port = DefaultMemoryPort(memory_store)
 
-    tasks.extend(
-        build_proactive_runtime(
-            config,
-            workspace,
-            feed_registry=feed_registry,
-            feed_store=feed_store,
-            feed_manage_tool=feed_manage_tool,
-            session_manager=session_manager,
-            provider=provider,
-            light_provider=light_provider,
-            push_tool=push_tool,
-            memory_store=memory_port,
-            presence=presence,
-            agent_loop=agent_loop,
-        )
+    proactive_tasks, proactive_loop = build_proactive_runtime(
+        config,
+        workspace,
+        feed_registry=feed_registry,
+        feed_store=feed_store,
+        feed_manage_tool=feed_manage_tool,
+        session_manager=session_manager,
+        provider=provider,
+        light_provider=light_provider,
+        push_tool=push_tool,
+        memory_store=memory_port,
+        presence=presence,
+        agent_loop=agent_loop,
     )
+    tasks.extend(proactive_tasks)
+
+    # 将 ProactiveLoop 注入 IPC server，以支持手动触发 skill action
+    if proactive_loop is not None:
+        ipc.set_proactive_loop(proactive_loop)
 
     # 7. 启动记忆优化器
     if config.memory_optimizer_enabled:

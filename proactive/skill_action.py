@@ -36,8 +36,8 @@ class SkillActionDef:
     id: str
     name: str
     action_type: str = "shell"  # "shell" | "agent"
-    command: str = ""           # shell 类型：shell 命令，支持 $VAR 展开
-    task_prompt: str = ""       # agent 类型：自然语言任务描述
+    command: str = ""  # shell 类型：shell 命令，支持 $VAR 展开
+    task_prompt: str = ""  # agent 类型：自然语言任务描述
     enabled: bool = True
     one_shot: bool = False  # True=成功执行一次后自动标记完成，不再触发
     weight: float = 1.0  # 随机抽取权重（越大越容易被选中）
@@ -117,10 +117,12 @@ class SkillActionRegistry:
         self._actions = [
             SkillActionDef.from_dict(a)
             for a in raw.get("actions", [])
-            if a.get("id") and (
+            if a.get("id")
+            and (
                 a.get("command")
                 or a.get("task_prompt")
-                or a.get("action_type") == "agent"  # agent 类型可用 TASK.md 代替 task_prompt
+                or a.get("action_type")
+                == "agent"  # agent 类型可用 TASK.md 代替 task_prompt
             )
         ]
         self._mtime = mtime
@@ -147,28 +149,63 @@ _AGENT_SYSTEM_PROMPT = (
     "你是一个自主后台 Agent，在用户空闲时执行预先设定的任务。\n"
     "你有固定的工具集，专注完成分配的任务。\n"
     "\n"
+    "## 多轮持久任务机制（最重要，必须理解）\n"
+    "你的任务是**跨多次运行**逐步完成的，每次运行有步骤预算上限（约 40 步）。\n"
+    "这意味着：\n"
+    "- 一次运行不需要、也不应该试图完成所有阶段\n"
+    "- 步骤预算不够时，做完当前阶段后立即用 task_note 记录检查点，然后正常结束\n"
+    "- 系统会在你空闲时再次触发你，你从 task_recall 读取上次的检查点继续\n"
+    "- **绝对禁止**因为「步骤快用完了」就跳过阶段、压缩步骤、或伪造完成\n"
+    "- 做完一个完整的阶段比草草完成所有阶段更有价值\n"
+    "\n"
     "## 任务文档（TASK.md）\n"
-    "每次开始前，用 read_file 读取工作目录下的 TASK.md，了解：\n"
-    "  - 任务目标和约束\n"
-    "  - 用户补充说明（用户在对话中追加的新指令，优先级最高）\n"
-    "  - 历史运行记录（上次做到哪、产出了什么）\n"
-    "任务结束时（无论完成与否），用 edit_file 在 TASK.md 的「## 运行历史」区块追加本次记录：\n"
+    "TASK.md 是用户写给你的任务书，内容由用户维护，你只能读取，不能修改其中的：\n"
+    "  - 任务目标\n"
+    "  - 约束条件\n"
+    "  - 用户补充说明\n"
+    "每次开始前用 read_file 读取 TASK.md，了解任务目标、约束和用户最新补充说明。\n"
+    "\n"
+    "任务结束时（无论完成与否），只允许在 TASK.md 末尾的「## 运行历史」区块用 edit_file 追加本次记录，\n"
+    "格式如下（禁止修改该区块以外的任何内容）：\n"
     "  ### 第N次 (YYYY-MM-DD) — [完成/未完成]\n"
     "  - 本次完成的步骤\n"
     "  - 产出文件路径\n"
     "  - 下次需要继续的事项\n"
     "\n"
-    "## 进度管理\n"
-    "完成重要步骤时，用 task_note(namespace=任务ID, key=..., value=...) 记录结构化检查点。\n"
+    "## 进度管理（task_note / task_recall）\n"
+    "task_note 和 task_recall 是你跨次运行的核心记忆机制，是给下一次运行的你自己看的，与 TASK.md 无关。\n"
+    "每次任务开始时，第一步必须调用 task_recall(namespace=任务ID) 查询所有已记录的检查点，\n"
+    "根据检查点判断当前处于哪个阶段、上次做到哪一步、有哪些中间结果，再决定从哪里继续。\n"
+    "不要依赖 TASK.md 的运行历史来判断进度——那是给用户看的摘要，不是可靠的状态机。\n"
+    "\n"
+    "每完成一个关键步骤，立即调用 task_note 记录检查点，粒度要足够细，例如：\n"
+    "  task_note(namespace=任务ID, key='phase', value='研究完成，结论：用GraphRAG方案')\n"
+    "  task_note(namespace=任务ID, key='novel_total_lines', value='21375')\n"
+    "  task_note(namespace=任务ID, key='processed_up_to_line', value='500')\n"
+    "  task_note(namespace=任务ID, key='demo_status', value='已写完，路径：demo/rag_demo.py')\n"
+    "下次运行时 task_recall 能直接拿到这些值，不需要重新推断。\n"
+    "\n"
     "任务彻底完成后，调用 task_done(summary=...) 标记完成，之后该任务将不再自动触发。\n"
     "未完成时不要调用 task_done，让任务下次继续跑。\n"
     "\n"
-    "## 其他规则\n"
-    "任务完成后，必须调用 notify_owner 发送消息，否则视为未完成。\n"
-    "消息中须简要说明：①做了哪些步骤 ②得到了什么结果。\n"
-    "禁止在没有实际执行步骤的情况下声称任务完成。\n"
-    "不要执行任务描述范围之外的操作。\n"
-    "遇到工具调用失败时，换个方式继续，不要在最终回复中提及失败细节。"
+    "## 文件路径规则\n"
+    "文件工具（read_file / write_file / list_dir / edit_file）支持两种路径写法：\n"
+    "  - 相对路径：相对于 agent-tasks/ 目录，例如 `rag-novel-eva-research/TASK.md`\n"
+    "  - 绝对路径：完整路径，例如 `/home/user/.akasic/workspace/agent-tasks/rag-novel-eva-research/TASK.md`\n"
+    "相对路径推荐写法：`<任务ID>/文件名`，读 TASK.md 时用 `<任务ID>/TASK.md`。\n"
+    "禁止写出 `agent-tasks/` 前缀的相对路径（因工作目录已是 agent-tasks/，会导致路径错误）。\n"
+    "\n"
+    "## 执行纪律\n"
+    "1. **严格按 TASK.md 规定的阶段顺序执行**，禁止跳过任何阶段，哪怕剩余 iterations 不多。\n"
+    "   宁可本次只完成阶段 1-2，下次继续，也不能跳到后面的阶段。\n"
+    "2. **产出文件名必须与 TASK.md 规定完全一致**，禁止自行更改文件名。\n"
+    "   例如 TASK.md 写 `survey.md`，就必须写 `survey.md`，不能写成 `rag_evaluation_design.md`。\n"
+    "3. 每完成一个阶段，立即用 task_note 记录阶段检查点，然后再继续下一阶段。\n"
+    "4. 任务完成后，必须调用 notify_owner 发送消息，否则视为未完成。\n"
+    "   消息中须简要说明：①做了哪些步骤 ②得到了什么结果。\n"
+    "5. 禁止在没有实际执行步骤的情况下声称任务完成。\n"
+    "6. 不要执行任务描述范围之外的操作。\n"
+    "7. 遇到工具调用失败时，换个方式继续，不要在最终回复中提及失败细节。"
 )
 
 
@@ -240,7 +277,8 @@ class SkillActionRunner:
         """用 SubAgent 执行自然语言任务。"""
         if not self._subagent_factory:
             logger.warning(
-                "[skill_action] agent 类型任务需要 subagent_factory，但未配置 id=%s", action.id
+                "[skill_action] agent 类型任务需要 subagent_factory，但未配置 id=%s",
+                action.id,
             )
             self._record_run(action.id, now, success=False)
             self._save_state()
@@ -249,12 +287,16 @@ class SkillActionRunner:
         # 决定任务入口：优先读 TASK.md，回退到 task_prompt
         task_md_path = (
             self._agent_tasks_dir / action.id / "TASK.md"
-            if self._agent_tasks_dir else None
+            if self._agent_tasks_dir
+            else None
         )
         has_task_md = task_md_path is not None and task_md_path.exists()
 
         if not has_task_md and not action.task_prompt.strip():
-            logger.warning("[skill_action] agent 任务无 TASK.md 且 task_prompt 为空 id=%s", action.id)
+            logger.warning(
+                "[skill_action] agent 任务无 TASK.md 且 task_prompt 为空 id=%s",
+                action.id,
+            )
             self._record_run(action.id, now, success=False)
             self._save_state()
             return False, ""
@@ -266,14 +308,20 @@ class SkillActionRunner:
                     f"[任务ID: {action.id}]\n"
                     f"[工作目录: agent-tasks/{action.id}/]\n"
                     f"[共享配置目录: agent-tasks/shared/ — 内含 API keys 等公共配置]\n\n"
-                    f"请先用 read_file 读取 agent-tasks/{action.id}/TASK.md，"
-                    f"了解任务目标、用户最新补充说明和历史进度，然后继续执行。"
+                    f"请按以下顺序开始：\n"
+                    f'1. 调用 task_recall(namespace="{action.id}") 查询上次进度检查点\n'
+                    f"2. 用 read_file 读取 agent-tasks/{action.id}/TASK.md，"
+                    f"了解任务目标、用户最新补充说明和历史运行记录\n"
+                    f"3. 结合进度检查点和 TASK.md，决定从哪里继续执行"
                 )
             else:
                 augmented_prompt = (
                     f"[任务ID: {action.id}]\n"
                     f"[工作目录: agent-tasks/{action.id}/]\n"
                     f"[共享配置目录: agent-tasks/shared/ — 内含 API keys 等公共配置]\n\n"
+                    f"请按以下顺序开始：\n"
+                    f'1. 调用 task_recall(namespace="{action.id}") 查询上次进度检查点\n'
+                    f"2. 结合进度检查点，执行以下任务：\n\n"
                     f"{action.task_prompt}"
                 )
             result = await subagent.run(augmented_prompt)
@@ -288,7 +336,9 @@ class SkillActionRunner:
             self._save_state()
             return success, result
         except Exception as e:
-            logger.exception("[skill_action] agent 任务异常 id=%s error=%s", action.id, e)
+            logger.exception(
+                "[skill_action] agent 任务异常 id=%s error=%s", action.id, e
+            )
             self._record_run(action.id, now, success=False)
             self._save_state()
             return False, ""

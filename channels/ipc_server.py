@@ -4,15 +4,24 @@ IPC Server Channel（服务端）
 在 Unix socket 上监听，CLI 客户端连接后可双向通信。
 每条连接独立维护 session，消息流向：
   CLI client → socket → MessageBus → AgentLoop → socket → CLI client
+
+特殊命令（type="command"）：
+  trigger_skill_action  手动触发一次 skill action，阻断当前 proactive tick 的等待
+    参数：action_id（可选，字符串）；留空则按权重随机抽取
 """
+
 import asyncio
 import json
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+
+if TYPE_CHECKING:
+    from proactive.loop import ProactiveLoop
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +29,15 @@ CHANNEL = "cli"
 
 
 class IPCServerChannel:
-
-    def __init__(self, bus: MessageBus, socket_path: str) -> None:
+    def __init__(
+        self,
+        bus: MessageBus,
+        socket_path: str,
+        proactive_loop: "ProactiveLoop | None" = None,
+    ) -> None:
         self._bus = bus
         self._socket_path = socket_path
+        self._proactive_loop = proactive_loop
         self._writers: dict[str, asyncio.StreamWriter] = {}  # chat_id → writer
         bus.subscribe_outbound(CHANNEL, self._on_response)
 
@@ -41,6 +55,11 @@ class IPCServerChannel:
         await self._server.wait_closed()
         Path(self._socket_path).unlink(missing_ok=True)
 
+    def set_proactive_loop(self, proactive_loop: "ProactiveLoop") -> None:
+        """在 IPC server 启动后注入 ProactiveLoop，用于手动触发 skill action。"""
+        self._proactive_loop = proactive_loop
+        logger.info("[cli] ProactiveLoop 已注入，trigger_skill_action 命令已就绪")
+
     # ── 私有方法 ──────────────────────────────────────────────────
 
     async def _handle_connection(
@@ -57,17 +76,23 @@ class IPCServerChannel:
                     break
                 try:
                     data = json.loads(line)
+                    # 特殊命令分支
+                    if data.get("type") == "command":
+                        await self._handle_command(data, chat_id, writer)
+                        continue
                     content = data.get("content", "").strip()
                     if not content:
                         continue
                     preview = content[:60] + "..." if len(content) > 60 else content
                     logger.info(f"[cli] 收到消息  session={chat_id}  内容: {preview!r}")
-                    await self._bus.publish_inbound(InboundMessage(
-                        channel=CHANNEL,
-                        sender="cli-user",
-                        chat_id=chat_id,
-                        content=content,
-                    ))
+                    await self._bus.publish_inbound(
+                        InboundMessage(
+                            channel=CHANNEL,
+                            sender="cli-user",
+                            chat_id=chat_id,
+                            content=content,
+                        )
+                    )
                 except json.JSONDecodeError:
                     logger.warning(f"[cli] 收到非 JSON 数据，已忽略")
         finally:
@@ -75,16 +100,83 @@ class IPCServerChannel:
             writer.close()
             logger.info(f"[cli] 客户端已断开  session={chat_id}")
 
+    async def _handle_command(
+        self,
+        data: dict,
+        chat_id: str,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """处理 type=command 的特殊指令，结果通过同一 writer 回写。"""
+        cmd = data.get("command", "")
+        logger.info("[cli] 收到命令 cmd=%r session=%s", cmd, chat_id)
+
+        if cmd == "trigger_skill_action":
+            await self._cmd_trigger_skill_action(data, chat_id, writer)
+        else:
+            await self._write_command_result(
+                writer,
+                ok=False,
+                message=f"未知命令: {cmd!r}",
+            )
+
+    async def _cmd_trigger_skill_action(
+        self,
+        data: dict,
+        chat_id: str,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """触发手动 skill action，把结果写回客户端。"""
+        if self._proactive_loop is None:
+            await self._write_command_result(
+                writer, ok=False, message="ProactiveLoop 未启用或未注入"
+            )
+            return
+
+        action_id: str | None = data.get("action_id") or None
+        logger.info(
+            "[cli] trigger_skill_action action_id=%s session=%s",
+            action_id or "(随机)",
+            chat_id,
+        )
+        try:
+            success, message = await self._proactive_loop.trigger_skill_action(
+                action_id
+            )
+            await self._write_command_result(writer, ok=success, message=message)
+        except Exception as e:
+            logger.exception("[cli] trigger_skill_action 异常")
+            await self._write_command_result(writer, ok=False, message=str(e))
+
+    @staticmethod
+    async def _write_command_result(
+        writer: asyncio.StreamWriter,
+        *,
+        ok: bool,
+        message: str,
+    ) -> None:
+        payload = (
+            json.dumps(
+                {"type": "command_result", "ok": ok, "message": message},
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+        writer.write(payload.encode())
+        await writer.drain()
+
     async def _on_response(self, msg: OutboundMessage) -> None:
         writer = self._writers.get(msg.chat_id)
         if writer and not writer.is_closing():
-            payload = json.dumps(
-                {
-                    "type": "assistant",
-                    "content": msg.content,
-                    "metadata": msg.metadata or {},
-                },
-                ensure_ascii=False,
-            ) + "\n"
+            payload = (
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "content": msg.content,
+                        "metadata": msg.metadata or {},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
             writer.write(payload.encode())
             await writer.drain()

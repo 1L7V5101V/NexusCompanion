@@ -248,7 +248,7 @@ class AgentLoop:
         return result
 
     # 单条消息处理的总超时（秒）。覆盖工具挂起、LLM 超时累积等极端场景。
-    _MESSAGE_TIMEOUT_S: float = 300.0
+    _MESSAGE_TIMEOUT_S: float = 600.0
 
     async def _process(
         self, msg: InboundMessage, session_key: str | None = None
