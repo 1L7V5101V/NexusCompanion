@@ -88,9 +88,12 @@ class MemoryPort(Protocol):
         self,
         query: str,
         memory_types: list[str] | None = None,
+        top_k: int | None = None,
     ) -> list[dict]: ...
 
     def format_injection_block(self, items: list[dict]) -> str: ...
+    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]: ...
+    def select_for_injection(self, items: list[dict]) -> list[dict]: ...
 
     # ── v2: write ─────────────────────────────────────────────────
     async def save_item(
@@ -216,12 +219,17 @@ class DefaultMemoryPort:
         self,
         query: str,
         memory_types: list[str] | None = None,
+        top_k: int | None = None,
     ) -> list[dict]:
         """Embed query and return top-k memory items; empty list if no retriever."""
         if not self._retriever:
             return []
         try:
-            return await self._retriever.retrieve(query, memory_types=memory_types)
+            return await self._retriever.retrieve(
+                query,
+                memory_types=memory_types,
+                top_k=top_k,
+            )
         except Exception as e:
             logger.warning("[memory_port] retrieve_related failed: %s", e)
             return []
@@ -231,6 +239,26 @@ class DefaultMemoryPort:
         if not self._retriever:
             return ""
         return self._retriever.format_injection_block(items)
+
+    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
+        if not self._retriever:
+            return "", []
+        if hasattr(self._retriever, "format_injection_with_ids"):
+            try:
+                return self._retriever.format_injection_with_ids(items)
+            except Exception as e:
+                logger.warning("[memory_port] format_injection_with_ids failed: %s", e)
+        return self._retriever.format_injection_block(items), []
+
+    def select_for_injection(self, items: list[dict]) -> list[dict]:
+        if not self._retriever:
+            return []
+        if hasattr(self._retriever, "select_for_injection"):
+            try:
+                return self._retriever.select_for_injection(items)
+            except Exception as e:
+                logger.warning("[memory_port] select_for_injection failed: %s", e)
+        return items
 
     # ── v2: write ──────────────────────────────────────────────────
 

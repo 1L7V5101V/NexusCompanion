@@ -3,6 +3,7 @@ import json
 import json_repair
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,8 +28,107 @@ _MAX_TOOL_RESULT_CHARS = 100_000
 _TOOL_LOOP_REPEAT_LIMIT = 3  # 连续同签名工具调用达到该次数时判定循环
 _SUMMARY_MAX_TOKENS = 512
 _RETRIEVE_TRACE_SUMMARY_MAX = 240
+_FLOW_TRIGGER_WORDS = (
+    "步骤",
+    "流程",
+    "下次",
+    "按这个逻辑",
+)
+_FLOW_SEQUENCE_PATTERN = re.compile(r"先.{0,20}再")
 
 logger = logging.getLogger(__name__)
+
+
+class GateController:
+    """单进程 gate 自动降级控制器（基于滚动窗口 P95）。"""
+
+    def __init__(
+        self,
+        *,
+        enabled: bool,
+        baseline_p95_ms: int,
+        initial_sufficiency_enabled: bool,
+        allow_auto_enable: bool,
+        window_seconds: int = 1800,
+        eval_every_seconds: int = 300,
+        trigger_windows: int = 3,
+        recover_windows: int = 6,
+        trigger_ratio: float = 1.12,
+        recover_ratio: float = 1.05,
+        cooldown_seconds: int = 3600,
+    ) -> None:
+        self.enabled = enabled and baseline_p95_ms > 0
+        self.baseline = max(1, int(baseline_p95_ms))
+        self.window_seconds = max(60, int(window_seconds))
+        self.eval_every_seconds = max(10, int(eval_every_seconds))
+        self.trigger_windows = max(1, int(trigger_windows))
+        self.recover_windows = max(1, int(recover_windows))
+        self.trigger_ratio = float(trigger_ratio)
+        self.recover_ratio = float(recover_ratio)
+        self.cooldown_seconds = max(60, int(cooldown_seconds))
+        self._samples: list[tuple[float, int]] = []
+        self._last_eval_ts = 0.0
+        self._high_streak = 0
+        self._recover_streak = 0
+        self._disabled_until = 0.0
+        self.sufficiency_enabled = bool(initial_sufficiency_enabled)
+        self._allow_auto_enable = bool(allow_auto_enable)
+
+    @staticmethod
+    def _p95(values: list[int]) -> int:
+        if not values:
+            return 0
+        arr = sorted(values)
+        idx = max(0, int(len(arr) * 0.95) - 1)
+        return int(arr[idx])
+
+    def record_latency(self, latency_ms: int, now_ts: float) -> None:
+        if not self.enabled:
+            return
+        self._samples.append((now_ts, max(1, int(latency_ms))))
+        cutoff = now_ts - self.window_seconds
+        self._samples = [(t, v) for (t, v) in self._samples if t >= cutoff]
+
+    def tick(self, now_ts: float) -> tuple[bool, str]:
+        """返回 (当前是否启用 sufficiency gate, 原因)。"""
+        if not self.enabled:
+            return True, "controller_disabled"
+        if now_ts - self._last_eval_ts < self.eval_every_seconds:
+            return self.sufficiency_enabled, "not_due"
+        self._last_eval_ts = now_ts
+
+        if now_ts < self._disabled_until:
+            self.sufficiency_enabled = False
+            return False, "cooldown_active"
+
+        values = [v for _, v in self._samples]
+        current_p95 = self._p95(values)
+        if current_p95 <= 0:
+            return self.sufficiency_enabled, "no_samples"
+
+        high = current_p95 > self.baseline * self.trigger_ratio
+        recovered = current_p95 <= self.baseline * self.recover_ratio
+
+        if self.sufficiency_enabled:
+            self._high_streak = self._high_streak + 1 if high else 0
+            if self._high_streak >= self.trigger_windows:
+                self.sufficiency_enabled = False
+                self._disabled_until = now_ts + self.cooldown_seconds
+                self._high_streak = 0
+                self._recover_streak = 0
+                return False, "auto_disabled"
+            return True, "healthy"
+
+        if not self._allow_auto_enable:
+            return False, "auto_enable_blocked"
+
+        self._recover_streak = self._recover_streak + 1 if recovered else 0
+        if self._recover_streak >= self.recover_windows:
+            self.sufficiency_enabled = True
+            self._recover_streak = 0
+            return True, "auto_reenabled"
+        return False, "waiting_recover"
+
 
 # 内部注入的反思提示，不应持久化到 session
 _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
@@ -95,6 +195,15 @@ class AgentLoop:
         memorizer=None,
         retriever=None,
         disable_full_memory: bool = False,
+        memory_top_k_procedure: int = 4,
+        memory_top_k_history: int = 8,
+        memory_route_intention_enabled: bool = False,
+        memory_sufficiency_check_enabled: bool = False,
+        memory_sop_guard_enabled: bool = True,
+        memory_gate_llm_timeout_ms: int = 800,
+        memory_gate_max_tokens: int = 96,
+        memory_auto_downgrade_enabled: bool = False,
+        memory_gate_baseline_p95_ms: int = 0,
         memory_port: "MemoryPort | None" = None,
     ) -> None:
         self.bus = bus
@@ -114,6 +223,22 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
         self._processing_state = processing_state
         self._disable_full_memory = disable_full_memory
+        self._memory_top_k_procedure = max(1, int(memory_top_k_procedure))
+        self._memory_top_k_history = max(1, int(memory_top_k_history))
+        self._memory_route_intention_enabled = bool(memory_route_intention_enabled)
+        self._memory_sufficiency_check_enabled = bool(memory_sufficiency_check_enabled)
+        self._memory_sufficiency_default_enabled = bool(
+            memory_sufficiency_check_enabled
+        )
+        self._memory_sop_guard_enabled = bool(memory_sop_guard_enabled)
+        self._memory_gate_llm_timeout_ms = max(100, int(memory_gate_llm_timeout_ms))
+        self._memory_gate_max_tokens = max(32, int(memory_gate_max_tokens))
+        self._gate_controller = GateController(
+            enabled=bool(memory_auto_downgrade_enabled),
+            baseline_p95_ms=max(0, int(memory_gate_baseline_p95_ms)),
+            initial_sufficiency_enabled=self._memory_sufficiency_check_enabled,
+            allow_auto_enable=self._memory_sufficiency_default_enabled,
+        )
 
         if memorizer and retriever:
             self._post_mem_worker = PostResponseMemoryWorker(
@@ -144,6 +269,7 @@ class AgentLoop:
         # 3. Keep legacy references for callers that may still use them directly
         self._memorizer = memorizer
         self._retriever = retriever
+        self._post_mem_failures = 0
 
     async def run(self) -> None:
         self._running = True
@@ -287,6 +413,15 @@ class AgentLoop:
         user_msg: str,
         items: list[dict],
         injected_block: str,
+        route_decision: str = "RETRIEVE",
+        rewritten_query: str = "",
+        sufficiency_decision: str = "ENOUGH_TO_INJECT",
+        fallback_reason: str = "",
+        sop_guard_applied: bool = False,
+        procedure_hits: int = 0,
+        history_hits: int = 0,
+        injected_item_ids: list[str] | None = None,
+        gate_latency_ms: dict | None = None,
         error: str = "",
     ) -> None:
         """将每轮 memory2 检索结果落盘，便于排查 top-k 注入是否过量。"""
@@ -302,7 +437,16 @@ class AgentLoop:
                 "chat_id": chat_id,
                 "user_msg": user_msg,
                 "hit_count": len(items),
+                "procedure_hits": procedure_hits,
+                "history_hits": history_hits,
                 "injected_chars": len(injected_block or ""),
+                "route_decision": route_decision,
+                "rewritten_query": rewritten_query,
+                "sufficiency_decision": sufficiency_decision,
+                "fallback_reason": fallback_reason,
+                "sop_guard_applied": sop_guard_applied,
+                "injected_item_ids": injected_item_ids or [],
+                "gate_latency_ms": gate_latency_ms or {},
                 "error": error,
                 "top_items": [
                     {
@@ -321,12 +465,242 @@ class AgentLoop:
         except Exception as e:
             logger.warning("memory2 retrieve trace write failed: %s", e)
 
+    @staticmethod
+    def _extract_task_tools(tools_used: list[str]) -> list[str]:
+        task_tools = []
+        for name in tools_used:
+            if name.startswith("skill_action_") or name in {"task_note", "update_now"}:
+                task_tools.append(name)
+        return task_tools
+
+    def _update_session_runtime_metadata(
+        self,
+        session,
+        *,
+        tools_used: list[str],
+        tool_chain: list[dict],
+    ) -> None:
+        """写入 Gate 判定所需的 session.metadata 运行态字段。"""
+        md = session.metadata if isinstance(session.metadata, dict) else {}
+        call_count = 0
+        for group in tool_chain:
+            if not isinstance(group, dict):
+                continue
+            calls = group.get("calls") or []
+            if isinstance(calls, list):
+                call_count += len(calls)
+
+        turn_task_tools = self._extract_task_tools(tools_used)
+        turns = md.get("_task_tools_turns")
+        if not isinstance(turns, list):
+            turns = []
+        turns.append(turn_task_tools)
+        turns = turns[-2:]
+
+        flat_recent = []
+        seen = set()
+        for turn in turns:
+            if not isinstance(turn, list):
+                continue
+            for name in turn:
+                if isinstance(name, str) and name not in seen:
+                    seen.add(name)
+                    flat_recent.append(name)
+
+        md["last_turn_tool_calls_count"] = call_count
+        md["recent_task_tools"] = flat_recent
+        md["last_turn_had_task_tool"] = bool(turn_task_tools)
+        md["last_turn_ts"] = datetime.now().astimezone().isoformat()
+        md["_task_tools_turns"] = turns
+        session.metadata = md
+
+    @staticmethod
+    def _is_flow_execution_state(user_msg: str, metadata: dict[str, object]) -> bool:
+        text = user_msg or ""
+        if any(w in text for w in _FLOW_TRIGGER_WORDS):
+            return True
+        if _FLOW_SEQUENCE_PATTERN.search(text):
+            return True
+        if bool(metadata.get("last_turn_had_task_tool", False)):
+            return True
+        recent_task_tools = metadata.get("recent_task_tools")
+        if isinstance(recent_task_tools, list) and any(
+            isinstance(t, str) and t for t in recent_task_tools
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _format_gate_history(history: list[dict], max_turns: int = 3) -> str:
+        """取最近 N 轮 user/assistant 消息，格式化为单行摘要串。"""
+        turns = []
+        for msg in reversed(history):
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                content = " ".join(
+                    c.get("text", "") for c in content if isinstance(c, dict)
+                )
+            content = str(content).strip()[:100]
+            if content:
+                turns.append(f"[{role}] {content}")
+            if len(turns) >= max_turns * 2:
+                break
+        return "\n".join(reversed(turns))
+
+    async def _decide_history_retrieval(
+        self,
+        *,
+        user_msg: str,
+        metadata: dict[str, object],
+        recent_history: str = "",
+    ) -> tuple[bool, str, str, int]:
+        """Gate A: 决定是否开启 H 通道检索。失败默认 RETRIEVE（fail-open）。"""
+        start = datetime.now()
+
+        if not self._memory_route_intention_enabled:
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return True, user_msg, "disabled", latency
+
+        if self._is_flow_execution_state(user_msg, metadata):
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return True, user_msg, "flow_execution_state", latency
+
+        history_section = f"\n近期对话摘要：\n{recent_history}\n" if recent_history else ""
+
+        prompt = f"""判断当前用户消息是否需要检索历史事件记忆。
+{history_section}
+当前消息：{user_msg}
+
+规则：
+- 闲聊、通识问答、无需历史上下文 -> NO_RETRIEVE
+- 涉及历史偏好、过往对话、用户特征 -> RETRIEVE
+
+若 RETRIEVE：rewritten_query 只保留检索主题关键词（如"仁王 游戏偏好"），
+去掉"我之前/之前说过/聊过"等 meta 表述，方便向量检索命中记忆。
+若 NO_RETRIEVE：rewritten_query 返回原文不变。
+
+只返回 JSON：{{"decision":"RETRIEVE|NO_RETRIEVE","rewritten_query":"...","confidence":"high|medium|low"}}"""
+
+        try:
+            timeout_s = max(0.1, self._memory_gate_llm_timeout_ms / 1000.0)
+            resp = await asyncio.wait_for(
+                self.light_provider.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    model=self.light_model,
+                    max_tokens=self._memory_gate_max_tokens,
+                ),
+                timeout=timeout_s,
+            )
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            payload = json_repair.loads(text)
+            decision = (
+                str(payload.get("decision", "")).upper()
+                if isinstance(payload, dict)
+                else ""
+            )
+            rewritten = (
+                str(payload.get("rewritten_query", "")).strip()
+                if isinstance(payload, dict)
+                else ""
+            )
+            confidence = (
+                str(payload.get("confidence", "medium")).lower()
+                if isinstance(payload, dict)
+                else "low"
+            )
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "low"
+            if confidence == "low":
+                decision = "RETRIEVE"
+            needs_history = decision != "NO_RETRIEVE"
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return needs_history, (rewritten or user_msg), "ok", latency
+        except Exception:
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return True, user_msg, "route_gate_exception", latency
+
+    async def _decide_history_injection_sufficiency(
+        self,
+        *,
+        user_msg: str,
+        procedure_items: list[dict],
+        history_items: list[dict],
+    ) -> tuple[bool, str, int]:
+        """Gate C: 决定是否注入 H 通道。失败默认注入（fail-open）。"""
+        start = datetime.now()
+        if not self._memory_sufficiency_check_enabled:
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return True, "disabled", latency
+        if not history_items:
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return False, "no_history_items", latency
+
+        items_block = "\n".join(
+            f"- {i.get('memory_type', '')}: {(i.get('summary', '') or '')[:140]}"
+            for i in history_items[:4]
+            if isinstance(i, dict)
+        )
+        prompt = f"""判断这些历史记忆是否对当前问题有实质帮助。
+
+用户消息：{user_msg}
+历史候选：
+{items_block}
+
+规则：
+- 若历史候选明显帮助回答当前问题，返回 ENOUGH_TO_INJECT
+- 若候选离题或帮助很弱，返回 SKIP_INJECTION
+
+只返回 JSON：{{"decision":"ENOUGH_TO_INJECT|SKIP_INJECTION","confidence":"high|medium|low"}}"""
+
+        try:
+            timeout_s = max(0.1, self._memory_gate_llm_timeout_ms / 1000.0)
+            resp = await asyncio.wait_for(
+                self.light_provider.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    model=self.light_model,
+                    max_tokens=self._memory_gate_max_tokens,
+                ),
+                timeout=timeout_s,
+            )
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            payload = json_repair.loads(text)
+            decision = (
+                str(payload.get("decision", "")).upper()
+                if isinstance(payload, dict)
+                else ""
+            )
+            confidence = (
+                str(payload.get("confidence", "medium")).lower()
+                if isinstance(payload, dict)
+                else "low"
+            )
+            if confidence not in {"high", "medium", "low"}:
+                confidence = "low"
+            if confidence == "low":
+                decision = "ENOUGH_TO_INJECT"
+            include_history = decision != "SKIP_INJECTION"
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return include_history, "ok", latency
+        except Exception:
+            latency = int((datetime.now() - start).total_seconds() * 1000)
+            return True, "sufficiency_gate_exception", latency
+
     # 单条消息处理的总超时（秒）。覆盖工具挂起、LLM 超时累积等极端场景。
     _MESSAGE_TIMEOUT_S: float = 600.0
 
     async def _process(
         self, msg: InboundMessage, session_key: str | None = None
     ) -> OutboundMessage:
+        started = time.time()
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"Processing message from {msg.channel}:{msg.sender}: {preview}")
 
@@ -349,6 +723,18 @@ class AgentLoop:
                 content="（处理超时，请重试）",
             )
         finally:
+            elapsed_ms = int((time.time() - started) * 1000)
+            now_ts = time.time()
+            self._gate_controller.record_latency(elapsed_ms, now_ts)
+            if self._gate_controller.enabled:
+                enabled, reason = self._gate_controller.tick(now_ts)
+                if enabled != self._memory_sufficiency_check_enabled:
+                    self._memory_sufficiency_check_enabled = enabled
+                    logger.warning(
+                        "memory sufficiency gate switched to %s (%s)",
+                        "enabled" if enabled else "disabled",
+                        reason,
+                    )
             if self._processing_state:
                 self._processing_state.exit(key)
 
@@ -373,17 +759,113 @@ class AgentLoop:
         # memory v2 检索
         retrieved_block = ""
         try:
-            items = await self._memory_port.retrieve_related(msg.content)
-            retrieved_block = self._memory_port.format_injection_block(items)
+            route_decision = "RETRIEVE"
+            rewritten_query = msg.content
+            sufficiency_decision = "ENOUGH_TO_INJECT"
+            fallback_reason = ""
+            gate_latency_ms: dict[str, int] = {}
+            runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
+
+            # Phase-0/1: 双通道检索骨架
+            # P 通道始终检索（procedure/preference），保证 SOP 约束不回退
+            p_items = await self._memory_port.retrieve_related(
+                rewritten_query,
+                memory_types=["procedure", "preference"],
+                top_k=self._memory_top_k_procedure,
+            )
+
+            # Gate A: 决定是否开启 H 通道
+            recent_turns = self._format_gate_history(main_history, max_turns=3)
+            (
+                needs_history,
+                rewritten_query,
+                route_reason,
+                route_ms,
+            ) = await self._decide_history_retrieval(
+                user_msg=msg.content,
+                metadata=runtime_md,
+                recent_history=recent_turns,
+            )
+            gate_latency_ms["route"] = route_ms
+            if route_reason != "ok":
+                fallback_reason = route_reason
+            route_decision = "RETRIEVE" if needs_history else "NO_RETRIEVE"
+
+            h_items: list[dict] = []
+            if needs_history:
+                h_items = await self._memory_port.retrieve_related(
+                    rewritten_query,
+                    memory_types=["event", "profile"],
+                    top_k=self._memory_top_k_history,
+                )
+
+            # Gate C: 决定是否注入 H 通道
+            (
+                include_history,
+                suff_reason,
+                suff_ms,
+            ) = await self._decide_history_injection_sufficiency(
+                user_msg=rewritten_query,
+                procedure_items=p_items,
+                history_items=h_items,
+            )
+            gate_latency_ms["sufficiency"] = suff_ms
+            if suff_reason != "ok" and not fallback_reason:
+                fallback_reason = suff_reason
+            sufficiency_decision = (
+                "ENOUGH_TO_INJECT" if include_history else "SKIP_HISTORY_INJECTION"
+            )
+            effective_h_items = h_items if include_history else []
+
+            seen_ids: set[str] = set()
+            items = []
+            for item in p_items + effective_h_items:
+                item_id = item.get("id")
+                if isinstance(item_id, str) and item_id:
+                    if item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                items.append(item)
+
+            selected_items = self._memory_port.select_for_injection(items)
+
+            retrieved_block, injected_item_ids = (
+                self._memory_port.format_injection_with_ids(selected_items)
+            )
             if retrieved_block:
-                logger.info(f"memory2 retrieve: {len(items)} 条命中，注入检索块")
+                logger.info(
+                    f"memory2 retrieve: {len(items)} 条命中，筛选后 {len(selected_items)} 条注入"
+                )
+
+            protected_ids = {
+                str(i.get("id", ""))
+                for i in p_items
+                if isinstance(i, dict)
+                and i.get("memory_type") == "procedure"
+                and (i.get("extra_json") or {}).get("tool_requirement")
+                and i.get("id")
+            }
+            sop_guard_applied = bool(
+                self._memory_sop_guard_enabled
+                and any(item_id in protected_ids for item_id in injected_item_ids)
+            )
+
             self._trace_memory_retrieve(
                 session_key=key,
                 channel=msg.channel,
                 chat_id=msg.chat_id,
                 user_msg=msg.content,
-                items=items,
+                items=selected_items,
                 injected_block=retrieved_block,
+                route_decision=route_decision,
+                rewritten_query=rewritten_query,
+                sufficiency_decision=sufficiency_decision,
+                fallback_reason=fallback_reason,
+                sop_guard_applied=sop_guard_applied,
+                procedure_hits=len(p_items),
+                history_hits=len(effective_h_items),
+                injected_item_ids=injected_item_ids,
+                gate_latency_ms=gate_latency_ms,
             )
         except Exception as e:
             logger.warning(f"memory2 retrieve 失败，跳过: {e}")
@@ -394,6 +876,7 @@ class AgentLoop:
                 user_msg=msg.content,
                 items=[],
                 injected_block="",
+                fallback_reason="retrieve_exception",
                 error=str(e),
             )
 
@@ -423,18 +906,25 @@ class AgentLoop:
             tools_used=tools_used if tools_used else None,
             tool_chain=tool_chain if tool_chain else None,
         )
+        self._update_session_runtime_metadata(
+            session,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
         # 普通对话只追加 2 条消息，避免全量重写阻塞事件循环
         await self.session_manager.append_messages(session, session.messages[-2:])
 
         if self._post_mem_worker:
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._post_mem_worker.run(
                     user_msg=msg.content,
                     agent_response=final_content,
                     tool_chain=tool_chain,
                     source_ref=f"{key}@post_response",
-                )
+                ),
+                name=f"post_mem:{key}",
             )
+            task.add_done_callback(lambda t: self._on_post_mem_task_done(t, key))
 
         return OutboundMessage(
             channel=msg.channel,
@@ -448,6 +938,31 @@ class AgentLoop:
                 "tool_chain": tool_chain,
             },
         )
+
+    def _on_post_mem_task_done(self, task: asyncio.Task, session_key: str) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.info("post_response_memorize task cancelled: %s", session_key)
+            return
+        except Exception as e:
+            self._post_mem_failures += 1
+            logger.warning(
+                "post_response_memorize task inspection failed session=%s failures=%d err=%s",
+                session_key,
+                self._post_mem_failures,
+                e,
+            )
+            return
+
+        if exc is not None:
+            self._post_mem_failures += 1
+            logger.warning(
+                "post_response_memorize task failed session=%s failures=%d err=%s",
+                session_key,
+                self._post_mem_failures,
+                exc,
+            )
 
     async def _run_agent_loop(
         self,

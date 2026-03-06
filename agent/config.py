@@ -72,8 +72,26 @@ class MemoryV2Config:
     db_path: str = ""  # 空则用 workspace/memory/memory2.db
     embed_model: str = "text-embedding-v3"
     retrieve_top_k: int = 8
+    top_k_history: int = 8
+    top_k_procedure: int = 4
     score_threshold: float = 0.45
+    score_threshold_procedure: float = 0.60
+    score_threshold_preference: float = 0.60
+    score_threshold_event: float = 0.68
+    score_threshold_profile: float = 0.68
+    relative_delta: float = 0.06
+    inject_max_chars: int = 1200
+    inject_max_forced: int = 3
+    inject_max_procedure_preference: int = 4
+    inject_max_event_profile: int = 2
     disable_full_memory: bool = False  # True 时不再注入全量 MEMORY.md
+    route_intention_enabled: bool = False
+    sufficiency_check_enabled: bool = False
+    sop_guard_enabled: bool = True
+    gate_llm_timeout_ms: int = 800
+    gate_max_tokens: int = 96
+    auto_downgrade_enabled: bool = False
+    gate_baseline_p95_ms: int = 0
 
 
 @dataclass
@@ -314,13 +332,41 @@ class Config:
             )
 
         mv2 = data.get("memory_v2", {})
+        score_thresholds = mv2.get("score_thresholds", {}) or {}
+        inject_limits = mv2.get("inject_limits", {}) or {}
+        history_top_k = int(
+            mv2.get(
+                "top_k_history",
+                mv2.get("recall_top_k", mv2.get("retrieve_top_k", 8)),
+            )
+        )
         memory_v2 = MemoryV2Config(
             enabled=bool(mv2.get("enabled", False)),
             db_path=mv2.get("db_path", ""),
             embed_model=mv2.get("embed_model", "text-embedding-v3"),
-            retrieve_top_k=int(mv2.get("retrieve_top_k", 8)),
+            retrieve_top_k=history_top_k,
+            top_k_history=history_top_k,
+            top_k_procedure=int(mv2.get("top_k_procedure", 4)),
             score_threshold=float(mv2.get("score_threshold", 0.45)),
+            score_threshold_procedure=float(score_thresholds.get("procedure", 0.60)),
+            score_threshold_preference=float(score_thresholds.get("preference", 0.60)),
+            score_threshold_event=float(score_thresholds.get("event", 0.68)),
+            score_threshold_profile=float(score_thresholds.get("profile", 0.68)),
+            relative_delta=float(mv2.get("relative_delta", 0.06)),
+            inject_max_chars=int(inject_limits.get("max_chars", 1200)),
+            inject_max_forced=int(inject_limits.get("forced", 3)),
+            inject_max_procedure_preference=int(
+                inject_limits.get("procedure_preference", 4)
+            ),
+            inject_max_event_profile=int(inject_limits.get("event_profile", 2)),
             disable_full_memory=bool(mv2.get("disable_full_memory", False)),
+            route_intention_enabled=bool(mv2.get("route_intention_enabled", False)),
+            sufficiency_check_enabled=bool(mv2.get("sufficiency_check_enabled", False)),
+            sop_guard_enabled=bool(mv2.get("sop_guard_enabled", True)),
+            gate_llm_timeout_ms=int(mv2.get("gate_llm_timeout_ms", 800)),
+            gate_max_tokens=int(mv2.get("gate_max_tokens", 96)),
+            auto_downgrade_enabled=bool(mv2.get("auto_downgrade_enabled", False)),
+            gate_baseline_p95_ms=int(mv2.get("gate_baseline_p95_ms", 0)),
         )
 
         return cls(

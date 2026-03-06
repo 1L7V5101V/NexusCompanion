@@ -24,6 +24,11 @@ class PostResponseMemoryWorker:
 
     SUPERSEDE_THRESHOLD = 0.82
     SUPERSEDE_CANDIDATE_K = 5
+    TOKEN_BUDGET_PER_RUN = 768
+    TOKENS_EXTRACT_IMPLICIT = 384
+    TOKENS_EXTRACT_INVALIDATION = 96
+    TOKENS_CHECK_INVALIDATE = 96
+    TOKENS_CHECK_SUPERSEDE = 96
 
     def __init__(
         self,
@@ -44,18 +49,25 @@ class PostResponseMemoryWorker:
         tool_chain: list[dict],
         source_ref: str,
     ) -> None:
+        token_budget = self.TOKEN_BUDGET_PER_RUN
         try:
             already_memorized, protected_ids = self._collect_explicit_memorized(
                 tool_chain
             )
 
             # 先处理"旧的有误/需要遗忘"的显式废弃信号，无需新规则即可 supersede
-            await self._handle_invalidations(user_msg, source_ref, protected_ids)
+            token_budget = await self._handle_invalidations(
+                user_msg,
+                source_ref,
+                protected_ids,
+                token_budget,
+            )
 
-            new_items = await self._extract_implicit(
+            new_items, token_budget = await self._extract_implicit(
                 user_msg,
                 agent_response,
                 already_memorized,
+                token_budget,
             )
             new_items = await self._dedupe_against_explicit(
                 new_items,
@@ -66,9 +78,20 @@ class PostResponseMemoryWorker:
                 return
 
             for item in new_items:
-                await self._save_with_supersede(item, source_ref, protected_ids)
+                token_budget = await self._save_with_supersede(
+                    item,
+                    source_ref,
+                    protected_ids,
+                    token_budget,
+                )
         except Exception as e:
             logger.warning(f"post_response_memorize run failed: {e}")
+
+    @staticmethod
+    def _consume_budget(remain: int, cost: int) -> tuple[bool, int]:
+        if remain < cost:
+            return False, remain
+        return True, remain - cost
 
     @staticmethod
     def _normalize_text(text: str) -> str:
@@ -135,12 +158,19 @@ class PostResponseMemoryWorker:
         return filtered
 
     async def _handle_invalidations(
-        self, user_msg: str, source_ref: str, protected_ids: set[str] | None = None
-    ) -> None:
+        self,
+        user_msg: str,
+        source_ref: str,
+        protected_ids: set[str] | None = None,
+        token_budget: int = TOKEN_BUDGET_PER_RUN,
+    ) -> int:
         """检测用户明确指出 agent 旧行为有误的情况，无需替代规则即直接 supersede 旧条目。"""
-        topics = await self._extract_invalidation_topics(user_msg)
+        topics, token_budget = await self._extract_invalidation_topics(
+            user_msg,
+            token_budget,
+        )
         if not topics:
-            return
+            return token_budget
         _protected = protected_ids or set()
         for topic in topics:
             candidates = await self._retriever.retrieve(
@@ -156,7 +186,11 @@ class PostResponseMemoryWorker:
             ][: self.SUPERSEDE_CANDIDATE_K]
             if not high_sim:
                 continue
-            supersede_ids = await self._check_invalidate(topic, high_sim)
+            supersede_ids, token_budget = await self._check_invalidate(
+                topic,
+                high_sim,
+                token_budget,
+            )
             if supersede_ids:
                 self._memorizer.supersede_batch(supersede_ids)
                 logger.info(
@@ -164,8 +198,13 @@ class PostResponseMemoryWorker:
                     supersede_ids,
                     topic,
                 )
+        return token_budget
 
-    async def _extract_invalidation_topics(self, user_msg: str) -> list[str]:
+    async def _extract_invalidation_topics(
+        self,
+        user_msg: str,
+        token_budget: int,
+    ) -> tuple[list[str], int]:
         """从用户消息中提取被明确声明为有误/需废弃的 agent 行为主题。"""
         prompt = f"""判断用户消息是否在指出 agent 某个现有行为/流程有误，且希望废弃它（即使没给出替代方案）。
 
@@ -176,28 +215,42 @@ class PostResponseMemoryWorker:
 2. 主语是 agent 的行为（不是用户自己的事，不是第三方的事）
 
 若触发，提取受影响的行为主题（简短描述，如"steam查询流程"、"健康数据获取方式"）。
-"也许/可能"等不确定措辞仍算触发——宁可多检查，不可漏掉。
+含"也许/可能/猜测"等不确定措辞时默认不触发，除非同时出现明确废弃指令（如"忘掉/废弃/不要再按这个做"）。
 若不触发，返回 []。
 
 只返回 JSON 数组，如 ["steam查询流程"] 或 []"""
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_EXTRACT_INVALIDATION,
+        )
+        if not ok:
+            logger.info("post_response invalidation skipped: token budget exhausted")
+            return [], token_budget
         try:
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=128,
+                max_tokens=self.TOKENS_EXTRACT_INVALIDATION,
             )
             text = (resp.content or "").strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
             if isinstance(result, list):
-                return [t for t in result if isinstance(t, str) and t.strip()]
+                return [
+                    t for t in result if isinstance(t, str) and t.strip()
+                ], token_budget
         except Exception as e:
             logger.warning(f"extract_invalidation_topics failed: {e}")
-        return []
+        return [], token_budget
 
-    async def _check_invalidate(self, topic: str, candidates: list[dict]) -> list[str]:
+    async def _check_invalidate(
+        self,
+        topic: str,
+        candidates: list[dict],
+        token_budget: int,
+    ) -> tuple[list[str], int]:
         """用户声明旧行为有误时，判断哪些旧条目应被 supersede（无需新规则替代）。"""
         old_block = "\n".join(f"- id={c['id']} | {c['summary']}" for c in candidates)
         prompt = f"""用户明确表示 agent 关于"{topic}"的现有行为/流程有误，需要废弃。
@@ -211,12 +264,21 @@ class PostResponseMemoryWorker:
 - 若无关联条目，返回 []
 
 只返回 JSON 数组，如 ["abc123"] 或 []"""
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_CHECK_INVALIDATE,
+        )
+        if not ok:
+            logger.info(
+                "post_response check_invalidate skipped: token budget exhausted"
+            )
+            return [], token_budget
         try:
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=128,
+                max_tokens=self.TOKENS_CHECK_INVALIDATE,
             )
             text = (resp.content or "").strip()
             if text.startswith("```"):
@@ -224,10 +286,12 @@ class PostResponseMemoryWorker:
             result = json_repair.loads(text)
             if isinstance(result, list):
                 valid_ids = {c["id"] for c in candidates}
-                return [i for i in result if isinstance(i, str) and i in valid_ids]
+                return [
+                    i for i in result if isinstance(i, str) and i in valid_ids
+                ], token_budget
         except Exception as e:
             logger.warning(f"check_invalidate failed: {e}")
-        return []
+        return [], token_budget
 
     def _collect_explicit_memorized(
         self, tool_chain: list[dict]
@@ -240,7 +304,7 @@ class PostResponseMemoryWorker:
         """
         import re as _re
 
-        _id_pattern = _re.compile(r"(?:new|reinforced):([a-f0-9]{10,16})")
+        _id_pattern = _re.compile(r"(?:new|reinforced):([A-Za-z0-9_-]{8,64})")
 
         summaries: list[str] = []
         protected_ids: set[str] = set()
@@ -268,7 +332,8 @@ class PostResponseMemoryWorker:
         user_msg: str,
         agent_response: str,
         already_memorized: list[str],
-    ) -> list[dict]:
+        token_budget: int,
+    ) -> tuple[list[dict], int]:
         """light model 提取隐式偏好，返回 behavior_updates 格式列表。"""
         exclusion_block = ""
         if already_memorized:
@@ -301,33 +366,46 @@ ASSISTANT: {agent_response}
 只返回合法 JSON 数组，无内容时返回 []。
 每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": []}}"""
 
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_EXTRACT_IMPLICIT,
+        )
+        if not ok:
+            logger.info(
+                "post_response extract_implicit skipped: token budget exhausted"
+            )
+            return [], token_budget
+
         try:
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=512,
+                max_tokens=self.TOKENS_EXTRACT_IMPLICIT,
             )
             text = (resp.content or "").strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
             if isinstance(result, list):
-                return [r for r in result if isinstance(r, dict) and r.get("summary")]
+                return [
+                    r for r in result if isinstance(r, dict) and r.get("summary")
+                ], token_budget
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
-        return []
+        return [], token_budget
 
     async def _save_with_supersede(
         self,
         item: dict,
         source_ref: str,
         protected_ids: set[str] | None = None,
-    ) -> None:
+        token_budget: int = TOKEN_BUDGET_PER_RUN,
+    ) -> int:
         """写入新条目，同时检测并退休矛盾的旧条目。"""
         summary = (item.get("summary") or "").strip()
         if not summary:
-            return
+            return token_budget
 
         mtype = item.get("memory_type", "procedure")
         if mtype not in ("procedure", "preference", "event", "profile"):
@@ -348,7 +426,11 @@ ASSISTANT: {agent_response}
             ][: self.SUPERSEDE_CANDIDATE_K]
 
             if high_sim:
-                supersede_ids = await self._check_supersede(summary, high_sim)
+                supersede_ids, token_budget = await self._check_supersede(
+                    summary,
+                    high_sim,
+                    token_budget,
+                )
                 if supersede_ids:
                     self._memorizer.supersede_batch(supersede_ids)
 
@@ -366,10 +448,14 @@ ASSISTANT: {agent_response}
             logger.info(f"post_response_memorize saved ({mtype}): {result}")
         except Exception as e:
             logger.warning(f"post_response_memorize save failed: {e}")
+        return token_budget
 
     async def _check_supersede(
-        self, new_summary: str, candidates: list[dict]
-    ) -> list[str]:
+        self,
+        new_summary: str,
+        candidates: list[dict],
+        token_budget: int,
+    ) -> tuple[list[str], int]:
         """让 light model 判断新条目覆盖了哪些旧条目。"""
         old_block = "\n".join(f"- id={c['id']} | {c['summary']}" for c in candidates)
         prompt = f"""判断新规则是否覆盖/取代了以下旧规则。
@@ -385,13 +471,20 @@ ASSISTANT: {agent_response}
 - 若无矛盾，返回空数组
 
 只返回 JSON 数组，如 ["abc123", "def456"] 或 []"""
+        ok, token_budget = self._consume_budget(
+            token_budget,
+            self.TOKENS_CHECK_SUPERSEDE,
+        )
+        if not ok:
+            logger.info("post_response check_supersede skipped: token budget exhausted")
+            return [], token_budget
 
         try:
             resp = await self._provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
                 model=self._model,
-                max_tokens=128,
+                max_tokens=self.TOKENS_CHECK_SUPERSEDE,
             )
             text = (resp.content or "").strip()
             if text.startswith("```"):
@@ -403,7 +496,7 @@ ASSISTANT: {agent_response}
                     item_id
                     for item_id in result
                     if isinstance(item_id, str) and item_id in valid_ids
-                ]
+                ], token_budget
         except Exception as e:
             logger.warning(f"supersede check failed: {e}")
-        return []
+        return [], token_budget

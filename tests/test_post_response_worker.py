@@ -1,11 +1,16 @@
 import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 from memory2.post_response_worker import PostResponseMemoryWorker
 
 
 class _DummyProvider:
+    def __init__(self):
+        self.calls = 0
+
     async def chat(self, **kwargs):
+        self.calls += 1
         raise AssertionError("provider.chat should not be called in this test")
 
 
@@ -38,26 +43,31 @@ def test_post_worker_skips_implicit_when_semantic_dup_to_explicit():
         ]
     )
     worker = PostResponseMemoryWorker(
-        memorizer=memorizer,
-        retriever=retriever,
-        light_provider=_DummyProvider(),
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
         light_model="test",
     )
 
-    worker._collect_explicit_memorized = lambda _tc: (
+    worker._collect_explicit_memorized = lambda tool_chain: (
         ["记忆冲突时必须实时验证，禁止推测，必须外部工具验证"],
         {"2b1ba4e802bf"},
     )
-    worker._handle_invalidations = AsyncMock(return_value=None)
+    worker._handle_invalidations = AsyncMock(
+        side_effect=lambda *args, **kwargs: args[-1] if args else 0
+    )
     worker._extract_implicit = AsyncMock(
-        return_value=[
-            {
-                "summary": "在记忆冲突情况下应优先外部工具验证，不依赖内部推测",
-                "memory_type": "procedure",
-                "tool_requirement": None,
-                "steps": [],
-            }
-        ]
+        return_value=(
+            [
+                {
+                    "summary": "在记忆冲突情况下应优先外部工具验证，不依赖内部推测",
+                    "memory_type": "procedure",
+                    "tool_requirement": None,
+                    "steps": [],
+                }
+            ],
+            256,
+        )
     )
 
     asyncio.run(
@@ -76,26 +86,31 @@ def test_post_worker_saves_implicit_when_not_duplicate_to_explicit():
     memorizer = _DummyMemorizer()
     retriever = _DummyRetriever([])
     worker = PostResponseMemoryWorker(
-        memorizer=memorizer,
-        retriever=retriever,
-        light_provider=_DummyProvider(),
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
         light_model="test",
     )
 
-    worker._collect_explicit_memorized = lambda _tc: (
+    worker._collect_explicit_memorized = lambda tool_chain: (
         ["记得后续查 Steam 要走 MCP"],
         {"abcdef123456"},
     )
-    worker._handle_invalidations = AsyncMock(return_value=None)
+    worker._handle_invalidations = AsyncMock(
+        side_effect=lambda *args, **kwargs: args[-1] if args else 0
+    )
     worker._extract_implicit = AsyncMock(
-        return_value=[
-            {
-                "summary": "回复结尾要主动追问用户最关心的点",
-                "memory_type": "preference",
-                "tool_requirement": None,
-                "steps": [],
-            }
-        ]
+        return_value=(
+            [
+                {
+                    "summary": "回复结尾要主动追问用户最关心的点",
+                    "memory_type": "preference",
+                    "tool_requirement": None,
+                    "steps": [],
+                }
+            ],
+            256,
+        )
     )
 
     asyncio.run(
@@ -108,3 +123,42 @@ def test_post_worker_saves_implicit_when_not_duplicate_to_explicit():
     )
 
     memorizer.save_item.assert_called_once()
+
+
+def test_collect_explicit_memorized_accepts_long_mixed_id():
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+    tool_chain = [
+        {
+            "calls": [
+                {
+                    "name": "memorize",
+                    "arguments": {"summary": "规则A"},
+                    "result": "已记住（new:AbCDef12_34567890）：规则A",
+                }
+            ]
+        }
+    ]
+    summaries, protected = worker._collect_explicit_memorized(tool_chain)
+    assert summaries == ["规则A"]
+    assert "AbCDef12_34567890" in protected
+
+
+def test_extract_invalidation_topics_skips_when_token_budget_exhausted():
+    provider = _DummyProvider()
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, _DummyMemorizer()),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, provider),
+        light_model="test",
+    )
+    topics, remain = asyncio.run(
+        worker._extract_invalidation_topics("也许这个流程不对", token_budget=0)
+    )
+    assert topics == []
+    assert remain == 0
+    assert provider.calls == 0

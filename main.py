@@ -20,7 +20,6 @@ from bus.queue import MessageBus
 from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMProvider
-from agent.memory import MemoryStore
 from agent.tools.registry import ToolRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tools.filesystem import (
@@ -158,6 +157,18 @@ def build_memory_runtime(
         embedder,
         top_k=config.memory_v2.retrieve_top_k,
         score_threshold=config.memory_v2.score_threshold,
+        score_thresholds={
+            "procedure": config.memory_v2.score_threshold_procedure,
+            "preference": config.memory_v2.score_threshold_preference,
+            "event": config.memory_v2.score_threshold_event,
+            "profile": config.memory_v2.score_threshold_profile,
+        },
+        relative_delta=config.memory_v2.relative_delta,
+        inject_max_chars=config.memory_v2.inject_max_chars,
+        inject_max_forced=config.memory_v2.inject_max_forced,
+        inject_max_procedure_preference=config.memory_v2.inject_max_procedure_preference,
+        inject_max_event_profile=config.memory_v2.inject_max_event_profile,
+        sop_guard_enabled=config.memory_v2.sop_guard_enabled,
     )
 
     # 3. 注册工具（含 SopIndexer）
@@ -185,6 +196,8 @@ def build_core_runtime(
     LLMProvider,
     LLMProvider | None,
     McpServerRegistry,
+    "MemoryPort",
+    PresenceStore,
 ]:
     """
     构建核心运行时：消息总线、工具注册表、AgentLoop、调度器、MCP。
@@ -266,6 +279,15 @@ def build_core_runtime(
         memorizer=memorizer,
         retriever=retriever,
         disable_full_memory=config.memory_v2.disable_full_memory,
+        memory_top_k_procedure=config.memory_v2.top_k_procedure,
+        memory_top_k_history=config.memory_v2.top_k_history,
+        memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
+        memory_sufficiency_check_enabled=config.memory_v2.sufficiency_check_enabled,
+        memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+        memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+        memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
+        memory_auto_downgrade_enabled=config.memory_v2.auto_downgrade_enabled,
+        memory_gate_baseline_p95_ms=config.memory_v2.gate_baseline_p95_ms,
     )
 
     # 6. 回填 agent_loop，注册调度与 MCP 工具
@@ -293,6 +315,8 @@ def build_core_runtime(
         provider,
         light_provider,
         mcp_registry,
+        loop._memory_port,
+        presence,
     )
 
 
@@ -420,6 +444,7 @@ def build_proactive_runtime(
 async def serve(config_path: str = "config.json") -> None:
     # 1. 加载配置
     config = Config.load(config_path)
+    print(f"[DEBUG] config_path={config_path} route_intention={config.memory_v2.route_intention_enabled} sufficiency={config.memory_v2.sufficiency_check_enabled}", flush=True)
     workspace = Path.home() / ".akasic" / "workspace"
 
     # 2. 构建核心运行时
@@ -433,6 +458,8 @@ async def serve(config_path: str = "config.json") -> None:
         provider,
         light_provider,
         mcp_registry,
+        memory_port,
+        presence,
     ) = build_core_runtime(config, workspace)
     await mcp_registry.load_and_connect_all()
 
@@ -494,13 +521,6 @@ async def serve(config_path: str = "config.json") -> None:
         bus.dispatch_outbound(),
         scheduler.run(),
     ]
-
-    memory_store = MemoryStore(workspace)
-    presence = PresenceStore(workspace / "presence.json")
-
-    from core.memory.port import DefaultMemoryPort
-
-    memory_port = DefaultMemoryPort(memory_store)
 
     proactive_tasks, proactive_loop = build_proactive_runtime(
         config,
