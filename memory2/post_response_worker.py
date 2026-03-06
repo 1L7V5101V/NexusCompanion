@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import json_repair
 
@@ -44,7 +45,9 @@ class PostResponseMemoryWorker:
         source_ref: str,
     ) -> None:
         try:
-            already_memorized, protected_ids = self._collect_explicit_memorized(tool_chain)
+            already_memorized, protected_ids = self._collect_explicit_memorized(
+                tool_chain
+            )
 
             # 先处理"旧的有误/需要遗忘"的显式废弃信号，无需新规则即可 supersede
             await self._handle_invalidations(user_msg, source_ref, protected_ids)
@@ -54,6 +57,11 @@ class PostResponseMemoryWorker:
                 agent_response,
                 already_memorized,
             )
+            new_items = await self._dedupe_against_explicit(
+                new_items,
+                already_memorized,
+                protected_ids,
+            )
             if not new_items:
                 return
 
@@ -61,6 +69,70 @@ class PostResponseMemoryWorker:
                 await self._save_with_supersede(item, source_ref, protected_ids)
         except Exception as e:
             logger.warning(f"post_response_memorize run failed: {e}")
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        text = (text or "").strip().lower()
+        text = re.sub(r"\s+", "", text)
+        text = re.sub(r"[，。！？、；：,.!?;:\-—_`'\"()\[\]{}<>《》]", "", text)
+        return text
+
+    async def _dedupe_against_explicit(
+        self,
+        items: list[dict],
+        explicit_summaries: list[str],
+        protected_ids: set[str],
+    ) -> list[dict]:
+        """过滤掉与本轮显式 memorize 同义的隐式条目，避免同轮重复写入。"""
+        if not items:
+            return []
+        if not explicit_summaries:
+            return items
+
+        explicit_norms = [self._normalize_text(s) for s in explicit_summaries if s]
+        filtered: list[dict] = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            summary = (item.get("summary") or "").strip()
+            if not summary:
+                continue
+
+            cur = self._normalize_text(summary)
+            # 1) 先做轻量文本去重
+            text_dup = any(n and cur and (n in cur or cur in n) for n in explicit_norms)
+            if text_dup:
+                logger.info(
+                    "post_response_memorize skip implicit (explicit text-dup): %s",
+                    summary,
+                )
+                continue
+
+            # 2) 再做向量同义校验：命中本轮显式写入 id 且高相似时跳过
+            mtype = item.get("memory_type", "procedure")
+            if protected_ids and mtype in ("procedure", "preference"):
+                try:
+                    candidates = await self._retriever.retrieve(
+                        summary,
+                        memory_types=["procedure", "preference"],
+                    )
+                    if any(
+                        c.get("id") in protected_ids and c.get("score", 0) >= 0.78
+                        for c in candidates
+                        if isinstance(c, dict)
+                    ):
+                        logger.info(
+                            "post_response_memorize skip implicit (explicit sem-dup): %s",
+                            summary,
+                        )
+                        continue
+                except Exception as e:
+                    logger.warning(f"implicit-explicit dedupe retrieve failed: {e}")
+
+            filtered.append(item)
+
+        return filtered
 
     async def _handle_invalidations(
         self, user_msg: str, source_ref: str, protected_ids: set[str] | None = None
@@ -76,7 +148,8 @@ class PostResponseMemoryWorker:
                 memory_types=["procedure", "preference"],
             )
             high_sim = [
-                c for c in candidates
+                c
+                for c in candidates
                 if isinstance(c, dict)
                 and c.get("score", 0) >= self.SUPERSEDE_THRESHOLD
                 and c.get("id") not in _protected
@@ -124,13 +197,9 @@ class PostResponseMemoryWorker:
             logger.warning(f"extract_invalidation_topics failed: {e}")
         return []
 
-    async def _check_invalidate(
-        self, topic: str, candidates: list[dict]
-    ) -> list[str]:
+    async def _check_invalidate(self, topic: str, candidates: list[dict]) -> list[str]:
         """用户声明旧行为有误时，判断哪些旧条目应被 supersede（无需新规则替代）。"""
-        old_block = "\n".join(
-            f'- id={c["id"]} | {c["summary"]}' for c in candidates
-        )
+        old_block = "\n".join(f"- id={c['id']} | {c['summary']}" for c in candidates)
         prompt = f"""用户明确表示 agent 关于"{topic}"的现有行为/流程有误，需要废弃。
 以下是数据库中与该主题相关的现有规则，判断哪些应被标记为废弃：
 
@@ -155,10 +224,7 @@ class PostResponseMemoryWorker:
             result = json_repair.loads(text)
             if isinstance(result, list):
                 valid_ids = {c["id"] for c in candidates}
-                return [
-                    i for i in result
-                    if isinstance(i, str) and i in valid_ids
-                ]
+                return [i for i in result if isinstance(i, str) and i in valid_ids]
         except Exception as e:
             logger.warning(f"check_invalidate failed: {e}")
         return []
@@ -173,7 +239,8 @@ class PostResponseMemoryWorker:
         - protected_ids：memorize tool 本轮写入的条目 id，不允许被 worker supersede
         """
         import re as _re
-        _id_pattern = _re.compile(r'(?:new|reinforced):([a-f0-9]{10,16})')
+
+        _id_pattern = _re.compile(r"(?:new|reinforced):([a-f0-9]{10,16})")
 
         summaries: list[str] = []
         protected_ids: set[str] = set()

@@ -26,6 +26,7 @@ _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 _MAX_TOOL_RESULT_CHARS = 100_000
 _TOOL_LOOP_REPEAT_LIMIT = 3  # 连续同签名工具调用达到该次数时判定循环
 _SUMMARY_MAX_TOKENS = 512
+_RETRIEVE_TRACE_SUMMARY_MAX = 240
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,49 @@ class AgentLoop:
                 result.append(name)
         return result
 
+    def _trace_memory_retrieve(
+        self,
+        *,
+        session_key: str,
+        channel: str,
+        chat_id: str,
+        user_msg: str,
+        items: list[dict],
+        injected_block: str,
+        error: str = "",
+    ) -> None:
+        """将每轮 memory2 检索结果落盘，便于排查 top-k 注入是否过量。"""
+        try:
+            memory_dir = self.workspace / "memory"
+            memory_dir.mkdir(parents=True, exist_ok=True)
+            trace_file = memory_dir / "memory2_retrieve_trace.jsonl"
+
+            payload = {
+                "ts": datetime.now().astimezone().isoformat(),
+                "session_key": session_key,
+                "channel": channel,
+                "chat_id": chat_id,
+                "user_msg": user_msg,
+                "hit_count": len(items),
+                "injected_chars": len(injected_block or ""),
+                "error": error,
+                "top_items": [
+                    {
+                        "id": item.get("id", ""),
+                        "memory_type": item.get("memory_type", ""),
+                        "score": round(float(item.get("score", 0.0)), 4),
+                        "summary": (item.get("summary", "") or "")[
+                            :_RETRIEVE_TRACE_SUMMARY_MAX
+                        ],
+                    }
+                    for item in items
+                ],
+            }
+            with trace_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning("memory2 retrieve trace write failed: %s", e)
+
     # 单条消息处理的总超时（秒）。覆盖工具挂起、LLM 超时累积等极端场景。
     _MESSAGE_TIMEOUT_S: float = 600.0
 
@@ -333,8 +377,25 @@ class AgentLoop:
             retrieved_block = self._memory_port.format_injection_block(items)
             if retrieved_block:
                 logger.info(f"memory2 retrieve: {len(items)} 条命中，注入检索块")
+            self._trace_memory_retrieve(
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                user_msg=msg.content,
+                items=items,
+                injected_block=retrieved_block,
+            )
         except Exception as e:
             logger.warning(f"memory2 retrieve 失败，跳过: {e}")
+            self._trace_memory_retrieve(
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                user_msg=msg.content,
+                items=[],
+                injected_block="",
+                error=str(e),
+            )
 
         self._set_tool_context(msg.channel, msg.chat_id)
         final_content, tools_used, tool_chain = await self._run_with_safety_retry(
