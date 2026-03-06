@@ -206,18 +206,9 @@ class Retriever:
                 type_best[mtype] = score
 
         selected: list[dict] = []
-        protected: list[dict] = []
         for item in sorted_items:
             mtype = str(item.get("memory_type", "") or "")
             score = float(item.get("score", 0.0) or 0.0)
-            extra = item.get("extra_json") or {}
-            if (
-                self._sop_guard_enabled
-                and mtype == "procedure"
-                and extra.get("tool_requirement")
-            ):
-                protected.append(item)
-                continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
             floor = type_best.get(mtype, score) - self._relative_delta
             if score < type_th:
@@ -226,19 +217,4 @@ class Retriever:
                 continue
             selected.append(item)
 
-        if not protected:
-            return selected
-
-        seen_ids: set[str] = {
-            str(i.get("id")) for i in selected if isinstance(i, dict) and i.get("id")
-        }
-        merged = list(selected)
-        for item in protected:
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id and item_id in seen_ids:
-                continue
-            merged.append(item)
-            if isinstance(item_id, str) and item_id:
-                seen_ids.add(item_id)
-        merged.sort(key=lambda x: float(x.get("score", 0.0) or 0.0), reverse=True)
-        return merged
+        return selected
