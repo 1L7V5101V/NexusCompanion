@@ -10,10 +10,11 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
+    from core.memory.runtime import MemoryRuntime
 
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -59,6 +60,8 @@ from proactive.state import ProactiveStateStore
 from proactive.presence import PresenceStore
 from proactive.schedule import ScheduleStore
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
+from core.memory.runtime import MemoryRuntime
+from memory2.post_response_worker import PostResponseMemoryWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +73,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
 
 
 # ── 服务端 ────────────────────────────────────────────────────────
@@ -113,25 +118,47 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
     return provider, light_provider
 
 
+async def _run_cleanup_steps(
+    *steps: tuple[str, Callable[[], Awaitable[None]]]
+) -> None:
+    """Run shutdown steps in order, continuing after failures."""
+    first_error: Exception | None = None
+    for name, step in steps:
+        try:
+            await step()
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+            logger.warning("shutdown step failed: %s: %s", name, exc)
+    if first_error is not None:
+        raise first_error
+
+
 def build_memory_runtime(
     config: Config,
     workspace: Path,
     tools: ToolRegistry,
     provider: LLMProvider,
-) -> tuple:
+    light_provider: LLMProvider | None,
+) -> MemoryRuntime:
     """
     初始化 memory v2（向量检索体系），并注册相关工具。
 
     # 1. 检查 memory_v2 开关
     # 2. 初始化 store / embedder / memorizer / retriever
     # 3. 注册 MemorizeTool、WriteFileTool、EditFileTool（含 SopIndexer）
-    # 4. 返回 (memorizer, retriever)
+    # 4. 返回 MemoryRuntime
     """
+    from agent.memory import MemoryStore
+    from core.memory.port import DefaultMemoryPort
+
+    store = MemoryStore(workspace)
+
     # 1. 检查开关
     if not config.memory_v2.enabled:
         tools.register(WriteFileTool())
         tools.register(EditFileTool())
-        return None, None
+        return MemoryRuntime(port=DefaultMemoryPort(store))
 
     # 2. 初始化 store / embedder / memorizer / retriever
     from memory2.store import MemoryStore2
@@ -171,8 +198,16 @@ def build_memory_runtime(
         sop_guard_enabled=config.memory_v2.sop_guard_enabled,
     )
 
+    port = DefaultMemoryPort(store, memorizer=memorizer, retriever=retriever)
+    post_mem_worker = PostResponseMemoryWorker(
+        memorizer=memorizer,
+        retriever=retriever,
+        light_provider=light_provider or provider,
+        light_model=config.light_model or config.model,
+    )
+
     # 3. 注册工具（含 SopIndexer）
-    tools.register(MemorizeTool(memorizer))
+    tools.register(MemorizeTool(port))
     from memory2.sop_indexer import SopIndexer
 
     sop_indexer = SopIndexer(mem2_store, embedder, workspace / "sop")
@@ -180,7 +215,12 @@ def build_memory_runtime(
     tools.register(EditFileTool(sop_indexer=sop_indexer))
 
     # 4. 返回
-    return memorizer, retriever
+    return MemoryRuntime(
+        port=port,
+        post_response_worker=post_mem_worker,
+        sop_indexer=sop_indexer,
+        closeables=[mem2_store, embedder],
+    )
 
 
 def build_core_runtime(
@@ -196,7 +236,7 @@ def build_core_runtime(
     LLMProvider,
     LLMProvider | None,
     McpServerRegistry,
-    "MemoryPort",
+    "MemoryRuntime",
     PresenceStore,
 ]:
     """
@@ -218,7 +258,6 @@ def build_core_runtime(
     tools.register(WebFetchTool())
     tools.register(ReadFileTool())
     tools.register(ListDirTool())
-    tools.register(UpdateNowTool(workspace))
     push_tool = MessagePushTool()
     tools.register(push_tool)
 
@@ -247,7 +286,14 @@ def build_core_runtime(
     provider, light_provider = build_providers(config)
 
     # 3. 初始化 memory runtime
-    memorizer, retriever = build_memory_runtime(config, workspace, tools, provider)
+    memory_runtime = build_memory_runtime(
+        config,
+        workspace,
+        tools,
+        provider,
+        light_provider,
+    )
+    tools.register(UpdateNowTool(memory_runtime.port))
 
     # 4. 初始化调度器（agent_loop 暂为 None，后续回填）
     tracker = LatencyTracker()
@@ -276,14 +322,13 @@ def build_core_runtime(
         light_model=config.light_model,
         light_provider=light_provider,
         processing_state=processing_state,
-        memorizer=memorizer,
-        retriever=retriever,
         memory_top_k_procedure=config.memory_v2.top_k_procedure,
         memory_top_k_history=config.memory_v2.top_k_history,
         memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
         memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
         memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
         memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
+        memory_runtime=memory_runtime,
     )
 
     # 6. 回填 agent_loop，注册调度与 MCP 工具
@@ -311,7 +356,7 @@ def build_core_runtime(
         provider,
         light_provider,
         mcp_registry,
-        loop._memory_port,
+        memory_runtime,
         presence,
     )
 
@@ -454,7 +499,7 @@ async def serve(config_path: str = "config.json") -> None:
         provider,
         light_provider,
         mcp_registry,
-        memory_port,
+        memory_runtime,
         presence,
     ) = build_core_runtime(config, workspace)
     await mcp_registry.load_and_connect_all()
@@ -528,7 +573,7 @@ async def serve(config_path: str = "config.json") -> None:
         provider=provider,
         light_provider=light_provider,
         push_tool=push_tool,
-        memory_store=memory_port,
+        memory_store=memory_runtime.port,
         presence=presence,
         agent_loop=agent_loop,
     )
@@ -541,7 +586,7 @@ async def serve(config_path: str = "config.json") -> None:
     # 7. 启动记忆优化器
     if config.memory_optimizer_enabled:
         mem_optimizer = MemoryOptimizer(
-            memory=memory_port,
+            memory=memory_runtime.port,
             provider=provider,
             model=config.model,
         )
@@ -557,11 +602,12 @@ async def serve(config_path: str = "config.json") -> None:
     try:
         await asyncio.gather(*tasks)
     finally:
-        await ipc.stop()
-        if tg_channel:
-            await tg_channel.stop()
-        if qq_channel:
-            await qq_channel.stop()
+        await _run_cleanup_steps(
+            ("ipc.stop", ipc.stop),
+            ("telegram.stop", tg_channel.stop if tg_channel else (lambda: asyncio.sleep(0))),
+            ("qq.stop", qq_channel.stop if qq_channel else (lambda: asyncio.sleep(0))),
+            ("memory_runtime.aclose", memory_runtime.aclose),
+        )
 
 
 # ── 客户端 ────────────────────────────────────────────────────────

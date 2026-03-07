@@ -48,7 +48,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
             _provider,
             _light_provider,
             _mcp_registry,
-            _memory_port,
+            _memory_runtime,
             _presence,
         ) = runtime
 
@@ -77,3 +77,22 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
     assert "scheduler" in observed
     assert "bus" in observed
 
+
+@pytest.mark.asyncio
+async def test_run_cleanup_steps_continues_after_failure():
+    calls: list[str] = []
+
+    async def _fail() -> None:
+        calls.append("fail")
+        raise RuntimeError("stop failed")
+
+    async def _cleanup() -> None:
+        calls.append("cleanup")
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await main._run_cleanup_steps(
+            ("fail", _fail),
+            ("cleanup", _cleanup),
+        )
+
+    assert calls == ["fail", "cleanup"]

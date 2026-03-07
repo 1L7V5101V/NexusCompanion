@@ -4,10 +4,12 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 from agent.loop import AgentLoop
+from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from core.memory.port import DefaultMemoryPort
 from proactive.components import ProactiveMessageComposer
 
 
@@ -112,6 +114,7 @@ def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> Age
         session_manager=MagicMock(),
         workspace=tmp_path,
         max_iterations=10,
+        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
     )
 
 
@@ -301,6 +304,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
         session_manager=MagicMock(),
         workspace=tmp_path,
         max_iterations=10,
+        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
     )
 
     final, _, _ = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "t"}]))

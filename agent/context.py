@@ -15,19 +15,10 @@ if TYPE_CHECKING:
 class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
 
-    def __init__(self, workspace: Path, memory: "MemoryPort | None" = None):
-        # 1. Store workspace and skills loader
+    def __init__(self, workspace: Path, memory: "MemoryPort"):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace)
-
-        # 2. Accept injected MemoryPort, or fall back to a v1-only DefaultMemoryPort
-        if memory is not None:
-            self.memory = memory
-        else:
-            from agent.memory import MemoryStore
-            from core.memory.port import DefaultMemoryPort
-
-            self.memory = DefaultMemoryPort(MemoryStore(workspace))
+        self.memory = memory
 
     def build_system_prompt(
         self,

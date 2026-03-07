@@ -1,15 +1,21 @@
 import json
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import main
 from agent.config import Config
 from agent.loop import AgentLoop
+from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
+from agent.tools.memorize import MemorizeTool
+from agent.tools.update_now import UpdateNowTool
 from agent.tools.registry import ToolRegistry
+from core.memory.port import DefaultMemoryPort
+from core.memory.runtime import MemoryRuntime
 from memory2.retriever import Retriever
 from session.manager import Session
 
@@ -127,6 +133,7 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
         tools=tools,
         session_manager=MagicMock(),
         workspace=tmp_path,
+        memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
     )
     session = Session("telegram:1")
 
@@ -151,6 +158,146 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     assert session.metadata["last_turn_tool_calls_count"] == 1
     assert isinstance(session.metadata.get("_task_tools_turns"), list)
     assert len(session.metadata["_task_tools_turns"]) <= 2
+
+
+@pytest.mark.asyncio
+async def test_update_now_tool_uses_memory_port():
+    memory = MagicMock()
+    tool = UpdateNowTool(cast(Any, memory))
+
+    result = await tool.execute(add='["任务A"]', remove_keywords=["旧任务"])
+
+    memory.update_now_ongoing.assert_called_once_with(
+        add=["任务A"],
+        remove_keywords=["旧任务"],
+    )
+    assert "NOW.md 已更新" in result
+
+
+@pytest.mark.asyncio
+async def test_memorize_tool_uses_memory_port():
+    memory = MagicMock()
+    memory.save_item = AsyncMock(return_value="mem-1")
+    tool = MemorizeTool(cast(Any, memory))
+
+    result = await tool.execute(
+        summary="以后先查工具状态",
+        memory_type="procedure",
+        tool_requirement="skill_action_status",
+        steps=["先查", "再执行"],
+    )
+
+    memory.save_item.assert_awaited_once_with(
+        summary="以后先查工具状态",
+        memory_type="procedure",
+        extra={
+            "tool_requirement": "skill_action_status",
+            "steps": ["先查", "再执行"],
+            "persist_file": None,
+        },
+        source_ref="memorize_tool",
+    )
+    assert "已记住" in result
+
+
+def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
+    tools = ToolRegistry()
+    tools.register(_NoopTool())
+    memory_port = cast(Any, MagicMock())
+    post_mem_worker = MagicMock()
+    runtime = MemoryRuntime(
+        port=memory_port,
+        post_response_worker=post_mem_worker,
+    )
+
+    loop = AgentLoop(
+        bus=MagicMock(),
+        provider=cast(Any, _FakeProvider()),
+        tools=tools,
+        session_manager=MagicMock(),
+        workspace=tmp_path,
+        memory_runtime=runtime,
+    )
+
+    assert loop._memory_port is memory_port
+    assert loop._post_mem_worker is post_mem_worker
+    assert loop.context.memory is memory_port
+
+
+@pytest.mark.asyncio
+async def test_build_memory_runtime_v2_enabled_returns_worker_and_port(tmp_path: Path):
+    config = Config(
+        provider="openai",
+        model="test-model",
+        api_key="test-key",
+        system_prompt="test system prompt",
+    )
+    config.memory_v2.enabled = True
+
+    tools = ToolRegistry()
+    runtime = main.build_memory_runtime(
+        config,
+        tmp_path,
+        tools,
+        cast(Any, MagicMock()),
+        None,
+    )
+
+    assert runtime.port is not None
+    assert runtime.post_response_worker is not None
+    assert runtime.sop_indexer is not None
+    schema_names = {schema["function"]["name"] for schema in tools.get_schemas()}
+    assert "memorize" in schema_names
+
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_memory_runtime_aclose_closes_resources_in_reverse_order():
+    calls: list[str] = []
+
+    class _CloseOnly:
+        def close(self) -> None:
+            calls.append("first")
+
+    class _AsyncCloseOnly:
+        def __init__(self) -> None:
+            self.aclose = AsyncMock(side_effect=self._aclose)
+
+        async def _aclose(self) -> None:
+            calls.append("second")
+
+    runtime = MemoryRuntime(
+        port=cast(Any, MagicMock()),
+        closeables=[_CloseOnly(), _AsyncCloseOnly()],
+    )
+    await runtime.aclose()
+
+    assert calls == ["second", "first"]
+
+
+@pytest.mark.asyncio
+async def test_memory_runtime_aclose_continues_after_failure():
+    calls: list[str] = []
+
+    class _FailingAsyncClose:
+        async def aclose(self) -> None:
+            calls.append("failing")
+            raise RuntimeError("boom")
+
+    class _CloseOnly:
+        def close(self) -> None:
+            calls.append("close")
+
+    runtime = MemoryRuntime(
+        port=cast(Any, MagicMock()),
+        closeables=[_CloseOnly(), _FailingAsyncClose()],
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await runtime.aclose()
+
+    assert calls == ["failing", "close"]
 
 
 def test_retriever_select_for_injection_applies_type_threshold_and_relative_delta():

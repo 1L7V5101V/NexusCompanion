@@ -20,6 +20,7 @@ from memory2.post_response_worker import PostResponseMemoryWorker
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
+    from core.memory.runtime import MemoryRuntime
 
 # 安全拦截时递减历史窗口的倍率序列：全量 → 减半 → 清空
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
@@ -101,8 +102,6 @@ class AgentLoop:
         light_model: str = "",
         light_provider: LLMProvider | None = None,
         processing_state: ProcessingState | None = None,
-        memorizer=None,
-        retriever=None,
         memory_top_k_procedure: int = 4,
         memory_top_k_history: int = 8,
         memory_route_intention_enabled: bool = False,
@@ -110,6 +109,8 @@ class AgentLoop:
         memory_gate_llm_timeout_ms: int = 800,
         memory_gate_max_tokens: int = 96,
         memory_port: "MemoryPort | None" = None,
+        post_mem_worker: PostResponseMemoryWorker | None = None,
+        memory_runtime: "MemoryRuntime | None" = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -134,35 +135,16 @@ class AgentLoop:
         self._memory_gate_llm_timeout_ms = max(100, int(memory_gate_llm_timeout_ms))
         self._memory_gate_max_tokens = max(32, int(memory_gate_max_tokens))
 
-        if memorizer and retriever:
-            self._post_mem_worker = PostResponseMemoryWorker(
-                memorizer=memorizer,
-                retriever=retriever,
-                light_provider=light_provider or provider,
-                light_model=light_model or model,
-            )
-        else:
-            self._post_mem_worker = None
+        if memory_runtime is not None:
+            memory_port = memory_runtime.port
+            post_mem_worker = memory_runtime.post_response_worker
+        if memory_port is None:
+            raise ValueError("AgentLoop requires memory_port or memory_runtime")
 
-        # 1. Build or accept a unified MemoryPort
-        if memory_port is not None:
-            self._memory_port = memory_port
-        else:
-            from agent.memory import MemoryStore
-            from core.memory.port import DefaultMemoryPort
+        self._post_mem_worker = post_mem_worker
+        self._memory_port = memory_port
 
-            self._memory_port: "MemoryPort" = DefaultMemoryPort(
-                MemoryStore(workspace),
-                memorizer=memorizer,
-                retriever=retriever,
-            )
-
-        # 2. Wire ContextBuilder with the unified memory port
         self.context = ContextBuilder(workspace, memory=self._memory_port)
-
-        # 3. Keep legacy references for callers that may still use them directly
-        self._memorizer = memorizer
-        self._retriever = retriever
         self._post_mem_failures = 0
 
     async def run(self) -> None:

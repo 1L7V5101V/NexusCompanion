@@ -7,10 +7,12 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.loop import AgentLoop
+from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
+from core.memory.port import DefaultMemoryPort
 
 
 class _NoopTool(Tool):
@@ -71,6 +73,7 @@ def _make_loop(provider: _Provider, **kwargs: Any) -> AgentLoop:
         tools=tools,
         session_manager=MagicMock(),
         workspace=workspace,
+        memory_port=kwargs.pop("memory_port", DefaultMemoryPort(MemoryStore(workspace))),
         **kwargs,
     )
 

@@ -12,7 +12,6 @@ from agent.tools.base import Tool
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
-    from memory2.memorizer import Memorizer
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +72,8 @@ class MemorizeTool(Tool):
         "required": ["summary", "memory_type"],
     }
 
-    def __init__(self, memorizer: "MemoryPort | Memorizer") -> None:
-        # Accept either a unified MemoryPort or the legacy Memorizer directly
-        self._memorizer = memorizer
+    def __init__(self, memory: "MemoryPort") -> None:
+        self._memory = memory
 
     async def execute(
         self,
@@ -91,7 +89,7 @@ class MemorizeTool(Tool):
             "steps": steps or [],
             "persist_file": persist_file,
         }
-        result = await self._memorizer.save_item(
+        result = await self._memory.save_item(
             summary=summary,
             memory_type=memory_type,
             extra=extra,

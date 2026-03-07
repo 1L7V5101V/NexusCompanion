@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
-from agent.memory import MemoryStore
 from agent.tools.base import Tool
+
+from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ class UpdateNowTool(Tool):
         "required": [],
     }
 
-    def __init__(self, workspace: Path) -> None:
-        self._workspace = workspace
+    def __init__(self, memory: MemoryPort) -> None:
+        self._memory = memory
 
     @staticmethod
     def _coerce_list(val: Any) -> list[str]:
@@ -64,12 +64,11 @@ class UpdateNowTool(Tool):
         remove_keywords: list[str] | None = None,
         **_: Any,
     ) -> str:
-        memory = MemoryStore(self._workspace)
         add = self._coerce_list(add)
         remove_keywords = self._coerce_list(remove_keywords)
         if not add and not remove_keywords:
             return "无变化（add 和 remove_keywords 均为空）"
-        memory.update_now_ongoing(add=add, remove_keywords=remove_keywords)
+        self._memory.update_now_ongoing(add=add, remove_keywords=remove_keywords)
         parts = []
         if add:
             parts.append(f"已添加 {len(add)} 条: {add}")
