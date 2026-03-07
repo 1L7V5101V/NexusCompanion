@@ -1,11 +1,16 @@
 import asyncio
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.loop import AgentLoop, GateController
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from bus.events import InboundMessage
 
 
 class _NoopTool(Tool):
@@ -37,16 +42,35 @@ class _Provider:
         )
 
 
+class _DummySession:
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.messages: list[dict] = []
+        self.metadata: dict[str, object] = {}
+        self.last_consolidated = 0
+
+    def get_history(self, max_messages: int = 500) -> list[dict]:
+        return self.messages[-max_messages:]
+
+    def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
+        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        msg.update(kwargs)
+        if media:
+            msg["media"] = list(media)
+        self.messages.append(msg)
+
+
 def _make_loop(provider: _Provider, **kwargs: Any) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(_NoopTool())
+    workspace = kwargs.pop("workspace", Path(tempfile.mkdtemp(prefix="loop-test-")))
     return AgentLoop(
         bus=MagicMock(),
         provider=cast(Any, provider),
         light_provider=cast(Any, provider),
         tools=tools,
         session_manager=MagicMock(),
-        workspace=MagicMock(),
+        workspace=workspace,
         **kwargs,
     )
 
@@ -135,3 +159,83 @@ def test_flow_execution_state_uses_task_tool_flag_not_any_tool_count():
         )
         is True
     )
+
+
+def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
+    loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
+    session = _DummySession("cli:1")
+    loop.session_manager.get_or_create.return_value = session
+    loop.session_manager.append_messages = AsyncMock(return_value=None)
+    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], []))
+
+    async def _slow_retrieve(*args, **kwargs):
+        await asyncio.sleep(0.12)
+        return []
+
+    async def _slow_route(*args, **kwargs):
+        await asyncio.sleep(0.12)
+        return False, "q", "ok", 120
+
+    loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._decide_history_retrieval = _slow_route  # type: ignore[assignment]
+    loop._decide_history_injection_sufficiency = AsyncMock(
+        return_value=(False, "no_history_items", 0)
+    )
+
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+    start = time.perf_counter()
+    asyncio.run(loop._process_inner(msg, msg.session_key))
+    elapsed = time.perf_counter() - start
+
+    # 若串行应接近 0.24s；并行时应接近单个分支耗时。
+    assert elapsed < 0.22
+
+
+def test_process_inner_schedules_consolidation_only_after_append_messages():
+    loop = _make_loop(_Provider())
+    session = _DummySession("cli:1")
+    session.messages = [{"role": "user", "content": "x"} for _ in range(41)]
+    loop.session_manager.get_or_create.return_value = session
+    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], []))
+
+    append_done = False
+
+    async def _append_messages(*args, **kwargs):
+        nonlocal append_done
+        append_done = True
+        return None
+
+    loop.session_manager.append_messages = AsyncMock(side_effect=_append_messages)
+    loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._decide_history_retrieval = AsyncMock(return_value=(False, "q", "ok", 0))
+    loop._decide_history_injection_sufficiency = AsyncMock(
+        return_value=(False, "no_history_items", 0)
+    )
+
+    scheduled_after_append: list[bool] = []
+    real_create_task = asyncio.create_task
+
+    def _fake_create_task(coro, *args, **kwargs):
+        name = getattr(getattr(coro, "cr_code", None), "co_name", "")
+        if name == "_consolidate_memory_bg":
+            scheduled_after_append.append(append_done)
+            # 避免未调度协程告警
+            try:
+                coro.close()
+            except Exception:
+                pass
+            return MagicMock()
+        return real_create_task(coro, *args, **kwargs)
+
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+    with patch("agent.loop.asyncio.create_task", side_effect=_fake_create_task):
+        asyncio.run(loop._process_inner(msg, msg.session_key))
+
+    assert scheduled_after_append
+    assert scheduled_after_append[0] is True

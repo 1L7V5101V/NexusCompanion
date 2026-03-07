@@ -71,12 +71,24 @@ class MemoryPort(Protocol):
     # ── v1: pending facts buffer (PENDING.md) ─────────────────────
     def read_pending(self) -> str: ...
     def append_pending(self, facts: str) -> None: ...
+    def append_pending_once(
+        self,
+        facts: str,
+        source_ref: str,
+        kind: str = "pending",
+    ) -> bool: ...
     def snapshot_pending(self) -> str: ...
     def commit_pending_snapshot(self) -> None: ...
     def rollback_pending_snapshot(self) -> None: ...
 
     # ── v1: history log (HISTORY.md) ──────────────────────────────
     def append_history(self, entry: str) -> None: ...
+    def append_history_once(
+        self,
+        entry: str,
+        source_ref: str,
+        kind: str = "history_entry",
+    ) -> bool: ...
     def read_history(self, max_chars: int = 0) -> str: ...
 
     # ── v1: context helpers ────────────────────────────────────────
@@ -176,6 +188,21 @@ class DefaultMemoryPort:
     def append_pending(self, facts: str) -> None:
         self._store.append_pending(facts)
 
+    def append_pending_once(
+        self,
+        facts: str,
+        source_ref: str,
+        kind: str = "pending",
+    ) -> bool:
+        if hasattr(self._store, "append_pending_once"):
+            return self._store.append_pending_once(
+                facts,
+                source_ref=source_ref,
+                kind=kind,
+            )
+        self._store.append_pending(facts)
+        return bool((facts or "").strip())
+
     def snapshot_pending(self) -> str:
         return self._store.snapshot_pending()
 
@@ -190,8 +217,28 @@ class DefaultMemoryPort:
     def append_history(self, entry: str) -> None:
         self._store.append_history(entry)
 
+    def append_history_once(
+        self,
+        entry: str,
+        source_ref: str,
+        kind: str = "history_entry",
+    ) -> bool:
+        if hasattr(self._store, "append_history_once"):
+            return self._store.append_history_once(
+                entry,
+                source_ref=source_ref,
+                kind=kind,
+            )
+        self._store.append_history(entry)
+        return bool((entry or "").strip())
+
     def read_history(self, max_chars: int = 0) -> str:
         """Read HISTORY.md; if max_chars > 0, return only the last max_chars."""
+        if hasattr(self._store, "read_history"):
+            try:
+                return self._store.read_history(max_chars=max_chars)
+            except Exception:
+                return ""
         try:
             if not self._store.history_file.exists():
                 return ""

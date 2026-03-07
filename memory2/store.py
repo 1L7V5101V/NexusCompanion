@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS memory_items (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_items_hash
     ON memory_items (content_hash, memory_type);
+CREATE TABLE IF NOT EXISTS consolidation_events (
+    source_ref  TEXT PRIMARY KEY,
+    item_id     TEXT,
+    created_at  TEXT NOT NULL
+);
 """
 
 
@@ -113,6 +118,87 @@ class MemoryStore2:
         )
         self._db.commit()
         return f"new:{item_id}"
+
+    def upsert_consolidation_event(
+        self,
+        *,
+        source_ref: str,
+        summary: str,
+        embedding: list[float] | None,
+        extra: dict | None = None,
+        happened_at: str | None = None,
+    ) -> str:
+        """原子写入 consolidation event：同一 source_ref 最多写一次。"""
+        src = (source_ref or "").strip()
+        text = (summary or "").strip()
+        if not src or not text:
+            return "skipped:empty"
+
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            already = self._db.execute(
+                "SELECT item_id FROM consolidation_events WHERE source_ref=?",
+                (src,),
+            ).fetchone()
+            if already is not None:
+                self._db.execute("COMMIT")
+                existing_id = already[0] or ""
+                return f"skipped:{existing_id or src}"
+
+            chash = _content_hash(text, "event")
+            existing = self._db.execute(
+                "SELECT id, status FROM memory_items WHERE content_hash=? AND memory_type=?",
+                (chash, "event"),
+            ).fetchone()
+
+            if existing:
+                row_id, status = existing
+                if status == "superseded":
+                    self._db.execute(
+                        "UPDATE memory_items SET status='active', reinforcement=reinforcement+1, updated_at=? WHERE id=?",
+                        (_now_iso(), row_id),
+                    )
+                else:
+                    self._db.execute(
+                        "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
+                        (_now_iso(), row_id),
+                    )
+                item_id = row_id
+                result = f"reinforced:{row_id}"
+            else:
+                item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
+                self._db.execute(
+                    """INSERT INTO memory_items
+                       (id, memory_type, summary, content_hash, embedding, extra_json,
+                        source_ref, happened_at, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        item_id,
+                        "event",
+                        text,
+                        chash,
+                        json.dumps(embedding) if embedding is not None else None,
+                        json.dumps(extra) if extra else None,
+                        src,
+                        happened_at,
+                        _now_iso(),
+                        _now_iso(),
+                    ),
+                )
+                result = f"new:{item_id}"
+
+            self._db.execute(
+                "INSERT INTO consolidation_events(source_ref, item_id, created_at) VALUES (?, ?, ?)",
+                (src, item_id, _now_iso()),
+            )
+            self._db.execute("COMMIT")
+            return result
+        except Exception:
+            try:
+                self._db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def mark_superseded(self, item_id: str) -> None:
         """将指定条目标记为已退休。"""
@@ -217,6 +303,24 @@ class MemoryStore2:
         )
         self._db.commit()
         return cur.rowcount
+
+    def has_item_by_source_ref(
+        self,
+        source_ref: str,
+        memory_type: str | None = None,
+    ) -> bool:
+        """检查是否已存在指定 source_ref 的条目。"""
+        if memory_type:
+            row = self._db.execute(
+                "SELECT 1 FROM memory_items WHERE source_ref=? AND memory_type=? LIMIT 1",
+                (source_ref, memory_type),
+            ).fetchone()
+        else:
+            row = self._db.execute(
+                "SELECT 1 FROM memory_items WHERE source_ref=? LIMIT 1",
+                (source_ref,),
+            ).fetchone()
+        return row is not None
 
     def close(self) -> None:
         self._db.close()

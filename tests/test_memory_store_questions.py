@@ -62,3 +62,74 @@ def test_get_memory_context_empty_and_nonempty(tmp_path):
 
     store.write_long_term("- user profile")
     assert store.get_memory_context().startswith("## Long-term Memory")
+
+
+def test_append_pending_once_is_idempotent_and_hidden_from_read(tmp_path):
+    store = MemoryStore(tmp_path)
+
+    assert store.append_pending_once(
+        "- pref A",
+        source_ref="session@1-10",
+        kind="user_facts",
+    )
+    assert not store.append_pending_once(
+        "- pref A duplicated",
+        source_ref="session@1-10",
+        kind="user_facts",
+    )
+
+    pending = store.read_pending()
+    raw = store.pending_file.read_text(encoding="utf-8")
+
+    assert "- pref A" in pending
+    assert "duplicated" not in pending
+    assert "<!-- consolidation:session@1-10:user_facts -->" in raw
+    assert raw.count("<!-- consolidation:session@1-10:user_facts -->") == 1
+
+
+def test_append_history_once_is_idempotent_and_hidden_from_read(tmp_path):
+    store = MemoryStore(tmp_path)
+
+    assert store.append_history_once(
+        "[2026-03-08 12:00] USER: hi",
+        source_ref="session@1-10",
+        kind="history_entry",
+    )
+    assert not store.append_history_once(
+        "[2026-03-08 12:01] USER: hi again",
+        source_ref="session@1-10",
+        kind="history_entry",
+    )
+
+    history = store.read_history()
+    raw = store.history_file.read_text(encoding="utf-8")
+
+    assert "USER: hi" in history
+    assert "hi again" not in history
+    assert "<!-- consolidation:session@1-10:history_entry -->" in raw
+    assert raw.count("<!-- consolidation:session@1-10:history_entry -->") == 1
+
+
+def test_append_pending_once_repairs_file_when_db_ahead(tmp_path):
+    store = MemoryStore(tmp_path)
+    assert store.append_pending_once(
+        "- pref A",
+        source_ref="session@1-10",
+        kind="user_facts",
+    )
+
+    # 模拟文件被回滚/覆盖但 sidecar 仍保留写入记录
+    store.pending_file.write_text("", encoding="utf-8")
+
+    # 同一 source_ref 再次写入时应被判重，但会自动把缺失内容补回文件
+    assert not store.append_pending_once(
+        "- pref A should be ignored",
+        source_ref="session@1-10",
+        kind="user_facts",
+    )
+    pending = store.read_pending()
+    raw = store.pending_file.read_text(encoding="utf-8")
+
+    assert "- pref A" in pending
+    assert "ignored" not in pending
+    assert "<!-- consolidation:session@1-10:user_facts -->" in raw

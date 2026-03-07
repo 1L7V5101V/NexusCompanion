@@ -741,14 +741,6 @@ class AgentLoop:
     async def _process_inner(self, msg: InboundMessage, key: str) -> OutboundMessage:
         session = self.session_manager.get_or_create(key)
 
-        # 超过记忆窗口时后台压缩（不阻塞当前消息处理）
-        if (
-            len(session.messages) > self.memory_window
-            and key not in self._consolidating
-        ):
-            self._consolidating.add(key)
-            asyncio.create_task(self._consolidate_memory_bg(session, key))
-
         # 解析 $skill 语法，命中时直接注入完整 SKILL.md（Codex 风格：事前注入，而非事后检测）
         skill_mentions = self._collect_skill_mentions(msg.content)
         if skill_mentions:
@@ -771,24 +763,29 @@ class AgentLoop:
             # 追加"操作规范"将 query embedding 拉向 procedure 空间，
             # 弥补事实性问题与操作规范文本之间的语义距离
             p_query = f"{msg.content} 操作规范"
-            p_items = await self._memory_port.retrieve_related(
-                p_query,
-                memory_types=["procedure", "preference"],
-                top_k=self._memory_top_k_procedure,
-            )
-
-            # Gate A: 决定是否开启 H 通道
             recent_turns = self._format_gate_history(main_history, max_turns=3)
-            (
+            p_task = asyncio.create_task(
+                self._memory_port.retrieve_related(
+                    p_query,
+                    memory_types=["procedure", "preference"],
+                    top_k=self._memory_top_k_procedure,
+                )
+            )
+            route_task = asyncio.create_task(
+                self._decide_history_retrieval(
+                    user_msg=msg.content,
+                    metadata=runtime_md,
+                    recent_history=recent_turns,
+                )
+            )
+            p_items, (
                 needs_history,
                 rewritten_query,
                 route_reason,
                 route_ms,
-            ) = await self._decide_history_retrieval(
-                user_msg=msg.content,
-                metadata=runtime_md,
-                recent_history=recent_turns,
-            )
+            ) = await asyncio.gather(p_task, route_task)
+
+            # Gate A: 决定是否开启 H 通道
             gate_latency_ms["route"] = route_ms
             if route_reason != "ok":
                 fallback_reason = route_reason
@@ -916,6 +913,14 @@ class AgentLoop:
         )
         # 普通对话只追加 2 条消息，避免全量重写阻塞事件循环
         await self.session_manager.append_messages(session, session.messages[-2:])
+
+        # 超过记忆窗口时后台压缩；放到回复落盘后再触发，避免和当前被动回复抢占模型
+        if (
+            len(session.messages) > self.memory_window
+            and key not in self._consolidating
+        ):
+            self._consolidating.add(key)
+            asyncio.create_task(self._consolidate_memory_bg(session, key))
 
         if self._post_mem_worker:
             task = asyncio.create_task(
@@ -1176,6 +1181,12 @@ class AgentLoop:
                 f"Memory consolidation started: {len(session.messages)} total, {len(old_messages)} new to consolidate, {keep_count} keep"
             )
 
+        source_ref = (
+            f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
+            if not archive_all
+            else f"{session.key}@archive_all"
+        )
+
         # 以下逻辑对 archive_all 和普通压缩均适用
         lines = []
         for m in old_messages:
@@ -1187,7 +1198,7 @@ class AgentLoop:
                 continue
             lines.append(f"[{m.get('timestamp', '?')[:16]}] {role}: {m['content']}")
         conversation = "\n".join(lines)
-        current_memory = memory.read_long_term()
+        current_memory = await asyncio.to_thread(memory.read_long_term)
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -1276,21 +1287,38 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                 return
 
             if "history_entry" in result:
-                memory.append_history(result["history_entry"])
+                await asyncio.to_thread(
+                    memory.append_history_once,
+                    result["history_entry"],
+                    source_ref=source_ref,
+                    kind="history_entry",
+                )
 
             # user_facts / corrections → PENDING.md（MemoryOptimizer 稍后合并到 MEMORY.md）
             user_facts = result.get("user_facts", "")
             if user_facts and isinstance(user_facts, str) and user_facts.strip():
-                memory.append_pending(user_facts)
-                logger.info(
-                    f"Memory consolidation: appended {len(user_facts.splitlines())} user_facts to PENDING"
+                appended = await asyncio.to_thread(
+                    memory.append_pending_once,
+                    user_facts,
+                    source_ref=source_ref,
+                    kind="user_facts",
                 )
+                if appended:
+                    logger.info(
+                        f"Memory consolidation: appended {len(user_facts.splitlines())} user_facts to PENDING"
+                    )
             corrections = result.get("corrections", "")
             if corrections and isinstance(corrections, str) and corrections.strip():
-                memory.append_pending(corrections)
-                logger.info(
-                    f"Memory consolidation: appended {len(corrections.splitlines())} corrections to PENDING"
+                appended = await asyncio.to_thread(
+                    memory.append_pending_once,
+                    corrections,
+                    source_ref=source_ref,
+                    kind="corrections",
                 )
+                if appended:
+                    logger.info(
+                        f"Memory consolidation: appended {len(corrections.splitlines())} corrections to PENDING"
+                    )
 
             # self_insights → PENDING.md 带 [SELF] 标记，供 Optimizer 路由到 SELF.md
             self_insights = result.get("self_insights", [])
@@ -1301,23 +1329,24 @@ agent 从本次对话中发现的用户**行为模式新规律**，格式为带 
                     if isinstance(s, str) and s.strip()
                 ]
                 if insight_lines:
-                    memory.append_pending("\n".join(insight_lines))
-                    logger.info(
-                        f"Memory consolidation: appended {len(insight_lines)} self_insights to PENDING"
+                    appended = await asyncio.to_thread(
+                        memory.append_pending_once,
+                        "\n".join(insight_lines),
+                        source_ref=source_ref,
+                        kind="self_insights",
                     )
+                    if appended:
+                        logger.info(
+                            f"Memory consolidation: appended {len(insight_lines)} self_insights to PENDING"
+                        )
 
             # memory v2 写入（非阻塞）：通过 MemoryPort 统一写口
             history_entry = result.get("history_entry", "")
-            _source_ref = (
-                f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
-                if not archive_all
-                else f"{session.key}@archive_all"
-            )
             asyncio.create_task(
                 self._memory_port.save_from_consolidation(
                     history_entry=history_entry,
                     behavior_updates=[],
-                    source_ref=_source_ref,
+                    source_ref=source_ref,
                     scope_channel=getattr(session, "_channel", ""),
                     scope_chat_id=getattr(session, "_chat_id", ""),
                 )

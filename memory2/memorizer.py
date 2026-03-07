@@ -48,16 +48,23 @@ class Memorizer:
         # 1. history_entry → event
         if history_entry and history_entry.strip():
             try:
-                result = await self.save_item(
+                embedding = await self._embedder.embed(history_entry.strip())
+                result = self._store.upsert_consolidation_event(
+                    source_ref=source_ref,
                     summary=history_entry.strip(),
-                    memory_type="event",
+                    embedding=embedding,
                     extra={
                         "scope_channel": scope_channel,
                         "scope_chat_id": scope_chat_id,
                     },
-                    source_ref=source_ref,
                 )
-                logger.info(f"memory2 event saved: {result}")
+                if result.startswith("skipped:"):
+                    logger.info(
+                        "memory2 consolidation skip duplicated source_ref=%s",
+                        source_ref,
+                    )
+                else:
+                    logger.info(f"memory2 event saved: {result}")
             except Exception as e:
                 logger.warning(f"memory2 event save 失败: {e}")
 
