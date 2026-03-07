@@ -65,9 +65,13 @@ async def _download_to_temp(urls: list[str]) -> list[str]:
                 resp.raise_for_status()
                 ct = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
                 ext = ext_map.get(ct, ".jpg")
-                tmp = tempfile.mktemp(suffix=ext, prefix="akasic_qq_")
-                Path(tmp).write_bytes(resp.content)
-                paths.append(tmp)
+                with tempfile.NamedTemporaryFile(
+                    delete=False,
+                    suffix=ext,
+                    prefix="akasic_qq_",
+                ) as tmp:
+                    tmp.write(resp.content)
+                    paths.append(tmp.name)
             except Exception as e:
                 logger.warning(f"[qq] 图片下载失败  url={url[:80]}  错误: {e}")
     return paths

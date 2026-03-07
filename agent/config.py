@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +25,29 @@ _PRESETS: dict[str, str] = {
 # CLI channel 默认 Unix socket 路径
 DEFAULT_SOCKET = "/tmp/akasic.sock"
 
+_DEPRECATED_PROACTIVE_KEYS: dict[str, str] = {
+    "only_new_items_trigger": "该开关已移除；主动链路默认允许无新 feed 时继续评估是否触达。",
+    "energy_cool_threshold": "已不再参与 proactive 主流程。",
+    "energy_crisis_threshold": "已不再参与 proactive 主流程。",
+    "energy_min_urge": "已不再参与 proactive 主流程。",
+    "quiet_hours_start": "静默时段旧配置已移除。",
+    "quiet_hours_end": "静默时段旧配置已移除。",
+    "quiet_hours_weight": "静默时段旧配置已移除。",
+    "tick_interval_high": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
+    "tick_interval_normal": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
+    "tick_interval_low": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
+    "tick_interval_crisis": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
+}
+
+_DEPRECATED_MEMORY_V2_KEYS: dict[str, str] = {
+    "retrieve_top_k": "请改用 memory_v2.top_k_history。",
+    "recall_top_k": "请改用 memory_v2.top_k_history。",
+    "disable_full_memory": "该开关已移除；长期记忆默认全量注入。",
+    "sufficiency_check_enabled": "该开关已移除；history sufficiency gate 已删除。",
+    "auto_downgrade_enabled": "该开关已移除；history sufficiency gate 已删除。",
+    "gate_baseline_p95_ms": "该开关已移除；history sufficiency gate 已删除。",
+}
+
 
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
@@ -37,6 +61,14 @@ def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
             f"proactive.anyaction_timezone 无效: {tz_name!r}，"
             "请使用 IANA 格式，如 'Asia/Shanghai'"
         )
+
+
+def _warn_deprecated_config(key_path: str, message: str) -> None:
+    warnings.warn(
+        f"配置项 {key_path} 已弃用。{message}",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @dataclass
@@ -84,14 +116,10 @@ class MemoryV2Config:
     inject_max_forced: int = 3
     inject_max_procedure_preference: int = 4
     inject_max_event_profile: int = 2
-    disable_full_memory: bool = False  # True 时不再注入全量 MEMORY.md
     route_intention_enabled: bool = False
-    sufficiency_check_enabled: bool = False
     sop_guard_enabled: bool = True
     gate_llm_timeout_ms: int = 800
     gate_max_tokens: int = 96
-    auto_downgrade_enabled: bool = False
-    gate_baseline_p95_ms: int = 0
 
 
 @dataclass
@@ -155,6 +183,9 @@ class Config:
         # ── proactive ──
         proactive = ProactiveConfig()
         if p := data.get("proactive"):
+            for key, message in _DEPRECATED_PROACTIVE_KEYS.items():
+                if key in p:
+                    _warn_deprecated_config(f"proactive.{key}", message)
             if_cfg = p.get("interest_filter", {}) or {}
             proactive = ProactiveConfig(
                 enabled=p.get("enabled", False),
@@ -167,7 +198,6 @@ class Config:
                 default_chat_id=str(p.get("default_chat_id", "")),
                 dedupe_seen_ttl_hours=int(p.get("dedupe_seen_ttl_hours", 24 * 14)),
                 delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
-                only_new_items_trigger=bool(p.get("only_new_items_trigger", True)),
                 semantic_dedupe_enabled=bool(p.get("semantic_dedupe_enabled", True)),
                 semantic_dedupe_threshold=float(
                     p.get("semantic_dedupe_threshold", 0.90)
@@ -350,6 +380,9 @@ class Config:
             )
 
         mv2 = data.get("memory_v2", {})
+        for key, message in _DEPRECATED_MEMORY_V2_KEYS.items():
+            if key in mv2:
+                _warn_deprecated_config(f"memory_v2.{key}", message)
         score_thresholds = mv2.get("score_thresholds", {}) or {}
         inject_limits = mv2.get("inject_limits", {}) or {}
         history_top_k = int(
@@ -377,14 +410,10 @@ class Config:
                 inject_limits.get("procedure_preference", 4)
             ),
             inject_max_event_profile=int(inject_limits.get("event_profile", 2)),
-            disable_full_memory=bool(mv2.get("disable_full_memory", False)),
             route_intention_enabled=bool(mv2.get("route_intention_enabled", False)),
-            sufficiency_check_enabled=bool(mv2.get("sufficiency_check_enabled", False)),
             sop_guard_enabled=bool(mv2.get("sop_guard_enabled", True)),
             gate_llm_timeout_ms=int(mv2.get("gate_llm_timeout_ms", 800)),
             gate_max_tokens=int(mv2.get("gate_max_tokens", 96)),
-            auto_downgrade_enabled=bool(mv2.get("auto_downgrade_enabled", False)),
-            gate_baseline_p95_ms=int(mv2.get("gate_baseline_p95_ms", 0)),
         )
 
         return cls(

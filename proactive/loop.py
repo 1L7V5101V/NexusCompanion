@@ -74,7 +74,6 @@ class ProactiveConfig:
     default_chat_id: str = ""
     dedupe_seen_ttl_hours: int = 24 * 14
     delivery_dedupe_hours: int = 24
-    only_new_items_trigger: bool = True
     semantic_dedupe_enabled: bool = True
     semantic_dedupe_threshold: float = 0.90
     semantic_dedupe_window_hours: int = 72
@@ -171,10 +170,6 @@ class ProactiveConfig:
     source_scorer_cache_path: str = (
         ""  # 缓存文件路径（空=自动用 workspace/source_scores.json）
     )
-    # ── 旧参数兼容（当前主流程不再使用）──
-    energy_cool_threshold: float = 0.20
-    energy_crisis_threshold: float = 0.05
-    energy_min_urge: float = 0.10
 
 
 @dataclass
@@ -289,10 +284,9 @@ class ProactiveLoop:
             else None
         )
         logger.info(
-            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh only_new_items_trigger=%s semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
+            "[proactive] 去重配置 seen_ttl=%dh delivery_window=%dh semantic_enabled=%s semantic_threshold=%.2f semantic_window=%dh ngram=%d use_global_memory=%s memory_max_chars=%d",
             self._cfg.dedupe_seen_ttl_hours,
             self._cfg.delivery_dedupe_hours,
-            self._cfg.only_new_items_trigger,
             self._cfg.semantic_dedupe_enabled,
             self._cfg.semantic_dedupe_threshold,
             self._cfg.semantic_dedupe_window_hours,

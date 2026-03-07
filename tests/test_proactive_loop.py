@@ -90,7 +90,7 @@ async def test_send_writes_proactive_message_into_target_session(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tick_dedupes_seen_items_and_skips_second_reflect(tmp_path):
+async def test_tick_delivery_dedupe_blocks_repeat_send_for_seen_item(tmp_path):
     push_tool = AsyncMock()
     push_tool.execute = AsyncMock(return_value="文本已发送")
 
@@ -108,55 +108,8 @@ async def test_tick_dedupes_seen_items_and_skips_second_reflect(tmp_path):
 
     provider = _DummyProvider()
     provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.9,"should_send":true,"message":"ping"}')
-    )
-    session_manager = SessionManager(tmp_path)
-    loop = ProactiveLoop(
-        feed_registry=feed,
-        session_manager=session_manager,
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(
-            enabled=True,
-            default_channel="telegram",
-            default_chat_id="7674283004",
-            only_new_items_trigger=True,
-        ),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-    )
-
-    await loop._tick()
-    await loop._tick()
-
-    assert provider.chat.await_count == 1
-    assert push_tool.execute.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
-    """item 发送后标记为 seen，tick2 无新条目时 only_new_items_trigger 早退，不重复发送。
-    Fix D 移除了 new_items 到 items 的回退逻辑，delivery_key 现仅基于 new_items 中的证据；
-    当 new_items=[] 时使用 time_bucket+prefix 格式，因此依赖 only_new_items_trigger 阻断重复。"""
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    feed = _DummyFeedRegistry()
-    item = FeedItem(
-        source_name="TestFeed",
-        source_type="rss",
-        title="A",
-        content="content",
-        url="https://example.com/a",
-        author=None,
-        published_at=None,
-    )
-    feed.fetch_all = AsyncMock(side_effect=[[item], [item]])
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
         return_value=_Resp(
-            '{"reasoning":"ok","score":0.9,"should_send":true,"message":"same msg","evidence_item_ids":[]}'
+            '{"reasoning":"ok","score":0.9,"should_send":true,"message":"ping"}'
         )
     )
     session_manager = SessionManager(tmp_path)
@@ -170,8 +123,7 @@ async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
             default_channel="telegram",
             default_chat_id="7674283004",
             delivery_dedupe_hours=24,
-            only_new_items_trigger=True,   # tick2 item 已 seen → new_items=[] → 早退
-            message_dedupe_enabled=False,  # 避免额外的 LLM 调用干扰计数
+            message_dedupe_enabled=False,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -180,64 +132,7 @@ async def test_tick_delivery_dedupe_blocks_duplicate_send(tmp_path):
     await loop._tick()
     await loop._tick()
 
-    assert provider.chat.await_count == 1   # tick2 早退，不调 LLM
-    assert push_tool.execute.await_count == 1  # item seen 后不重复发送
-
-
-@pytest.mark.asyncio
-async def test_tick_semantic_dedupe_blocks_cross_source_duplicates(tmp_path):
-    push_tool = AsyncMock()
-    push_tool.execute = AsyncMock(return_value="文本已发送")
-
-    feed = _DummyFeedRegistry()
-    item_a = FeedItem(
-        source_name="SourceA",
-        source_type="rss",
-        title="Elden Ring DLC announced",
-        content="New trailer and release date window.",
-        url="https://a.example.com/post-1",
-        author=None,
-        published_at=None,
-    )
-    item_b = FeedItem(
-        source_name="SourceB",
-        source_type="rss",
-        title="Elden Ring DLC announced",
-        content="New trailer and release date window.",
-        url="https://b.example.com/news-77",
-        author=None,
-        published_at=None,
-    )
-    feed.fetch_all = AsyncMock(side_effect=[[item_a], [item_b]])
-
-    provider = _DummyProvider()
-    provider.chat = AsyncMock(
-        return_value=_Resp('{"reasoning":"ok","score":0.95,"should_send":true,"message":"ping"}')
-    )
-    session_manager = SessionManager(tmp_path)
-    loop = ProactiveLoop(
-        feed_registry=feed,
-        session_manager=session_manager,
-        provider=provider,
-        push_tool=push_tool,
-        config=ProactiveConfig(
-            enabled=True,
-            default_channel="telegram",
-            default_chat_id="7674283004",
-            only_new_items_trigger=True,
-            semantic_dedupe_enabled=True,
-            semantic_dedupe_threshold=0.90,
-            semantic_dedupe_window_hours=72,
-            semantic_dedupe_ngram=3,
-        ),
-        model="test-model",
-        state_path=tmp_path / "proactive_state.json",
-    )
-
-    await loop._tick()
-    await loop._tick()
-
-    assert provider.chat.await_count == 1
+    assert provider.chat.await_count == 2
     assert push_tool.execute.await_count == 1
 
 
@@ -299,7 +194,6 @@ def _build_loop_with_presence(tmp_path, provider, presence, feed=None):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            only_new_items_trigger=False,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -343,7 +237,6 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            only_new_items_trigger=False,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -450,7 +343,6 @@ async def test_tick_skips_llm_when_no_content_and_no_crisis(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            only_new_items_trigger=False,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -489,8 +381,6 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            only_new_items_trigger=False,
-            energy_min_urge=0.01,   # 低阈值，确保有记忆时必然触发
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -506,7 +396,7 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_path):
-    """no new feed items + low energy + memory → 不被旧 only_new_items_trigger 拦截。"""
+    """no new feed items + low energy + memory 时仍可进入 LLM。"""
     import random
     from agent.memory import MemoryStore
     provider = _DummyProvider()
@@ -530,8 +420,6 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
             enabled=True,
             default_channel="telegram",
             default_chat_id="123",
-            only_new_items_trigger=True,   # 有 presence 时此开关不阻止 LLM 调用
-            energy_min_urge=0.01,
         ),
         model="test-model",
         state_path=tmp_path / "proactive_state.json",
@@ -1014,7 +902,6 @@ async def test_llm_rejection_writes_rejection_cooldown(tmp_path):
     cfg.score_llm_threshold = 0.01   # 很低，确保进 LLM
     cfg.items_per_source = 5
     cfg.interest_filter.enabled = False
-    cfg.only_new_items_trigger = False
     cfg.feature_scoring_enabled = False
     cfg.threshold = 0.9   # 高 threshold → should_send 不触发
     cfg.dedupe_seen_ttl_hours = 336

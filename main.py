@@ -278,16 +278,12 @@ def build_core_runtime(
         processing_state=processing_state,
         memorizer=memorizer,
         retriever=retriever,
-        disable_full_memory=config.memory_v2.disable_full_memory,
         memory_top_k_procedure=config.memory_v2.top_k_procedure,
         memory_top_k_history=config.memory_v2.top_k_history,
         memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
-        memory_sufficiency_check_enabled=config.memory_v2.sufficiency_check_enabled,
         memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
         memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
         memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
-        memory_auto_downgrade_enabled=config.memory_v2.auto_downgrade_enabled,
-        memory_gate_baseline_p95_ms=config.memory_v2.gate_baseline_p95_ms,
     )
 
     # 6. 回填 agent_loop，注册调度与 MCP 工具
@@ -444,7 +440,7 @@ def build_proactive_runtime(
 async def serve(config_path: str = "config.json") -> None:
     # 1. 加载配置
     config = Config.load(config_path)
-    print(f"[DEBUG] config_path={config_path} route_intention={config.memory_v2.route_intention_enabled} sufficiency={config.memory_v2.sufficiency_check_enabled}", flush=True)
+    print(f"[DEBUG] config_path={config_path} route_intention={config.memory_v2.route_intention_enabled}", flush=True)
     workspace = Path.home() / ".akasic" / "workspace"
 
     # 2. 构建核心运行时

@@ -447,20 +447,7 @@ class ProactiveEngine:
 
     async def _stage_score(self, ctx: DecisionContext) -> float | None:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
-        # 1. only_new_items_trigger 早退
-        if (
-            self._cfg.only_new_items_trigger
-            and not ctx.new_items
-            and not self._presence
-            and not ctx.has_memory
-        ):
-            logger.info(
-                "[proactive] 无新信息且 only_new_items_trigger=true（无 presence），跳过本轮反思"
-            )
-            logger.info("[proactive] selected_action=idle reason=no_new_items")
-            return ctx.pre_score
-
-        # 2. 计算 base_score / draw_score
+        # 1. 计算 base_score / draw_score
         ctx.dc = d_content(len(ctx.new_items), self._cfg.score_content_halfsat)
         ctx.base_score = (
             composite_score(
@@ -476,7 +463,7 @@ class ProactiveEngine:
         w_random = random_weight(rng=self._rng)
         ctx.draw_score = ctx.base_score * w_random
 
-        # 3. 采集 presence 信号
+        # 2. 采集 presence 信号
         ctx.session_key = self._sense.target_session_key()
         ctx.target_last_user = (
             self._presence.get_last_user_at(ctx.session_key)
@@ -723,11 +710,15 @@ class ProactiveEngine:
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
         ctx.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
+        # new_items 为空并不代表本轮没有相关 feed 证据：同一条 item 在上一轮发送后，
+        # 本轮仍可能从 feed 拉到，但会在 seen filter 中被剔除。这里回退到原始 items，
+        # 保持 delivery_key 在相邻 tick 间稳定，避免重复主动发送同一条内容。
+        evidence_source_items = ctx.new_items or ctx.items
         evidence_ids = self._decide.resolve_evidence_item_ids(
             ctx.decision
             if ctx.decision is not None
             else _PseudoDecision(message=ctx.decision_message),
-            ctx.new_items,
+            evidence_source_items,
         )
         delivery_key = self._decide.build_delivery_key(
             evidence_ids, ctx.decision_message

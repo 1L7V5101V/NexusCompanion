@@ -85,6 +85,31 @@ def d_recent(msg_count: int, scale: float = 10.0) -> float:
     return min(1.0, math.log1p(max(0, msg_count)) / math.log1p(max(scale, 1.0)))
 
 
+def time_weight(
+    hour: int,
+    *,
+    quiet_start: int = 23,
+    quiet_end: int = 8,
+) -> float:
+    """[兼容保留] 按本地小时返回昼夜权重。
+
+    默认 quiet_start=23, quiet_end=8，表示 23:00-07:59 为静默时段。
+    非跨午夜窗口同样支持，例如 quiet_start=2, quiet_end=4 表示 02:00-03:59。
+    """
+    hour = int(hour) % 24
+    quiet_start = int(quiet_start) % 24
+    quiet_end = int(quiet_end) % 24
+
+    if quiet_start == quiet_end:
+        return 1.0
+
+    if quiet_start < quiet_end:
+        in_quiet = quiet_start <= hour < quiet_end
+    else:
+        in_quiet = hour >= quiet_start or hour < quiet_end
+    return 0.0 if in_quiet else 1.0
+
+
 # ── 合成得分 ───────────────────────────────────────────────────────
 
 

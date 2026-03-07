@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.loop import AgentLoop, GateController
+from agent.loop import AgentLoop
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -104,38 +104,6 @@ def test_route_gate_fail_open_on_low_confidence():
     assert reason == "ok"
 
 
-def test_sufficiency_gate_skip_history_when_high_confidence_skip():
-    loop = _make_loop(
-        _Provider(['{"decision":"SKIP_INJECTION","confidence":"high"}']),
-        memory_sufficiency_check_enabled=True,
-    )
-    include, reason, _ = asyncio.run(
-        loop._decide_history_injection_sufficiency(
-            user_msg="今天天气如何",
-            procedure_items=[],
-            history_items=[{"memory_type": "event", "summary": "用户昨天聊了游戏"}],
-        )
-    )
-    assert include is False
-    assert reason == "ok"
-
-
-def test_gate_controller_does_not_auto_enable_when_initially_disabled():
-    ctrl = GateController(
-        enabled=True,
-        baseline_p95_ms=1000,
-        initial_sufficiency_enabled=False,
-        allow_auto_enable=False,
-        eval_every_seconds=1,
-        recover_windows=1,
-    )
-    now = 1000.0
-    ctrl.record_latency(900, now)
-    enabled, reason = ctrl.tick(now + 2)
-    assert enabled is False
-    assert reason in {"auto_enable_blocked", "no_samples", "not_due", "waiting_recover"}
-
-
 def test_flow_execution_state_not_triggered_by_single_char_xian_zai():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
     assert loop._is_flow_execution_state("我先问个问题", {}) is False
@@ -181,10 +149,6 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._decide_history_retrieval = _slow_route  # type: ignore[assignment]
-    loop._decide_history_injection_sufficiency = AsyncMock(
-        return_value=(False, "no_history_items", 0)
-    )
-
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     start = time.perf_counter()
     asyncio.run(loop._process_inner(msg, msg.session_key))
@@ -214,10 +178,6 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._decide_history_retrieval = AsyncMock(return_value=(False, "q", "ok", 0))
-    loop._decide_history_injection_sufficiency = AsyncMock(
-        return_value=(False, "no_history_items", 0)
-    )
-
     scheduled_after_append: list[bool] = []
     real_create_task = asyncio.create_task
 

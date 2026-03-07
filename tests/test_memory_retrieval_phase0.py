@@ -3,6 +3,8 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.config import Config
 from agent.loop import AgentLoop
 from agent.provider import LLMResponse
@@ -54,7 +56,10 @@ def test_memory_v2_top_k_history_compat_from_legacy_fields(tmp_path: Path):
             },
         },
     )
-    cfg = Config.load(cfg_path)
+    with pytest.warns(
+        DeprecationWarning, match=r"memory_v2\.retrieve_top_k"
+    ):
+        cfg = Config.load(cfg_path)
     assert cfg.memory_v2.top_k_history == 9
     assert cfg.memory_v2.retrieve_top_k == 9
     assert cfg.memory_v2.score_threshold_procedure == 0.60
@@ -78,9 +83,39 @@ def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
             },
         },
     )
-    cfg = Config.load(cfg_path)
+    with pytest.warns(
+        DeprecationWarning, match=r"memory_v2\.(recall_top_k|retrieve_top_k)"
+    ):
+        cfg = Config.load(cfg_path)
     assert cfg.memory_v2.top_k_history == 12
     assert cfg.memory_v2.retrieve_top_k == 12
+
+
+def test_proactive_legacy_fields_warn_when_present(tmp_path: Path):
+    cfg_path = tmp_path / "config.json"
+    _write_config(
+        cfg_path,
+        {
+            "provider": "openai",
+            "model": "x",
+            "api_key": "k",
+            "system_prompt": "s",
+            "proactive": {
+                "enabled": True,
+                "energy_min_urge": 0.1,
+                "quiet_hours_start": 23,
+                "tick_interval_high": 7200,
+            },
+        },
+    )
+
+    with pytest.warns(DeprecationWarning) as record:
+        Config.load(cfg_path)
+
+    messages = "\n".join(str(item.message) for item in record)
+    assert "proactive.energy_min_urge" in messages
+    assert "proactive.quiet_hours_start" in messages
+    assert "proactive.tick_interval_high" in messages
 
 
 def test_loop_updates_session_runtime_metadata(tmp_path: Path):

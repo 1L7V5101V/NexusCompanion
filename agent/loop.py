@@ -39,97 +39,6 @@ _FLOW_SEQUENCE_PATTERN = re.compile(r"先.{0,20}再")
 logger = logging.getLogger(__name__)
 
 
-class GateController:
-    """单进程 gate 自动降级控制器（基于滚动窗口 P95）。"""
-
-    def __init__(
-        self,
-        *,
-        enabled: bool,
-        baseline_p95_ms: int,
-        initial_sufficiency_enabled: bool,
-        allow_auto_enable: bool,
-        window_seconds: int = 1800,
-        eval_every_seconds: int = 300,
-        trigger_windows: int = 3,
-        recover_windows: int = 6,
-        trigger_ratio: float = 1.12,
-        recover_ratio: float = 1.05,
-        cooldown_seconds: int = 3600,
-    ) -> None:
-        self.enabled = enabled and baseline_p95_ms > 0
-        self.baseline = max(1, int(baseline_p95_ms))
-        self.window_seconds = max(60, int(window_seconds))
-        self.eval_every_seconds = max(10, int(eval_every_seconds))
-        self.trigger_windows = max(1, int(trigger_windows))
-        self.recover_windows = max(1, int(recover_windows))
-        self.trigger_ratio = float(trigger_ratio)
-        self.recover_ratio = float(recover_ratio)
-        self.cooldown_seconds = max(60, int(cooldown_seconds))
-        self._samples: list[tuple[float, int]] = []
-        self._last_eval_ts = 0.0
-        self._high_streak = 0
-        self._recover_streak = 0
-        self._disabled_until = 0.0
-        self.sufficiency_enabled = bool(initial_sufficiency_enabled)
-        self._allow_auto_enable = bool(allow_auto_enable)
-
-    @staticmethod
-    def _p95(values: list[int]) -> int:
-        if not values:
-            return 0
-        arr = sorted(values)
-        idx = max(0, int(len(arr) * 0.95) - 1)
-        return int(arr[idx])
-
-    def record_latency(self, latency_ms: int, now_ts: float) -> None:
-        if not self.enabled:
-            return
-        self._samples.append((now_ts, max(1, int(latency_ms))))
-        cutoff = now_ts - self.window_seconds
-        self._samples = [(t, v) for (t, v) in self._samples if t >= cutoff]
-
-    def tick(self, now_ts: float) -> tuple[bool, str]:
-        """返回 (当前是否启用 sufficiency gate, 原因)。"""
-        if not self.enabled:
-            return True, "controller_disabled"
-        if now_ts - self._last_eval_ts < self.eval_every_seconds:
-            return self.sufficiency_enabled, "not_due"
-        self._last_eval_ts = now_ts
-
-        if now_ts < self._disabled_until:
-            self.sufficiency_enabled = False
-            return False, "cooldown_active"
-
-        values = [v for _, v in self._samples]
-        current_p95 = self._p95(values)
-        if current_p95 <= 0:
-            return self.sufficiency_enabled, "no_samples"
-
-        high = current_p95 > self.baseline * self.trigger_ratio
-        recovered = current_p95 <= self.baseline * self.recover_ratio
-
-        if self.sufficiency_enabled:
-            self._high_streak = self._high_streak + 1 if high else 0
-            if self._high_streak >= self.trigger_windows:
-                self.sufficiency_enabled = False
-                self._disabled_until = now_ts + self.cooldown_seconds
-                self._high_streak = 0
-                self._recover_streak = 0
-                return False, "auto_disabled"
-            return True, "healthy"
-
-        if not self._allow_auto_enable:
-            return False, "auto_enable_blocked"
-
-        self._recover_streak = self._recover_streak + 1 if recovered else 0
-        if self._recover_streak >= self.recover_windows:
-            self.sufficiency_enabled = True
-            self._recover_streak = 0
-            return True, "auto_reenabled"
-        return False, "waiting_recover"
-
-
 # 内部注入的反思提示，不应持久化到 session
 _REFLECT_PROMPT = """根据上述工具执行结果，决定下一步操作。
 
@@ -194,16 +103,12 @@ class AgentLoop:
         processing_state: ProcessingState | None = None,
         memorizer=None,
         retriever=None,
-        disable_full_memory: bool = False,
         memory_top_k_procedure: int = 4,
         memory_top_k_history: int = 8,
         memory_route_intention_enabled: bool = False,
-        memory_sufficiency_check_enabled: bool = False,
         memory_sop_guard_enabled: bool = True,
         memory_gate_llm_timeout_ms: int = 800,
         memory_gate_max_tokens: int = 96,
-        memory_auto_downgrade_enabled: bool = False,
-        memory_gate_baseline_p95_ms: int = 0,
         memory_port: "MemoryPort | None" = None,
     ) -> None:
         self.bus = bus
@@ -222,23 +127,12 @@ class AgentLoop:
         self._running = False
         self._consolidating: set[str] = set()  # 正在后台压缩的 session key
         self._processing_state = processing_state
-        self._disable_full_memory = disable_full_memory
         self._memory_top_k_procedure = max(1, int(memory_top_k_procedure))
         self._memory_top_k_history = max(1, int(memory_top_k_history))
         self._memory_route_intention_enabled = bool(memory_route_intention_enabled)
-        self._memory_sufficiency_check_enabled = bool(memory_sufficiency_check_enabled)
-        self._memory_sufficiency_default_enabled = bool(
-            memory_sufficiency_check_enabled
-        )
         self._memory_sop_guard_enabled = bool(memory_sop_guard_enabled)
         self._memory_gate_llm_timeout_ms = max(100, int(memory_gate_llm_timeout_ms))
         self._memory_gate_max_tokens = max(32, int(memory_gate_max_tokens))
-        self._gate_controller = GateController(
-            enabled=bool(memory_auto_downgrade_enabled),
-            baseline_p95_ms=max(0, int(memory_gate_baseline_p95_ms)),
-            initial_sufficiency_enabled=self._memory_sufficiency_check_enabled,
-            allow_auto_enable=self._memory_sufficiency_default_enabled,
-        )
 
         if memorizer and retriever:
             self._post_mem_worker = PostResponseMemoryWorker(
@@ -330,7 +224,6 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 message_timestamp=msg.timestamp,
                 retrieved_memory_block=retrieved_memory_block,
-                disable_full_memory=self._disable_full_memory,
             )
             try:
                 result = await self._run_agent_loop(
@@ -415,7 +308,6 @@ class AgentLoop:
         injected_block: str,
         route_decision: str = "RETRIEVE",
         rewritten_query: str = "",
-        sufficiency_decision: str = "ENOUGH_TO_INJECT",
         fallback_reason: str = "",
         sop_guard_applied: bool = False,
         procedure_hits: int = 0,
@@ -442,7 +334,6 @@ class AgentLoop:
                 "injected_chars": len(injected_block or ""),
                 "route_decision": route_decision,
                 "rewritten_query": rewritten_query,
-                "sufficiency_decision": sufficiency_decision,
                 "fallback_reason": fallback_reason,
                 "sop_guard_applied": sop_guard_applied,
                 "injected_item_ids": injected_item_ids or [],
@@ -625,75 +516,6 @@ class AgentLoop:
             latency = int((datetime.now() - start).total_seconds() * 1000)
             return True, user_msg, "route_gate_exception", latency
 
-    async def _decide_history_injection_sufficiency(
-        self,
-        *,
-        user_msg: str,
-        procedure_items: list[dict],
-        history_items: list[dict],
-    ) -> tuple[bool, str, int]:
-        """Gate C: 决定是否注入 H 通道。失败默认注入（fail-open）。"""
-        start = datetime.now()
-        if not self._memory_sufficiency_check_enabled:
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return True, "disabled", latency
-        if not history_items:
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return False, "no_history_items", latency
-
-        items_block = "\n".join(
-            f"- {i.get('memory_type', '')}: {(i.get('summary', '') or '')[:140]}"
-            for i in history_items[:4]
-            if isinstance(i, dict)
-        )
-        prompt = f"""判断这些历史记忆是否对当前问题有实质帮助。
-
-用户消息：{user_msg}
-历史候选：
-{items_block}
-
-规则：
-- 若历史候选明显帮助回答当前问题，返回 ENOUGH_TO_INJECT
-- 若候选离题或帮助很弱，返回 SKIP_INJECTION
-
-只返回 JSON：{{"decision":"ENOUGH_TO_INJECT|SKIP_INJECTION","confidence":"high|medium|low"}}"""
-
-        try:
-            timeout_s = max(0.1, self._memory_gate_llm_timeout_ms / 1000.0)
-            resp = await asyncio.wait_for(
-                self.light_provider.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    tools=[],
-                    model=self.light_model,
-                    max_tokens=self._memory_gate_max_tokens,
-                ),
-                timeout=timeout_s,
-            )
-            text = (resp.content or "").strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            payload = json_repair.loads(text)
-            decision = (
-                str(payload.get("decision", "")).upper()
-                if isinstance(payload, dict)
-                else ""
-            )
-            confidence = (
-                str(payload.get("confidence", "medium")).lower()
-                if isinstance(payload, dict)
-                else "low"
-            )
-            if confidence not in {"high", "medium", "low"}:
-                confidence = "low"
-            if confidence == "low":
-                decision = "ENOUGH_TO_INJECT"
-            include_history = decision != "SKIP_INJECTION"
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return include_history, "ok", latency
-        except Exception:
-            latency = int((datetime.now() - start).total_seconds() * 1000)
-            return True, "sufficiency_gate_exception", latency
-
     # 单条消息处理的总超时（秒）。覆盖工具挂起、LLM 超时累积等极端场景。
     _MESSAGE_TIMEOUT_S: float = 600.0
 
@@ -723,18 +545,6 @@ class AgentLoop:
                 content="（处理超时，请重试）",
             )
         finally:
-            elapsed_ms = int((time.time() - started) * 1000)
-            now_ts = time.time()
-            self._gate_controller.record_latency(elapsed_ms, now_ts)
-            if self._gate_controller.enabled:
-                enabled, reason = self._gate_controller.tick(now_ts)
-                if enabled != self._memory_sufficiency_check_enabled:
-                    self._memory_sufficiency_check_enabled = enabled
-                    logger.warning(
-                        "memory sufficiency gate switched to %s (%s)",
-                        "enabled" if enabled else "disabled",
-                        reason,
-                    )
             if self._processing_state:
                 self._processing_state.exit(key)
 
@@ -753,7 +563,6 @@ class AgentLoop:
         try:
             route_decision = "RETRIEVE"
             rewritten_query = msg.content
-            sufficiency_decision = "ENOUGH_TO_INJECT"
             fallback_reason = ""
             gate_latency_ms: dict[str, int] = {}
             runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
@@ -799,27 +608,9 @@ class AgentLoop:
                     top_k=self._memory_top_k_history,
                 )
 
-            # Gate C: 决定是否注入 H 通道
-            (
-                include_history,
-                suff_reason,
-                suff_ms,
-            ) = await self._decide_history_injection_sufficiency(
-                user_msg=rewritten_query,
-                procedure_items=p_items,
-                history_items=h_items,
-            )
-            gate_latency_ms["sufficiency"] = suff_ms
-            if suff_reason != "ok" and not fallback_reason:
-                fallback_reason = suff_reason
-            sufficiency_decision = (
-                "ENOUGH_TO_INJECT" if include_history else "SKIP_HISTORY_INJECTION"
-            )
-            effective_h_items = h_items if include_history else []
-
             seen_ids: set[str] = set()
             items = []
-            for item in p_items + effective_h_items:
+            for item in p_items + h_items:
                 item_id = item.get("id")
                 if isinstance(item_id, str) and item_id:
                     if item_id in seen_ids:
@@ -859,11 +650,10 @@ class AgentLoop:
                 injected_block=retrieved_block,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
-                sufficiency_decision=sufficiency_decision,
                 fallback_reason=fallback_reason,
                 sop_guard_applied=sop_guard_applied,
                 procedure_hits=len(p_items),
-                history_hits=len(effective_h_items),
+                history_hits=len(h_items),
                 injected_item_ids=injected_item_ids,
                 gate_latency_ms=gate_latency_ms,
             )

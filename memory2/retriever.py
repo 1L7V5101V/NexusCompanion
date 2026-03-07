@@ -215,6 +215,14 @@ class Retriever:
         for item in sorted_items:
             mtype = str(item.get("memory_type", "") or "")
             score = float(item.get("score", 0.0) or 0.0)
+            extra = item.get("extra_json") or {}
+            if (
+                self._sop_guard_enabled
+                and mtype == "procedure"
+                and extra.get("tool_requirement")
+            ):
+                selected.append(item)
+                continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
             floor = type_best.get(mtype, score) - self._relative_delta
             if score < type_th:

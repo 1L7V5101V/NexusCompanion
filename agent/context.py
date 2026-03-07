@@ -34,7 +34,6 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
-        disable_full_memory: bool = False,
     ) -> str:
         parts = []
         # 核心identity
@@ -44,11 +43,9 @@ class ContextBuilder:
         if retrieved_memory_block:
             parts.append(retrieved_memory_block)
 
-        # 用户长期记忆（disable_full_memory=True 时跳过）
-        if not disable_full_memory:
-            memory = self.memory.get_memory_context()
-            if memory:
-                parts.append(memory)
+        memory = self.memory.get_memory_context()
+        if memory:
+            parts.append(memory)
 
         # Nexus 自我认知（人格/关系理解）
         self_content = self.memory.read_self()
@@ -194,7 +191,6 @@ request_time={now_iso}
         chat_id: str | None = None,
         message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
-        disable_full_memory: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -206,7 +202,6 @@ request_time={now_iso}
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
             retrieved_memory_block: memory v2 检索命中块。
-            disable_full_memory: True 时不注入全量 MEMORY.md。
 
         Returns:
             List of messages including system prompt.
@@ -216,7 +211,6 @@ request_time={now_iso}
             skill_names=skill_names,
             message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
-            disable_full_memory=disable_full_memory,
         )
         if channel and chat_id:
             system_prompt += (

@@ -269,16 +269,18 @@ class TestScenario4SemanticDupeNotMarkedSeen:
         sense.refresh_sleep_context.return_value = False
         sense.sleep_context.return_value = None
 
-        # Config mock：only_new_items_trigger=True + presence=None + no memory → 早退，不进 LLM
+        # Config mock：无新条目且无记忆，仅验证 semantic duplicate 不会写 seen_items
         cfg = MagicMock()
         cfg.anyaction_enabled = False
         cfg.score_weight_energy = 0.40
+        cfg.score_weight_content = 0.40
         cfg.score_weight_recent = 0.20
         cfg.score_recent_scale = 8.0
+        cfg.score_content_halfsat = 2.5
         cfg.score_pre_threshold = 0.01   # 低阈值，确保 pre_score 通过
+        cfg.score_llm_threshold = 0.99
         cfg.items_per_source = 5
         cfg.interest_filter.enabled = False
-        cfg.only_new_items_trigger = True  # new_items=[] + no presence + no memory → 早退
         cfg.feature_scoring_enabled = False
         cfg.dedupe_seen_ttl_hours = 336
         cfg.delivery_dedupe_hours = 10
@@ -288,7 +290,7 @@ class TestScenario4SemanticDupeNotMarkedSeen:
         engine = ProactiveEngine(
             cfg=cfg,
             state=state,
-            presence=None,   # no presence → only_new_items 分支早退
+            presence=None,
             rng=None,
             sense=sense,
             decide=MagicMock(),
