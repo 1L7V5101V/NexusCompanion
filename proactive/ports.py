@@ -27,10 +27,35 @@ from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
 
+@dataclass
+class ProactiveSourceRef:
+    item_id: str
+    source_type: str
+    source_name: str
+    title: str
+    url: str | None = None
+    published_at: str | None = None
+
+
+@dataclass
+class ProactiveSendMeta:
+    evidence_item_ids: list[str] = field(default_factory=list)
+    source_refs: list[ProactiveSourceRef] = field(default_factory=list)
+    state_summary_tag: str = "none"
+
+
+@dataclass
+class RecentProactiveMessage:
+    content: str
+    timestamp: datetime | None = None
+    state_summary_tag: str = "none"
+    source_refs: list[ProactiveSourceRef] = field(default_factory=list)
+
+
 class SensePort(Protocol):
     def compute_energy(self) -> float: ...
     def collect_recent(self) -> list[dict]: ...
-    def collect_recent_proactive(self, n: int = 5) -> list[str]: ...
+    def collect_recent_proactive(self, n: int = 5) -> list[RecentProactiveMessage]: ...
     def compute_interruptibility(
         self,
         *,
@@ -87,7 +112,11 @@ class DecidePort(Protocol):
 
 
 class ActPort(Protocol):
-    async def send(self, message: str) -> bool: ...
+    async def send(
+        self,
+        message: str,
+        meta: ProactiveSendMeta | None = None,
+    ) -> bool: ...
 
 
 @dataclass
@@ -547,8 +576,8 @@ class DefaultSensePort:
             per_source_limits=per_source_limits,
         )
 
-    def collect_recent_proactive(self, n: int = 5) -> list[str]:
-        """从目标 session 取最近 n 条 proactive=True 的助手消息内容（按时间升序）。"""
+    def collect_recent_proactive(self, n: int = 5) -> list[RecentProactiveMessage]:
+        """从目标 session 取最近 n 条 proactive=True 的结构化助手消息（按时间升序）。"""
         channel = (self._cfg.default_channel or "").strip()
         chat_id = self._cfg.default_chat_id.strip()
         if not channel or not chat_id:
@@ -556,14 +585,56 @@ class DefaultSensePort:
         key = f"{channel}:{chat_id}"
         try:
             session = self._sessions.get_or_create(key)
-            results: list[str] = []
+            results: list[RecentProactiveMessage] = []
             for m in reversed(session.messages):
                 if (
                     m.get("role") == "assistant"
                     and m.get("proactive")
                     and m.get("content")
                 ):
-                    results.append(str(m["content"]))
+                    source_refs: list[ProactiveSourceRef] = []
+                    for raw in m.get("source_refs") or []:
+                        if not isinstance(raw, dict):
+                            continue
+                        source_refs.append(
+                            ProactiveSourceRef(
+                                item_id=str(raw.get("item_id", "") or ""),
+                                source_type=str(raw.get("source_type", "") or ""),
+                                source_name=str(raw.get("source_name", "") or ""),
+                                title=str(raw.get("title", "") or ""),
+                                url=(
+                                    str(raw.get("url")).strip()
+                                    if raw.get("url") is not None
+                                    else None
+                                ),
+                                published_at=(
+                                    str(raw.get("published_at")).strip()
+                                    if raw.get("published_at") is not None
+                                    else None
+                                ),
+                            )
+                        )
+                    ts = None
+                    raw_ts = str(m.get("timestamp", "") or "").strip()
+                    if raw_ts:
+                        try:
+                            ts = datetime.fromisoformat(raw_ts)
+                            if ts.tzinfo is None:
+                                ts = ts.replace(
+                                    tzinfo=datetime.now().astimezone().tzinfo
+                                )
+                        except Exception:
+                            ts = None
+                    results.append(
+                        RecentProactiveMessage(
+                            content=str(m["content"]),
+                            timestamp=ts,
+                            state_summary_tag=str(
+                                m.get("state_summary_tag", "none") or "none"
+                            ),
+                            source_refs=source_refs,
+                        )
+                    )
                     if len(results) >= n:
                         break
             return list(reversed(results))

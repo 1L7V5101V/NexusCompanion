@@ -272,5 +272,5 @@ class ProactiveLoop(
             parts.append(f"## Workspace 导航（AGENTS.md）\n{agents}")
         return "\n\n".join(p for p in parts if p)
 
-    async def _send(self, message: str) -> bool:
-        return await self._sender.send(message)
+    async def _send(self, message: str, meta: Any | None = None) -> bool:
+        return await self._sender.send(message, meta)

@@ -12,6 +12,7 @@ from core.net.http import (
 from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
 from proactive.loop import ProactiveLoop, _parse_decision
+from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -104,6 +105,41 @@ async def test_send_writes_proactive_message_into_target_session(tmp_path):
     assert last["role"] == "assistant"
     assert last["content"] == "你好，这是一次主动触达"
     assert last.get("proactive") is True
+
+
+@pytest.mark.asyncio
+async def test_send_persists_source_refs_and_state_summary_tag(tmp_path):
+    push_tool = AsyncMock()
+    push_tool.execute = AsyncMock(return_value="文本已发送")
+    loop, session_manager = _build_loop(tmp_path, push_tool)
+
+    await loop._send(
+        "Rare Atom 这条看起来像是临时补强。",
+        ProactiveSendMeta(
+            evidence_item_ids=["item-1"],
+            source_refs=[
+                ProactiveSourceRef(
+                    item_id="item-1",
+                    source_type="rss",
+                    source_name="HLTV",
+                    title="Rare Atom signs x9",
+                    url="https://example.com/ra",
+                    published_at="2026-03-09T00:00:00+00:00",
+                )
+            ],
+            state_summary_tag="none",
+        ),
+    )
+
+    session = session_manager.get_or_create("telegram:7674283004")
+    last = session.messages[-1]
+    assert "HLTV 的 RSS" in last["content"]
+    assert last["evidence_item_ids"] == ["item-1"]
+    assert last["state_summary_tag"] == "none"
+    assert last["source_refs"][0]["source_name"] == "HLTV"
+    history = session.get_history()
+    assert "[proactive_meta]" in history[-1]["content"]
+    assert "HLTV | Rare Atom signs x9 | https://example.com/ra" in history[-1]["content"]
 
 
 @pytest.mark.asyncio
@@ -334,6 +370,23 @@ async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
     user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
     assert "只是加分项，不是前置条件" in user_prompt
     assert "长期兴趣高度匹配" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path):
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp('{"reasoning":"ok","score":0.3,"should_send":false,"message":""}')
+    )
+
+    presence = _make_presence(tmp_path, "telegram:123", last_user_minutes_ago=60 * 48)
+    loop, _ = _build_loop_with_presence(tmp_path, provider, presence)
+
+    await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
+
+    user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
+    assert "用户此后还没有回复，则新消息禁止重复这一层" in user_prompt
+    assert "若本次只是新资讯，直接进入新内容" in user_prompt
 
 
 @pytest.mark.asyncio
@@ -626,7 +679,7 @@ async def test_sent_without_session_key_still_marks_items_seen(tmp_path):
         def item_id_for(self, item): return "id1"
 
     class _Act:
-        async def send(self, msg): return True  # 发送成功
+        async def send(self, msg, meta=None): return True  # 发送成功
 
     cfg = ProactiveConfig(
         enabled=True, default_channel="", default_chat_id="",
@@ -684,7 +737,7 @@ async def test_gate_quota_exhausted_returns_zero(tmp_path):
         def item_id_for(self, item): return ""
 
     class _Act:
-        async def send(self, msg): return False
+        async def send(self, msg, meta=None): return False
 
     cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
     engine = ProactiveEngine(
@@ -733,7 +786,7 @@ async def test_gate_min_interval_returns_none(tmp_path):
         def item_id_for(self, item): return ""
 
     class _Act:
-        async def send(self, msg): return False
+        async def send(self, msg, meta=None): return False
 
     cfg = ProactiveConfig(enabled=True, anyaction_enabled=True, default_channel="telegram", default_chat_id="123")
     engine = ProactiveEngine(

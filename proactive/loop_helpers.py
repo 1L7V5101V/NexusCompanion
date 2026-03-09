@@ -60,7 +60,8 @@ def _format_items(items: list[FeedItem]) -> str:
         if item.published_at:
             meta.append(str(item.published_at))
         meta_str = f" [{' / '.join(meta)}]" if meta else ""
-        out.append(f"{i}. {title}{meta_str}\n{content}")
+        url_line = f"\n原文链接: {item.url}" if item.url else ""
+        out.append(f"{i}. {title}{meta_str}\n{content}{url_line}")
     return "\n\n".join(out)
 
 

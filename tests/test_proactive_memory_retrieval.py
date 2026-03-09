@@ -315,7 +315,7 @@ async def test_engine_feature_scoring_receives_retrieved_memory_block(tmp_path):
             return "item1"
 
     class _Act:
-        async def send(self, message):
+        async def send(self, message, meta=None):
             return False
 
     class _Retrieval:

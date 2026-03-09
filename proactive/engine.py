@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,9 @@ from proactive.ports import (
     DecidePort,
     MemoryRetrievalPort,
     ProactiveRetrievedMemory,
+    ProactiveSendMeta,
+    ProactiveSourceRef,
+    RecentProactiveMessage,
     SensePort,
 )
 from proactive.state import ProactiveStateStore
@@ -119,6 +123,8 @@ class DecisionContext:
     decision: Any = None
     decision_message: str = ""
     should_send: bool = False
+    state_summary_tag: str = "none"
+    source_refs: list[ProactiveSourceRef] = field(default_factory=list)
     memory_query: str = ""
     retrieved_memory_block: str = ""
     retrieved_memory_item_ids: list[str] = field(default_factory=list)
@@ -729,6 +735,7 @@ class ProactiveEngine:
             ctx.new_entries,
             evidence_ids,
         )
+        ctx.source_refs = self._build_source_refs(evidence_items)
 
         if not ctx.should_send:
             logger.info("[proactive] 决定不主动发送")
@@ -771,13 +778,58 @@ class ProactiveEngine:
             logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
             return
 
-        # 3. message 语义去重
-        if self._message_deduper is not None:
-            recent_proactive = self._sense.collect_recent_proactive(
-                getattr(self._cfg, "message_dedupe_recent_n", 5)
+        # 3. 同一沉默周期内的用户状态总结防复读
+        recent_proactive = self._sense.collect_recent_proactive(
+            getattr(self._cfg, "message_dedupe_recent_n", 5)
+        )
+        ctx.state_summary_tag = await self._classify_state_summary_tag(
+            ctx.decision_message
+        )
+        if (
+            ctx.state_summary_tag != "none"
+            and self._seen_state_summary_in_current_silence(
+                ctx.state_summary_tag,
+                recent_proactive,
+                ctx.target_last_user,
             )
+        ):
+            rewritten = await self._rewrite_without_repeated_state(
+                ctx.decision_message,
+                ctx.state_summary_tag,
+                ctx.source_refs,
+            )
+            if not rewritten:
+                logger.info(
+                    "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
+                    ctx.state_summary_tag,
+                )
+                self._state.mark_rejection_cooldown(
+                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
+                )
+                await self._try_skill_action(now_utc=ctx.now_utc)
+                return
+            rewritten_tag = await self._classify_state_summary_tag(rewritten)
+            if rewritten_tag == ctx.state_summary_tag and rewritten_tag != "none":
+                logger.info(
+                    "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
+                    rewritten_tag,
+                )
+                self._state.mark_rejection_cooldown(
+                    evidence_entries or self._primary_candidate_entries(ctx.new_entries),
+                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
+                )
+                await self._try_skill_action(now_utc=ctx.now_utc)
+                return
+            ctx.decision_message = rewritten
+            ctx.state_summary_tag = rewritten_tag
+
+        # 4. message 语义去重
+        if self._message_deduper is not None:
             is_dup, dup_reason = await self._message_deduper.is_duplicate(
-                ctx.decision_message, recent_proactive
+                ctx.decision_message,
+                recent_proactive,
+                ctx.state_summary_tag,
             )
             if is_dup:
                 logger.info(
@@ -791,7 +843,7 @@ class ProactiveEngine:
                 await self._try_skill_action(now_utc=ctx.now_utc)
                 return
 
-        # 4. 被动处理并发检查
+        # 5. 被动处理并发检查
         if (
             ctx.session_key
             and self._passive_busy_fn
@@ -804,8 +856,15 @@ class ProactiveEngine:
             )
             return
 
-        # 5. 发送
-        sent = await self._act.send(ctx.decision_message)
+        # 6. 发送
+        sent = await self._act.send(
+            ctx.decision_message,
+            ProactiveSendMeta(
+                evidence_item_ids=evidence_ids,
+                source_refs=ctx.source_refs,
+                state_summary_tag=ctx.state_summary_tag,
+            ),
+        )
         if sent:
             # 配额记录：动作成功即消耗，与 session_key 无关
             if self._cfg.anyaction_enabled and self._anyaction:
@@ -940,6 +999,135 @@ class ProactiveEngine:
             self._state.remove_pending_items(stale_entries)
         return selected_items, selected_entries
 
+    def _build_source_refs(self, items: list[FeedItem]) -> list[ProactiveSourceRef]:
+        refs: list[ProactiveSourceRef] = []
+        for item in items[:1]:
+            published_at = None
+            if item.published_at is not None:
+                try:
+                    published_at = item.published_at.isoformat()
+                except Exception:
+                    published_at = str(item.published_at)
+            refs.append(
+                ProactiveSourceRef(
+                    item_id=self._item_id_for(item),
+                    source_type=str(item.source_type or ""),
+                    source_name=str(item.source_name or ""),
+                    title=str(item.title or ""),
+                    url=str(item.url).strip() if item.url else None,
+                    published_at=published_at,
+                )
+            )
+        return refs
+
+    def _seen_state_summary_in_current_silence(
+        self,
+        tag: str,
+        recent_proactive: list[RecentProactiveMessage],
+        last_user_reply_at: datetime | None,
+    ) -> bool:
+        if not tag or tag == "none":
+            return False
+        for msg in reversed(recent_proactive):
+            msg_tag = str(getattr(msg, "state_summary_tag", "none") or "none")
+            if msg_tag != tag:
+                continue
+            ts = getattr(msg, "timestamp", None)
+            if last_user_reply_at is None:
+                return True
+            if ts is None:
+                continue
+            try:
+                if ts > last_user_reply_at:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _classify_state_summary_tag(self, message: str) -> str:
+        text = (message or "").strip()
+        if not text:
+            return "none"
+        heuristic = _heuristic_state_summary_tag(text)
+        if self._light_provider is None or not self._light_model:
+            return heuristic
+        prompt = (
+            "你是主动消息分类器。判断消息是否包含“用户状态总结/安慰框架”。\n"
+            "只允许输出 JSON："
+            '{"state_summary_tag":"none"}\n'
+            "可选标签只有：none, interview_anxiety_reassurance, health_nudge, sleep_concern, general_encouragement。\n"
+            "如果消息主要是在概括用户最近的压力、焦虑、别太逼自己、底子还在、先歇歇等，优先标 interview_anxiety_reassurance 或 general_encouragement。\n"
+            "如果消息主要是直接推送兴趣资讯，不概括用户状态，标 none。"
+        )
+        try:
+            resp = await self._light_provider.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": text},
+                ],
+                tools=[],
+                model=self._light_model,
+                max_tokens=64,
+            )
+            content = (resp.content or "").strip()
+            match = re.search(r"\{[\s\S]*\}", content)
+            if match:
+                data = json.loads(match.group())
+                tag = str(data.get("state_summary_tag", "") or "").strip()
+                if tag in {
+                    "none",
+                    "interview_anxiety_reassurance",
+                    "health_nudge",
+                    "sleep_concern",
+                    "general_encouragement",
+                }:
+                    return tag
+        except Exception:
+            logger.debug("[proactive] state_summary_tag 分类失败，回退 heuristic")
+        return heuristic
+
+    async def _rewrite_without_repeated_state(
+        self,
+        message: str,
+        tag: str,
+        source_refs: list[ProactiveSourceRef],
+    ) -> str:
+        text = (message or "").strip()
+        if not text:
+            return ""
+        if self._light_provider is None or not self._light_model:
+            return ""
+        source_hint = ""
+        if source_refs:
+            ref = source_refs[0]
+            parts = [p for p in [ref.source_name, ref.title, ref.url] if p]
+            if parts:
+                source_hint = "\n来源信息：" + " | ".join(parts)
+        prompt = (
+            "你要重写一条主动消息。要求：删除重复的用户状态总结/安慰前缀，"
+            "保留真正的新资讯与来源行；如果原消息没有实质新内容，返回空字符串。\n"
+            "只输出最终消息，不要解释。"
+        )
+        user_prompt = (
+            f"重复的 state_summary_tag={tag}\n"
+            "用户在最近这次主动消息后还没有回复，所以不能再重复同类安慰。\n"
+            f"原消息：{text}{source_hint}"
+        )
+        try:
+            resp = await self._light_provider.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                tools=[],
+                model=self._light_model,
+                max_tokens=min(192,  max(64, len(text) + 64)),
+            )
+            return (resp.content or "").strip()
+        except Exception:
+            logger.debug("[proactive] 去重复写失败")
+            return ""
+
     def _resolve_evidence_entries(
         self,
         items: list[FeedItem],
@@ -984,6 +1172,27 @@ class ProactiveEngine:
         except Exception:
             pass
         return compute_item_id(item)
+
+
+def _heuristic_state_summary_tag(message: str) -> str:
+    text = (message or "").strip().lower()
+    if not text:
+        return "none"
+
+    def has_any(words: tuple[str, ...]) -> bool:
+        return any(word in text for word in words)
+
+    if has_any(("早点睡", "睡眠", "熬夜", "先睡", "休息一下", "去睡")):
+        return "sleep_concern"
+    if has_any(("喝水", "站起来", "活动一下", "别久坐", "休息会", "身体")):
+        return "health_nudge"
+    if has_any(("面试", "八股", "力扣", "月底")) and has_any(
+        ("焦虑", "压力", "别太逼", "不用慌", "底子在", "先歇", "放轻松", "烦")
+    ):
+        return "interview_anxiety_reassurance"
+    if has_any(("别太逼", "不用慌", "底子在", "先歇", "放轻松", "撑住", "别慌")):
+        return "general_encouragement"
+    return "none"
 
 
 def _feature_final_score(

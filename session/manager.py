@@ -15,6 +15,31 @@ _CLEARED = "[已清除]"
 _INFERENCE_TAG = "[以下为推演内容，本轮未调用工具，不可作为事实依据]\n"
 
 
+def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
+    """Expose source trace and state tag back to the model without changing user-visible text."""
+    if not msg.get("proactive"):
+        return content
+    meta_lines: list[str] = []
+    state_tag = str(msg.get("state_summary_tag", "") or "").strip()
+    if state_tag and state_tag != "none":
+        meta_lines.append(f"state_summary_tag={state_tag}")
+    source_refs = msg.get("source_refs") or []
+    if isinstance(source_refs, list) and source_refs:
+        meta_lines.append("sources:")
+        for raw in source_refs[:1]:
+            if not isinstance(raw, dict):
+                continue
+            parts = [
+                str(raw.get("source_name", "") or "").strip(),
+                str(raw.get("title", "") or "").strip(),
+                str(raw.get("url", "") or "").strip(),
+            ]
+            meta_lines.append("- " + " | ".join(p for p in parts if p))
+    if not meta_lines:
+        return content
+    return f"{content}\n\n[proactive_meta]\n" + "\n".join(meta_lines)
+
+
 def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict]":
     """重建带附件的用户消息。图片内联 base64；非图片文件保留路径引用供 agent 调用 read_file。"""
     images = []
@@ -65,7 +90,7 @@ class Session:
         msg = {
             "role": role,
             "content": content,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().astimezone().isoformat(),
             **kwargs
         }
         if media:
@@ -139,6 +164,8 @@ class Session:
                 content = m.get("content", "") or ""
                 if not tool_chain and content and not content.startswith(_INFERENCE_TAG):
                     content = _INFERENCE_TAG + content
+                if content:
+                    content = _append_proactive_meta(content, m)
                 out.append({"role": "assistant", "content": content})
 
         return out

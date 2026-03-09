@@ -13,6 +13,34 @@ from memory2.retriever import Retriever
 
 logger = logging.getLogger(__name__)
 
+_TITLE_PATTERN = re.compile(r"[《\"“](.{1,40}?)[》\"”]")
+_NEGATIVE_CUES = (
+    "讨厌",
+    "厌恶",
+    "反感",
+    "恶心",
+    "不喜欢",
+    "看不起",
+    "别再推",
+    "不要再推",
+    "别给我推",
+    "不要给我推",
+    "别再发",
+    "不要再发",
+    "别拿",
+    "不要拿",
+)
+_POSITIVE_CUES = (
+    "喜欢",
+    "很喜欢",
+    "爱看",
+    "爱玩",
+    "偏好",
+    "感兴趣",
+    "有兴趣",
+    "想看",
+)
+
 
 class PostResponseMemoryWorker:
     """
@@ -63,12 +91,14 @@ class PostResponseMemoryWorker:
                 token_budget,
             )
 
+            heuristic_items = self._extract_explicit_content_preferences(user_msg)
             new_items, token_budget = await self._extract_implicit(
                 user_msg,
                 agent_response,
                 already_memorized,
                 token_budget,
             )
+            new_items = self._merge_extracted_items(heuristic_items, new_items)
             new_items = await self._dedupe_against_explicit(
                 new_items,
                 already_memorized,
@@ -343,17 +373,30 @@ class PostResponseMemoryWorker:
             lines = "\n".join(f"- {s}" for s in already_memorized if s)
             exclusion_block = f"\n\n【本轮已显式记录，不要重复提取】\n{lines}"
 
-        prompt = f"""你是记忆提取专家。从以下对话中提取用户对 agent 行为的隐式偏好或操作规范。
+        prompt = f"""你是记忆提取专家。从以下对话中提取两类长期有效的信息：
+1. 用户对 agent 行为的隐式偏好或操作规范
+2. 用户对内容题材/作品/游戏/作者/来源的稳定喜欢或厌恶，尤其是会影响未来主动推送的偏好
 
 【唯一有效依据来源：USER 说的话】
 ASSISTANT 的回复只是对话背景，不能作为提取依据。
 即使 ASSISTANT 描述了某个流程/规则，若 USER 没有明确表达纠正/要求/不满，也不能提取。
 
 【提取标准——必须同时满足以下全部条件】
-1. 能从 USER 的原话中直接引用出明确的纠正/不满/要求信号（如"你应该""你不能""你之前错了""下次要"等）
+1. 能从 USER 的原话中直接引用出明确的纠正/不满/要求/偏好信号
+   - 行为规范信号示例："你应该""你不能""你之前错了""下次要"
+   - 内容偏好信号示例："我就讨厌《X》""以后别给我推 X""我很喜欢《Y》"
    无法引用 USER 原话 → 直接返回 []
-2. 该信号针对的是 agent 的操作行为，不是用户自身情况或第三方信息
-3. 跨对话有持久意义——新对话开始时这条规则还适用吗？若否，不写
+2. 该信号必须具有跨对话持久意义
+   - 新对话开始时仍然适用，才写入
+3. 若是内容偏好，必须足够明确，能够影响未来推荐/主动推送/举例方式
+
+【内容偏好提取重点】
+✓ 用户明确表达喜欢/偏好某作品、题材、作者、来源，可提取为 preference
+✓ 用户明确表达讨厌/厌恶/拒绝某作品、题材、作者、来源，可提取为 preference
+✓ 用户明确要求“以后别再推/别再发/别再拿 X 打比方”，必须优先提取为 preference
+✓ 这类偏好应直接写成对未来行为有指导意义的总结，如：
+  - 用户明确厌恶《鬼灭之刃》相关内容；主动消息不要再推送、引用或拿它打比方
+  - 用户明确喜欢《仁王》相关内容；主动消息可优先推送相关内容
 
 【明确不写】
 ✗ ASSISTANT 回复中描述的任何流程、规则、步骤（即使正确）
@@ -362,6 +405,7 @@ ASSISTANT 的回复只是对话背景，不能作为提取依据。
 ✗ agent 自己选择的回复格式/风格（用户没有要求）
 ✗ 用户对自身情况的感慨或困惑
 ✗ 一次性操作记录
+✗ USER 只是随口评价某作品好坏，但没有表现出稳定喜欢/厌恶或未来规避意图
 ✗ 显式 memorize 内容（见排除列表）{exclusion_block}
 
 【重要】大多数对话不包含可提取的偏好，返回 [] 是正常且正确的结果。
@@ -407,6 +451,90 @@ ASSISTANT: {agent_response}
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
         return [], token_budget
+
+    @staticmethod
+    def _merge_extracted_items(
+        first: list[dict],
+        second: list[dict],
+    ) -> list[dict]:
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for bucket in (first, second):
+            for item in bucket:
+                if not isinstance(item, dict):
+                    continue
+                summary = str(item.get("summary", "") or "").strip()
+                if not summary:
+                    continue
+                key = PostResponseMemoryWorker._normalize_text(summary)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return merged
+
+    @staticmethod
+    def _extract_explicit_content_preferences(user_msg: str) -> list[dict]:
+        text = (user_msg or "").strip()
+        if not text:
+            return []
+
+        titles = []
+        for raw in _TITLE_PATTERN.findall(text):
+            title = raw.strip()
+            if title and title not in titles:
+                titles.append(title)
+        if not titles:
+            return []
+
+        lowered = text.lower()
+        is_negative = any(cue in text for cue in _NEGATIVE_CUES)
+        is_positive = any(cue in text for cue in _POSITIVE_CUES)
+        items: list[dict] = []
+
+        for title in titles[:2]:
+            if is_negative:
+                summary = (
+                    f"用户明确厌恶《{title}》相关内容；"
+                    "主动消息不要再推送、引用或拿它打比方"
+                )
+            elif is_positive:
+                summary = (
+                    f"用户明确喜欢《{title}》相关内容；"
+                    "主动消息可优先推送相关内容"
+                )
+            else:
+                continue
+            items.append(
+                {
+                    "summary": summary,
+                    "memory_type": "preference",
+                    "tool_requirement": None,
+                    "steps": [],
+                }
+            )
+
+        # 对未包书名号但带有“别再推/不要再发”之类显式规避意图的短词做一个轻量兜底
+        if not items and any(cue in text for cue in _NEGATIVE_CUES):
+            match = re.search(
+                r"(?:别再推|不要再推|别给我推|不要给我推|别再发|不要再发|别拿|不要拿)([^，。！？\n]{1,16})",
+                text,
+            )
+            if match:
+                subject = match.group(1).strip().strip("这那种类个些的相关内容作品游戏动漫番剧")
+                if subject:
+                    items.append(
+                        {
+                            "summary": (
+                                f"用户明确厌恶{subject}相关内容；"
+                                "主动消息不要再推送、引用或拿它打比方"
+                            ),
+                            "memory_type": "preference",
+                            "tool_requirement": None,
+                            "steps": [],
+                        }
+                    )
+        return items
 
     async def _save_with_supersede(
         self,

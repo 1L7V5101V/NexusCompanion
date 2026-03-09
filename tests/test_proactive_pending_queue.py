@@ -10,6 +10,7 @@ from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
 from proactive.engine import ProactiveEngine
 from proactive.item_id import compute_item_id, compute_source_key
+from proactive.ports import RecentProactiveMessage
 from proactive.state import ProactiveStateStore
 
 
@@ -145,6 +146,50 @@ async def test_send_success_consumes_only_evidence_item(tmp_path):
     assert not state.is_item_seen(entries[0][0], entries[0][1], ttl_hours=336)
     assert not state.is_item_seen(entries[2][0], entries[2][1], ttl_hours=336)
     assert state.pending_stats()[entries[0][0]] == 2
+    send_meta = engine._act.send.await_args.args[1]
+    assert send_meta.evidence_item_ids == [evidence_id]
+    assert send_meta.source_refs[0].source_name == "Feed"
+    assert send_meta.source_refs[0].url == "https://example.com/b"
+
+
+@pytest.mark.asyncio
+async def test_same_state_summary_is_blocked_within_current_silence(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    item = _item("A", "https://example.com/a", minutes_ago=1)
+    entry = (compute_source_key(item), compute_item_id(item))
+    sense = _sense([item], [entry])
+    sense.collect_recent_proactive.return_value = [
+        RecentProactiveMessage(
+            content="月底面试确实烦，但你的底子在那儿。",
+            timestamp=datetime.now(timezone.utc) - timedelta(minutes=30),
+            state_summary_tag="interview_anxiety_reassurance",
+            source_refs=[],
+        )
+    ]
+
+    class _RepeatDecide(_Decide):
+        def _decision(self, should_send: bool, score: float):
+            d = super()._decision(should_send, score)
+            d.message = "月底面试确实烦，但你的底子在那儿。刚好又有个新消息。"
+            return d
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=sense,
+        decide=_RepeatDecide([entry[1]], should_send=True),
+        act=act,
+        light_provider=None,
+        light_model="",
+    )
+
+    await engine.tick()
+
+    act.send.assert_not_called()
+    assert state.is_rejection_cooled(entry[0], entry[1], ttl_hours=12)
 
 
 @pytest.mark.asyncio
