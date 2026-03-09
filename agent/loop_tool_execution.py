@@ -10,6 +10,7 @@ from agent.loop_constants import (
     _TOOL_LOOP_REPEAT_LIMIT,
     _tool_call_signature,
 )
+from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 
 logger = logging.getLogger("agent.loop")
 
@@ -101,24 +102,10 @@ class AgentLoopToolExecutionMixin:
                     f"LLM 请求调用 {len(response.tool_calls)} 个工具: "
                     f"{[tc.name for tc in response.tool_calls]}"
                 )
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": response.content,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.name,
-                                    "arguments": json.dumps(
-                                        tc.arguments, ensure_ascii=False
-                                    ),
-                                },
-                            }
-                            for tc in response.tool_calls
-                        ],
-                    }
+                append_assistant_tool_calls(
+                    messages,
+                    content=response.content,
+                    tool_calls=response.tool_calls,
                 )
 
                 iter_calls: list[dict] = []
@@ -137,8 +124,10 @@ class AgentLoopToolExecutionMixin:
                                 "  ✗ 工具 %s 不存在，拒绝执行", tc.name
                             )
                             result = f"工具 '{tc.name}' 不存在，请调用 tool_search 查找可用工具。"
-                            messages.append(
-                                {"role": "tool", "tool_call_id": tc.id, "content": result}
+                            append_tool_result(
+                                messages,
+                                tool_call_id=tc.id,
+                                content=result,
                             )
                             iter_calls.append(
                                 {
@@ -165,8 +154,10 @@ class AgentLoopToolExecutionMixin:
                             len(visible_names),
                         )
 
-                    messages.append(
-                        {"role": "tool", "tool_call_id": tc.id, "content": result}
+                    append_tool_result(
+                        messages,
+                        tool_call_id=tc.id,
+                        content=result,
                     )
                     iter_calls.append(
                         {

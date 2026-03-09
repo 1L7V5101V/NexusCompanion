@@ -18,6 +18,11 @@ from feeds.base import FeedItem
 from feeds.buffer import FeedBuffer
 from feeds.registry import FeedRegistry
 from feeds.store import FeedStore
+from memory2.injection_planner import (
+    build_memory_injection_result,
+    retrieve_history_items,
+    retrieve_procedure_items,
+)
 from proactive.components import build_proactive_memory_query
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
@@ -212,52 +217,45 @@ class DefaultMemoryRetrievalPort:
             )
 
             p_query = f"{query} 操作规范 用户偏好"
-            p_items = await self._memory.retrieve_related(
+            p_items = await retrieve_procedure_items(
+                self._memory,
                 p_query,
-                memory_types=["procedure", "preference"],
                 top_k=max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
             )
 
             h_items: list[dict] = []
             history_scope_mode = "disabled"
             if history_open:
-                if channel and chat_id:
-                    scoped_items = await self._memory.retrieve_related(
-                        query,
-                        memory_types=["event"],
-                        top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
-                        scope_channel=channel,
-                        scope_chat_id=chat_id,
-                        require_scope_match=True,
-                    )
-                    if scoped_items:
-                        h_items = scoped_items
-                        history_scope_mode = "scoped"
-                if not h_items and bool(
-                    getattr(self._cfg, "memory_scope_fallback_to_global", False)
-                ):
-                    h_items = await self._memory.retrieve_related(
-                        query,
-                        memory_types=["event"],
-                        top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
-                        require_scope_match=False,
-                    )
-                    history_scope_mode = "global-fallback"
+                h_items, history_scope_mode = await retrieve_history_items(
+                    self._memory,
+                    query,
+                    memory_types=["event"],
+                    top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
+                    prefer_scoped=True,
+                    scope_channel=channel,
+                    scope_chat_id=chat_id,
+                    allow_global=bool(
+                        getattr(self._cfg, "memory_scope_fallback_to_global", False)
+                    ),
+                )
 
-            merged = self._dedupe_items(p_items + h_items)
-            selected = self._memory.select_for_injection(merged)
-            block, ids = self._memory.format_injection_with_ids(selected)
+            injection = build_memory_injection_result(
+                self._memory,
+                procedure_items=p_items,
+                history_items=h_items,
+                history_scope_mode=history_scope_mode,
+            )
 
             result = ProactiveRetrievedMemory(
                 query=query,
-                block=block,
-                item_ids=ids,
-                items=selected,
-                procedure_hits=len(p_items),
-                history_hits=len(h_items),
+                block=injection.block,
+                item_ids=injection.item_ids,
+                items=injection.selected_items,
+                procedure_hits=injection.procedure_hits,
+                history_hits=injection.history_hits,
                 history_channel_open=history_open,
                 history_gate_reason=history_reason,
-                history_scope_mode=history_scope_mode,
+                history_scope_mode=injection.history_scope_mode,
             )
             self._trace(
                 session_key=session_key,
@@ -305,18 +303,6 @@ class DefaultMemoryRetrievalPort:
         if len(recent_texts) >= 2 or sum(len(t) for t in recent_texts) >= 40:
             return True, "recent_continuity"
         return False, "insufficient_topic_signal"
-
-    def _dedupe_items(self, items: list[dict]) -> list[dict]:
-        seen: set[str] = set()
-        out: list[dict] = []
-        for item in items:
-            item_id = str(item.get("id", "") or "")
-            if item_id:
-                if item_id in seen:
-                    continue
-                seen.add(item_id)
-            out.append(item)
-        return out
 
     def _trace(
         self,

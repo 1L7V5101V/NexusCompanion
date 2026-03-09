@@ -7,11 +7,11 @@ from pathlib import Path
 
 from agent.provider import LLMProvider
 from agent.subagent import SubAgent
-from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
-from agent.tools.shell import ShellTool
-from agent.tools.web_fetch import WebFetchTool
-from agent.tools.web_search import WebSearchTool
-from bus.events import InboundMessage
+from agent.subagent_profiles import SubagentRuntime, build_spawn_spec
+from bus.internal_events import (
+    SpawnCompletionEvent,
+    make_spawn_completion_message,
+)
 from bus.queue import MessageBus
 from core.net.http import HttpRequester
 
@@ -33,11 +33,13 @@ class SubagentManager:
         max_tokens: int,
         fetch_requester: HttpRequester,
     ) -> None:
-        self._provider = provider
         self._workspace = workspace
         self._bus = bus
-        self._model = model
-        self._max_tokens = max_tokens
+        self._runtime = SubagentRuntime(
+            provider=provider,
+            model=model,
+            max_tokens=max_tokens,
+        )
         self._fetch_requester = fetch_requester
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
@@ -116,23 +118,13 @@ class SubagentManager:
             )
 
     def _build_subagent(self) -> SubAgent:
-        tools = [
-            ReadFileTool(allowed_dir=self._workspace),
-            ListDirTool(allowed_dir=self._workspace),
-            WriteFileTool(allowed_dir=self._workspace),
-            EditFileTool(allowed_dir=self._workspace),
-            WebSearchTool(),
-            WebFetchTool(self._fetch_requester),
-            ShellTool(),
-        ]
-        return SubAgent(
-            provider=self._provider,
-            model=self._model,
-            tools=tools,
+        spec = build_spawn_spec(
+            workspace=self._workspace,
+            fetch_requester=self._fetch_requester,
             system_prompt=self._build_subagent_prompt(),
             max_iterations=20,
-            max_tokens=self._max_tokens,
         )
+        return spec.build(self._runtime)
 
     def _build_subagent_prompt(self) -> str:
         workspace = str(self._workspace.expanduser().resolve())
@@ -179,22 +171,17 @@ class SubagentManager:
                 payload_result[:_RESULT_MAX_CHARS]
                 + f"\n...[结果已截断，原始长度 {original_len}]"
             )
-        msg = InboundMessage(
+        msg = make_spawn_completion_message(
             channel=origin_channel,
-            sender="spawn",
             chat_id=origin_chat_id,
-            content="[internal spawn completed]",
-            metadata={
-                "internal_event": "spawn_completed",
-                "spawn": {
-                    "job_id": job_id,
-                    "label": label,
-                    "task": task,
-                    "status": status,
-                    "exit_reason": exit_reason,
-                    "result": payload_result,
-                },
-            },
+            event=SpawnCompletionEvent(
+                job_id=job_id,
+                label=label,
+                task=task,
+                status=status,
+                exit_reason=exit_reason,
+                result=payload_result,
+            ),
         )
         await self._bus.publish_inbound(msg)
         logger.info(

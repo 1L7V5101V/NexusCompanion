@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
-from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
+from proactive.memory_optimizer import (
+    MemoryOptimizer,
+    MemoryOptimizerLoop,
+    _parse_cleanup_json,
+)
 
 
 class _Resp:
@@ -98,6 +102,35 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
 
     assert "近期历史摘要" not in prompt
     assert "- [identity] 新身份" in prompt
+
+
+def test_parse_cleanup_json_supports_fenced_json():
+    ongoing, pending = _parse_cleanup_json(
+        '```json\n{"remove_ongoing":["明天返校"],"remove_pending":["确认显卡型号"]}\n```'
+    )
+
+    assert ongoing == ["明天返校"]
+    assert pending == ["确认显卡型号"]
+
+
+def test_request_text_response_uses_expected_chat_kwargs(tmp_path):
+    memory = DefaultMemoryPort(MemoryStore(tmp_path))
+    provider = _provider_with_responses("merged")
+    optimizer = MemoryOptimizer(memory, provider, "test-model")
+
+    result = asyncio.run(
+        optimizer._request_text_response(
+            system_content="system",
+            user_content="user",
+            max_tokens=123,
+        )
+    )
+
+    assert result == "merged"
+    kwargs = provider.chat.await_args.kwargs
+    assert kwargs["tools"] == []
+    assert kwargs["model"] == "test-model"
+    assert kwargs["max_tokens"] == 123
 
 
 def test_seconds_until_next_tick_aligns_to_interval_boundary():

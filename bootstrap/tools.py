@@ -7,8 +7,7 @@ from agent.loop import AgentLoop
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
 from agent.mcp.registry import McpServerRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
-from agent.tools.filesystem import ListDirTool, ReadFileTool
-from agent.tools.fitbit import FitbitHealthSnapshotTool, FitbitSleepReportTool
+from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
@@ -52,6 +51,13 @@ def build_core_runtime(
 ) -> tuple:
     bus = MessageBus()
     tools = ToolRegistry()
+    readonly_tools = {
+        tool.name: tool
+        for tool in build_readonly_research_tools(
+            fetch_requester=http_resources.external_default,
+            include_list_dir=True,
+        )
+    }
 
     # 元工具：始终可见，不暴露在搜索结果里
     tools.register(
@@ -73,28 +79,28 @@ def build_core_runtime(
         search_keywords=["终端", "命令", "bash", "运行命令", "执行脚本", "shell"],
     )
     tools.register(
-        WebSearchTool(),
+        readonly_tools["web_search"],
         always_on=True,
         tags=["web"],
         risk="read-only",
         search_keywords=["搜索", "网络搜索", "谷歌", "bing", "查资料"],
     )
     tools.register(
-        WebFetchTool(http_resources.external_default),
+        readonly_tools["web_fetch"],
         always_on=True,
         tags=["web"],
         risk="read-only",
         search_keywords=["网页", "抓取网页", "读取网址", "fetch", "浏览网页"],
     )
     tools.register(
-        ReadFileTool(),
+        readonly_tools["read_file"],
         always_on=True,
         tags=["filesystem"],
         risk="read-only",
         search_keywords=["读文件", "查看文件", "文件内容", "read"],
     )
     tools.register(
-        ListDirTool(),
+        readonly_tools["list_dir"],
         always_on=True,
         tags=["filesystem"],
         risk="read-only",
@@ -162,20 +168,21 @@ def build_core_runtime(
 
     fitbit_url = getattr(config.proactive, "fitbit_url", "http://127.0.0.1:18765")
     if getattr(config.proactive, "fitbit_enabled", False):
-        tools.register(
-            FitbitHealthSnapshotTool(
-                fitbit_url,
+        fitbit_tools = {
+            tool.name: tool
+            for tool in build_fitbit_tools(
+                fitbit_url=fitbit_url,
                 requester=http_resources.local_service,
-            ),
+            )
+        }
+        tools.register(
+            fitbit_tools["fitbit_health_snapshot"],
             tags=["health", "fitbit"],
             risk="read-only",
             search_keywords=["健康数据", "运动数据", "fitbit", "心率", "步数", "卡路里"],
         )
         tools.register(
-            FitbitSleepReportTool(
-                fitbit_url,
-                requester=http_resources.local_service,
-            ),
+            fitbit_tools["fitbit_sleep_report"],
             tags=["health", "fitbit"],
             risk="read-only",
             search_keywords=["睡眠报告", "睡眠数据", "睡眠质量", "fitbit", "sleep"],

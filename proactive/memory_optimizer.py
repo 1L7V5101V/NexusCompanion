@@ -10,9 +10,7 @@ proactive/memory_optimizer.py — 记忆质量优化器
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import re
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Callable
 
@@ -20,6 +18,7 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
 from agent.provider import LLMProvider
+from proactive.json_utils import extract_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +143,8 @@ NOW.md 当前内容：
 
 
 def _parse_cleanup_json(text: str) -> tuple[list[str], list[str]]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
-        data = json.loads(text)
+        data = extract_json_object(text)
         ongoing = [str(x).strip() for x in data.get("remove_ongoing", [])]
         pending = [str(x).strip() for x in data.get("remove_pending", [])]
         return ongoing, pending
@@ -254,16 +250,11 @@ class MemoryOptimizer:
             pending=pending or "（无新内容）",
         )
         try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": _MERGE_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
+            return await self._request_text_response(
+                system_content=_MERGE_SYSTEM,
+                user_content=prompt,
                 max_tokens=self._max_tokens,
             )
-            return (resp.content or "").strip()
         except Exception as e:
             logger.error("[memory_optimizer] 记忆合并失败: %s", e)
             return ""
@@ -279,16 +270,11 @@ class MemoryOptimizer:
             pending=pending or "（无新内容）",
         )
         try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": _SELF_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
+            updated = await self._request_text_response(
+                system_content=_SELF_SYSTEM,
+                user_content=prompt,
                 max_tokens=2048,
             )
-            updated = (resp.content or "").strip()
             if updated:
                 self._memory.write_self(updated)
                 logger.info("[memory_optimizer] SELF.md 已更新")
@@ -307,18 +293,12 @@ class MemoryOptimizer:
             history=history[-2000:] if len(history) > 2000 else history or "（无）",
         )
         try:
-            resp = await self._provider.chat(
-                messages=[
-                    {"role": "system", "content": _NOW_CLEANUP_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
+            response_text = await self._request_text_response(
+                system_content=_NOW_CLEANUP_SYSTEM,
+                user_content=prompt,
                 max_tokens=256,
             )
-            remove_ongoing, remove_pending_items = _parse_cleanup_json(
-                resp.content or ""
-            )
+            remove_ongoing, remove_pending_items = _parse_cleanup_json(response_text)
             if remove_ongoing or remove_pending_items:
                 text = self._memory.read_now()
                 text = _remove_items_from_section(text, "## 近期进行中", remove_ongoing)
@@ -339,6 +319,24 @@ class MemoryOptimizer:
             return self._memory.read_history(max_chars=self._history_max_chars)
         except Exception:
             return ""
+
+    async def _request_text_response(
+        self,
+        *,
+        system_content: str,
+        user_content: str,
+        max_tokens: int,
+    ) -> str:
+        resp = await self._provider.chat(
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            ],
+            tools=[],
+            model=self._model,
+            max_tokens=max_tokens,
+        )
+        return (resp.content or "").strip()
 
 
 # ── MemoryOptimizerLoop ───────────────────────────────────────────

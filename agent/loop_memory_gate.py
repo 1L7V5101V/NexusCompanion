@@ -3,8 +3,7 @@ import json
 import logging
 from datetime import datetime
 
-import json_repair
-
+from agent.llm_json import load_json_object_loose
 from agent.loop_constants import (
     _FLOW_SEQUENCE_PATTERN,
     _FLOW_TRIGGER_WORDS,
@@ -199,22 +198,20 @@ class AgentLoopMemoryGateMixin:
                 timeout=timeout_s,
             )
             text = (resp.content or "").strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            payload = json_repair.loads(text)
+            payload = load_json_object_loose(text)
             decision = (
                 str(payload.get("decision", "")).upper()
-                if isinstance(payload, dict)
+                if payload is not None
                 else ""
             )
             rewritten = (
                 str(payload.get("rewritten_query", "")).strip()
-                if isinstance(payload, dict)
+                if payload is not None
                 else ""
             )
             confidence = (
                 str(payload.get("confidence", "medium")).lower()
-                if isinstance(payload, dict)
+                if payload is not None
                 else "low"
             )
             if confidence not in {"high", "medium", "low"}:

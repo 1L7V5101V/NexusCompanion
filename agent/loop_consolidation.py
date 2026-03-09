@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-import json_repair
+from agent.llm_json import load_json_object_loose
 
 logger = logging.getLogger("agent.loop")
 
@@ -37,6 +37,10 @@ def _format_pending_items(raw_items) -> str:
         seen.add(line)
         lines.append(line)
     return "\n".join(lines)
+
+
+def _parse_consolidation_payload(text: str) -> dict | None:
+    return load_json_object_loose(text)
 
 
 class AgentLoopConsolidationMixin:
@@ -181,10 +185,8 @@ class AgentLoopConsolidationMixin:
                     "Memory consolidation: LLM returned empty response, skipping"
                 )
                 return
-            if text.startswith("```"):
-                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-            result = json_repair.loads(text)
-            if not isinstance(result, dict):
+            result = _parse_consolidation_payload(text)
+            if result is None:
                 logger.warning(
                     f"Memory consolidation: unexpected response type, skipping. Response: {text[:200]}"
                 )

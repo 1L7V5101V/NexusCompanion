@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
+from agent.loop_handlers import ConversationTurnHandler, InternalEventHandler
 from agent.loop_consolidation import AgentLoopConsolidationMixin
 from agent.loop_memory_gate import AgentLoopMemoryGateMixin
 from agent.loop_safety_retry import AgentLoopSafetyRetryMixin
 from agent.loop_tool_execution import AgentLoopToolExecutionMixin
 from bus.events import InboundMessage, OutboundMessage
+from bus.internal_events import is_spawn_completion_message
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -105,6 +107,8 @@ class AgentLoop(
         self._memory_port = memory_port
         self.context = ContextBuilder(workspace, memory=self._memory_port)
         self._post_mem_failures = 0
+        self._conversation_handler = ConversationTurnHandler(self)
+        self._internal_event_handler = InternalEventHandler(self)
 
     async def run(self) -> None:
         self._running = True
@@ -187,178 +191,8 @@ class AgentLoop(
 
     async def _process_inner(self, msg: InboundMessage, key: str) -> OutboundMessage:
         if self._is_spawn_completion(msg):
-            return await self._process_spawn_completion(msg, key)
-
-        session = self.session_manager.get_or_create(key)
-        skill_mentions = self._collect_skill_mentions(msg.content)
-        if skill_mentions:
-            logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
-
-        main_history = session.get_history(max_messages=self.memory_window)
-        retrieved_block = ""
-        try:
-            route_decision = "RETRIEVE"
-            rewritten_query = msg.content
-            fallback_reason = ""
-            gate_latency_ms: dict[str, int] = {}
-            runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
-
-            p_query = f"{msg.content} 操作规范"
-            recent_turns = self._format_gate_history(main_history, max_turns=3)
-            p_task = asyncio.create_task(
-                self._memory_port.retrieve_related(
-                    p_query,
-                    memory_types=["procedure", "preference"],
-                    top_k=self._memory_top_k_procedure,
-                )
-            )
-            route_task = asyncio.create_task(
-                self._decide_history_retrieval(
-                    user_msg=msg.content,
-                    metadata=runtime_md,
-                    recent_history=recent_turns,
-                )
-            )
-            p_items, (
-                needs_history,
-                rewritten_query,
-                route_reason,
-                route_ms,
-            ) = await asyncio.gather(p_task, route_task)
-
-            gate_latency_ms["route"] = route_ms
-            if route_reason != "ok":
-                fallback_reason = route_reason
-            route_decision = "RETRIEVE" if needs_history else "NO_RETRIEVE"
-
-            h_items: list[dict] = []
-            if needs_history:
-                h_items = await self._memory_port.retrieve_related(
-                    rewritten_query,
-                    memory_types=["event", "profile"],
-                    top_k=self._memory_top_k_history,
-                )
-
-            seen_ids: set[str] = set()
-            items = []
-            for item in p_items + h_items:
-                item_id = item.get("id")
-                if isinstance(item_id, str) and item_id:
-                    if item_id in seen_ids:
-                        continue
-                    seen_ids.add(item_id)
-                items.append(item)
-
-            selected_items = self._memory_port.select_for_injection(items)
-            retrieved_block, injected_item_ids = (
-                self._memory_port.format_injection_with_ids(selected_items)
-            )
-            if retrieved_block:
-                logger.info(
-                    f"memory2 retrieve: {len(items)} 条命中，筛选后 {len(selected_items)} 条注入"
-                )
-
-            protected_ids = {
-                str(i.get("id", ""))
-                for i in p_items
-                if isinstance(i, dict)
-                and i.get("memory_type") == "procedure"
-                and (i.get("extra_json") or {}).get("tool_requirement")
-                and i.get("id")
-            }
-            sop_guard_applied = bool(
-                self._memory_sop_guard_enabled
-                and any(item_id in protected_ids for item_id in injected_item_ids)
-            )
-
-            self._trace_memory_retrieve(
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_msg=msg.content,
-                items=selected_items,
-                injected_block=retrieved_block,
-                route_decision=route_decision,
-                rewritten_query=rewritten_query,
-                fallback_reason=fallback_reason,
-                sop_guard_applied=sop_guard_applied,
-                procedure_hits=len(p_items),
-                history_hits=len(h_items),
-                injected_item_ids=injected_item_ids,
-                gate_latency_ms=gate_latency_ms,
-            )
-        except Exception as e:
-            logger.warning(f"memory2 retrieve 失败，跳过: {e}")
-            self._trace_memory_retrieve(
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_msg=msg.content,
-                items=[],
-                injected_block="",
-                fallback_reason="retrieve_exception",
-                error=str(e),
-            )
-
-        self._set_tool_context(msg.channel, msg.chat_id)
-        final_content, tools_used, tool_chain = await self._run_with_safety_retry(
-            msg,
-            session,
-            skill_names=skill_mentions or None,
-            base_history=main_history,
-            retrieved_memory_block=retrieved_block,
-        )
-
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
-
-        preview = (
-            final_content[:120] + "..." if len(final_content) > 120 else final_content
-        )
-        logger.info(f"Response to {msg.channel}:{msg.sender}: {preview}")
-
-        if self._presence:
-            self._presence.record_user_message(key)
-        session.add_message("user", msg.content, media=msg.media if msg.media else None)
-        session.add_message(
-            "assistant",
-            final_content,
-            tools_used=tools_used if tools_used else None,
-            tool_chain=tool_chain if tool_chain else None,
-        )
-        self._update_session_runtime_metadata(
-            session,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-        )
-        await self.session_manager.append_messages(session, session.messages[-2:])
-
-        if len(session.messages) > self.memory_window and key not in self._consolidating:
-            self._consolidating.add(key)
-            asyncio.create_task(self._consolidate_memory_bg(session, key))
-
-        if self._post_mem_worker:
-            task = asyncio.create_task(
-                self._post_mem_worker.run(
-                    user_msg=msg.content,
-                    agent_response=final_content,
-                    tool_chain=tool_chain,
-                    source_ref=f"{key}@post_response",
-                ),
-                name=f"post_mem:{key}",
-            )
-            task.add_done_callback(lambda t: self._on_post_mem_task_done(t, key))
-
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            metadata={
-                **(msg.metadata or {}),
-                "tools_used": tools_used,
-                "tool_chain": tool_chain,
-            },
-        )
+            return await self._internal_event_handler.process_spawn_completion(msg, key)
+        return await self._conversation_handler.process(msg, key)
 
     async def process_direct(
         self,
@@ -378,77 +212,29 @@ class AgentLoop(
 
     @staticmethod
     def _is_spawn_completion(msg: InboundMessage) -> bool:
-        md = msg.metadata if isinstance(msg.metadata, dict) else {}
-        return md.get("internal_event") == "spawn_completed"
+        return is_spawn_completion_message(msg)
 
-    async def _process_spawn_completion(
-        self, msg: InboundMessage, key: str
-    ) -> OutboundMessage:
-        session = self.session_manager.get_or_create(key)
-        spawn_md = (
-            (msg.metadata or {}).get("spawn", {})
-            if isinstance(msg.metadata, dict)
-            else {}
-        )
-        label = str(spawn_md.get("label", "") or "后台任务")
-        task = str(spawn_md.get("task", "") or "").strip()
-        status = str(spawn_md.get("status", "") or "incomplete").strip()
-        result = str(spawn_md.get("result", "") or "").strip()
-        exit_reason = str(spawn_md.get("exit_reason", "") or "").strip()
+    def _schedule_consolidation_if_needed(self, session, key: str) -> None:
+        if len(session.messages) > self.memory_window and key not in self._consolidating:
+            self._consolidating.add(key)
+            asyncio.create_task(self._consolidate_memory_bg(session, key))
 
-        current_message = (
-            "[后台任务已完成]\n"
-            f"任务标签: {label}\n"
-            f"原始任务: {task or '（未提供）'}\n"
-            f"状态: {status}\n"
-            f"执行结果:\n{result or '（无结果）'}\n\n"
-            "请基于当前会话上下文，用自然中文向用户汇报这次后台任务的结果。\n"
-            "不要提及 subagent、spawn、内部事件、job_id。\n"
-            "如果状态是 incomplete，说明目前做到哪里、接下来还差什么。\n"
-            "如果状态是 error，只说明用户需要知道的失败结论，不暴露内部技术细节。\n"
-            "必要时你可以读取结果里提到的文件来补充说明。"
-        )
-
-        self._set_tool_context(msg.channel, msg.chat_id)
-        initial_messages = self.context.build_messages(
-            history=session.get_history(max_messages=self.memory_window),
-            current_message=current_message,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            message_timestamp=msg.timestamp,
-        )
-        final_content, tools_used, tool_chain, _ = await self._run_agent_loop(
-            initial_messages,
-            request_time=msg.timestamp,
-            preloaded_tools=None,
-        )
-        if final_content is None:
-            final_content = "后台任务已完成。"
-
-        marker = f"[后台任务完成] {label} ({status})"
-        if exit_reason:
-            marker += f" [{exit_reason}]"
-        session.add_message("user", marker)
-        session.add_message(
-            "assistant",
-            final_content,
-            tools_used=tools_used if tools_used else None,
-            tool_chain=tool_chain if tool_chain else None,
-        )
-        self._update_session_runtime_metadata(
-            session,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-        )
-        await self.session_manager.append_messages(session, session.messages[-2:])
-
-        return OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            metadata={
-                **(msg.metadata or {}),
-                "tools_used": tools_used,
-                "tool_chain": tool_chain,
-            },
-        )
+    def _schedule_post_response_memory(
+        self,
+        *,
+        msg: InboundMessage,
+        key: str,
+        final_content: str,
+        tool_chain: list[dict],
+    ) -> None:
+        if self._post_mem_worker:
+            task = asyncio.create_task(
+                self._post_mem_worker.run(
+                    user_msg=msg.content,
+                    agent_response=final_content,
+                    tool_chain=tool_chain,
+                    source_ref=f"{key}@post_response",
+                ),
+                name=f"post_mem:{key}",
+            )
+            task.add_done_callback(lambda t: self._on_post_mem_task_done(t, key))

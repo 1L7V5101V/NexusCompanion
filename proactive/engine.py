@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +17,7 @@ from proactive.energy import (
     random_weight,
 )
 from proactive.interest import select_interesting_items
+from proactive.json_utils import extract_json_object
 from proactive.presence import PresenceStore
 from proactive.anyaction import AnyActionGate
 from proactive.ports import (
@@ -1083,28 +1083,21 @@ class ProactiveEngine:
             "如果消息主要是直接推送兴趣资讯，不概括用户状态，标 none。"
         )
         try:
-            resp = await self._light_provider.chat(
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": text},
-                ],
-                tools=[],
-                model=self._light_model,
+            content = await self._request_light_text(
+                system_content=prompt,
+                user_content=text,
                 max_tokens=64,
             )
-            content = (resp.content or "").strip()
-            match = re.search(r"\{[\s\S]*\}", content)
-            if match:
-                data = json.loads(match.group())
-                tag = str(data.get("state_summary_tag", "") or "").strip()
-                if tag in {
-                    "none",
-                    "interview_anxiety_reassurance",
-                    "health_nudge",
-                    "sleep_concern",
-                    "general_encouragement",
-                }:
-                    return tag
+            data = extract_json_object(content)
+            tag = str(data.get("state_summary_tag", "") or "").strip()
+            if tag in {
+                "none",
+                "interview_anxiety_reassurance",
+                "health_nudge",
+                "sleep_concern",
+                "general_encouragement",
+            }:
+                return tag
         except Exception:
             logger.debug("[proactive] state_summary_tag 分类失败，回退 heuristic")
         return heuristic
@@ -1137,19 +1130,32 @@ class ProactiveEngine:
             f"原消息：{text}{source_hint}"
         )
         try:
-            resp = await self._light_provider.chat(
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                tools=[],
-                model=self._light_model,
-                max_tokens=min(192,  max(64, len(text) + 64)),
+            return await self._request_light_text(
+                system_content=prompt,
+                user_content=user_prompt,
+                max_tokens=min(192, max(64, len(text) + 64)),
             )
-            return (resp.content or "").strip()
         except Exception:
             logger.debug("[proactive] 去重复写失败")
             return ""
+
+    async def _request_light_text(
+        self,
+        *,
+        system_content: str,
+        user_content: str,
+        max_tokens: int,
+    ) -> str:
+        resp = await self._light_provider.chat(
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            ],
+            tools=[],
+            model=self._light_model,
+            max_tokens=max_tokens,
+        )
+        return (resp.content or "").strip()
 
     def _resolve_evidence_entries(
         self,

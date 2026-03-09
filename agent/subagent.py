@@ -16,11 +16,16 @@ SubAgent — 通用子 Agent
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Sequence
 
 from agent.provider import LLMProvider
+from agent.tool_runtime import (
+    append_assistant_tool_calls,
+    append_tool_result,
+    prepare_toolset,
+    tool_call_signature,
+)
 from agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -66,16 +71,6 @@ _FORCED_FINAL_SUMMARY_FALLBACK = (
     "这次后台任务已先停在当前进度。我已经完成了一部分关键步骤，"
     "但还有剩余工作未收束；下一次可从当前检查点继续推进。"
 )
-
-
-def _tool_call_signature(tool_calls) -> str:
-    parts: list[str] = []
-    for tc in tool_calls:
-        args = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
-        parts.append(f"{tc.name}:{args}")
-    return "|".join(parts)
-
-
 def _trim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """将旧轮次的 tool result 替换为占位符，防止长对话累积撑爆上下文。
 
@@ -131,18 +126,9 @@ class SubAgent:
         self._max_tokens = max_tokens
         self._mandatory_exit_tools = list(mandatory_exit_tools)
         self.last_exit_reason: str = "idle"
-        self._tool_map: dict[str, Tool] = {t.name: t for t in tools}
-        self._tool_schemas: list[dict[str, Any]] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                },
-            }
-            for t in tools
-        ]
+        prepared = prepare_toolset(tools)
+        self._tool_map: dict[str, Tool] = prepared.tool_map
+        self._tool_schemas: list[dict[str, Any]] = prepared.schemas
 
     async def run(self, task: str) -> str:
         """执行任务并返回文本结果。
@@ -178,7 +164,7 @@ class SubAgent:
                 self.last_exit_reason = "completed"
                 return (response.content or "").strip()
 
-            signature = _tool_call_signature(response.tool_calls)
+            signature = tool_call_signature(response.tool_calls)
             if signature and signature == last_tool_signature:
                 repeat_count += 1
             else:
@@ -201,24 +187,10 @@ class SubAgent:
                 )
 
             # 追加 assistant 消息（含 tool_calls）
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(
-                                    tc.arguments, ensure_ascii=False
-                                ),
-                            },
-                        }
-                        for tc in response.tool_calls
-                    ],
-                }
+            append_assistant_tool_calls(
+                messages,
+                content=response.content,
+                tool_calls=response.tool_calls,
             )
 
             # 执行工具
@@ -249,9 +221,7 @@ class SubAgent:
                         tc.name,
                         original_len,
                     )
-                messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": result}
-                )
+                append_tool_result(messages, tool_call_id=tc.id, content=result)
 
             remaining = self._max_iterations - iteration - 1
             if remaining == 0:
@@ -347,23 +317,10 @@ class SubAgent:
                 continue
 
             tc = response.tool_calls[0]
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(
-                                    tc.arguments, ensure_ascii=False
-                                ),
-                            },
-                        }
-                    ],
-                }
+            append_assistant_tool_calls(
+                messages,
+                content=response.content,
+                tool_calls=[tc],
             )
             tool = self._tool_map.get(tc.name)
             if tool:
@@ -376,4 +333,4 @@ class SubAgent:
                 )
             else:
                 result = f"未知工具: {tc.name}"
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            append_tool_result(messages, tool_call_id=tc.id, content=result)

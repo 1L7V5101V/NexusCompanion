@@ -13,7 +13,6 @@ SourceScorer — 基于用户 memory 对 RSS 信息源打分，按 softmax 分�
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import math
 import re
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
 from core.common.timekit import utcnow as _utcnow
 from feeds.base import FeedSubscription
 from infra.persistence.json_store import load_json, save_json
+from proactive.json_utils import extract_json_object, extract_json_text
 
 logger = logging.getLogger(__name__)
 
@@ -195,19 +195,7 @@ class SourceScorer:
 {{"scores": {{"<id>": <score>, ...}}}}"""
 
         try:
-            response = await self._provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是信息筛选助手，只返回合法 JSON。",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
-                max_tokens=1024,
-            )
-            text = (response.content or "").strip()
+            text = await self._request_json_response(prompt, max_tokens=1024)
             scores = _parse_scores_json(text, subs)
             logger.info(
                 "[source_scorer] 全量打分完成 scores=%s",
@@ -251,24 +239,27 @@ class SourceScorer:
 {{"score": <number>}}"""
 
         try:
-            response = await self._provider.chat(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是信息筛选助手，只返回合法 JSON。",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                tools=[],
-                model=self._model,
-                max_tokens=64,
-            )
-            text = (response.content or "").strip()
+            text = await self._request_json_response(prompt, max_tokens=64)
             score = _parse_single_score(text)
             return score
         except Exception as e:
             logger.warning("[source_scorer] 单源打分失败，默认 5.0: %s", e)
             return 5.0
+
+    async def _request_json_response(self, prompt: str, *, max_tokens: int) -> str:
+        response = await self._provider.chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是信息筛选助手，只返回合法 JSON。",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            tools=[],
+            model=self._model,
+            max_tokens=max_tokens,
+        )
+        return (response.content or "").strip()
 
     def _load_cache(self) -> None:
         """懒加载缓存文件到内存。"""
@@ -312,17 +303,12 @@ def _hash_ids(ids: list[str]) -> str:
 
 def _parse_scores_json(text: str, subs: list[FeedSubscription]) -> dict[str, float]:
     """从 LLM 输出中解析 {"scores": {id: score}} JSON。解析失败时回退均等分。"""
-    # 尝试去掉 markdown 代码块
-    if "```" in text:
-        m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-        text = m.group(1) if m else text
-    # 找 { ... }
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
+    json_text = extract_json_text(text)
+    if "{" not in json_text:
         logger.warning("[source_scorer] 无法提取 JSON: %r", text[:200])
         return {s.id: 5.0 for s in subs}
     try:
-        data = json.loads(m.group())
+        data = extract_json_object(text)
         raw_scores = data.get("scores", {})
         result: dict[str, float] = {}
         for sub in subs:
@@ -341,18 +327,15 @@ def _parse_scores_json(text: str, subs: list[FeedSubscription]) -> dict[str, flo
 
 def _parse_single_score(text: str) -> float:
     """从 LLM 输出中解析 {"score": N} JSON。"""
-    if "```" in text:
-        m = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-        text = m.group(1) if m else text
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
+    json_text = extract_json_text(text)
+    if "{" not in json_text:
         # 尝试直接找数字
         nm = re.search(r"\b(\d+(?:\.\d+)?)\b", text)
         if nm:
             return max(0.0, min(10.0, float(nm.group(1))))
         return 5.0
     try:
-        data = json.loads(m.group())
+        data = extract_json_object(text)
         return max(0.0, min(10.0, float(data.get("score", 5.0))))
     except Exception:
         return 5.0

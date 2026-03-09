@@ -107,6 +107,21 @@ def test_route_gate_fail_open_on_low_confidence():
     assert reason == "ok"
 
 
+def test_route_gate_supports_fenced_json_payload():
+    loop = _make_loop(
+        _Provider(
+            ['```json\n{"decision":"NO_RETRIEVE","rewritten_query":"偏好","confidence":"high"}\n```']
+        ),
+        memory_route_intention_enabled=True,
+    )
+    needs, rewritten, reason, _ = asyncio.run(
+        loop._decide_history_retrieval(user_msg="我之前喜欢什么游戏", metadata={})
+    )
+    assert needs is False
+    assert rewritten == "偏好"
+    assert reason == "ok"
+
+
 def test_flow_execution_state_not_triggered_by_single_char_xian_zai():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
     assert loop._is_flow_execution_state("我先问个问题", {}) is False

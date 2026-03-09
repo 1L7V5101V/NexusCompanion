@@ -11,6 +11,7 @@ from core.net.http import (
 )
 from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
+from proactive.engine import ProactiveEngine
 from proactive.loop import ProactiveLoop, _parse_decision
 from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
 from proactive.presence import PresenceStore
@@ -74,6 +75,44 @@ def test_parse_decision_string_false_is_false():
         '{"score": 0.9, "should_send": "false", "message": "hello", "reasoning": "r"}'
     )
     assert d.should_send is False
+
+
+@pytest.mark.asyncio
+async def test_engine_classify_state_summary_tag_supports_fenced_json():
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(
+        return_value=_Resp(
+            '```json\n{"state_summary_tag":"general_encouragement"}\n```'
+        )
+    )
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._light_provider = provider
+    engine._light_model = "test-model"
+
+    tag = await engine._classify_state_summary_tag("先别太逼自己，今天先缓一缓。")
+
+    assert tag == "general_encouragement"
+
+
+@pytest.mark.asyncio
+async def test_engine_request_light_text_uses_expected_chat_kwargs():
+    provider = _DummyProvider()
+    provider.chat = AsyncMock(return_value=_Resp("rewritten"))
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._light_provider = provider
+    engine._light_model = "test-model"
+
+    text = await engine._request_light_text(
+        system_content="system",
+        user_content="user",
+        max_tokens=77,
+    )
+
+    assert text == "rewritten"
+    kwargs = provider.chat.await_args.kwargs
+    assert kwargs["tools"] == []
+    assert kwargs["model"] == "test-model"
+    assert kwargs["max_tokens"] == 77
 
 
 @pytest.mark.asyncio

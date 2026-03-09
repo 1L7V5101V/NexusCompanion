@@ -1,4 +1,4 @@
-import json
+from agent.tool_runtime import tool_call_signature as _tool_call_signature
 import re
 
 # 安全拦截时递减历史窗口的倍率序列：全量 → 减半 → 清空
@@ -43,12 +43,3 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输
 2) 目前还缺什么信息或步骤；
 3) 下一步你会怎么继续。
 禁止输出“已达到最大迭代次数”这类模板句；不要输出 JSON。"""
-
-
-def _tool_call_signature(tool_calls) -> str:
-    """生成本轮 tool_calls 的稳定签名，用于检测循环调用。"""
-    parts: list[str] = []
-    for tc in tool_calls:
-        args = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True)
-        parts.append(f"{tc.name}:{args}")
-    return "|".join(parts)
