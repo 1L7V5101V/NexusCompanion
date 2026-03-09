@@ -90,7 +90,9 @@
     "pending_item_ttl_hours": 24,
     "pending_candidate_limit": 3,
     "pending_max_per_source": 20,
-    "pending_max_total": 200
+    "pending_max_total": 200,
+    "_comment_fitbit_sleep_modifier": "Fitbit 判定 sleeping 时，对 proactive 打扰系数的乘数；越低越保守",
+    "sleep_modifier_sleeping": 0.15
   },
 
   "_provider_presets": {

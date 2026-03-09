@@ -96,6 +96,7 @@ class ProactiveConfig:
     fitbit_enabled: bool = False
     fitbit_url: str = "http://127.0.0.1:18765"
     fitbit_poll_seconds: int = 300
+    sleep_modifier_sleeping: float = 0.15
     fitbit_monitor_path: str = ""
     source_scorer_enabled: bool = False
     source_scorer_total_budget: int = 60

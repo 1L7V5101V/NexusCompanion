@@ -53,6 +53,7 @@ class ProactiveLoopTraceMixin:
             "memory_top_k_procedure": self._cfg.memory_top_k_procedure,
             "memory_top_k_history": self._cfg.memory_top_k_history,
             "memory_history_gate_enabled": self._cfg.memory_history_gate_enabled,
+            "sleep_modifier_sleeping": self._cfg.sleep_modifier_sleeping,
         }
         self._append_trace_line("proactive_config_trace.jsonl", payload)
 

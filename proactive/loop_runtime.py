@@ -113,11 +113,13 @@ class ProactiveLoopRuntimeMixin:
         provider = FitbitSleepProvider(
             url=self._cfg.fitbit_url,
             poll_interval=self._cfg.fitbit_poll_seconds,
+            sleeping_modifier=self._cfg.sleep_modifier_sleeping,
         )
         logger.info(
-            "[proactive] FitbitSleepProvider 已启动 url=%s interval=%ds",
+            "[proactive] FitbitSleepProvider 已启动 url=%s interval=%ds sleeping_modifier=%.2f",
             self._cfg.fitbit_url,
             self._cfg.fitbit_poll_seconds,
+            self._cfg.sleep_modifier_sleeping,
         )
         return provider
 

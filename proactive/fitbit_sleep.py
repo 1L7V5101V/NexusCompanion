@@ -29,6 +29,7 @@ class SleepContext:
     data_lag_min: int | None
     fetched_at: float       # time.time()
     available: bool         # False=服务不可达或数据过期
+    sleeping_modifier: float = 0.15
     health_events: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -40,7 +41,7 @@ class SleepContext:
         if not self.available:
             return 1.0   # 降级：不影响现有行为
         if self.state == "sleeping":
-            return 0.20  # chat 概率降约 80%
+            return self.sleeping_modifier
         if self.state == "uncertain":
             # 睡眠高概率的 uncertain 也按睡眠保护处理，减少夜间/午睡打扰。
             if (
@@ -68,6 +69,7 @@ _FALLBACK = SleepContext(
     prob=None,
     prob_source="unavailable",
     data_lag_min=None,
+    sleeping_modifier=0.15,
     health_events=[],
     fetched_at=0.0,
     available=False,
@@ -92,10 +94,12 @@ class FitbitSleepProvider:
         url: str = "http://127.0.0.1:18765",
         poll_interval: int = 300,
         timeout: int = 10,
+        sleeping_modifier: float = 0.15,
     ) -> None:
         self._url = url.rstrip("/")
         self._poll_interval = poll_interval
         self._timeout = timeout
+        self._sleeping_modifier = max(0.0, min(float(sleeping_modifier), 1.0))
         self._cached: SleepContext = _FALLBACK
         self._lock = threading.Lock()
         self._consecutive_failures = 0
@@ -181,6 +185,7 @@ class FitbitSleepProvider:
             prob=sleep.get("prob"),
             prob_source=sleep.get("prob_source", "unavailable"),
             data_lag_min=sleep.get("data_lag_min"),
+            sleeping_modifier=self._sleeping_modifier,
             health_events=health_events if isinstance(health_events, list) else [],
             fetched_at=time.time(),
             available=True,
