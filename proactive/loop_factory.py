@@ -60,7 +60,7 @@ class ProactiveLoopFactoryMixin:
             SubagentRuntime,
             build_skill_action_spec,
         )
-        from proactive.skill_action import _AGENT_SYSTEM_PROMPT
+        from prompts.background import SKILL_ACTION_AGENT_BASE_PROMPT
 
         workspace = getattr(self._sessions, "workspace", None)
         if workspace is None:
@@ -83,7 +83,7 @@ class ProactiveLoopFactoryMixin:
 
         def factory(
             action_id: str,
-            system_prompt_override: str = _AGENT_SYSTEM_PROMPT,
+            system_prompt_override: str = SKILL_ACTION_AGENT_BASE_PROMPT,
         ):
             assert system_prompt_override is not None
             action_dir = agent_tasks_dir / action_id

@@ -21,6 +21,7 @@ from bus.internal_events import (
 from bus.queue import MessageBus
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.net.http import HttpRequester
+from prompts.background import build_spawn_subagent_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -171,22 +172,7 @@ class SubagentManager:
         return spec.build(self._runtime)
 
     def _build_subagent_prompt(self) -> str:
-        workspace = str(self._workspace.expanduser().resolve())
-        return (
-            "你是主 agent 派生出的后台执行 agent。\n"
-            "你的唯一目标是完成当前分配的任务，不要做额外延伸。\n"
-            "\n"
-            "规则：\n"
-            "1. 只处理当前任务，不主动接新任务。\n"
-            "2. 不直接与用户对话；你的结果会回传给主 agent。\n"
-            "3. 禁止再创建后台任务。\n"
-            "4. 你看不到主会话完整历史，只能基于当前任务行动。\n"
-            "5. 若创建或修改了文件，最终结果必须明确写出文件路径。\n"
-            "6. 若未完成，最终结果必须明确写：已完成什么、未完成什么、下一步建议。\n"
-            "\n"
-            f"工作区根目录：{workspace}\n"
-            f"技能目录：{workspace}/skills/ （需要时可自行读取对应 SKILL.md）"
-        )
+        return build_spawn_subagent_prompt(self._workspace)
 
     async def _announce_result(
         self,

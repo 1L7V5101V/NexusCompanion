@@ -1,11 +1,16 @@
 import base64
 import mimetypes
-import platform
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
+from prompts.agent import (
+    build_agent_identity_prompt,
+    build_current_session_prompt,
+    build_skills_catalog_prompt,
+    build_sop_index_prompt,
+    build_telegram_rendering_prompt,
+)
 from agent.skills import SkillsLoader
 
 if TYPE_CHECKING:
@@ -49,12 +54,7 @@ class ContextBuilder:
         if sop_readme.exists():
             try:
                 sop_index = sop_readme.read_text(encoding="utf-8").strip()
-                parts.append(
-                    f"# SOP 文件索引\n\n"
-                    f"**执行任务**：SOP 相关内容已由系统检索注入到本 prompt，直接参照执行，无需 read_file。\n"
-                    f"**新增/修改 SOP**：必须先 read_file 读取对应文件全文，按要求修改后 write_file 写回，并更新本 README 索引。\n\n"
-                    f"{sop_index}"
-                )
+                parts.append(build_sop_index_prompt(sop_index))
             except Exception:
                 pass
 
@@ -77,90 +77,15 @@ class ContextBuilder:
         # 模型识别到任务匹配时，通过 read_file 读取对应 SKILL.md 获取完整指令
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
-            parts.append(f"""# Skills
-
-以下技能扩展了你的能力范围。
-
-**触发规则（强制，不可跳过）**
-- 用户消息中出现技能名称（含 `$技能名` 语法），或任务明显与某技能描述匹配 → 该轮**必须**使用该技能
-- 使用方式：先 `read_file` 读取 `<location>` 中的完整 SKILL.md 指令，再执行；不得在未读取指令的情况下执行
-- 同时匹配多个技能时，全部使用，说明执行顺序
-- 跳过了明显匹配的技能时，必须说明理由
-- 技能不跨轮沿用，除非用户再次提及
-- `available="false"` 的技能表示依赖未安装，先按技能指令安装依赖，再执行
-
-{skills_summary}""")
+            parts.append(build_skills_catalog_prompt(skills_summary))
 
         return "\n\n---\n\n".join(parts)
 
     def _get_identity(self, message_timestamp: "datetime | None" = None) -> str:
-        # 确保时区感知，naive datetime 转换为本地时区
-        ts = message_timestamp
-        if ts is None:
-            ts = datetime.now().astimezone()
-        elif ts.tzinfo is None:
-            ts = ts.astimezone()
-        now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
-        now_iso = ts.isoformat()  # e.g. "2025-06-01T15:48:40+08:00"
-        runtime = platform.machine()
-        workspace_path = str(self.workspace.expanduser().resolve())
-
-        return f"""# Nexus
-
-{NEXUS_IDENTITY}
-
-## 性格
-
-{PERSONALITY_RULES}
-
-
-## 当前时间
-{now}
-request_time={now_iso}
-（调用 schedule 工具时，将该 request_time 原样传入 request_time 字段）
-
-## 环境
-{runtime}
-
-## 工作区
-- 根目录：{workspace_path}
-- 长期记忆：{workspace_path}/memory/MEMORY.md
-- 自我认知：{workspace_path}/memory/SELF.md
-- 短期状态：{workspace_path}/memory/NOW.md（进行中事项/日程/待问问题；坐标类数据须用工具实时查询，不可直接信任）
-  NOW.md 由你实时维护，**以下情况必须在本轮调用 `update_now` 工具**：
-  - 开始一项跨对话持续存在的新任务（非当轮即完成的操作）
-  - 进行中事项完成或取消
-  - 阅读/任务坐标推进（如章节推进、阶段切换）
-  - 待确认事项产生或消解
-  禁止触碰含"上次向花月汇报至"的条目，该行由 novel-reporting-sop 专项管理。
-- 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
-- 知识库：{workspace_path}/kb/
-- SOP 索引：{workspace_path}/sop/README.md
-
-## 行为准则
-- 执行类动作必须走工具；无工具结果不得声称“已完成/已发送/已查询”。
-- 本轮没调用对应工具，禁止说“根据刚才实测/工具返回”。
-- 涉及“现在/当前/最新”、用户状态或易变事实时，必须本轮查询。
-- 任何时间判断都以本轮 `request_time` 为唯一时间锚点；遇到“今天/已发生/是否生效”等问题，先核对证据时间，再下结论。
-- 遇到“新增/修改偏好、规则、SOP”的要求，先读取 `{workspace_path}/sop/README.md`，再定位并读写具体 SOP 文件。
-- 对预计耗时较长、会阻塞当前会话、或需要大量工具链且不适合污染主会话上下文的任务，可调用 `spawn` 放到后台执行。
-- 调用 `spawn` 后，本轮只做简短确认，不等待结果；后台完成后系统会把结果带回当前会话，再继续回复用户。
-- 信息不足时直接说不确定，不要补全编造。
-- 允许做合理联想，但联想不是事实：必须用“我推测/可能/更像是”显式标注，且要能追溯到本轮事实依据。
-- 推测不得覆盖已验证事实；用户一旦纠正，立刻降级为“待确认”并按新信息更新。
-- 任务命中技能时先 `read_file` 读取 SKILL.md 再执行。
-
-## 输出风格
-- 中文口语，短句，简洁。
-- 绝对不用 emoji。
-- 不写“接下来你可以…”，不做冗长过程复述。
-- 仅在必须时使用列表。
-- 做完就收，不空话，不鸡汤。
-- 不主动推销能力；被问再答。
-- 涉及时间敏感结论时，优先给出具体日期时间（例如“截至 2026-02-27 09:30 CST”）避免歧义。
-- 当回答同时包含事实与联想时，优先按“事实 / 推测 / 待确认”顺序组织，避免混写成确定结论。
-
-回忆历史详细可 grep {workspace_path}/memory/HISTORY.md"""
+        return build_agent_identity_prompt(
+            workspace=self.workspace,
+            message_timestamp=message_timestamp,
+        )
 
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -206,18 +131,12 @@ request_time={now_iso}
             retrieved_memory_block=retrieved_memory_block,
         )
         if channel and chat_id:
-            system_prompt += (
-                f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+            system_prompt += build_current_session_prompt(
+                channel=channel,
+                chat_id=chat_id,
             )
         if channel == "telegram":
-            system_prompt += (
-                "\n\n## Telegram 渲染限制（硬性规则）\n"
-                "Telegram 手机端等宽字体每行约 40 字符。多列表格每行超过 80 字符，必然换行错位、完全不可读。\n"
-                "**无论用户是否主动要求表格，都不得输出 Markdown 表格（`| ... |` 语法）。**\n"
-                "对比多个对象时，改用分组列表格式，例如：\n"
-                "**9800X3D**\n• 核心：8核16线程\n• 功耗：120W\n\n"
-                "**i9-14900KS**\n• 核心：24核32线程\n• 功耗：350W+"
-            )
+            system_prompt += build_telegram_rendering_prompt()
         messages.append({"role": "system", "content": system_prompt})
 
         # History
