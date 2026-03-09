@@ -32,20 +32,6 @@ _PRESETS: dict[str, str] = {
 # CLI channel 默认 Unix socket 路径
 DEFAULT_SOCKET = "/tmp/akasic.sock"
 
-_DEPRECATED_PROACTIVE_KEYS: dict[str, str] = {
-    "only_new_items_trigger": "该开关已移除；主动链路默认允许无新 feed 时继续评估是否触达。",
-    "energy_cool_threshold": "已不再参与 proactive 主流程。",
-    "energy_crisis_threshold": "已不再参与 proactive 主流程。",
-    "energy_min_urge": "已不再参与 proactive 主流程。",
-    "quiet_hours_start": "静默时段旧配置已移除。",
-    "quiet_hours_end": "静默时段旧配置已移除。",
-    "quiet_hours_weight": "静默时段旧配置已移除。",
-    "tick_interval_high": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
-    "tick_interval_normal": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
-    "tick_interval_low": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
-    "tick_interval_crisis": "旧的 energy 驱动 tick 配置已移除，请使用 tick_interval_s0~s3。",
-}
-
 _DEPRECATED_MEMORY_V2_KEYS: dict[str, str] = {
     "retrieve_top_k": "请改用 memory_v2.top_k_history。",
     "recall_top_k": "请改用 memory_v2.top_k_history。",
@@ -117,9 +103,6 @@ def load_config(path: str | Path = "config.json") -> Config:
 
     proactive = ProactiveConfig()
     if p := data.get("proactive"):
-        for key, message in _DEPRECATED_PROACTIVE_KEYS.items():
-            if key in p:
-                _warn_deprecated_config(f"proactive.{key}", message)
         if_cfg = p.get("interest_filter", {}) or {}
         proactive = ProactiveConfig(
             enabled=p.get("enabled", False),

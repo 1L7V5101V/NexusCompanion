@@ -98,33 +98,6 @@ def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
     assert cfg.memory_v2.retrieve_top_k == 12
 
 
-def test_proactive_legacy_fields_warn_when_present(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
-    _write_config(
-        cfg_path,
-        {
-            "provider": "openai",
-            "model": "x",
-            "api_key": "k",
-            "system_prompt": "s",
-            "proactive": {
-                "enabled": True,
-                "energy_min_urge": 0.1,
-                "quiet_hours_start": 23,
-                "tick_interval_high": 7200,
-            },
-        },
-    )
-
-    with pytest.warns(DeprecationWarning) as record:
-        Config.load(cfg_path)
-
-    messages = "\n".join(str(item.message) for item in record)
-    assert "proactive.energy_min_urge" in messages
-    assert "proactive.quiet_hours_start" in messages
-    assert "proactive.tick_interval_high" in messages
-
-
 def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     tools = ToolRegistry()
     tools.register(_NoopTool())

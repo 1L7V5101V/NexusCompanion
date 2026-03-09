@@ -26,10 +26,6 @@
   - 总结 URL/文件/YouTube 内容，支持提取转写。
   - 文件：`/mnt/data/coding/akasic-agent/skills/summarize/SKILL.md`
 
-- `update-schedule`
-  - 根据用户作息变化更新 `schedule.json`（安静时段）。
-  - 文件：`/mnt/data/coding/akasic-agent/skills/update-schedule/SKILL.md`
-
 - `weather`
   - 通过 wttr.in / Open-Meteo 查询天气与预报。
   - 文件：`/mnt/data/coding/akasic-agent/skills/weather/SKILL.md`
