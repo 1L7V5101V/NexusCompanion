@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.loop import AgentLoop
+from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.subagent import SubAgent

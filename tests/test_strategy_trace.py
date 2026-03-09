@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.loop_memory_gate import AgentLoopMemoryGateMixin
+from agent.looping.memory_gate import AgentLoopMemoryGateMixin
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive.loop_traces import ProactiveLoopTraceMixin
 

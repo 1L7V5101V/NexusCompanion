@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.delegation_policy import SpawnDecision, SpawnDecisionMeta
+from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from agent.tools.registry import ToolRegistry
 from agent.tools.spawn import SpawnTool
 

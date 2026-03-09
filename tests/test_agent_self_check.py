@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from agent.loop import AgentLoop
+from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
 

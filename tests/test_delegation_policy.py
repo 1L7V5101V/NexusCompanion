@@ -1,4 +1,4 @@
-from agent.delegation_policy import DelegationPolicy
+from agent.policies.delegation import DelegationPolicy
 
 
 def test_delegation_policy_marks_background_long_running_tasks():

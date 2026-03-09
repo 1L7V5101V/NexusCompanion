@@ -3,9 +3,9 @@ from typing import Any, cast
 
 import pytest
 
-from agent.delegation_policy import SpawnDecision, SpawnDecisionMeta
+from agent.background.subagent_manager import SubagentManager
+from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from agent.provider import LLMResponse
-from agent.subagent_manager import SubagentManager
 from bus.queue import MessageBus
 
 

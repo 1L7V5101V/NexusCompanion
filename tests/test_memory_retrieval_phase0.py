@@ -7,7 +7,7 @@ import pytest
 
 from bootstrap import app as bootstrap_app
 from agent.config import Config
-from agent.loop import AgentLoop
+from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool

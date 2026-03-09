@@ -460,7 +460,7 @@ class ProactiveEngine:
 
         # 7. act
         await self._stage_act(ctx)
-        return ctx.base_score
+        return ctx.ensure_score().base_score
 
     # ------------------------------------------------------------------
     # Stage 1 — gate: state cleanup + anyaction gate
@@ -492,7 +492,7 @@ class ProactiveEngine:
             return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
         should_act, meta = self._anyaction.should_act(
-            now_utc=ctx.now_utc,
+            now_utc=ctx.state.now_utc,
             last_user_at=self._sense.last_user_at(),
         )
         if not should_act:
@@ -521,6 +521,7 @@ class ProactiveEngine:
 
     def _stage_sense(self, ctx: DecisionContext) -> SenseResult:
         """采集睡眠上下文、能量、打扰度等环境信号，填充 ctx。"""
+        state = ctx.state
         sense = ctx.ensure_sense()
         # 1. 刷新睡眠上下文
         refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
@@ -545,7 +546,7 @@ class ProactiveEngine:
         sense.interruptibility, sense.interrupt_detail = (
             self._sense.compute_interruptibility(
                 now_hour=sense.now_hour,
-                now_utc=ctx.state.now_utc,
+                now_utc=state.now_utc,
                 recent_msg_count=len(sense.recent),
             )
         )
@@ -577,7 +578,7 @@ class ProactiveEngine:
                 (sense.sleep_ctx.prob if sense.sleep_ctx is not None else None),
             ),
         )
-        ctx.sense_result = SenseResult(
+        result = SenseResult(
             sleep_state=sleep_state,
             sleep_available=sleep_available,
             health_event_count=len(sense.health_events),
@@ -587,7 +588,8 @@ class ProactiveEngine:
             interrupt_factor=sense.interrupt_factor,
             sleep_mod=sense.sleep_mod,
         )
-        return ctx.sense_result
+        ctx.sense_result = result
+        return result
 
     # ------------------------------------------------------------------
     # Stage 3 — pre-score: quick score before fetching items
@@ -595,6 +597,7 @@ class ProactiveEngine:
 
     async def _stage_pre_score(self, ctx: DecisionContext) -> PreScoreResult:
         """计算 pre_score；过低时尝试 skill action 后提前返回。"""
+        state = ctx.state
         sense = ctx.ensure_sense()
         score = ctx.ensure_score()
         # 1. 计算加权 pre_score
@@ -649,7 +652,7 @@ class ProactiveEngine:
                 score.pre_score,
                 self._cfg.score_pre_threshold,
             )
-            await self._try_skill_action(now_utc=ctx.state.now_utc)
+            await self._try_skill_action(now_utc=state.now_utc)
             return PreScoreResult(
                 proceed=False,
                 return_score=score.pre_score,
@@ -668,6 +671,7 @@ class ProactiveEngine:
 
     async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
         """拉取 feed 条目，去重，应用兴趣筛选，填充 ctx.new_items 等。"""
+        state = ctx.state
         fetch = ctx.ensure_fetch()
         # 1. 拉取原始条目
         fetch.items = await self._sense.fetch_items(self._cfg.items_per_source)
@@ -722,10 +726,10 @@ class ProactiveEngine:
                 discovered_items,
                 max_per_source=self._cfg_int("pending_max_per_source", 20),
                 max_total=self._cfg_int("pending_max_total", 200),
-                now=ctx.state.now_utc,
+                now=state.now_utc,
             )
             fetch.new_items, fetch.new_entries = self._select_pending_candidates(
-                now=ctx.state.now_utc,
+                now=state.now_utc,
                 limit=self._cfg_int("pending_candidate_limit", 3),
             )
             logger.info(
@@ -739,7 +743,7 @@ class ProactiveEngine:
 
         # 4. 全局记忆检查（影响 force_reflect 判断）
         fetch.has_memory = self._sense.has_global_memory()
-        ctx.fetch_result = FetchFilterResult(
+        result = FetchFilterResult(
             total_items=len(fetch.items),
             discovered_count=len(discovered_items),
             selected_count=len(fetch.new_items),
@@ -747,7 +751,8 @@ class ProactiveEngine:
             pending_enabled=pending_enabled,
             has_memory=fetch.has_memory,
         )
-        return ctx.fetch_result
+        ctx.fetch_result = result
+        return result
 
     # ------------------------------------------------------------------
     # Stage 5 — score: compute base_score / draw_score
@@ -755,13 +760,14 @@ class ProactiveEngine:
 
     async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
         """计算 base_score / draw_score；未过门槛时提前返回。"""
+        state = ctx.state
         w_random = self._compute_score_snapshot(ctx)
         self._refresh_presence_state(ctx)
         result = self._build_score_result(ctx, w_random=w_random)
         if result.reason_code == "draw_score_below_threshold":
             logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
             logger.info("[proactive] selected_action=idle reason=draw_score")
-            await self._try_skill_action(now_utc=ctx.state.now_utc)
+            await self._try_skill_action(now_utc=state.now_utc)
         return result
 
     # ------------------------------------------------------------------
@@ -784,8 +790,7 @@ class ProactiveEngine:
 
     async def _stage_act(self, ctx: DecisionContext) -> None:
         """去重检查、发送消息、标记已发送状态。"""
-        sense = ctx.ensure_sense()
-        fetch = ctx.ensure_fetch()
+        state = ctx.state
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         evidence = self._build_evidence_bundle(ctx)
@@ -798,22 +803,17 @@ class ProactiveEngine:
             return
 
         # 1. 解析证据 & 构建 delivery_key
-        channel = (self._cfg.default_channel or "").strip()
-        chat_id = self._cfg.default_chat_id.strip()
-        ctx.state.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
-        delivery_key = self._decide.build_delivery_key(
-            evidence.evidence_item_ids, decide.decision_message
-        )
+        delivery_key = self._prepare_delivery_attempt(ctx, evidence)
         logger.info(
             "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
-            ctx.state.session_key or "（未配置）",
+            state.session_key or "（未配置）",
             len(evidence.evidence_item_ids),
             delivery_key[:16],
         )
 
         # 2. delivery 去重
-        if ctx.state.session_key and self._state.is_delivery_duplicate(
-            session_key=ctx.state.session_key,
+        if state.session_key and self._state.is_delivery_duplicate(
+            session_key=state.session_key,
             delivery_key=delivery_key,
             window_hours=self._cfg.delivery_dedupe_hours,
         ):
@@ -830,65 +830,27 @@ class ProactiveEngine:
         recent_proactive = self._sense.collect_recent_proactive(
             getattr(self._cfg, "message_dedupe_recent_n", 5)
         )
-        act.state_summary_tag = await self._classify_state_summary_tag(
-            decide.decision_message
-        )
-        if (
-            act.state_summary_tag != "none"
-            and self._seen_state_summary_in_current_silence(
-                act.state_summary_tag,
-                recent_proactive,
-                ctx.state.target_last_user,
-            )
+        if not await self._rewrite_or_reject_repeated_state_summary(
+            ctx,
+            evidence,
+            recent_proactive,
         ):
-            rewritten = await self._rewrite_without_repeated_state(
-                decide.decision_message,
-                act.state_summary_tag,
-                act.source_refs,
-            )
-            if not rewritten:
-                logger.info(
-                    "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
-                    act.state_summary_tag,
-                )
-                await self._reject_and_try_skill_action(ctx, evidence)
-                return
-            rewritten_tag = await self._classify_state_summary_tag(rewritten)
-            if rewritten_tag == act.state_summary_tag and rewritten_tag != "none":
-                logger.info(
-                    "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
-                    rewritten_tag,
-                )
-                await self._reject_and_try_skill_action(ctx, evidence)
-                return
-            decide.decision_message = rewritten
-            act.state_summary_tag = rewritten_tag
+            return
 
         # 4. message 语义去重
-        if self._message_deduper is not None:
-            is_dup, dup_reason = await self._message_deduper.is_duplicate(
-                decide.decision_message,
-                recent_proactive,
-                act.state_summary_tag,
-            )
-            if is_dup:
-                logger.info(
-                    "[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason
-                )
-                logger.info("[proactive] selected_action=idle reason=message_dedupe")
-                await self._reject_and_try_skill_action(ctx, evidence)
-                return
+        if not await self._passes_message_deduper(ctx, evidence, recent_proactive):
+            return
 
         # 5. 被动处理并发检查
         if (
-            ctx.state.session_key
+            state.session_key
             and self._passive_busy_fn
-            and self._passive_busy_fn(ctx.state.session_key)
+            and self._passive_busy_fn(state.session_key)
         ):
             logger.info(
                 "[proactive] 目标会话 %s 正在处理被动回复，跳过本轮发送"
                 " selected_action=idle reason=passive_busy",
-                ctx.state.session_key,
+                state.session_key,
             )
             return
 
@@ -902,28 +864,7 @@ class ProactiveEngine:
             ),
         )
         if sent:
-            # 配额记录：动作成功即消耗，与 session_key 无关
-            if self._cfg.anyaction_enabled and self._anyaction:
-                self._anyaction.record_action(now_utc=ctx.state.now_utc)
-            # item 标记：全局去重，不依赖 session
-            self._consume_evidence_entries(evidence)
-            # delivery 去重：仅 chat 类 action 有 session_key
-            if ctx.state.session_key:
-                self._state.mark_delivery(ctx.state.session_key, delivery_key)
-            # 健康事件 ACK：发送成功后消费本轮全部事件（high + medium）
-            if sense.health_events:
-                acked_ids = [
-                    e["id"]
-                    for e in sense.health_events
-                    if isinstance(e, dict) and e.get("id")
-                ]
-                if acked_ids:
-                    getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
-                    logger.info(
-                        "[proactive] acknowledged %d 健康事件 ids=%s",
-                        len(acked_ids),
-                        acked_ids,
-                    )
+            self._finalize_successful_send(ctx, evidence, delivery_key)
             logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
             logger.debug("[proactive] selected_action=chat")
         else:
@@ -1045,25 +986,26 @@ class ProactiveEngine:
         )
 
     def _populate_decision_signals(self, ctx: DecisionContext) -> None:
+        state = ctx.state
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         mins_since_last_user = (
-            int((ctx.state.now_utc - ctx.state.target_last_user).total_seconds() / 60)
-            if ctx.state.target_last_user
+            int((state.now_utc - state.target_last_user).total_seconds() / 60)
+            if state.target_last_user
             else None
         )
         mins_since_last_proactive = (
-            int((ctx.state.now_utc - ctx.state.last_proactive_at).total_seconds() / 60)
-            if ctx.state.last_proactive_at
+            int((state.now_utc - state.last_proactive_at).total_seconds() / 60)
+            if state.last_proactive_at
             else None
         )
         replied_after_last_proactive = bool(
-            ctx.state.target_last_user
-            and ctx.state.last_proactive_at
-            and ctx.state.target_last_user > ctx.state.last_proactive_at
+            state.target_last_user
+            and state.last_proactive_at
+            and state.target_last_user > state.last_proactive_at
         )
         decide.decision_signals = {
             "minutes_since_last_user": mins_since_last_user,
@@ -1099,17 +1041,18 @@ class ProactiveEngine:
         )
 
     async def _retrieve_decision_memory(self, ctx: DecisionContext) -> None:
+        state = ctx.state
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         channel = ""
         chat_id = ""
-        if ctx.state.session_key and ":" in ctx.state.session_key:
-            channel, chat_id = ctx.state.session_key.split(":", 1)
+        if state.session_key and ":" in state.session_key:
+            channel, chat_id = state.session_key.split(":", 1)
         if self._memory_retrieval is not None:
             retrieved = await self._memory_retrieval.retrieve_proactive_context(
-                session_key=ctx.state.session_key,
+                session_key=state.session_key,
                 channel=channel,
                 chat_id=chat_id,
                 items=fetch.new_items,
@@ -1303,10 +1246,11 @@ class ProactiveEngine:
         ctx: DecisionContext,
         evidence: EvidenceBundle,
     ) -> None:
+        state = ctx.state
         self._reject_current_candidates(
             self._candidate_entries_for_rejection(ctx, evidence)
         )
-        await self._try_skill_action(now_utc=ctx.state.now_utc)
+        await self._try_skill_action(now_utc=state.now_utc)
 
     def _consume_evidence_entries(self, evidence: EvidenceBundle) -> None:
         self._state.mark_items_seen(evidence.evidence_entries)
@@ -1314,6 +1258,115 @@ class ProactiveEngine:
         self._state.mark_semantic_items(
             self._decide.semantic_entries(evidence.evidence_items)
         )
+
+    def _prepare_delivery_attempt(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+    ) -> str:
+        state = ctx.state
+        decide = ctx.ensure_decide()
+        channel = (self._cfg.default_channel or "").strip()
+        chat_id = self._cfg.default_chat_id.strip()
+        state.session_key = f"{channel}:{chat_id}" if channel and chat_id else ""
+        return self._decide.build_delivery_key(
+            evidence.evidence_item_ids,
+            decide.decision_message,
+        )
+
+    async def _rewrite_or_reject_repeated_state_summary(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+        recent_proactive: list[RecentProactiveMessage],
+    ) -> bool:
+        state = ctx.state
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        original_tag = await self._classify_state_summary_tag(decide.decision_message)
+        act.state_summary_tag = original_tag
+        if original_tag == "none" or not self._seen_state_summary_in_current_silence(
+            original_tag,
+            recent_proactive,
+            state.target_last_user,
+        ):
+            return True
+
+        rewritten = await self._rewrite_without_repeated_state(
+            decide.decision_message,
+            original_tag,
+            act.source_refs,
+        )
+        if not rewritten:
+            logger.info(
+                "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
+                original_tag,
+            )
+            await self._reject_and_try_skill_action(ctx, evidence)
+            return False
+
+        rewritten_tag = await self._classify_state_summary_tag(rewritten)
+        if rewritten_tag == original_tag and rewritten_tag != "none":
+            logger.info(
+                "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
+                rewritten_tag,
+            )
+            await self._reject_and_try_skill_action(ctx, evidence)
+            return False
+
+        decide.decision_message = rewritten
+        act.state_summary_tag = rewritten_tag
+        return True
+
+    async def _passes_message_deduper(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+        recent_proactive: list[RecentProactiveMessage],
+    ) -> bool:
+        if self._message_deduper is None:
+            return True
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        is_dup, dup_reason = await self._message_deduper.is_duplicate(
+            decide.decision_message,
+            recent_proactive,
+            act.state_summary_tag,
+        )
+        if not is_dup:
+            return True
+        logger.info("[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason)
+        logger.info("[proactive] selected_action=idle reason=message_dedupe")
+        await self._reject_and_try_skill_action(ctx, evidence)
+        return False
+
+    def _finalize_successful_send(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+        delivery_key: str,
+    ) -> None:
+        state = ctx.state
+        sense = ctx.ensure_sense()
+        if self._cfg.anyaction_enabled and self._anyaction:
+            self._anyaction.record_action(now_utc=state.now_utc)
+        self._consume_evidence_entries(evidence)
+        if state.session_key:
+            self._state.mark_delivery(state.session_key, delivery_key)
+        if not sense.health_events:
+            return
+        acked_ids = [
+            e["id"]
+            for e in sense.health_events
+            if isinstance(e, dict) and e.get("id")
+        ]
+        if acked_ids:
+            getattr(self._sense, "acknowledge_health_events", lambda _: None)(acked_ids)
+            logger.info(
+                "[proactive] acknowledged %d 健康事件 ids=%s",
+                len(acked_ids),
+                acked_ids,
+            )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1326,12 +1379,13 @@ class ProactiveEngine:
         stage: str,
         result: object,
     ) -> None:
+        state = ctx.state
         if self._stage_trace_writer is None:
             return
         payload = {
             "stage": stage,
             "result": _json_safe(asdict(result)) if is_dataclass(result) else {},
-            "session_key": ctx.state.session_key,
+            "session_key": state.session_key,
         }
         try:
             self._stage_trace_writer(

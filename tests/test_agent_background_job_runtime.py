@@ -2,7 +2,7 @@ from typing import cast, Any
 
 import pytest
 
-from agent.agent_background_job_runtime import (
+from agent.background.runtime import (
     AgentBackgroundJobRunner,
     AgentBackgroundJobSpec,
 )

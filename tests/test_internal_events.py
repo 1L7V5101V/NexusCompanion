@@ -6,7 +6,7 @@ from bus.internal_events import (
     parse_spawn_completion,
     parse_spawn_decision,
 )
-from agent.delegation_policy import SpawnDecision, SpawnDecisionMeta
+from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 
 
 def test_spawn_completion_helpers_roundtrip():

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.loop import AgentLoop
+from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
@@ -246,7 +246,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
         return real_create_task(coro, *args, **kwargs)
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    with patch("agent.loop.asyncio.create_task", side_effect=_fake_create_task):
+    with patch("agent.looping.core.asyncio.create_task", side_effect=_fake_create_task):
         asyncio.run(loop._process_inner(msg, msg.session_key))
 
     assert scheduled_after_append

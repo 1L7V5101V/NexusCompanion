@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
+from agent.looping.core import AgentLoop
+
 import pytest
 
-from agent.loop import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool

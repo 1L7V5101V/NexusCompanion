@@ -25,11 +25,52 @@ class ConversationTurnHandler:
     async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
         loop = self._loop
         session = loop.session_manager.get_or_create(key)
+        skill_mentions = self._collect_skill_mentions(msg)
+        main_history = session.get_history(max_messages=loop.memory_window)
+        retrieved_block = await self._retrieve_memory_block(
+            msg=msg,
+            key=key,
+            session=session,
+            main_history=main_history,
+        )
+        final_content, tools_used, tool_chain = await self._run_conversation_turn(
+            msg=msg,
+            session=session,
+            skill_mentions=skill_mentions,
+            main_history=main_history,
+            retrieved_block=retrieved_block,
+        )
+        await self._persist_turn(
+            msg=msg,
+            key=key,
+            session=session,
+            final_content=final_content,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
+        return self._build_outbound_message(
+            msg=msg,
+            final_content=final_content,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
+
+    def _collect_skill_mentions(self, msg: InboundMessage) -> list[str]:
+        loop = self._loop
         skill_mentions = loop._collect_skill_mentions(msg.content)
         if skill_mentions:
             logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
+        return skill_mentions
 
-        main_history = session.get_history(max_messages=loop.memory_window)
+    async def _retrieve_memory_block(
+        self,
+        *,
+        msg: InboundMessage,
+        key: str,
+        session,
+        main_history: list[dict],
+    ) -> str:
+        loop = self._loop
         retrieved_block = ""
         try:
             route_decision = "RETRIEVE"
@@ -132,7 +173,18 @@ class ConversationTurnHandler:
                 fallback_reason="retrieve_exception",
                 error=str(e),
             )
+        return retrieved_block
 
+    async def _run_conversation_turn(
+        self,
+        *,
+        msg: InboundMessage,
+        session,
+        skill_mentions: list[str],
+        main_history: list[dict],
+        retrieved_block: str,
+    ) -> tuple[str, list[str], list[dict]]:
+        loop = self._loop
         loop._set_tool_context(msg.channel, msg.chat_id)
         final_content, tools_used, tool_chain = await loop._run_with_safety_retry(
             msg,
@@ -144,7 +196,19 @@ class ConversationTurnHandler:
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+        return final_content, tools_used, tool_chain
 
+    async def _persist_turn(
+        self,
+        *,
+        msg: InboundMessage,
+        key: str,
+        session,
+        final_content: str,
+        tools_used: list[str],
+        tool_chain: list[dict],
+    ) -> None:
+        loop = self._loop
         preview = (
             final_content[:120] + "..." if len(final_content) > 120 else final_content
         )
@@ -173,6 +237,14 @@ class ConversationTurnHandler:
             tool_chain=tool_chain,
         )
 
+    @staticmethod
+    def _build_outbound_message(
+        *,
+        msg: InboundMessage,
+        final_content: str,
+        tools_used: list[str],
+        tool_chain: list[dict],
+    ) -> OutboundMessage:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,

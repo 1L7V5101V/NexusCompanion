@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from agent.loop_consolidation import (
+from agent.looping.consolidation import (
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
     _parse_consolidation_payload,
