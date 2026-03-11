@@ -58,12 +58,6 @@ class MemoryV2Config:
     hyde_enabled: bool = False
     hyde_timeout_ms: int = 2000
 
-
-@dataclass
-class ShellConfig:
-    run_as_user: str = ""
-
-
 @dataclass
 class Config:
     provider: str
@@ -82,7 +76,6 @@ class Config:
     light_api_key: str = ""
     light_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
-    shell: ShellConfig = field(default_factory=ShellConfig)
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
 
@@ -93,6 +86,5 @@ __all__ = [
     "MemoryV2Config",
     "QQChannelConfig",
     "QQGroupConfig",
-    "ShellConfig",
     "TelegramChannelConfig",
 ]

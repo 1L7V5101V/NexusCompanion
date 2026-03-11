@@ -3,6 +3,9 @@ from __future__ import annotations
 from agent.config_models import Config
 from agent.provider import LLMProvider
 
+_MAIN_PROVIDER_TIMEOUT_S = 300.0
+_LIGHT_PROVIDER_TIMEOUT_S = 180.0
+
 
 def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
     provider = LLMProvider(
@@ -10,7 +13,7 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
         base_url=config.base_url,
         system_prompt=config.system_prompt,
         extra_body=config.extra_body,
-        request_timeout_s=180.0,
+        request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
     )
 
     light_provider: LLMProvider | None = None
@@ -26,6 +29,7 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
             base_url=config.light_base_url or config.base_url,
             system_prompt=config.system_prompt,
             extra_body=light_extra,
+            request_timeout_s=_LIGHT_PROVIDER_TIMEOUT_S,
         )
 
     return provider, light_provider

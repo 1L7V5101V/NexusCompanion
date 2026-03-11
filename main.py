@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -34,11 +33,6 @@ def connect_cli(config_path: str = "config.json") -> None:
 
 async def serve(config_path: str = "config.json") -> None:
     config = Config.load(config_path)
-    shell_run_as_user = getattr(config.shell, "run_as_user", "").strip()
-    if shell_run_as_user:
-        os.environ["AKASIC_SHELL_RUN_AS_USER"] = shell_run_as_user
-    else:
-        os.environ.pop("AKASIC_SHELL_RUN_AS_USER", None)
     runtime = build_app_runtime(
         config,
         workspace=Path.home() / ".akasic" / "workspace",

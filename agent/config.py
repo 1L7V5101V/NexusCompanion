@@ -18,7 +18,6 @@ from agent.config_models import (
     MemoryV2Config,
     QQChannelConfig,
     QQGroupConfig,
-    ShellConfig,
     TelegramChannelConfig,
 )
 from proactive.config import ProactiveConfig
@@ -342,9 +341,6 @@ def load_config(path: str | Path = "config.json") -> Config:
         light_api_key=_resolve(data.get("light_api_key", "")),
         light_base_url=data.get("light_base_url", ""),
         memory_v2=memory_v2,
-        shell=ShellConfig(
-            run_as_user=str((data.get("shell", {}) or {}).get("run_as_user", "")).strip()
-        ),
         tool_search_enabled=bool(data.get("tool_search_enabled", False)),
         spawn_enabled=bool(data.get("spawn_enabled", True)),
     )
@@ -377,7 +373,6 @@ __all__ = [
     "MemoryV2Config",
     "QQChannelConfig",
     "QQGroupConfig",
-    "ShellConfig",
     "TelegramChannelConfig",
     "_validated_timezone",
     "load_config",
