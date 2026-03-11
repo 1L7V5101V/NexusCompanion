@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -220,28 +221,53 @@ class DefaultMemoryRetrievalPort:
                 is_crisis=is_crisis,
             )
 
+            # 同步准备各路参数
             p_query = f"{query} 操作规范 用户偏好"
-            p_items = await retrieve_procedure_items(
-                self._memory,
-                p_query,
-                top_k=max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
-            )
+            top_k_proc = max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4)))
+            top_k_hist = max(1, int(getattr(self._cfg, "memory_top_k_history", 6)))
+            top_k_pref = max(1, int(getattr(self._cfg, "preference_top_k", 4)))
+            pref_enabled = bool(getattr(self._cfg, "preference_retrieval_enabled", True) and items)
+            pref_query_used = ""
+            if pref_enabled:
+                pref_query_used = build_proactive_preference_query(
+                    items=items,
+                    max_items=max(1, int(getattr(self._cfg, "memory_query_max_items", 3))),
+                )
 
-            h_items: list[dict] = []
-            history_scope_mode = "disabled"
-            if history_open:
-                h_items, history_scope_mode = await retrieve_history_items(
+            # preference 是可选路，失败时降级为空并记录，不影响主路径的异常语义。
+            async def _safe_pref() -> list[dict]:
+                if not (pref_enabled and pref_query_used):
+                    return []
+                try:
+                    return await self._memory.retrieve_related(
+                        pref_query_used,
+                        memory_types=["preference"],
+                        top_k=top_k_pref,
+                    )
+                except Exception as _e:
+                    logger.warning("[proactive.memory] preference 检索失败: %s", _e)
+                    return []
+
+            # 三路检索并发：procedure / history / preference 彼此无数据依赖。
+            # procedure 和 history 失败时直接抛出，由外层 except 统一处理。
+            p_items, h_result, raw_pref_items = await asyncio.gather(
+                retrieve_procedure_items(self._memory, p_query, top_k=top_k_proc),
+                retrieve_history_items(
                     self._memory,
                     query,
                     memory_types=["event"],
-                    top_k=max(1, int(getattr(self._cfg, "memory_top_k_history", 6))),
+                    top_k=top_k_hist,
                     prefer_scoped=True,
                     scope_channel=channel,
                     scope_chat_id=chat_id,
                     allow_global=bool(
                         getattr(self._cfg, "memory_scope_fallback_to_global", False)
                     ),
-                )
+                ) if history_open else asyncio.sleep(0, result=([], "disabled")),
+                _safe_pref(),
+            )
+            h_items: list[dict]
+            h_items, history_scope_mode = h_result
 
             injection = build_memory_injection_result(
                 self._memory,
@@ -254,29 +280,14 @@ class DefaultMemoryRetrievalPort:
             # 目的：检索"用户只关注 Falcons/NiKo 不关心其他战队"之类的明确偏好，
             # 用于引擎层的偏好否决门（engine preference_veto_enabled）。
             preference_block = ""
-            pref_query_used = ""
-            pref_hit_count = 0
-            if getattr(self._cfg, "preference_retrieval_enabled", True) and items:
-                try:
-                    pref_query_used = build_proactive_preference_query(
-                        items=items,
-                        max_items=max(1, int(getattr(self._cfg, "memory_query_max_items", 3))),
-                    )
-                    pref_items = await self._memory.retrieve_related(
-                        pref_query_used,
-                        memory_types=["preference"],
-                        top_k=max(1, int(getattr(self._cfg, "preference_top_k", 4))),
-                    )
-                    pref_hit_count = len(pref_items)
-                    if pref_items:
-                        pref_injection = build_memory_injection_result(
-                            self._memory,
-                            procedure_items=pref_items,
-                            history_items=[],
-                        )
-                        preference_block = pref_injection.block
-                except Exception:
-                    logger.warning("[proactive.memory] preference 专项查询失败", exc_info=True)
+            pref_hit_count = len(raw_pref_items)
+            if raw_pref_items:
+                pref_injection = build_memory_injection_result(
+                    self._memory,
+                    procedure_items=raw_pref_items,
+                    history_items=[],
+                )
+                preference_block = pref_injection.block
 
             result = ProactiveRetrievedMemory(
                 query=query,

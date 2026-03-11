@@ -296,6 +296,47 @@ def test_scope_mode_has_hyde_suffix_when_hyde_appended():
     assert len(items) == 2
 
 
+def test_scope_mode_global_fallback_without_hyde_suffix_in_scoped_fast_path():
+    """prefer_scoped=True 的快速路径下，global fallback 不走 HyDE 增强。"""
+    provider = MagicMock()
+    provider.chat = AsyncMock(
+        return_value=LLMResponse(content="不会被使用的假想条目", tool_calls=[])
+    )
+    enhancer = HyDEEnhancer(
+        light_provider=cast(Any, provider),
+        light_model="qwen-flash",
+        timeout_s=2.0,
+    )
+
+    memory = MagicMock()
+    memory.embed_query = AsyncMock(return_value=[0.1, 0.2, 0.3])
+    memory.retrieve_related_vec = AsyncMock(
+        side_effect=[
+            [],
+            [{"id": "g1", "score": 0.8}],
+        ]
+    )
+
+    items, scope_mode = asyncio.run(
+        retrieve_history_items(
+            memory,
+            "测试",
+            memory_types=["event"],
+            top_k=6,
+            prefer_scoped=True,
+            scope_channel="telegram",
+            scope_chat_id="123",
+            allow_global=True,
+            context="近期对话内容",
+            hyde_enhancer=enhancer,
+        )
+    )
+
+    assert scope_mode == "global-fallback"
+    assert items == [{"id": "g1", "score": 0.8}]
+    provider.chat.assert_not_called()
+
+
 def test_scope_mode_no_hyde_suffix_when_hyde_disabled_by_config():
     """hyde_enabled=False 时 AgentLoop._hyde_enhancer 为 None。"""
     loop = _make_loop(

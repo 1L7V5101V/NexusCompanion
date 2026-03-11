@@ -78,6 +78,33 @@ class Retriever:
         logger.debug(f"memory2 retrieve: query={query[:60]!r} hits={len(items)}")
         return items
 
+    async def embed(self, query: str) -> list[float]:
+        """仅做 embedding，不触发 vector_search。"""
+        return await self._embedder.embed(query)
+
+    async def retrieve_with_vec(
+        self,
+        query_vec: list[float],
+        memory_types: list[str] | None = None,
+        top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+    ) -> list[dict]:
+        """复用已有 query_vec 做本地 vector_search，跳过 embedding 步骤。"""
+        actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
+        items = self._store.vector_search(
+            query_vec=query_vec,
+            top_k=actual_top_k,
+            memory_types=memory_types,
+            score_threshold=self._score_threshold,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+        )
+        logger.debug(f"memory2 retrieve_with_vec: hits={len(items)}")
+        return items
+
     @staticmethod
     def _shorten(text: str, max_len: int) -> str:
         text = (text or "").strip()

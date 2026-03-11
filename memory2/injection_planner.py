@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -45,16 +46,51 @@ async def retrieve_history_items(
     hyde_enhancer: "HyDEEnhancer | None" = None,
 ) -> tuple[list[dict], str]:
     if prefer_scoped and scope_channel and scope_chat_id:
-        scoped_items = await memory.retrieve_related(
-            query,
-            memory_types=memory_types,
-            top_k=top_k,
-            scope_channel=scope_channel,
-            scope_chat_id=scope_chat_id,
-            require_scope_match=True,
+        # 单次 embed，scoped 和 global 共用 query_vec 并发查询，省去重复的远端 embedding 调用。
+        # 若 MemoryPort 实现尚未支持新接口，退化回原始串行逻辑。
+        _has_vec_api = callable(getattr(memory, "embed_query", None)) and callable(
+            getattr(memory, "retrieve_related_vec", None)
         )
-        if scoped_items:
-            return scoped_items, "scoped"
+        query_vec = await memory.embed_query(query) if _has_vec_api else []
+        if query_vec:
+            scoped_task = asyncio.create_task(
+                memory.retrieve_related_vec(
+                    query_vec,
+                    memory_types=memory_types,
+                    top_k=top_k,
+                    scope_channel=scope_channel,
+                    scope_chat_id=scope_chat_id,
+                    require_scope_match=True,
+                )
+            )
+            if allow_global:
+                global_task = asyncio.create_task(
+                    memory.retrieve_related_vec(
+                        query_vec,
+                        memory_types=memory_types,
+                        top_k=top_k,
+                        require_scope_match=False,
+                    )
+                )
+                scoped_items, global_items = await asyncio.gather(scoped_task, global_task)
+                return (scoped_items, "scoped") if scoped_items else (global_items, "global-fallback")
+            else:
+                scoped_items = await scoped_task
+                return (scoped_items, "scoped") if scoped_items else ([], "disabled")
+        else:
+            # embedder 未配置，退化回原始串行逻辑
+            scoped_items = await memory.retrieve_related(
+                query,
+                memory_types=memory_types,
+                top_k=top_k,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=True,
+            )
+            if scoped_items:
+                return scoped_items, "scoped"
+            if not allow_global:
+                return [], "disabled"
 
     if not allow_global:
         return [], "disabled"

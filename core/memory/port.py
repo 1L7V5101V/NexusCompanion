@@ -106,6 +106,18 @@ class MemoryPort(Protocol):
         require_scope_match: bool = False,
     ) -> list[dict]: ...
 
+    async def embed_query(self, query: str) -> list[float]: ...
+
+    async def retrieve_related_vec(
+        self,
+        query_vec: list[float],
+        memory_types: list[str] | None = None,
+        top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+    ) -> list[dict]: ...
+
     def format_injection_block(self, items: list[dict]) -> str: ...
     def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]: ...
     def select_for_injection(self, items: list[dict]) -> list[dict]: ...
@@ -290,6 +302,41 @@ class DefaultMemoryPort:
             )
         except Exception as e:
             logger.warning("[memory_port] retrieve_related failed: %s", e)
+            return []
+
+    async def embed_query(self, query: str) -> list[float]:
+        """仅 embed 一次，供调用方复用 query_vec 做多路 vector_search。"""
+        if not self._retriever:
+            return []
+        try:
+            return await self._retriever.embed(query)
+        except Exception as e:
+            logger.warning("[memory_port] embed_query failed: %s", e)
+            return []
+
+    async def retrieve_related_vec(
+        self,
+        query_vec: list[float],
+        memory_types: list[str] | None = None,
+        top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+    ) -> list[dict]:
+        """用已有 query_vec 做 vector_search，跳过 embedding 步骤。"""
+        if not self._retriever or not query_vec:
+            return []
+        try:
+            return await self._retriever.retrieve_with_vec(
+                query_vec,
+                memory_types=memory_types,
+                top_k=top_k,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+            )
+        except Exception as e:
+            logger.warning("[memory_port] retrieve_related_vec failed: %s", e)
             return []
 
     def format_injection_block(self, items: list[dict]) -> str:
