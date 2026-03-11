@@ -9,8 +9,10 @@ Shell 工具（Bash 命令执行）
 """
 import asyncio
 import json
+import os
 import shlex
 import ipaddress
+import re
 from urllib.parse import urlparse
 import time
 from typing import Any
@@ -20,6 +22,8 @@ from agent.tools.base import Tool
 _DEFAULT_TIMEOUT = 60   # 秒（OpenCode 默认 1 分钟）
 _MAX_TIMEOUT = 600      # 秒（OpenCode 最大 10 分钟）
 _MAX_OUTPUT = 30_000    # 字符（与 OpenCode MaxOutputLength 一致）
+_RUN_AS_USER_ENV = "AKASIC_SHELL_RUN_AS_USER"
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # 禁止命令（对应 OpenCode bannedCommands）
 _BANNED = frozenset({
@@ -43,6 +47,14 @@ _NET_WRITE_FLAGS = frozenset({
 
 class ShellTool(Tool):
     """在 bash 中执行命令，返回结构化结果"""
+
+    def __init__(self, run_as_user: str | None = None) -> None:
+        resolved_user = (
+            run_as_user
+            if run_as_user is not None
+            else os.environ.get(_RUN_AS_USER_ENV, "")
+        )
+        self._run_as_user = str(resolved_user or "").strip()
 
     name = "shell"
     description = (
@@ -79,6 +91,10 @@ class ShellTool(Tool):
 
         if not command:
             return _err("命令不能为空")
+        if self._run_as_user and not _USERNAME_RE.fullmatch(self._run_as_user):
+            return _err(
+                f"shell.run_as_user 非法：{self._run_as_user!r}，仅允许字母、数字、点、下划线、连字符"
+            )
 
         # 禁止命令检查（对应 OpenCode bannedCommands 逻辑）
         base_cmd = command.split()[0].lower()
@@ -89,7 +105,11 @@ class ShellTool(Tool):
             return _err(net_err)
 
         start_ms = int(time.monotonic() * 1000)
-        stdout, stderr, exit_code, interrupted = await _run(command, timeout)
+        stdout, stderr, exit_code, interrupted = await _run(
+            command,
+            timeout,
+            run_as_user=self._run_as_user,
+        )
         duration_ms = int(time.monotonic() * 1000) - start_ms
 
         stdout = _truncate(stdout)
@@ -128,13 +148,33 @@ def _err(msg: str) -> str:
     return json.dumps({"error": msg}, ensure_ascii=False)
 
 
-async def _run(command: str, timeout: int) -> tuple[str, str, int, bool]:
+async def _run(
+    command: str,
+    timeout: int,
+    *,
+    run_as_user: str = "",
+) -> tuple[str, str, int, bool]:
     """执行命令，并发读取 stdout/stderr，返回 (stdout, stderr, exit_code, interrupted)"""
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    if run_as_user:
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/bin/sudo",
+            "-n",
+            "-H",
+            "-u",
+            run_as_user,
+            "--",
+            "/bin/bash",
+            "-lc",
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return (
