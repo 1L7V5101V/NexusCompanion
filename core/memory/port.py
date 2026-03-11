@@ -131,6 +131,8 @@ class MemoryPort(Protocol):
 
     def supersede_batch(self, ids: list[str]) -> None: ...
 
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]: ...
+
 
 # ── Adapter ───────────────────────────────────────────────────────────────────
 
@@ -366,6 +368,19 @@ class DefaultMemoryPort:
     def supersede_batch(self, ids: list[str]) -> None:
         if self._memorizer:
             self._memorizer.supersede_batch(ids)
+
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
+        """对 trigger_tags 做纯关键字匹配，无需向量检索。"""
+        if not self._retriever:
+            return []
+        store = getattr(self._retriever, "_store", None)
+        if store is None:
+            return []
+        try:
+            return store.keyword_match_procedures(action_tokens)
+        except Exception as e:
+            logger.warning("[memory_port] keyword_match_procedures failed: %s", e)
+            return []
 
     # ── pass-through: expose v1 store for MemoryOptimizer ─────────
 

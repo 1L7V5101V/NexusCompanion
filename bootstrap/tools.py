@@ -214,6 +214,7 @@ def build_core_runtime(
         light_provider,
         http_resources,
     )
+    subagent_manager.set_memory_port(memory_runtime.port)
     tools.register(
         UpdateNowTool(memory_runtime.port),
         tags=["memory"],

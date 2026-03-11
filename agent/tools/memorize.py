@@ -72,8 +72,9 @@ class MemorizeTool(Tool):
         "required": ["summary", "memory_type"],
     }
 
-    def __init__(self, memory: "MemoryPort") -> None:
+    def __init__(self, memory: "MemoryPort", tagger=None) -> None:
         self._memory = memory
+        self._tagger = tagger  # ProcedureTagger | None
 
     async def execute(
         self,
@@ -84,11 +85,19 @@ class MemorizeTool(Tool):
         persist_file: str | None = None,
         **_: Any,
     ) -> str:
-        extra = {
+        extra: dict = {
             "tool_requirement": tool_requirement,
             "steps": steps or [],
             "persist_file": persist_file,
         }
+        if memory_type == "procedure" and self._tagger is not None:
+            try:
+                trigger_tags = await self._tagger.tag(summary)
+                if trigger_tags is not None:
+                    extra["trigger_tags"] = trigger_tags
+                    logger.info("memorize: trigger_tags generated scope=%s", trigger_tags.get("scope"))
+            except Exception as e:
+                logger.warning("memorize: trigger_tags generation failed: %s", e)
         result = await self._memory.save_item(
             summary=summary,
             memory_type=memory_type,

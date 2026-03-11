@@ -17,9 +17,10 @@ SubAgent — 通用子 Agent
 from __future__ import annotations
 
 import logging
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from agent.provider import LLMProvider
+from agent.procedure_hint import prepend_procedure_hint
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -27,6 +28,9 @@ from agent.tool_runtime import (
     tool_call_signature,
 )
 from agent.tools.base import Tool
+
+if TYPE_CHECKING:
+    from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +122,7 @@ class SubAgent:
         max_iterations: int = 30,
         max_tokens: int = 8192,
         mandatory_exit_tools: Sequence[str] = (),
+        memory: "MemoryPort | None" = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -125,6 +130,7 @@ class SubAgent:
         self._max_iterations = max_iterations
         self._max_tokens = max_tokens
         self._mandatory_exit_tools = list(mandatory_exit_tools)
+        self._memory = memory
         self.last_exit_reason: str = "idle"
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
@@ -144,6 +150,7 @@ class SubAgent:
         messages.append({"role": "user", "content": task})
         last_tool_signature = ""
         repeat_count = 0
+        injected_proc_ids: set[str] = set()
 
         for iteration in range(self._max_iterations):
             try:
@@ -206,6 +213,16 @@ class SubAgent:
                         result = await tool.execute(**tc.arguments)
                     except Exception as e:
                         result = f"工具执行出错: {e}"
+                    result, new_ids = prepend_procedure_hint(
+                        memory=self._memory,
+                        tool_name=tc.name,
+                        tool_arguments=tc.arguments,
+                        result=result,
+                        injected_ids=injected_proc_ids,
+                        logger=logger,
+                    )
+                    if new_ids:
+                        injected_proc_ids.update(new_ids)
                     logger.info("[subagent] 工具结果 %s: %s", tc.name, result[:120])
                 else:
                     result = f"未知工具: {tc.name}"

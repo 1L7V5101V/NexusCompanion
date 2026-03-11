@@ -64,11 +64,13 @@ class PostResponseMemoryWorker:
         retriever: Retriever,
         light_provider: LLMProvider,
         light_model: str,
+        tagger=None,  # ProcedureTagger | None
     ) -> None:
         self._memorizer = memorizer
         self._retriever = retriever
         self._provider = light_provider
         self._model = light_model
+        self._tagger = tagger
 
     async def run(
         self,
@@ -575,10 +577,21 @@ ASSISTANT: {agent_response}
                 if supersede_ids:
                     self._memorizer.supersede_batch(supersede_ids)
 
-        extra = {
+        extra: dict = {
             "tool_requirement": item.get("tool_requirement"),
             "steps": item.get("steps") or [],
         }
+        if mtype == "procedure" and self._tagger is not None:
+            try:
+                trigger_tags = await self._tagger.tag(summary)
+                if trigger_tags is not None:
+                    extra["trigger_tags"] = trigger_tags
+                    logger.info(
+                        "post_response_memorize: trigger_tags generated scope=%s",
+                        trigger_tags.get("scope"),
+                    )
+            except Exception as e:
+                logger.warning("post_response_memorize: trigger_tags generation failed: %s", e)
         try:
             result = await self._memorizer.save_item(
                 summary=summary,

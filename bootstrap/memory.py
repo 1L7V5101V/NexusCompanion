@@ -19,11 +19,13 @@ def build_memory_runtime(
     http_resources: SharedHttpResources,
 ) -> MemoryRuntime:
     from agent.memory import MemoryStore
+    from agent.skills import SkillsLoader
     from agent.tools.memorize import MemorizeTool
     from agent.tools.filesystem import EditFileTool, WriteFileTool
     from core.memory.port import DefaultMemoryPort
     from memory2.embedder import Embedder
     from memory2.memorizer import Memorizer
+    from memory2.procedure_tagger import ProcedureTagger
     from memory2.retriever import Retriever
     from memory2.sop_indexer import SopIndexer
     from memory2.store import MemoryStore2
@@ -78,14 +80,23 @@ def build_memory_runtime(
     )
 
     port = DefaultMemoryPort(store, memorizer=memorizer, retriever=retriever)
+
+    _skills_loader = SkillsLoader(workspace)
+    tagger = ProcedureTagger(
+        provider=light_provider or provider,
+        model=config.light_model or config.model,
+        skills_fn=lambda: [s["name"] for s in _skills_loader.list_skills(filter_unavailable=False)],
+    )
+
     post_mem_worker = PostResponseMemoryWorker(
         memorizer=memorizer,
         retriever=retriever,
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
+        tagger=tagger,
     )
     tools.register(
-        MemorizeTool(port),
+        MemorizeTool(port, tagger=tagger),
         always_on=True,
         tags=["memory"],
         risk="write",

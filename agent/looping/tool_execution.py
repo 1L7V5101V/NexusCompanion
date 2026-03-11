@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime
 
+from agent.procedure_hint import prepend_procedure_hint
 from agent.looping.constants import (
     _INCOMPLETE_SUMMARY_PROMPT,
     _PRE_FLIGHT_PROMPT,
@@ -44,6 +45,7 @@ class AgentLoopToolExecutionMixin:
         tool_chain: list[dict] = []
         last_tool_signature = ""
         repeat_count = 0
+        injected_proc_ids: set[str] = set()  # 本轮已注入的 procedure item id，用于去重
 
         # 按需工具可见性：仅 tool_search_enabled 时生效
         # preloaded_tools 来自上一轮请求的缓存，实现跨请求持久化
@@ -143,6 +145,17 @@ class AgentLoopToolExecutionMixin:
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info(f"  → 工具 {tc.name}  参数: {args_str[:120]}")
                     result = await self.tools.execute(tc.name, tc.arguments)
+
+                    result, new_ids = prepend_procedure_hint(
+                        memory=self._memory_port,
+                        tool_name=tc.name,
+                        tool_arguments=tc.arguments,
+                        result=result,
+                        injected_ids=injected_proc_ids,
+                        logger=logger,
+                    )
+                    if new_ids:
+                        injected_proc_ids.update(new_ids)
                     result_preview = result[:80] + "..." if len(result) > 80 else result
                     logger.info(f"  ← 工具 {tc.name}  结果: {result_preview!r}")
 

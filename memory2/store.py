@@ -335,5 +335,61 @@ class MemoryStore2:
             ).fetchone()
         return row is not None
 
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
+        """对 trigger_tags 做纯关键字匹配，无需向量检索。
+
+        action_tokens 是从工具调用中提取的 token 列表，例如：
+          ["shell", "pacman"]  / ["web_search"] / ["read_file", "yt-dlp-downloader"]
+
+        只返回 scope=tool_triggered 且命中的 procedure 条目。
+        """
+        if not action_tokens:
+            return []
+
+        token_set = {t.lower() for t in action_tokens if t}
+        action_text = " ".join(action_tokens).lower()
+
+        rows = self._db.execute(
+            "SELECT id, summary, extra_json FROM memory_items "
+            "WHERE memory_type='procedure' AND status='active' AND extra_json IS NOT NULL"
+        ).fetchall()
+
+        matched: list[dict] = []
+        for row_id, summary, extra_json_str in rows:
+            try:
+                extra = json.loads(extra_json_str) if extra_json_str else {}
+            except Exception:
+                continue
+            tags = extra.get("trigger_tags") or {}
+            if tags.get("scope") != "tool_triggered":
+                continue
+
+            # 过滤掉太短的 keyword（长度 < 3），避免 "i"、"-c" 之类造成误匹配
+            keywords = [k for k in (tags.get("keywords") or []) if k and len(k) >= 3]
+
+            if keywords:
+                # 有 keyword 时：必须命中至少一个 keyword 才算匹配
+                # keyword 是精确区分上下文的标志（如 "pacman"、"bilibili"），
+                # 仅靠 tool name 不足以触发（避免 shell/read_file 过度泛化）
+                hit = any(kw.lower() in action_text for kw in keywords)
+            else:
+                # 无 keyword：tool/skill 名精确匹配
+                # tools 超过 4 个说明是泛规范（LLM 把全量工具都填进去了），降级为 global 跳过
+                proc_tools = tags.get("tools") or []
+                proc_skills = tags.get("skills") or []
+                if len(proc_tools) > 4:
+                    continue
+                tag_token_set = {t.lower() for t in proc_tools}
+                tag_token_set |= {s.lower() for s in proc_skills}
+                hit = bool(token_set & tag_token_set)
+
+            if hit:
+                matched.append({
+                    "id": row_id, "memory_type": "procedure",
+                    "summary": summary, "extra_json": extra, "score": 1.0,
+                })
+
+        return matched
+
     def close(self) -> None:
         self._db.close()

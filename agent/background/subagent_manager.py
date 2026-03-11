@@ -20,6 +20,7 @@ from bus.internal_events import (
 )
 from bus.queue import MessageBus
 from core.common.strategy_trace import build_strategy_trace_envelope
+from core.memory.port import MemoryPort
 from core.net.http import HttpRequester
 from prompts.background import build_spawn_subagent_prompt
 
@@ -41,6 +42,7 @@ class SubagentManager:
         model: str,
         max_tokens: int,
         fetch_requester: HttpRequester,
+        memory: MemoryPort | None = None,
     ) -> None:
         self._workspace = workspace
         self._bus = bus
@@ -48,9 +50,18 @@ class SubagentManager:
             provider=provider,
             model=model,
             max_tokens=max_tokens,
+            memory=memory,
         )
         self._fetch_requester = fetch_requester
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def set_memory_port(self, memory: MemoryPort | None) -> None:
+        self._runtime = SubagentRuntime(
+            provider=self._runtime.provider,
+            model=self._runtime.model,
+            max_tokens=self._runtime.max_tokens,
+            memory=memory,
+        )
 
     async def spawn(
         self,

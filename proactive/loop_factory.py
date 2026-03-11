@@ -75,6 +75,7 @@ class ProactiveLoopFactoryMixin:
             provider=self._provider,
             model=self._model,
             max_tokens=self._max_tokens,
+            memory=self._memory,
         )
         push = self._push
         db_path = agent_tasks_dir / "task_notes.db"

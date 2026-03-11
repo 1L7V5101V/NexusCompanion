@@ -8,6 +8,7 @@ import pytest
 from agent.looping.core import AgentLoop
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
+from agent.procedure_hint import extract_action_tokens
 from agent.subagent import SubAgent
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
@@ -120,6 +121,16 @@ class _ExitTool(Tool):
     async def execute(self, **kwargs) -> str:
         self.called += 1
         return "noted"
+
+
+class _HintMemory:
+    def __init__(self, items: list[dict]) -> None:
+        self._items = items
+        self.calls: list[list[str]] = []
+
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
+        self.calls.append(list(action_tokens))
+        return list(self._items)
 
 
 def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> AgentLoop:
@@ -240,6 +251,90 @@ def test_subagent_no_false_positive_when_same_tool_but_different_args():
     assert subagent.last_exit_reason == "completed"
     assert result == "all done"
     assert len(tool.calls) == 2
+
+
+def test_subagent_injects_shared_procedure_hint_into_tool_result():
+    tool = _DummyTool("shell")
+    provider = _FakeProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})],
+            ),
+            LLMResponse(content="done", tool_calls=[]),
+        ]
+    )
+    memory = _HintMemory(
+        [{"id": "p1", "memory_type": "procedure", "summary": "pacman 调用时必须加 --noconfirm"}]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool],
+        max_iterations=10,
+        memory=cast(Any, memory),
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert result == "done"
+    assert memory.calls == [["shell", "pacman"]]
+    tool_messages = [m for m in provider.calls[1]["messages"] if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    assert "【操作规范提醒】" in tool_messages[0]["content"]
+    assert "--noconfirm" in tool_messages[0]["content"]
+
+
+def test_subagent_dedupes_repeated_procedure_hint_items():
+    tool = _DummyTool("shell")
+    provider = _FakeProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("s1", "shell", {"x": 1, "command": "pacman -S jq"})],
+            ),
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall("s2", "shell", {"x": 2, "command": "pacman -S git"})],
+            ),
+            LLMResponse(content="done", tool_calls=[]),
+        ]
+    )
+    memory = _HintMemory(
+        [{"id": "p1", "memory_type": "procedure", "summary": "pacman 调用时必须加 --noconfirm"}]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[tool],
+        max_iterations=10,
+        memory=cast(Any, memory),
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert result == "done"
+    second_round_tool_messages = [
+        m for m in provider.calls[2]["messages"] if m.get("role") == "tool"
+    ]
+    assert len(second_round_tool_messages) == 2
+    assert "【操作规范提醒】" in second_round_tool_messages[0]["content"]
+    assert "【操作规范提醒】" not in second_round_tool_messages[1]["content"]
+
+
+def test_extract_action_tokens_includes_web_fetch_host_and_path_tokens():
+    tokens = extract_action_tokens(
+        "web_fetch",
+        {"url": "https://www.bilibili.com/video/BV1xx?p=1"},
+    )
+
+    assert tokens == [
+        "web_fetch",
+        "www.bilibili.com",
+        "bilibili.com",
+        "video",
+        "bv1xx",
+    ]
 
 
 def test_composer_no_false_positive_when_args_change():

@@ -13,6 +13,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.notify_owner import NotifyOwnerTool
 from agent.tools.shell import ShellTool
 from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
+from core.memory.port import MemoryPort
 from core.net.http import HttpRequester
 
 
@@ -21,6 +22,7 @@ class SubagentRuntime:
     provider: LLMProvider
     model: str
     max_tokens: int
+    memory: MemoryPort | None = None
 
 
 @dataclass
@@ -39,6 +41,7 @@ class SubagentSpec:
             max_iterations=self.max_iterations,
             max_tokens=runtime.max_tokens,
             mandatory_exit_tools=self.mandatory_exit_tools,
+            memory=runtime.memory,
         )
 
 
