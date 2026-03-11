@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 logger = logging.getLogger(__name__)
+_MAX_PROCEDURE_RETRIEVE_K = 3
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
@@ -223,7 +224,10 @@ class DefaultMemoryRetrievalPort:
 
             # 同步准备各路参数
             p_query = f"{query} 操作规范 用户偏好"
-            top_k_proc = max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4)))
+            top_k_proc = min(
+                _MAX_PROCEDURE_RETRIEVE_K,
+                max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
+            )
             top_k_hist = max(1, int(getattr(self._cfg, "memory_top_k_history", 6)))
             top_k_pref = max(1, int(getattr(self._cfg, "preference_top_k", 4)))
             pref_enabled = bool(getattr(self._cfg, "preference_retrieval_enabled", True) and items)

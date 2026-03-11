@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from core.memory.runtime import MemoryRuntime
 
 logger = logging.getLogger("agent.loop")
+_MAX_PROCEDURE_RETRIEVE_K = 3
 
 
 class AgentLoop(
@@ -87,7 +88,10 @@ class AgentLoop(
         self._running = False
         self._consolidating: set[str] = set()
         self._processing_state = processing_state
-        self._memory_top_k_procedure = max(1, int(memory_top_k_procedure))
+        self._memory_top_k_procedure = min(
+            _MAX_PROCEDURE_RETRIEVE_K,
+            max(1, int(memory_top_k_procedure)),
+        )
         self._memory_top_k_history = max(1, int(memory_top_k_history))
         self._memory_route_intention_enabled = bool(memory_route_intention_enabled)
         self._memory_sop_guard_enabled = bool(memory_sop_guard_enabled)

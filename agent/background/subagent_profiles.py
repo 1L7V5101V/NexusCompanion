@@ -48,6 +48,7 @@ class SubagentSpec:
 def build_spawn_spec(
     *,
     workspace: Path,
+    task_dir: Path,
     fetch_requester: HttpRequester,
     system_prompt: str,
     max_iterations: int = 20,
@@ -57,8 +58,8 @@ def build_spawn_spec(
         allowed_dir=workspace,
         include_list_dir=True,
     ) + [
-        WriteFileTool(allowed_dir=workspace),
-        EditFileTool(allowed_dir=workspace),
+        WriteFileTool(allowed_dir=task_dir),
+        EditFileTool(allowed_dir=task_dir),
         ShellTool(),
     ]
     return SubagentSpec(

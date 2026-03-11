@@ -55,6 +55,16 @@ class SubagentManager:
         self._fetch_requester = fetch_requester
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
 
+    def _spawn_jobs_dir(self) -> Path:
+        root = self._workspace / "subagent-runs"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _job_task_dir(self, job_id: str) -> Path:
+        task_dir = self._spawn_jobs_dir() / job_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        return task_dir
+
     def set_memory_port(self, memory: MemoryPort | None) -> None:
         self._runtime = SubagentRuntime(
             provider=self._runtime.provider,
@@ -75,12 +85,14 @@ class SubagentManager:
         """创建后台 subagent 任务，并立即把控制权还给主 agent。"""
         job_id = uuid.uuid4().hex[:8]
         display_label = (label or task[:30] or job_id).strip()
+        task_dir = self._job_task_dir(job_id)
         # 1. 先生成 job_id 和 trace，确保后台任务还没起时也能追踪来源。
         self._append_spawn_trace(
             job_id=job_id,
             payload={
                 "phase": "started",
                 "label": display_label,
+                "task_dir": str(task_dir),
                 "origin_channel": origin_channel,
                 "origin_chat_id": origin_chat_id,
                 "decision": _decision_payload(decision),
@@ -92,6 +104,7 @@ class SubagentManager:
                 job_id=job_id,
                 task=task,
                 label=display_label,
+                task_dir=task_dir,
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
                 decision=decision,
@@ -124,12 +137,15 @@ class SubagentManager:
         job_id: str,
         task: str,
         label: str,
+        task_dir: Path,
         origin_channel: str,
         origin_chat_id: str,
         decision: SpawnDecision | None,
     ) -> None:
         """运行后台 subagent，并把统一结果协议回灌给主 agent。"""
-        job_runner = AgentBackgroundJobRunner(self._build_subagent)
+        job_runner = AgentBackgroundJobRunner(
+            lambda: self._build_subagent(task_dir=task_dir)
+        )
         # 1. 先按统一 background job spec 执行 subagent，本层不直接碰 loop 细节。
         result = await job_runner.run(
             AgentBackgroundJobSpec(
@@ -163,6 +179,7 @@ class SubagentManager:
             job_id=job_id,
             payload={
                 "phase": "completed",
+                "task_dir": str(task_dir),
                 "job_kind": result.job_kind,
                 "status": result.status,
                 "exit_reason": result.exit_reason,
@@ -174,17 +191,18 @@ class SubagentManager:
             },
         )
 
-    def _build_subagent(self) -> SubAgent:
+    def _build_subagent(self, *, task_dir: Path) -> SubAgent:
         spec = build_spawn_spec(
             workspace=self._workspace,
+            task_dir=task_dir,
             fetch_requester=self._fetch_requester,
-            system_prompt=self._build_subagent_prompt(),
+            system_prompt=self._build_subagent_prompt(task_dir),
             max_iterations=_SPAWN_MAX_ITERATIONS,
         )
         return spec.build(self._runtime)
 
-    def _build_subagent_prompt(self) -> str:
-        return build_spawn_subagent_prompt(self._workspace)
+    def _build_subagent_prompt(self, task_dir: Path) -> str:
+        return build_spawn_subagent_prompt(self._workspace, task_dir)
 
     async def _announce_result(
         self,
