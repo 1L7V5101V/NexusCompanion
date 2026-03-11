@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +36,28 @@ from proactive.skill_action import SkillActionRunner
 from core.common.strategy_trace import build_strategy_trace_envelope
 
 logger = logging.getLogger(__name__)
+
+_TOPIC_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}|[\u4e00-\u9fff]{2,8}")
+_TOPIC_STOPWORDS = frozenset(
+    {
+        "更新",
+        "上线",
+        "发布",
+        "视频",
+        "新闻",
+        "消息",
+        "内容",
+        "官方",
+        "作者",
+        "活动",
+        "版本",
+        "game",
+        "games",
+        "news",
+        "update",
+        "review",
+    }
+)
 
 # Sentinel returned by stage methods to signal "stop tick, return None to caller"
 _STOP_NONE: object = object()
@@ -1007,8 +1030,10 @@ class ProactiveEngine:
     def _prepare_feature_compose_candidates(self, ctx: DecisionContext) -> None:
         fetch = ctx.ensure_fetch()
         act = ctx.ensure_act()
-        act.compose_items = fetch.new_items[:1]
-        act.compose_entries = self._entries_for_items(act.compose_items, fetch.new_entries)
+        act.compose_items, act.compose_entries = self._select_compose_items(
+            fetch.new_items,
+            fetch.new_entries,
+        )
 
     async def _run_feature_decision(self, ctx: DecisionContext) -> DecideResult:
         """feature 模式：先打分，再在通过阈值时 compose_message。"""
@@ -1480,7 +1505,7 @@ class ProactiveEngine:
 
     def _build_source_refs(self, items: list[FeedItem]) -> list[ProactiveSourceRef]:
         refs: list[ProactiveSourceRef] = []
-        for item in items[:1]:
+        for item in items[:3]:
             published_at = None
             if item.published_at is not None:
                 try:
@@ -1498,6 +1523,64 @@ class ProactiveEngine:
                 )
             )
         return refs
+
+    def _select_compose_items(
+        self,
+        items: list[FeedItem],
+        entries: list[tuple[str, str]],
+    ) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+        if not items:
+            return [], []
+        max_items = min(3, len(items))
+        best_items = items[:1]
+        best_index = 0
+        for idx, seed in enumerate(items):
+            group = [seed]
+            for candidate in items[idx + 1 :]:
+                if self._is_same_topic(seed, candidate):
+                    group.append(candidate)
+                if len(group) >= max_items:
+                    break
+            if len(group) > len(best_items):
+                best_items = group
+                best_index = idx
+            elif len(group) == len(best_items) and idx < best_index:
+                best_items = group
+                best_index = idx
+            if len(best_items) >= max_items:
+                break
+        return best_items, self._entries_for_items(best_items, entries)
+
+    def _is_same_topic(self, left: FeedItem, right: FeedItem) -> bool:
+        if (left.source_name or "").strip().lower() != (right.source_name or "").strip().lower():
+            return False
+        left_title = self._topic_text(left)
+        right_title = self._topic_text(right)
+        if not left_title or not right_title:
+            return False
+        if left_title[:12] == right_title[:12]:
+            return True
+        left_tokens = set(self._topic_tokens(left_title))
+        right_tokens = set(self._topic_tokens(right_title))
+        return bool(left_tokens and right_tokens and left_tokens.intersection(right_tokens))
+
+    @staticmethod
+    def _topic_text(item: FeedItem) -> str:
+        title = (item.title or "").strip()
+        if title:
+            return title.lower()
+        return (item.content or "").strip().lower()
+
+    @staticmethod
+    def _topic_tokens(text: str) -> list[str]:
+        tokens: list[str] = []
+        seen: set[str] = set()
+        for token in _TOPIC_TOKEN_PATTERN.findall((text or "").lower()):
+            if token in _TOPIC_STOPWORDS or token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+        return tokens
 
     def _seen_state_summary_in_current_silence(
         self,

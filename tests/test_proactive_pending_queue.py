@@ -244,6 +244,105 @@ async def test_feature_mode_uses_same_item_for_message_and_source_ref(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_feature_mode_groups_same_topic_items_into_one_message(tmp_path):
+    state = ProactiveStateStore(tmp_path / "state.json")
+    items = [
+        FeedItem(
+            source_name="PC Gamer UK - Games",
+            source_type="rss",
+            title="Patch notes published",
+            content="another topic",
+            url="https://www.pcgamer.com/demo",
+            author=None,
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+        ),
+        FeedItem(
+            source_name="PC Gamer UK - Games",
+            source_type="rss",
+            title="Banquet for Fools release date confirmed",
+            content="Banquet for Fools release window",
+            url="https://www.pcgamer.com/banquet-release",
+            author=None,
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+        ),
+        FeedItem(
+            source_name="PC Gamer UK - Games",
+            source_type="rss",
+            title="Banquet for Fools demo is out now",
+            content="Banquet for Fools playable demo",
+            url="https://www.pcgamer.com/banquet-demo",
+            author=None,
+            published_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+        ),
+    ]
+    entries = [(compute_source_key(item), compute_item_id(item)) for item in items]
+    captured: dict[str, object] = {}
+
+    class _FeatureDecide:
+        async def score_features(self, **kw):
+            return {
+                "topic_continuity": 0.8,
+                "interest_match": 0.9,
+                "content_novelty": 0.7,
+                "reconnect_value": 0.7,
+                "disturb_risk": 0.1,
+                "message_readiness": 0.8,
+                "confidence": 0.9,
+            }
+
+        async def compose_message(self, **kw):
+            feed_items = kw["items"]
+            captured["items"] = feed_items
+            titles = [item.title for item in feed_items]
+            return " | ".join(titles)
+
+        async def reflect(self, *a, **kw):
+            raise AssertionError("feature mode 不应走 reflect")
+
+        def randomize_decision(self, d):
+            return d, 0.0
+
+        def resolve_evidence_item_ids(self, d, items):
+            return [compute_item_id(item) for item in items]
+
+        def build_delivery_key(self, ids, msg):
+            return "|".join(ids) or "no-evidence"
+
+        def semantic_entries(self, items):
+            return []
+
+        def item_id_for(self, item):
+            return compute_item_id(item)
+
+    act = MagicMock(send=AsyncMock(return_value=True))
+    engine = ProactiveEngine(
+        cfg=_cfg(
+            feature_scoring_enabled=True,
+            feature_send_threshold=0.0,
+            pending_queue_enabled=False,
+        ),
+        state=state,
+        presence=None,
+        rng=None,
+        sense=_sense(items, entries),
+        decide=_FeatureDecide(),
+        act=act,
+    )
+
+    await engine.tick()
+
+    send_message, send_meta = act.send.await_args.args
+    composed_items = captured["items"]
+    assert len(composed_items) == 2
+    assert all("Banquet for Fools" in (item.title or "") for item in composed_items)
+    assert "Banquet for Fools release date confirmed" in send_message
+    assert "Banquet for Fools demo is out now" in send_message
+    assert len(send_meta.evidence_item_ids) == 2
+    assert len(send_meta.source_refs) == 2
+    assert all("Banquet for Fools" in (ref.title or "") for ref in send_meta.source_refs)
+
+
+@pytest.mark.asyncio
 async def test_same_state_summary_is_blocked_within_current_silence(tmp_path):
     state = ProactiveStateStore(tmp_path / "state.json")
     item = _item("A", "https://example.com/a", minutes_ago=1)

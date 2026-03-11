@@ -799,8 +799,8 @@ class DefaultDecidePort:
                 selected.append(item_id)
                 seen.add(item_id)
         if selected:
-            return selected[:1]
-        return valid_order[:1]
+            return selected[:3]
+        return valid_order[:3]
 
     def build_delivery_key(self, item_ids: list[str], message: str) -> str:
         if item_ids:

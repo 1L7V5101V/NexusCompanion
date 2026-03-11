@@ -87,7 +87,7 @@
 
     "_comment_pending": "── 待发队列（pending backlog）──",
     "pending_queue_enabled": true,
-    "pending_item_ttl_hours": 24,
+    "pending_item_ttl_hours": 12,
     "pending_candidate_limit": 3,
     "pending_max_per_source": 20,
     "pending_max_total": 200,

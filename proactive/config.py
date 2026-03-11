@@ -81,7 +81,7 @@ class ProactiveConfig:
     message_dedupe_recent_n: int = 5
     llm_reject_cooldown_hours: int = 12
     pending_queue_enabled: bool = True
-    pending_item_ttl_hours: int = 24
+    pending_item_ttl_hours: int = 12
     pending_candidate_limit: int = 3
     pending_max_per_source: int = 20
     pending_max_total: int = 200
