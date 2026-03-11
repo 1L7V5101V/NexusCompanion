@@ -98,6 +98,8 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     for message in old_messages:
         if not message.get("content") or message.get("role") == "tool":
             continue
+        if message.get("role") == "assistant" and message.get("proactive"):
+            continue
         role = str(message.get("role", "")).upper()
         ts = str(message.get("timestamp", "?"))[:16]
         lines.append(f"[{ts}] {role}: {message['content']}")

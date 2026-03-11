@@ -327,7 +327,7 @@ class ProactiveEngine:
           6. decide — 构建 decision_signals，LLM 评分/生成
           7. act — 发送 + 状态标记
         """
-        logger.info("[proactive] tick 开始")
+        logger.debug("[proactive] tick 开始")
         ctx = DecisionContext()
 
         # 1. 先做 gate，决定这一轮是否连主动判断资格都没有。
@@ -418,7 +418,7 @@ class ProactiveEngine:
                 reason_code="scheduler_reject",
             )
 
-        logger.info("[proactive] gate_result=pass meta=%s", meta)
+        logger.debug("[proactive] gate_result=pass meta=%s", meta)
         return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
     # ------------------------------------------------------------------
@@ -580,19 +580,19 @@ class ProactiveEngine:
         fetch = ctx.ensure_fetch()
         # 1. 先从 feed 拉原始条目，后续所有筛选都基于这批候选。
         fetch.items = await self._sense.fetch_items(self._cfg.items_per_source)
-        logger.info("[proactive] 拉取到 %d 条信息", len(fetch.items))
+        logger.debug("[proactive] 拉取到 %d 条信息", len(fetch.items))
 
         # 2. 先做 seen / semantic 去重，避免重复条目进入后续决策。
         discovered_items, discovered_entries, fetch.semantic_duplicate_entries = (
             self._sense.filter_new_items(fetch.items)
         )
-        logger.info(
+        logger.debug(
             "[proactive] 去重后剩余新信息 %d 条（过滤重复 %d 条）",
             len(discovered_items),
             len(fetch.items) - len(discovered_items),
         )
         if fetch.semantic_duplicate_entries:
-            logger.info(
+            logger.debug(
                 "[proactive] 语义重复条目 count=%d 不写入 seen_items，72h 窗口自然抑制",
                 len(fetch.semantic_duplicate_entries),
             )
@@ -1040,7 +1040,7 @@ class ProactiveEngine:
             notify_count=len(act.high_events),
         )
         decide.feature_final_score = min(1.0, feature_final_base + health_bonus)
-        logger.info(
+        logger.debug(
             "[proactive] feature_score enabled base=%.3f health_bonus=%.3f final=%.3f threshold=%.3f features=%s",
             feature_final_base,
             health_bonus,
@@ -1110,7 +1110,7 @@ class ProactiveEngine:
             decide.feature_final_score is not None
             and decide.feature_final_score >= self._cfg.feature_send_threshold
         )
-        logger.info(
+        logger.debug(
             "[proactive] feature_mode compose_len=%d should_send=%s reasons={topic:%r,interest:%r,novel:%r,reconnect:%r,disturb:%r,readiness:%r,conf:%r}",
             len(decide.decision_message),
             decide.should_send,
@@ -1143,7 +1143,7 @@ class ProactiveEngine:
         )
         # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
         decide.decision, decision_delta = self._decide.randomize_decision(decide.decision)
-        logger.info(
+        logger.debug(
             f"[proactive] score={decide.decision.score:.2f}  "
             f"score_delta={decision_delta:+.2f}  "
             f"send={decide.decision.should_send}  "

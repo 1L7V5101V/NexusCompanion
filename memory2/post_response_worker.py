@@ -158,7 +158,7 @@ class PostResponseMemoryWorker:
             # 1) 先做轻量文本去重
             text_dup = any(n and cur and (n in cur or cur in n) for n in explicit_norms)
             if text_dup:
-                logger.info(
+                logger.debug(
                     "post_response_memorize skip implicit (explicit text-dup): %s",
                     summary,
                 )
@@ -177,7 +177,7 @@ class PostResponseMemoryWorker:
                         for c in candidates
                         if isinstance(c, dict)
                     ):
-                        logger.info(
+                        logger.debug(
                             "post_response_memorize skip implicit (explicit sem-dup): %s",
                             summary,
                         )
@@ -259,7 +259,7 @@ class PostResponseMemoryWorker:
             self.TOKENS_EXTRACT_INVALIDATION,
         )
         if not ok:
-            logger.info("post_response invalidation skipped: token budget exhausted")
+            logger.debug("post_response invalidation skipped: token budget exhausted")
             return [], token_budget
         try:
             resp = await self._provider.chat(
@@ -304,7 +304,7 @@ class PostResponseMemoryWorker:
             self.TOKENS_CHECK_INVALIDATE,
         )
         if not ok:
-            logger.info(
+            logger.debug(
                 "post_response check_invalidate skipped: token budget exhausted"
             )
             return [], token_budget
@@ -586,7 +586,7 @@ ASSISTANT: {agent_response}
                 trigger_tags = await self._tagger.tag(summary)
                 if trigger_tags is not None:
                     extra["trigger_tags"] = trigger_tags
-                    logger.info(
+                    logger.debug(
                         "post_response_memorize: trigger_tags generated scope=%s",
                         trigger_tags.get("scope"),
                     )
@@ -599,7 +599,7 @@ ASSISTANT: {agent_response}
                 extra=extra,
                 source_ref=source_ref,
             )
-            logger.info(f"post_response_memorize saved ({mtype}): {result}")
+            logger.debug(f"post_response_memorize saved ({mtype}): {result}")
         except Exception as e:
             logger.warning(f"post_response_memorize save failed: {e}")
         return token_budget
@@ -630,7 +630,7 @@ ASSISTANT: {agent_response}
             self.TOKENS_CHECK_SUPERSEDE,
         )
         if not ok:
-            logger.info("post_response check_supersede skipped: token budget exhausted")
+            logger.debug("post_response check_supersede skipped: token budget exhausted")
             return [], token_budget
 
         try:

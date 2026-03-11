@@ -301,6 +301,20 @@ class DefaultMemoryRetrievalPort:
                 history_scope_mode=injection.history_scope_mode,
                 preference_block=preference_block,
             )
+            if result.items or preference_block:
+                injected_preview = " | ".join(
+                    f"{str(item.get('memory_type', ''))}:{str(item.get('summary', ''))[:40]}"
+                    for item in result.items[:4]
+                    if isinstance(item, dict)
+                )
+                logger.info(
+                    "[proactive.memory] query=%r p=%d h=%d pref=%d injected=%s",
+                    query[:50],
+                    result.procedure_hits,
+                    result.history_hits,
+                    pref_hit_count,
+                    injected_preview or "preference_only",
+                )
             self._trace(
                 session_key=session_key,
                 channel=channel,

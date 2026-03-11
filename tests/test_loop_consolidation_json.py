@@ -74,3 +74,22 @@ def test_format_conversation_for_consolidation_skips_tool_messages():
     assert "TOOL" not in text
     assert "[2026-03-09T10:00] USER: 你好" in text
     assert "[2026-03-09T10:02] ASSISTANT: 收到" in text
+
+
+def test_format_conversation_for_consolidation_skips_proactive_assistant_messages():
+    text = _format_conversation_for_consolidation(
+        [
+            {"role": "user", "content": "你好", "timestamp": "2026-03-09T10:00:00"},
+            {
+                "role": "assistant",
+                "content": "这是一条主动 RSS 推送",
+                "timestamp": "2026-03-09T10:01:00",
+                "proactive": True,
+            },
+            {"role": "assistant", "content": "这是正常回复", "timestamp": "2026-03-09T10:02:00"},
+        ]
+    )
+
+    assert "主动 RSS 推送" not in text
+    assert "[2026-03-09T10:00] USER: 你好" in text
+    assert "[2026-03-09T10:02] ASSISTANT: 这是正常回复" in text

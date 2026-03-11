@@ -156,8 +156,15 @@ class ConversationTurnHandler:
                 len(selected_items),
                 "" if retrieved_block else "（无内容注入）",
             )
+            if selected_items:
+                injected_preview = " | ".join(
+                    f"{str(item.get('memory_type', ''))}:{str(item.get('summary', ''))[:40]}"
+                    for item in selected_items[:4]
+                    if isinstance(item, dict)
+                )
+                logger.info("memory2 injected_summary: %s", injected_preview)
             for _item in selected_items:
-                logger.info(
+                logger.debug(
                     "memory2 injected: id=%s score=%.3f type=%s summary=%s",
                     _item.get("id", ""),
                     float(_item.get("score", 0.0)),
