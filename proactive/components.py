@@ -79,6 +79,13 @@ def build_proactive_memory_query(
 ) -> str:
     """Build a compact query for proactive memory retrieval."""
     lines: list[str] = ["主动触达主题"]
+    candidate_message = re.sub(
+        r"\s+",
+        " ",
+        str(decision_signals.get("candidate_message", "")).strip(),
+    )[:120]
+    if candidate_message:
+        lines.append(f"拟发送消息: {candidate_message}")
 
     lines.append("候选内容：")
     for item in items[: max(1, int(max_items))]:

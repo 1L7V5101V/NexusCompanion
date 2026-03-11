@@ -100,7 +100,7 @@
     "preference_top_k": 4,
     "_comment_preference_veto": "preference_veto_enabled: 当 interest_match < threshold 且检索到明确偏好时，引擎层硬拒绝（仅 feature_scoring_enabled=true 时生效）",
     "preference_veto_enabled": true,
-    "preference_interest_veto_threshold": 0.3
+    "preference_interest_veto_threshold": 0.4
   },
 
   "_provider_presets": {
