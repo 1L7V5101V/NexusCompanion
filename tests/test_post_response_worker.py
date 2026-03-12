@@ -1,8 +1,9 @@
 import asyncio
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from memory2.post_response_worker import PostResponseMemoryWorker
+from memory2.rule_schema import build_procedure_rule_schema
 
 
 class _DummyProvider:
@@ -27,7 +28,7 @@ class _DummyRetriever:
 class _DummyMemorizer:
     def __init__(self):
         self.save_item = AsyncMock(return_value="new:testid")
-        self.supersede_batch = AsyncMock()
+        self.supersede_batch = MagicMock()
 
 
 def test_post_worker_skips_implicit_when_semantic_dup_to_explicit():
@@ -122,6 +123,224 @@ def test_post_worker_saves_implicit_when_not_duplicate_to_explicit():
         )
     )
 
+    memorizer.save_item.assert_called_once()
+
+
+def test_post_worker_deterministic_supersede_on_explicit_rule_conflict():
+    memorizer = _DummyMemorizer()
+    retriever = _DummyRetriever(
+        [
+            {
+                "id": "old-rule-1",
+                "memory_type": "procedure",
+                "score": 0.91,
+                "summary": "查 Steam 信息时必须直接使用 web_search，不能先用 steam MCP。",
+                "extra_json": {
+                    "tool_requirement": "web_search",
+                    "rule_schema": {
+                        "required_tools": ["web_search"],
+                        "forbidden_tools": ["steam_mcp"],
+                        "mentioned_tools": ["steam", "web_search", "steam_mcp"],
+                    },
+                },
+            }
+        ]
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+
+    asyncio.run(
+        worker._save_with_supersede(
+            {
+                "summary": "用户明确纠正 agent 的操作流程：查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search",
+                "memory_type": "procedure",
+                "tool_requirement": "steam_mcp",
+                "steps": [],
+                "rule_schema": {
+                    "required_tools": ["steam_mcp"],
+                    "forbidden_tools": ["web_search"],
+                    "mentioned_tools": ["steam", "steam_mcp", "web_search"],
+                },
+            },
+            "test@post_response",
+            token_budget=256,
+        )
+    )
+
+    memorizer.supersede_batch.assert_called_once_with(["old-rule-1"])
+    memorizer.save_item.assert_called_once()
+
+
+def test_build_procedure_rule_schema_prefers_explicit_rule_schema():
+    schema = build_procedure_rule_schema(
+        "查 Steam 信息时不要直接用 web_search，必须先使用 steam MCP。",
+        tool_requirement="steam_mcp",
+        rule_schema={
+            "required_tools": ["steam_mcp"],
+            "forbidden_tools": ["web_search"],
+            "mentioned_tools": ["steam", "web_search"],
+        },
+    )
+
+    assert "web_search" in schema["forbidden_tools"]
+    assert schema["required_tools"] == ["steam_mcp"]
+    assert "steam" in schema["mentioned_tools"]
+
+
+def test_build_procedure_rule_schema_fills_missing_slot_from_summary():
+    schema = build_procedure_rule_schema(
+        "查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search。",
+        rule_schema={"required_tools": ["steam_mcp"]},
+    )
+
+    assert schema["required_tools"] == ["steam_mcp"]
+    assert schema["forbidden_tools"] == ["web_search"]
+
+
+def test_build_procedure_rule_schema_infers_constraints_without_explicit_schema():
+    schema = build_procedure_rule_schema(
+        "查 Steam 信息时不要直接用 web_search，必须先使用 steam MCP。"
+    )
+
+    assert "steam_mcp" in schema["required_tools"]
+    assert "web_search" in schema["forbidden_tools"]
+    assert "steam" in schema["mentioned_tools"]
+
+
+def test_post_worker_merges_deterministic_and_llm_supersede_candidates():
+    memorizer = _DummyMemorizer()
+    retriever = _DummyRetriever(
+        [
+            {
+                "id": "old-rule-1",
+                "memory_type": "procedure",
+                "score": 0.91,
+                "summary": "查 Steam 信息时必须直接使用 web_search，不能先用 steam MCP。",
+                "extra_json": {
+                    "tool_requirement": "web_search",
+                    "rule_schema": {
+                        "required_tools": ["web_search"],
+                        "forbidden_tools": ["steam_mcp"],
+                        "mentioned_tools": ["steam", "web_search", "steam_mcp"],
+                    },
+                },
+            },
+            {
+                "id": "old-rule-2",
+                "memory_type": "procedure",
+                "score": 0.9,
+                "summary": "这是 Steam 查询的旧版流程，需要按旧版执行。",
+                "extra_json": {},
+            },
+        ]
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+    worker._check_supersede = AsyncMock(return_value=(["old-rule-2"], 128))
+
+    asyncio.run(
+        worker._save_with_supersede(
+            {
+                "summary": "用户明确纠正 agent 的操作流程：查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search",
+                "memory_type": "procedure",
+                "tool_requirement": "steam_mcp",
+                "steps": [],
+                "rule_schema": {
+                    "required_tools": ["steam_mcp"],
+                    "forbidden_tools": ["web_search"],
+                    "mentioned_tools": ["steam", "steam_mcp", "web_search"],
+                },
+            },
+            "test@post_response",
+            token_budget=256,
+        )
+    )
+
+    worker._check_supersede.assert_awaited_once()
+    memorizer.supersede_batch.assert_called_once_with(["old-rule-1", "old-rule-2"])
+    memorizer.save_item.assert_called_once()
+
+
+def test_post_worker_deterministic_supersede_without_explicit_rule_schema():
+    memorizer = _DummyMemorizer()
+    retriever = _DummyRetriever(
+        [
+            {
+                "id": "old-rule-1",
+                "memory_type": "procedure",
+                "score": 0.91,
+                "summary": "查 Steam 信息时必须直接使用 web_search，不能先用 steam MCP。",
+                "extra_json": {},
+            }
+        ]
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+
+    asyncio.run(
+        worker._save_with_supersede(
+            {
+                "summary": "用户明确纠正 agent 的操作流程：查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search",
+                "memory_type": "procedure",
+                "tool_requirement": None,
+                "steps": [],
+            },
+            "test@post_response",
+            token_budget=256,
+        )
+    )
+
+    memorizer.supersede_batch.assert_called_once_with(["old-rule-1"])
+    memorizer.save_item.assert_called_once()
+
+
+def test_post_worker_deterministic_supersede_with_partial_rule_schema():
+    memorizer = _DummyMemorizer()
+    retriever = _DummyRetriever(
+        [
+            {
+                "id": "old-rule-1",
+                "memory_type": "procedure",
+                "score": 0.91,
+                "summary": "查 Steam 信息时必须直接使用 web_search。",
+                "extra_json": {"rule_schema": {"required_tools": ["web_search"]}},
+            }
+        ]
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, retriever),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+    )
+
+    asyncio.run(
+        worker._save_with_supersede(
+            {
+                "summary": "查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search。",
+                "memory_type": "procedure",
+                "tool_requirement": None,
+                "steps": [],
+                "rule_schema": {"required_tools": ["steam_mcp"]},
+            },
+            "test@post_response",
+            token_budget=256,
+        )
+    )
+
+    memorizer.supersede_batch.assert_called_once_with(["old-rule-1"])
     memorizer.save_item.assert_called_once()
 
 

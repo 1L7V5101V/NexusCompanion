@@ -166,6 +166,11 @@ async def test_memorize_tool_uses_memory_port():
             "tool_requirement": "skill_action_status",
             "steps": ["先查", "再执行"],
             "persist_file": None,
+            "rule_schema": {
+                "required_tools": ["skill_action_status"],
+                "forbidden_tools": [],
+                "mentioned_tools": ["skill_action_status"],
+            },
         },
         source_ref="memorize_tool",
     )

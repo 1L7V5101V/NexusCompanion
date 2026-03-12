@@ -182,6 +182,8 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     extra = memory.save_item.await_args.kwargs["extra"]
     assert extra["trigger_tags"] == {"scope": "task"}
     assert extra["persist_file"] == "ops.md"
+    assert extra["rule_schema"]["required_tools"] == []
+    assert extra["rule_schema"]["forbidden_tools"] == []
 
     class _BadTagger:
         async def tag(self, summary: str) -> dict[str, str]:

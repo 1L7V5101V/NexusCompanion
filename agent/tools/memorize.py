@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent.tools.base import Tool
+from memory2.rule_schema import build_procedure_rule_schema
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
@@ -85,11 +86,20 @@ class MemorizeTool(Tool):
         persist_file: str | None = None,
         **_: Any,
     ) -> str:
+        # 1. 先构造基础 extra，保留原有 tool_requirement / steps / persist_file 字段。
         extra: dict = {
             "tool_requirement": tool_requirement,
             "steps": steps or [],
             "persist_file": persist_file,
         }
+        # 2. procedure 规则额外写入结构化 rule_schema，供后续冲突检测与 supersede 使用。
+        if memory_type == "procedure":
+            extra["rule_schema"] = build_procedure_rule_schema(
+                summary=summary,
+                tool_requirement=tool_requirement,
+                steps=steps or [],
+            )
+        # 3. 最后再补 tagger 产物并写入 memory port。
         if memory_type == "procedure" and self._tagger is not None:
             try:
                 trigger_tags = await self._tagger.tag(summary)

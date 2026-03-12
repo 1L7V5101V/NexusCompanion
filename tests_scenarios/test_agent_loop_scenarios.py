@@ -5,6 +5,7 @@ import os
 import pytest
 
 from tests_scenarios.fixtures import (
+    build_async_memory_correction_scenario,
     build_rag_with_noise_scenario,
     build_smalltalk_no_retrieve_scenario,
     build_tool_search_schedule_scenario,
@@ -56,4 +57,19 @@ async def test_real_rag_with_related_and_irrelevant_noise() -> None:
     # 2. 运行场景：真实执行 route gate、history retrieve、memory injection 和回答生成。
     result = await runner.run(spec)
     # 3. 校验结果：要求命中 history 检索，并且最终回答稳定落到正确答案而不是噪音。
+    assert result.passed, result.failure_message()
+
+
+@pytest.mark.asyncio
+@pytest.mark.scenario_mvp
+@pytest.mark.scenario_live
+@pytest.mark.skipif(not _RUN_SCENARIOS, reason="设置 AKASIC_RUN_SCENARIOS=1 后再执行真实场景测试")
+async def test_real_async_memory_correction_supersedes_old_rule() -> None:
+    """验证旧错误流程会被异步 supersede，新纠正规则会异步写入为 active。"""
+    # 1. 构造场景：预置一条错误 procedure 记忆，再发送用户纠正该流程的真实消息。
+    spec = build_async_memory_correction_scenario()
+    runner = ScenarioRunner()
+    # 2. 运行场景：真实执行主对话链路，并等待 post-response memory worker 完成异步落库。
+    result = await runner.run(spec)
+    # 3. 校验结果：要求旧规则被标记为 superseded，且新规则已写入 active memory。
     assert result.passed, result.failure_message()

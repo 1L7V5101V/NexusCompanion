@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import sqlite3
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -25,6 +27,7 @@ from session.manager import SessionManager
 from tests_scenarios.fixtures import (
     ScenarioAssertions,
     ScenarioMemoryItem,
+    ScenarioMemoryRowAssertion,
     ScenarioSpec,
 )
 from tests_scenarios.judge_runner import ScenarioJudgeRunner, ScenarioJudgeVerdict
@@ -105,6 +108,7 @@ class ScenarioResult:
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     memory_trace: dict[str, Any] = field(default_factory=dict)
+    memory_rows: list[dict[str, Any]] = field(default_factory=list)
     session_before: dict[str, Any] = field(default_factory=dict)
     session_after: dict[str, Any] = field(default_factory=dict)
     assertion_errors: list[str] = field(default_factory=list)
@@ -139,6 +143,7 @@ class ScenarioRunner:
         session_before: dict[str, Any] = {}
         session_after: dict[str, Any] = {}
         memory_trace: dict[str, Any] = {}
+        memory_rows: list[dict[str, Any]] = []
         assertion_errors: list[str] = []
         judge_verdict: ScenarioJudgeVerdict | None = None
         try:
@@ -150,12 +155,17 @@ class ScenarioRunner:
             final_content = outbound.content
             session_after = self._snapshot_session(runtime.session_manager, session_key)
             memory_trace = self._load_memory_trace(runtime.workspace)
+            memory_rows = await self._await_memory_rows_if_needed(
+                runtime.workspace,
+                spec.assertions,
+            )
             # 3. 最后分别执行硬断言和可选 judge，并把结果落盘。
             assertion_errors = self._check_assertions(
                 spec.assertions,
                 final_content=final_content,
                 tool_calls=runtime.tools.calls,
                 memory_trace=memory_trace,
+                memory_rows=memory_rows,
             )
             if spec.judge:
                 judge_verdict = await self._run_judge(
@@ -163,6 +173,7 @@ class ScenarioRunner:
                     spec,
                     final_content=final_content,
                     memory_trace=memory_trace,
+                    memory_rows=memory_rows,
                 )
             passed = not assertion_errors
             if judge_verdict is not None:
@@ -175,6 +186,7 @@ class ScenarioRunner:
                 llm_calls=runtime.llm_provider.calls,
                 tool_calls=runtime.tools.calls,
                 memory_trace=memory_trace,
+                memory_rows=memory_rows,
                 session_before=session_before,
                 session_after=session_after,
                 assertion_errors=assertion_errors,
@@ -191,6 +203,7 @@ class ScenarioRunner:
                 session_key,
             )
             memory_trace = self._safe_load_memory_trace(runtime.workspace)
+            memory_rows = self._safe_load_memory_rows(runtime.workspace)
             result = ScenarioResult(
                 spec_id=spec.id,
                 artifact_dir=runtime.artifact_dir,
@@ -199,6 +212,7 @@ class ScenarioRunner:
                 llm_calls=runtime.llm_provider.calls,
                 tool_calls=runtime.tools.calls,
                 memory_trace=memory_trace,
+                memory_rows=memory_rows,
                 session_before=session_before,
                 session_after=session_after,
                 error=str(exc),
@@ -377,6 +391,84 @@ class ScenarioRunner:
         except Exception:
             return {}
 
+    def _load_memory_rows(self, workspace: Path) -> list[dict[str, Any]]:
+        db_path = workspace / "memory" / "memory2.db"
+        if not db_path.exists():
+            return []
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, memory_type, summary, source_ref, happened_at, status, created_at, updated_at
+                FROM memory_items
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def _safe_load_memory_rows(self, workspace: Path) -> list[dict[str, Any]]:
+        try:
+            return self._load_memory_rows(workspace)
+        except Exception:
+            return []
+
+    async def _await_memory_rows_if_needed(
+        self,
+        workspace: Path,
+        assertions: ScenarioAssertions,
+    ) -> list[dict[str, Any]]:
+        # 1. 没有异步记忆断言时，直接返回当前 memory 快照。
+        if not assertions.async_memory_rows:
+            return self._safe_load_memory_rows(workspace)
+        timeout_s = max(0.5, float(assertions.async_wait_timeout_s or 8.0))
+        deadline = time.perf_counter() + timeout_s
+        last_rows: list[dict[str, Any]] = []
+        # 2. 对需要 post-response worker 的场景，轮询等待落库结果稳定出现。
+        while True:
+            last_rows = self._safe_load_memory_rows(workspace)
+            errors = self._check_memory_row_assertions(
+                assertions.async_memory_rows,
+                memory_rows=last_rows,
+            )
+            if not errors or time.perf_counter() >= deadline:
+                return last_rows
+            await asyncio.sleep(0.2)
+
+    def _check_memory_row_assertions(
+        self,
+        expected_rows: list[ScenarioMemoryRowAssertion],
+        *,
+        memory_rows: list[dict[str, Any]],
+    ) -> list[str]:
+        errors: list[str] = []
+        for expected in expected_rows:
+            if any(self._match_memory_row(expected, row) for row in memory_rows):
+                continue
+            errors.append(
+                "未找到预期 memory 条目: "
+                f"status={expected.status} memory_type={expected.memory_type or '*'} "
+                f"keywords={expected.summary_keywords}"
+            )
+        return errors
+
+    @staticmethod
+    def _match_memory_row(
+        expected: ScenarioMemoryRowAssertion,
+        row: dict[str, Any],
+    ) -> bool:
+        if str(row.get("status", "")) != expected.status:
+            return False
+        if expected.memory_type and str(row.get("memory_type", "")) != expected.memory_type:
+            return False
+        normalized_summary = _normalize_assert_text(str(row.get("summary", "")))
+        return all(
+            _normalize_assert_text(keyword) in normalized_summary
+            for keyword in expected.summary_keywords
+        )
+
     def _check_assertions(
         self,
         assertions: ScenarioAssertions,
@@ -384,6 +476,7 @@ class ScenarioRunner:
         final_content: str,
         tool_calls: list[dict[str, Any]],
         memory_trace: dict[str, Any],
+        memory_rows: list[dict[str, Any]],
     ) -> list[str]:
         errors: list[str] = []
         normalized_final = _normalize_assert_text(final_content)
@@ -409,6 +502,12 @@ class ScenarioRunner:
         for needle in assertions.final_not_contains:
             if _normalize_assert_text(needle) in normalized_final:
                 errors.append(f"最终回复包含了不应出现的内容: {needle}")
+        errors.extend(
+            self._check_memory_row_assertions(
+                assertions.async_memory_rows,
+                memory_rows=memory_rows,
+            )
+        )
         return errors
 
     async def _run_judge(
@@ -418,6 +517,7 @@ class ScenarioRunner:
         *,
         final_content: str,
         memory_trace: dict[str, Any],
+        memory_rows: list[dict[str, Any]],
     ) -> ScenarioJudgeVerdict:
         provider = runtime.light_provider
         if provider is None:
@@ -431,6 +531,7 @@ class ScenarioRunner:
             spec.judge,
             final_content=final_content,
             memory_trace=memory_trace,
+            memory_rows=memory_rows,
             tool_calls=runtime.tools.calls,
         )
 
@@ -446,6 +547,7 @@ class ScenarioRunner:
         self._write_jsonl(runtime.artifact_dir / "llm_calls.jsonl", result.llm_calls)
         self._write_jsonl(runtime.artifact_dir / "tool_calls.jsonl", result.tool_calls)
         self._write_json(runtime.artifact_dir / "memory_trace.json", result.memory_trace)
+        self._write_json(runtime.artifact_dir / "memory_rows.json", result.memory_rows)
         self._write_json(runtime.artifact_dir / "session_before.json", result.session_before)
         self._write_json(runtime.artifact_dir / "session_after.json", result.session_after)
         if result.judge_verdict is not None:
@@ -501,6 +603,7 @@ def _result_snapshot(result: ScenarioResult) -> dict[str, Any]:
         "final_content": result.final_content,
         "error": result.error,
         "assertion_errors": result.assertion_errors,
+        "memory_rows_count": len(result.memory_rows),
         "judge_verdict": asdict(result.judge_verdict) if result.judge_verdict else None,
     }
 

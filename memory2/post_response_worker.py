@@ -10,6 +10,11 @@ import json_repair
 from agent.provider import LLMProvider
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
+from memory2.rule_schema import (
+    build_procedure_rule_schema,
+    procedure_rules_conflict,
+    resolve_procedure_rule_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -418,12 +423,19 @@ USER: {user_msg}
 ASSISTANT: {agent_response}
 
 只返回合法 JSON 数组，无内容时返回 []。
-每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": []}}
+每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
 
 【tool_requirement 填写规则】
 - 若该条目要求 agent 在某类请求下必须调用特定工具/skill（如"查询天气时必须用 weather skill"、"查 Steam 必须用 MCP 工具"），则填写触发该工具的关键名称（如 "weather_skill"、"steam_mcp"）
 - 这样系统才能在相关请求时强制注入该规则，不受相似度分数影响
-- 若无强制工具要求，填 null"""
+- 若无强制工具要求，填 null
+
+【rule_schema 填写规则】
+- 仅对 procedure 填写；preference 可省略或填空对象
+- `required_tools` 只放用户明确要求必须使用的工具
+- `forbidden_tools` 只放用户明确禁止或要求不要直接使用的工具
+- `mentioned_tools` 放该规则涉及到的工具别名
+- 若无法确认某个约束，就留空，不要猜"""
 
         ok, token_budget = self._consume_budget(
             token_budget,
@@ -448,7 +460,9 @@ ASSISTANT: {agent_response}
             result = json_repair.loads(text)
             if isinstance(result, list):
                 return [
-                    r for r in result if isinstance(r, dict) and r.get("summary")
+                    self._normalize_extracted_item(r)
+                    for r in result
+                    if isinstance(r, dict) and r.get("summary")
                 ], token_budget
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
@@ -474,6 +488,18 @@ ASSISTANT: {agent_response}
                 seen.add(key)
                 merged.append(item)
         return merged
+
+    @staticmethod
+    def _normalize_extracted_item(item: dict) -> dict:
+        normalized = dict(item)
+        if normalized.get("memory_type") == "procedure":
+            normalized["rule_schema"] = build_procedure_rule_schema(
+                summary=str(normalized.get("summary", "") or ""),
+                tool_requirement=normalized.get("tool_requirement"),
+                steps=normalized.get("steps") or [],
+                rule_schema=normalized.get("rule_schema"),
+            )
+        return normalized
 
     @staticmethod
     def _extract_explicit_content_preferences(user_msg: str) -> list[dict]:
@@ -558,6 +584,7 @@ ASSISTANT: {agent_response}
             mtype = "procedure"
 
         _protected = protected_ids or set()
+        rule_schema = None
         if mtype in ("procedure", "preference"):
             candidates = await self._retriever.retrieve(
                 summary,
@@ -572,11 +599,39 @@ ASSISTANT: {agent_response}
             ][: self.SUPERSEDE_CANDIDATE_K]
 
             if high_sim:
-                supersede_ids, token_budget = await self._check_supersede(
-                    summary,
-                    high_sim,
-                    token_budget,
-                )
+                supersede_ids: list[str] = []
+                if mtype == "procedure":
+                    rule_schema = build_procedure_rule_schema(
+                        summary=summary,
+                        tool_requirement=item.get("tool_requirement"),
+                        steps=item.get("steps") or [],
+                        rule_schema=item.get("rule_schema"),
+                    )
+                    supersede_ids = [
+                        str(candidate.get("id", ""))
+                        for candidate in high_sim
+                        if procedure_rules_conflict(
+                            rule_schema,
+                            resolve_procedure_rule_schema(
+                                str(candidate.get("summary", "") or ""),
+                                candidate.get("extra_json") or {},
+                            ),
+                        )
+                    ]
+                remaining_candidates = [
+                    candidate
+                    for candidate in high_sim
+                    if str(candidate.get("id", "")) not in set(supersede_ids)
+                ]
+                if remaining_candidates:
+                    llm_supersede_ids, token_budget = await self._check_supersede(
+                        summary,
+                        remaining_candidates,
+                        token_budget,
+                    )
+                    for item_id in llm_supersede_ids:
+                        if item_id not in supersede_ids:
+                            supersede_ids.append(item_id)
                 if supersede_ids:
                     self._memorizer.supersede_batch(supersede_ids)
 
@@ -584,6 +639,13 @@ ASSISTANT: {agent_response}
             "tool_requirement": item.get("tool_requirement"),
             "steps": item.get("steps") or [],
         }
+        if mtype == "procedure":
+            extra["rule_schema"] = rule_schema or build_procedure_rule_schema(
+                summary=summary,
+                tool_requirement=item.get("tool_requirement"),
+                steps=item.get("steps") or [],
+                rule_schema=item.get("rule_schema"),
+            )
         if mtype == "procedure" and self._tagger is not None:
             try:
                 trigger_tags = await self._tagger.tag(summary)

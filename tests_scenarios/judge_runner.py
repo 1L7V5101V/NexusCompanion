@@ -29,9 +29,17 @@ class ScenarioJudgeRunner:
         *,
         final_content: str,
         memory_trace: dict,
+        memory_rows: list[dict],
         tool_calls: list[dict],
     ) -> ScenarioJudgeVerdict:
-        prompt = self._build_prompt(spec, judge, final_content, memory_trace, tool_calls)
+        prompt = self._build_prompt(
+            spec,
+            judge,
+            final_content,
+            memory_trace,
+            memory_rows,
+            tool_calls,
+        )
         response = await self._provider.chat(
             messages=[{"role": "user", "content": prompt}],
             tools=[],
@@ -46,16 +54,20 @@ class ScenarioJudgeRunner:
         judge: ScenarioJudgeSpec,
         final_content: str,
         memory_trace: dict,
+        memory_rows: list[dict],
         tool_calls: list[dict],
     ) -> str:
         rubric_text = "\n".join(f"- {line}" for line in judge.rubric)
         return (
             "你是 AgentLoop 场景测试的 judge，只能输出 JSON。\n"
-            "请根据场景目标与最终回答判断是否通过。\n\n"
+            "请根据场景目标、预期结果、memory rows 与最终回答判断是否通过。\n"
+            "若评分标准强调 memory rows，则应以 memory rows 为主要依据，最终回答仅作辅助上下文。\n\n"
             f"[场景目标]\n{judge.goal}\n\n"
+            f"[预期结果]\n{judge.expected_result}\n\n"
             f"[用户消息]\n{spec.message}\n\n"
             f"[评分标准]\n{rubric_text}\n\n"
             f"[记忆轨迹]\n{json.dumps(memory_trace, ensure_ascii=False)}\n\n"
+            f"[当前 Memory Rows]\n{json.dumps(memory_rows, ensure_ascii=False)}\n\n"
             f"[工具轨迹]\n{json.dumps(tool_calls, ensure_ascii=False)}\n\n"
             f"[最终回答]\n{final_content}\n\n"
             '输出格式：{"passed": true, "score": 0.95, "reasons": ["..."]}'

@@ -28,12 +28,22 @@ class ScenarioAssertions:
     required_tools: list[str] = field(default_factory=list)
     final_contains: list[str] = field(default_factory=list)
     final_not_contains: list[str] = field(default_factory=list)
+    async_memory_rows: list["ScenarioMemoryRowAssertion"] = field(default_factory=list)
+    async_wait_timeout_s: float = 0.0
 
 
 @dataclass
 class ScenarioJudgeSpec:
     goal: str
+    expected_result: str = ""
     rubric: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ScenarioMemoryRowAssertion:
+    status: str
+    summary_keywords: list[str] = field(default_factory=list)
+    memory_type: str | None = None
 
 
 @dataclass
@@ -199,10 +209,79 @@ def build_rag_with_noise_scenario() -> ScenarioSpec:
     )
 
 
+def build_async_memory_correction_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        id="async_memory_correction_supersedes_old_rule",
+        message=(
+            "你之前关于查 Steam 的流程是错的。"
+            "正确做法是：查 Steam 信息时必须先用 steam MCP，"
+            "不能直接用 web_search。"
+        ),
+        channel="cli",
+        chat_id="scenario-memory-correction",
+        session_key="cli:scenario-memory-correction",
+        request_time=datetime.fromisoformat("2026-03-12T10:15:00+08:00"),
+        history=[
+            {
+                "role": "user",
+                "content": "之前你查 Steam 信息时是怎么做的？",
+                "timestamp": "2026-03-10T18:00:00+08:00",
+            },
+            {
+                "role": "assistant",
+                "content": "我会直接 web_search 查一下就行。",
+                "timestamp": "2026-03-10T18:00:10+08:00",
+            },
+        ],
+        memory2_items=[
+            ScenarioMemoryItem(
+                summary="查 Steam 信息时必须直接使用 web_search，不能先用 steam MCP。",
+                memory_type="procedure",
+                extra={
+                    "steps": ["直接 web_search 查询 Steam 信息"],
+                    "tool_requirement": "web_search",
+                },
+                source_ref="scenario-memory-correction-old-rule",
+                happened_at="2026-03-09T20:00:00+08:00",
+            )
+        ],
+        assertions=ScenarioAssertions(
+            async_wait_timeout_s=12.0,
+            async_memory_rows=[
+                ScenarioMemoryRowAssertion(
+                    status="superseded",
+                    memory_type="procedure",
+                    summary_keywords=["Steam", "web_search", "不能", "MCP"],
+                ),
+                ScenarioMemoryRowAssertion(
+                    status="active",
+                    memory_type="procedure",
+                    summary_keywords=["Steam", "MCP", "必须"],
+                ),
+            ],
+        ),
+        judge=ScenarioJudgeSpec(
+            goal="判断异步记忆纠错是否在业务语义上成立。",
+            expected_result=(
+                "旧的错误 Steam 查询规则应被淘汰；"
+                "新的规则应明确表达“查 Steam 必须先用 steam MCP，不能直接用 web_search”。"
+            ),
+            rubric=[
+                "结合用户原始纠正消息，判断 active 的新 procedure 是否忠实表达了新规则。",
+                "判断 superseded 的旧 procedure 是否确实是被新规则取代的错误旧规则。",
+                "若新规则缺少“必须先用 steam MCP”或缺少“不能直接用 web_search”，则不通过。",
+                "重点根据 memory rows 判断，不要因为最终回答措辞保守、追问或承认冲突而直接判失败。",
+                "若新旧状态与语义都成立，则通过。",
+            ],
+        ),
+    )
+
+
 def build_sample_scenarios(root: Path | None = None) -> list[ScenarioSpec]:
     _ = root
     return [
         build_tool_search_schedule_scenario(),
         build_smalltalk_no_retrieve_scenario(),
         build_rag_with_noise_scenario(),
+        build_async_memory_correction_scenario(),
     ]
