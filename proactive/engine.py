@@ -417,7 +417,17 @@ class ProactiveEngine:
             pending_ttl_hours=self._cfg_int("pending_item_ttl_hours", 24),
         )
 
-        # 2. 再跑 anyaction gate，决定今天额度/最小间隔/概率是否允许继续。
+        # 2. 先探测 alert；只要本轮存在 alert，就绕过 anyaction gate 直接继续。
+        sense = ctx.ensure_sense()
+        sense.health_events = self._load_alert_events()
+        if sense.health_events:
+            logger.info(
+                "[proactive] gate_result=pass reason=alert_bypass alert_count=%d",
+                len(sense.health_events),
+            )
+            return GateResult(proceed=True, stop_result=None, reason_code="pass")
+
+        # 3. 再跑 anyaction gate，决定今天额度/最小间隔/概率是否允许继续。
         if not (self._cfg.anyaction_enabled and self._anyaction):
             return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
@@ -445,6 +455,19 @@ class ProactiveEngine:
         logger.debug("[proactive] gate_result=pass meta=%s", meta)
         return GateResult(proceed=True, stop_result=None, reason_code="pass")
 
+    def _load_alert_events(self) -> list[AlertEvent]:
+        """从 MCP 配置的告警源拉取 alert 事件。"""
+        try:
+            from proactive import mcp_sources
+
+            return [
+                GenericAlertEvent.from_mcp_payload(p)
+                for p in mcp_sources.fetch_alert_events()
+            ]
+        except Exception as _mcp_err:
+            logger.warning("[proactive] MCP alert 拉取失败: %s", _mcp_err)
+            return []
+
     # ------------------------------------------------------------------
     # Stage 2 — sense: collect environment signals
     # ------------------------------------------------------------------
@@ -460,14 +483,8 @@ class ProactiveEngine:
         sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
         # 2. 从 MCP 配置的告警源拉取 alert 事件。
-        try:
-            from proactive import mcp_sources
-            sense.health_events = [
-                GenericAlertEvent.from_mcp_payload(p)
-                for p in mcp_sources.fetch_alert_events()
-            ]
-        except Exception as _mcp_err:
-            logger.warning("[proactive] MCP alert 拉取失败: %s", _mcp_err)
+        if not sense.health_events:
+            sense.health_events = self._load_alert_events()
 
         # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
         sense.energy = self._sense.compute_energy()

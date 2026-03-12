@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -117,6 +118,34 @@ def test_decision_context_groups_fields_into_snapshots():
 
 
 @pytest.mark.asyncio
+async def test_proactive_loop_run_ticks_immediately_before_waiting():
+    loop = ProactiveLoop.__new__(ProactiveLoop)
+    loop._cfg = SimpleNamespace(
+        threshold=0.36,
+        default_channel="telegram",
+        default_chat_id="7674283004",
+    )
+    loop._manual_trigger_event = asyncio.Event()
+    ticked = {"done": False}
+
+    async def _tick():
+        ticked["done"] = True
+        loop._running = False
+        return 0.5
+
+    def _next_interval(base_score=None):
+        assert ticked["done"], "run() 应先执行一次 tick，再计算下次间隔"
+        return 60
+
+    loop._tick = _tick
+    loop._next_interval = _next_interval
+
+    await loop.run()
+
+    assert ticked["done"] is True
+
+
+@pytest.mark.asyncio
 async def test_engine_classify_state_summary_tag_supports_fenced_json():
     provider = _DummyProvider()
     provider.chat = AsyncMock(
@@ -174,6 +203,41 @@ async def test_engine_stage_gate_returns_structured_result_for_scheduler_reject(
     assert result.proceed is False
     assert result.stop_result is _STOP_NONE
     assert result.reason_code == "scheduler_reject"
+
+
+@pytest.mark.asyncio
+async def test_engine_stage_gate_bypasses_quota_when_alert_exists():
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        dedupe_seen_ttl_hours=24,
+        delivery_dedupe_hours=24,
+        semantic_dedupe_window_hours=24,
+        anyaction_enabled=True,
+    )
+    engine._state = SimpleNamespace(cleanup=MagicMock())
+    engine._sense = SimpleNamespace(last_user_at=lambda: None)
+    engine._anyaction = SimpleNamespace(
+        should_act=lambda **kwargs: (False, {"reason": "quota_exhausted"})
+    )
+
+    fake_alert_payload = [
+        {
+            "event_id": "alert-001",
+            "kind": "alert",
+            "source_type": "health_event",
+            "source_name": "fitbit",
+            "content": "心率偏高",
+            "severity": "high",
+        }
+    ]
+    with mock.patch(
+        "proactive.mcp_sources.fetch_alert_events", return_value=fake_alert_payload
+    ):
+        result = await engine._stage_gate(DecisionContext())
+
+    assert result.proceed is True
+    assert result.stop_result is None
+    assert result.reason_code == "pass"
 
 
 @pytest.mark.asyncio
