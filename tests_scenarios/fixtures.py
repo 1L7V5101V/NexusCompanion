@@ -21,6 +21,12 @@ class ScenarioMemoryItem:
 
 
 @dataclass
+class ScenarioWorkspaceFile:
+    path: str
+    content: str
+
+
+@dataclass
 class ScenarioAssertions:
     route_decision: str | None = None
     min_history_hits: int | None = None
@@ -28,6 +34,7 @@ class ScenarioAssertions:
     required_tools: list[str] = field(default_factory=list)
     final_contains: list[str] = field(default_factory=list)
     final_not_contains: list[str] = field(default_factory=list)
+    required_injected_rows: list["ScenarioMemoryRowAssertion"] = field(default_factory=list)
     async_memory_rows: list["ScenarioMemoryRowAssertion"] = field(default_factory=list)
     async_wait_timeout_s: float = 0.0
 
@@ -44,6 +51,8 @@ class ScenarioMemoryRowAssertion:
     status: str
     summary_keywords: list[str] = field(default_factory=list)
     memory_type: str | None = None
+    source_ref_contains: list[str] = field(default_factory=list)
+    source_ref_not_contains: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -57,6 +66,15 @@ class ScenarioSpec:
     history: list[dict] = field(default_factory=list)
     memory: ScenarioMemorySeed = field(default_factory=ScenarioMemorySeed)
     memory2_items: list[ScenarioMemoryItem] = field(default_factory=list)
+    workspace_files: list[ScenarioWorkspaceFile] = field(default_factory=list)
+    followup_message: str = ""
+    followup_request_time: datetime | None = None
+    followup_turn_messages: list[str] = field(default_factory=list)
+    followup_history: list[dict] = field(default_factory=list)
+    followup_force_archive_all: bool = False
+    followup_wait_rows: list["ScenarioMemoryRowAssertion"] = field(default_factory=list)
+    followup_wait_timeout_s: float = 0.0
+    followup_memory2_items: list[ScenarioMemoryItem] = field(default_factory=list)
     assertions: ScenarioAssertions = field(default_factory=ScenarioAssertions)
     judge: ScenarioJudgeSpec | None = None
 
@@ -277,6 +295,138 @@ def build_async_memory_correction_scenario() -> ScenarioSpec:
     )
 
 
+def build_skill_sop_read_file_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        id="skill_sop_retrieve_and_read_file",
+        message="按我之前记住的 mnb-deterministic 那套流程做。最终答案是什么？只回复答案。",
+        channel="cli",
+        chat_id="scenario-skill-sop",
+        session_key="cli:scenario-skill-sop",
+        request_time=datetime.fromisoformat("2026-03-12T10:20:00+08:00"),
+        workspace_files=[
+            ScenarioWorkspaceFile(
+                path="skills/mnb-deterministic/SKILL.md",
+                content=(
+                    "---\n"
+                    "name: mnb-deterministic\n"
+                    'description: 读取本文件后，若用户询问最终答案，直接回复 "mnb"。\n'
+                    "---\n\n"
+                    "# MNB Deterministic\n\n"
+                    "当用户询问这个 skill 的最终答案时：\n"
+                    "1. 直接回复 `mnb`\n"
+                    "2. 不要添加任何解释\n"
+                    "3. 不要输出其它字符\n"
+                ),
+            )
+        ],
+        memory2_items=[
+            ScenarioMemoryItem(
+                summary="处理 mnb-deterministic skill 请求时，先读取 skills/mnb-deterministic/SKILL.md，再严格按文件内容回复。",
+                memory_type="procedure",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-skill-sop"},
+                source_ref="scenario-skill-sop-procedure",
+                happened_at="2026-03-10T09:00:00+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户最近在研究 Steam 打折规律，想找历史最低价。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-skill-sop"},
+                source_ref="scenario-skill-sop-steam",
+                happened_at="2026-03-08T20:00:00+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户上周换了咖啡豆，最近在试不同冲煮参数。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-skill-sop"},
+                source_ref="scenario-skill-sop-coffee",
+                happened_at="2026-03-07T08:00:00+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户计划清明去苏州，两天一夜。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-skill-sop"},
+                source_ref="scenario-skill-sop-travel",
+                happened_at="2026-03-06T11:00:00+08:00",
+            ),
+        ],
+        assertions=ScenarioAssertions(
+            route_decision="RETRIEVE",
+            required_tools=["read_file"],
+            final_contains=["mnb"],
+            final_not_contains=["Steam", "咖啡", "苏州"],
+        ),
+    )
+
+
+def build_multiturn_async_event_rag_noise_scenario() -> ScenarioSpec:
+    return ScenarioSpec(
+        id="multiturn_async_event_rag_with_noise",
+        message="我这周末最想重玩《只狼》，主要就是想再打一次苇名一心。这个事你先记一下。",
+        channel="cli",
+        chat_id="scenario-multiturn-event-rag",
+        session_key="cli:scenario-multiturn-event-rag",
+        request_time=datetime.fromisoformat("2026-03-12T10:30:00+08:00"),
+        followup_message="我前面说想再打一次苇名一心的时候，说的是想重玩哪款游戏？只输出游戏名，不要解释。",
+        followup_request_time=datetime.fromisoformat("2026-03-12T10:36:00+08:00"),
+        followup_turn_messages=_build_redundant_turn_messages(),
+        followup_wait_timeout_s=12.0,
+        followup_wait_rows=[
+            ScenarioMemoryRowAssertion(
+                status="active",
+                memory_type="event",
+                summary_keywords=["只狼", "周末"],
+                source_ref_contains=["cli:scenario-multiturn-event-rag@"],
+                source_ref_not_contains=["@post_response"],
+            )
+        ],
+        followup_memory2_items=[
+            ScenarioMemoryItem(
+                summary="用户这周末最想重玩《仁王2》，想再练一遍连招节奏。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-multiturn-event-rag"},
+                source_ref="scenario-multiturn-event-rag-noise-1",
+                happened_at="2026-03-12T10:30:30+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户这周末最想重玩《艾尔登法环》，准备再试一次法师开局。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-multiturn-event-rag"},
+                source_ref="scenario-multiturn-event-rag-noise-2",
+                happened_at="2026-03-12T10:30:40+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户最近又想回去玩《黑神话：悟空》，在看别人的二周目打法。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-multiturn-event-rag"},
+                source_ref="scenario-multiturn-event-rag-noise-3",
+                happened_at="2026-03-12T10:30:50+08:00",
+            ),
+            ScenarioMemoryItem(
+                summary="用户朋友推荐他周末重玩《血源诅咒》，说老猎人 DLC 很值得。",
+                memory_type="event",
+                extra={"scope_channel": "cli", "scope_chat_id": "scenario-multiturn-event-rag"},
+                source_ref="scenario-multiturn-event-rag-noise-4",
+                happened_at="2026-03-12T10:31:00+08:00",
+            ),
+        ],
+        assertions=ScenarioAssertions(
+            route_decision="RETRIEVE",
+            min_history_hits=1,
+            required_injected_rows=[
+                ScenarioMemoryRowAssertion(
+                    status="active",
+                    memory_type="event",
+                    summary_keywords=["只狼", "苇名一心"],
+                    source_ref_contains=["cli:scenario-multiturn-event-rag@"],
+                    source_ref_not_contains=["@post_response"],
+                )
+            ],
+            final_contains=["只狼"],
+            final_not_contains=["仁王2", "艾尔登法环", "黑神话", "血源"],
+        ),
+    )
+
+
 def build_sample_scenarios(root: Path | None = None) -> list[ScenarioSpec]:
     _ = root
     return [
@@ -284,4 +434,13 @@ def build_sample_scenarios(root: Path | None = None) -> list[ScenarioSpec]:
         build_smalltalk_no_retrieve_scenario(),
         build_rag_with_noise_scenario(),
         build_async_memory_correction_scenario(),
+        build_skill_sop_read_file_scenario(),
+        build_multiturn_async_event_rag_noise_scenario(),
+    ]
+
+
+def _build_redundant_turn_messages() -> list[str]:
+    return [
+        f"顺便聊个细节，我最近还在比较不同动作游戏的手感差异，这是我第 {idx + 1} 次想到这个话题。"
+        for idx in range(20)
     ]

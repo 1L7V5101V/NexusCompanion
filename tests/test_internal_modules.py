@@ -184,6 +184,25 @@ async def test_source_scorer_fallback_paths_and_consolidation_helpers(
     assert harness._memory_port.save_from_consolidation.await_count == 2
     assert session.last_consolidated == 0
 
+    scheduled.clear()
+    awaited = _ConsolidationHarness(
+        json.dumps({"history_entries": ["[2025-01-01 10:00] 主题A"]})
+    )
+    awaited_session = SimpleNamespace(
+        key="telegram:2",
+        last_consolidated=0,
+        messages=session.messages,
+        _channel="telegram",
+        _chat_id="2",
+    )
+    await awaited._consolidate_memory(
+        awaited_session,
+        archive_all=True,
+        await_vector_store=True,
+    )
+    assert awaited._memory_port.save_from_consolidation.await_count == 1
+    assert scheduled and all(task.done() for task in scheduled)
+
     empty = _ConsolidationHarness("")
     short_session = SimpleNamespace(key="s", messages=[{"role": "user", "content": "u"}], last_consolidated=0)
     await empty._consolidate_memory(short_session)
@@ -303,13 +322,6 @@ async def test_post_response_worker_fallback_and_preference_helpers():
         set(),
     )
     assert len(items) == 1
-
-    assert worker._extract_explicit_content_preferences(
-        "以后别再给我推《鬼灭之刃》了，我真的很讨厌这个作品。"
-    )[0]["memory_type"] == "preference"
-    assert worker._extract_explicit_content_preferences("我一直都很喜欢《仁王》。")[0]["memory_type"] == "preference"
-    assert worker._extract_explicit_content_preferences("别再推火影了") == []
-
 
 @pytest.mark.asyncio
 async def test_fitbit_sleep_provider_and_bootstrap_paths(

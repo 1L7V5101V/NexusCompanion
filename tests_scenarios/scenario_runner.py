@@ -7,6 +7,7 @@ import sqlite3
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from tests_scenarios.fixtures import (
     ScenarioMemoryItem,
     ScenarioMemoryRowAssertion,
     ScenarioSpec,
+    ScenarioWorkspaceFile,
 )
 from tests_scenarios.judge_runner import ScenarioJudgeRunner, ScenarioJudgeVerdict
 
@@ -159,7 +161,19 @@ class ScenarioRunner:
                 runtime.workspace,
                 spec.assertions,
             )
-            # 3. 最后分别执行硬断言和可选 judge，并把结果落盘。
+            # 3. 若配置了第二轮，则先触发真实 consolidation，再执行 follow-up。
+            if spec.followup_message:
+                (
+                    final_content,
+                    session_after,
+                    memory_trace,
+                    memory_rows,
+                ) = await self._run_followup_turn(
+                    runtime,
+                    spec,
+                    session_key=session_key,
+                )
+            # 4. 最后分别执行硬断言和可选 judge，并把结果落盘。
             assertion_errors = self._check_assertions(
                 spec.assertions,
                 final_content=final_content,
@@ -224,7 +238,7 @@ class ScenarioRunner:
     async def _create_runtime(self, spec: ScenarioSpec) -> ScenarioRuntime:
         artifact_dir = self._prepare_artifact_dir(spec.id)
         workspace = artifact_dir / "workspace"
-        self._prepare_workspace(workspace)
+        self._prepare_workspace(workspace, spec.workspace_files)
         config = self._build_config(workspace)
         http_resources = SharedHttpResources()
         runtime_provider, light_provider = build_providers(config)
@@ -292,11 +306,20 @@ class ScenarioRunner:
         latest_dir.mkdir(parents=True, exist_ok=True)
         return latest_dir
 
-    def _prepare_workspace(self, workspace: Path) -> None:
+    def _prepare_workspace(
+        self,
+        workspace: Path,
+        workspace_files: list[ScenarioWorkspaceFile],
+    ) -> None:
         workspace.mkdir(parents=True, exist_ok=True)
         skills_src = self._repo_root / "skills"
         if skills_src.exists():
-            (workspace / "skills").symlink_to(skills_src)
+            skills_dir = workspace / "skills"
+            shutil.copytree(skills_src, skills_dir, dirs_exist_ok=True)
+        for item in workspace_files:
+            file_path = workspace / item.path
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(item.content, encoding="utf-8")
 
     def _build_config(self, workspace: Path) -> Config:
         config = copy.deepcopy(load_config(self._config_path))
@@ -320,6 +343,8 @@ class ScenarioRunner:
         session.messages = copy.deepcopy(spec.history)
         session.metadata = {}
         session.last_consolidated = 0
+        session._channel = spec.channel
+        session._chat_id = spec.chat_id
         runtime.session_manager.save(session)
         # 3. 最后写入 memory2 测试数据，走真实 embedding 与真实 upsert。
         for index, item in enumerate(spec.memory2_items):
@@ -347,6 +372,30 @@ class ScenarioRunner:
             chat_id=spec.chat_id,
             content=spec.message,
             timestamp=spec.request_time,
+        )
+
+    def _build_followup_message(self, spec: ScenarioSpec) -> InboundMessage:
+        return InboundMessage(
+            channel=spec.channel,
+            sender="scenario",
+            chat_id=spec.chat_id,
+            content=spec.followup_message,
+            timestamp=spec.followup_request_time or spec.request_time,
+        )
+
+    def _build_extra_turn_message(
+        self,
+        spec: ScenarioSpec,
+        *,
+        content: str,
+        turn_index: int,
+    ) -> InboundMessage:
+        return InboundMessage(
+            channel=spec.channel,
+            sender="scenario",
+            chat_id=spec.chat_id,
+            content=content,
+            timestamp=spec.request_time + timedelta(seconds=turn_index + 1),
         )
 
     def _resolve_session_key(self, spec: ScenarioSpec) -> str:
@@ -437,6 +486,27 @@ class ScenarioRunner:
                 return last_rows
             await asyncio.sleep(0.2)
 
+    async def _await_specific_memory_rows(
+        self,
+        workspace: Path,
+        expected_rows: list[ScenarioMemoryRowAssertion],
+        *,
+        timeout_s: float,
+    ) -> list[dict[str, Any]]:
+        # 1. 轮询等待指定 event / procedure 行出现，供多轮场景在第二轮前使用。
+        deadline = time.perf_counter() + max(0.5, float(timeout_s or 8.0))
+        last_rows: list[dict[str, Any]] = []
+        while True:
+            last_rows = self._safe_load_memory_rows(workspace)
+            errors = self._check_memory_row_assertions(
+                expected_rows,
+                memory_rows=last_rows,
+            )
+            if not errors or time.perf_counter() >= deadline:
+                return last_rows
+            # 2. consolidation 和 memory2.save_from_consolidation 都是后台任务，这里短轮询等待完成。
+            await asyncio.sleep(0.2)
+
     def _check_memory_row_assertions(
         self,
         expected_rows: list[ScenarioMemoryRowAssertion],
@@ -462,6 +532,11 @@ class ScenarioRunner:
         if str(row.get("status", "")) != expected.status:
             return False
         if expected.memory_type and str(row.get("memory_type", "")) != expected.memory_type:
+            return False
+        source_ref = str(row.get("source_ref", ""))
+        if any(part not in source_ref for part in expected.source_ref_contains):
+            return False
+        if any(part in source_ref for part in expected.source_ref_not_contains):
             return False
         normalized_summary = _normalize_assert_text(str(row.get("summary", "")))
         return all(
@@ -496,6 +571,16 @@ class ScenarioRunner:
         for tool_name in assertions.required_tools:
             if tool_name not in called_tools:
                 errors.append(f"缺少预期工具调用: {tool_name}")
+        injected_ids = set(memory_trace.get("injected_item_ids") or [])
+        injected_rows = [
+            row for row in memory_rows if str(row.get("id", "")) in injected_ids
+        ]
+        errors.extend(
+            self._check_memory_row_assertions(
+                assertions.required_injected_rows,
+                memory_rows=injected_rows,
+            )
+        )
         for needle in assertions.final_contains:
             if _normalize_assert_text(needle) not in normalized_final:
                 errors.append(f"最终回复缺少关键字: {needle}")
@@ -553,6 +638,54 @@ class ScenarioRunner:
         if result.judge_verdict is not None:
             self._write_json(runtime.artifact_dir / "judge.json", asdict(result.judge_verdict))
 
+    async def _run_followup_turn(
+        self,
+        runtime: ScenarioRuntime,
+        spec: ScenarioSpec,
+        *,
+        session_key: str,
+    ) -> tuple[str, dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+        # 1. 先补真实中间轮次，让 session / post-response / consolidation 都按主链路自然推进。
+        for index, message in enumerate(spec.followup_turn_messages):
+            await runtime.loop._process(
+                self._build_extra_turn_message(
+                    spec,
+                    content=message,
+                    turn_index=index,
+                )
+            )
+        # 2. 如有要求，再显式触发一次公开 consolidation 入口，兼容仍需强制归档的场景。
+        if spec.followup_force_archive_all:
+            await runtime.loop.trigger_memory_consolidation(
+                session_key,
+                archive_all=True,
+            )
+        if spec.followup_wait_rows:
+            await self._await_specific_memory_rows(
+                runtime.workspace,
+                spec.followup_wait_rows,
+                timeout_s=spec.followup_wait_timeout_s,
+            )
+        # 3. 若场景仍需固定 session 历史，再追加测试专用历史，兼容旧场景能力。
+        if spec.followup_history:
+            session = runtime.session_manager.get_or_create(session_key)
+            session.messages.extend(copy.deepcopy(spec.followup_history))
+            await runtime.session_manager.append_messages(
+                session,
+                session.messages[-len(spec.followup_history) :],
+            )
+        # 4. 再补一批高相似噪音 event，模拟真实记忆库更脏的情况。
+        for index, item in enumerate(spec.followup_memory2_items):
+            await self._save_memory_item(runtime, item, 10_000 + index)
+        # 5. 最后发送第二轮消息，并返回第二轮的 trace / rows 供最终断言。
+        outbound = await runtime.loop._process(self._build_followup_message(spec))
+        return (
+            outbound.content,
+            self._snapshot_session(runtime.session_manager, session_key),
+            self._load_memory_trace(runtime.workspace),
+            self._safe_load_memory_rows(runtime.workspace),
+        )
+
     async def _close_runtime(self, runtime: ScenarioRuntime) -> None:
         await runtime.memory_runtime.aclose()
         await runtime.http_resources.aclose()
@@ -583,14 +716,24 @@ def _scenario_snapshot(spec: ScenarioSpec) -> dict[str, Any]:
     return {
         "id": spec.id,
         "message": spec.message,
+        "followup_message": spec.followup_message,
+        "followup_turn_messages": spec.followup_turn_messages,
         "channel": spec.channel,
         "chat_id": spec.chat_id,
         "session_key": spec.session_key or spec.derived_session_key,
         "derived_session_key": spec.derived_session_key,
         "request_time": spec.request_time.isoformat(),
+        "followup_request_time": (
+            spec.followup_request_time.isoformat()
+            if spec.followup_request_time
+            else None
+        ),
         "history": spec.history,
+        "followup_history": spec.followup_history,
         "memory": asdict(spec.memory),
         "memory2_items": [asdict(item) for item in spec.memory2_items],
+        "followup_wait_rows": [asdict(item) for item in spec.followup_wait_rows],
+        "followup_memory2_items": [asdict(item) for item in spec.followup_memory2_items],
         "assertions": asdict(spec.assertions),
         "judge": asdict(spec.judge) if spec.judge else None,
     }

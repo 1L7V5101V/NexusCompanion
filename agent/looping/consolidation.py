@@ -139,7 +139,12 @@ class AgentLoopConsolidationMixin:
         finally:
             self._consolidating.discard(key)
 
-    async def _consolidate_memory(self, session, archive_all: bool = False) -> None:
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        await_vector_store: bool = False,
+    ) -> None:
         memory = self._memory_port
         window = _select_consolidation_window(
             session,
@@ -283,11 +288,12 @@ class AgentLoopConsolidationMixin:
 
             scope_channel = getattr(session, "_channel", "")
             scope_chat_id = getattr(session, "_chat_id", "")
+            save_tasks: list[asyncio.Task] = []
             for i, entry in enumerate(history_entries):
                 entry_ref = (
                     f"{source_ref}#{i}" if len(history_entries) > 1 else source_ref
                 )
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self._memory_port.save_from_consolidation(
                         history_entry=entry,
                         behavior_updates=[],
@@ -296,6 +302,9 @@ class AgentLoopConsolidationMixin:
                         scope_chat_id=scope_chat_id,
                     )
                 )
+                save_tasks.append(task)
+            if await_vector_store and save_tasks:
+                await asyncio.gather(*save_tasks)
             if history_entries:
                 logger.info(
                     "Memory consolidation: saved %d history entries to vector store",

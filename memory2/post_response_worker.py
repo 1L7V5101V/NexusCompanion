@@ -18,34 +18,6 @@ from memory2.rule_schema import (
 
 logger = logging.getLogger(__name__)
 
-_TITLE_PATTERN = re.compile(r"[《\"“](.{1,40}?)[》\"”]")
-_NEGATIVE_CUES = (
-    "讨厌",
-    "厌恶",
-    "反感",
-    "恶心",
-    "不喜欢",
-    "看不起",
-    "别再推",
-    "不要再推",
-    "别给我推",
-    "不要给我推",
-    "别再发",
-    "不要再发",
-    "别拿",
-    "不要拿",
-)
-_POSITIVE_CUES = (
-    "喜欢",
-    "很喜欢",
-    "爱看",
-    "爱玩",
-    "偏好",
-    "感兴趣",
-    "有兴趣",
-    "想看",
-)
-
 
 class PostResponseMemoryWorker:
     """
@@ -98,14 +70,12 @@ class PostResponseMemoryWorker:
                 token_budget,
             )
 
-            heuristic_items = self._extract_explicit_content_preferences(user_msg)
             new_items, token_budget = await self._extract_implicit(
                 user_msg,
                 agent_response,
                 already_memorized,
                 token_budget,
             )
-            new_items = self._merge_extracted_items(heuristic_items, new_items)
             new_items = await self._dedupe_against_explicit(
                 new_items,
                 already_memorized,
@@ -412,6 +382,7 @@ ASSISTANT 的回复只是对话背景，不能作为提取依据。
 ✗ agent 自己选择的回复格式/风格（用户没有要求）
 ✗ 用户对自身情况的感慨或困惑
 ✗ 一次性操作记录
+✗ 带明确时间锚点的短期计划、近期打算、当前想做的事（如“这周末最想重玩 X”“最近想看 Y”）不能写成 preference；若确有记忆价值，应写成 event
 ✗ USER 只是随口评价某作品好坏，但没有表现出稳定喜欢/厌恶或未来规避意图
 ✗ 显式 memorize 内容（见排除列表）{exclusion_block}
 
@@ -423,7 +394,7 @@ USER: {user_msg}
 ASSISTANT: {agent_response}
 
 只返回合法 JSON 数组，无内容时返回 []。
-每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
+每项格式：{{"summary": "...", "memory_type": "procedure|preference|event", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
 
 【tool_requirement 填写规则】
 - 若该条目要求 agent 在某类请求下必须调用特定工具/skill（如"查询天气时必须用 weather skill"、"查 Steam 必须用 MCP 工具"），则填写触发该工具的关键名称（如 "weather_skill"、"steam_mcp"）
@@ -500,72 +471,6 @@ ASSISTANT: {agent_response}
                 rule_schema=normalized.get("rule_schema"),
             )
         return normalized
-
-    @staticmethod
-    def _extract_explicit_content_preferences(user_msg: str) -> list[dict]:
-        text = (user_msg or "").strip()
-        if not text:
-            return []
-
-        titles = []
-        for raw in _TITLE_PATTERN.findall(text):
-            title = raw.strip()
-            if title and title not in titles:
-                titles.append(title)
-        if not titles:
-            return []
-
-        lowered = text.lower()
-        is_negative = any(cue in text for cue in _NEGATIVE_CUES)
-        is_positive = any(cue in text for cue in _POSITIVE_CUES)
-        items: list[dict] = []
-
-        for title in titles[:2]:
-            if is_negative:
-                summary = (
-                    f"用户明确厌恶《{title}》相关内容；"
-                    "主动消息不要再推送、引用或拿它打比方"
-                )
-            elif is_positive:
-                summary = (
-                    f"用户明确喜欢《{title}》相关内容；" "主动消息可优先推送相关内容"
-                )
-            else:
-                continue
-            items.append(
-                {
-                    "summary": summary,
-                    "memory_type": "preference",
-                    "tool_requirement": None,
-                    "steps": [],
-                }
-            )
-
-        # 对未包书名号但带有“别再推/不要再发”之类显式规避意图的短词做一个轻量兜底
-        if not items and any(cue in text for cue in _NEGATIVE_CUES):
-            match = re.search(
-                r"(?:别再推|不要再推|别给我推|不要给我推|别再发|不要再发|别拿|不要拿)([^，。！？\n]{1,16})",
-                text,
-            )
-            if match:
-                subject = (
-                    match.group(1)
-                    .strip()
-                    .strip("这那种类个些的相关内容作品游戏动漫番剧")
-                )
-                if subject:
-                    items.append(
-                        {
-                            "summary": (
-                                f"用户明确厌恶{subject}相关内容；"
-                                "主动消息不要再推送、引用或拿它打比方"
-                            ),
-                            "memory_type": "preference",
-                            "tool_requirement": None,
-                            "steps": [],
-                        }
-                    )
-        return items
 
     async def _save_with_supersede(
         self,

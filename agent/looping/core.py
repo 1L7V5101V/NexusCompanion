@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
-from agent.looping.consolidation import AgentLoopConsolidationMixin
+from agent.looping.consolidation import (
+    AgentLoopConsolidationMixin,
+    _select_consolidation_window,
+)
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
 from agent.looping.memory_gate import AgentLoopMemoryGateMixin
 from agent.looping.safety_retry import AgentLoopSafetyRetryMixin
@@ -44,6 +47,7 @@ class AgentLoop(
     """
 
     _MESSAGE_TIMEOUT_S: float = 600.0
+    _CONSOLIDATION_WAIT_S: float = 30.0
 
     def __init__(
         self,
@@ -235,6 +239,55 @@ class AgentLoop(
         )
         response = await self._process(msg, session_key=session_key)
         return response.content if response else ""
+
+    async def trigger_memory_consolidation(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool = False,
+    ) -> bool:
+        # 1. 先读取真实 session，并判断当前是否真的需要 consolidation。
+        session = self.session_manager.get_or_create(session_key)
+        window = _select_consolidation_window(
+            session,
+            memory_window=self.memory_window,
+            archive_all=archive_all,
+        )
+        if window is None:
+            return False
+        if session_key in self._consolidating:
+            # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
+            await self._wait_for_consolidation_idle(session_key)
+            session = self.session_manager.get_or_create(session_key)
+            window = _select_consolidation_window(
+                session,
+                memory_window=self.memory_window,
+                archive_all=archive_all,
+            )
+            if window is None:
+                return True
+        # 2. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
+        self._consolidating.add(session_key)
+        try:
+            await self._consolidate_memory(
+                session,
+                archive_all=archive_all,
+                await_vector_store=True,
+            )
+            await self.session_manager.save_async(session)
+            return True
+        finally:
+            self._consolidating.discard(session_key)
+
+    async def _wait_for_consolidation_idle(self, session_key: str) -> None:
+        # 1. 后台 consolidation 是异步任务，这里短轮询等待它退出运行态。
+        deadline = time.perf_counter() + self._CONSOLIDATION_WAIT_S
+        while session_key in self._consolidating:
+            if time.perf_counter() >= deadline:
+                raise TimeoutError(
+                    f"等待 consolidation 完成超时: session_key={session_key}"
+                )
+            await asyncio.sleep(0.05)
 
     @staticmethod
     def _is_spawn_completion(msg: InboundMessage) -> bool:

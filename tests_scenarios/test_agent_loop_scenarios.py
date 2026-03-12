@@ -6,7 +6,9 @@ import pytest
 
 from tests_scenarios.fixtures import (
     build_async_memory_correction_scenario,
+    build_multiturn_async_event_rag_noise_scenario,
     build_rag_with_noise_scenario,
+    build_skill_sop_read_file_scenario,
     build_smalltalk_no_retrieve_scenario,
     build_tool_search_schedule_scenario,
 )
@@ -72,4 +74,34 @@ async def test_real_async_memory_correction_supersedes_old_rule() -> None:
     # 2. 运行场景：真实执行主对话链路，并等待 post-response memory worker 完成异步落库。
     result = await runner.run(spec)
     # 3. 校验结果：要求旧规则被标记为 superseded，且新规则已写入 active memory。
+    assert result.passed, result.failure_message()
+
+
+@pytest.mark.asyncio
+@pytest.mark.scenario_mvp
+@pytest.mark.scenario_live
+@pytest.mark.skipif(not _RUN_SCENARIOS, reason="设置 AKASIC_RUN_SCENARIOS=1 后再执行真实场景测试")
+async def test_real_skill_sop_retrieve_and_read_file() -> None:
+    """验证命中 skill + SOP 时，主链路会 read_file 读取 SKILL.md 并按内容给出确定性答案。"""
+    # 1. 构造场景：隔离 workspace 中写入一个测试 skill，并预置相关 procedure 和记忆噪音。
+    spec = build_skill_sop_read_file_scenario()
+    runner = ScenarioRunner()
+    # 2. 运行场景：真实执行 retrieve、skill 命中、read_file 和最终回答。
+    result = await runner.run(spec)
+    # 3. 校验结果：要求 read_file 确实被调用，且最终回答稳定落到 skill 规定的答案。
+    assert result.passed, result.failure_message()
+
+
+@pytest.mark.asyncio
+@pytest.mark.scenario_mvp
+@pytest.mark.scenario_live
+@pytest.mark.skipif(not _RUN_SCENARIOS, reason="设置 AKASIC_RUN_SCENARIOS=1 后再执行真实场景测试")
+async def test_real_multiturn_async_event_rag_with_noise() -> None:
+    """验证真实多轮把 event 自然推进到记忆层后，第二轮在噪音和大上下文下仍能用 RAG 回答正确。"""
+    # 1. 构造场景：第一轮提供真实事件，中间再真实跑多轮冗余对话，并注入多条相似错误 event 噪音。
+    spec = build_multiturn_async_event_rag_noise_scenario()
+    runner = ScenarioRunner()
+    # 2. 运行场景：真实执行多轮 AgentLoop，让 session 持久化与 consolidation 按主链路自然推进。
+    result = await runner.run(spec)
+    # 3. 校验结果：要求第二轮仍能从 RAG 中找到正确 event，并稳定回答正确游戏名。
     assert result.passed, result.failure_message()
