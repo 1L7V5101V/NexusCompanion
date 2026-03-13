@@ -230,6 +230,7 @@ class ProactiveLoopRuntimeMixin:
                     "proactive_strategy_trace.jsonl", payload
                 )
             ),
+            observe_writer=getattr(self, "_observe_writer", None),
         )
 
     def _log_runtime_config(self) -> None:

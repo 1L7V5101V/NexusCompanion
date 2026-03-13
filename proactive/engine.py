@@ -34,6 +34,7 @@ from proactive.ports import (
 from proactive.state import ProactiveStateStore
 from proactive.skill_action import SkillActionRunner
 from core.common.strategy_trace import build_strategy_trace_envelope
+from core.observe.events import ProactiveDecisionTrace
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +318,7 @@ class ProactiveEngine:
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         stage_trace_writer: Callable[[dict[str, Any]], None] | None = None,
+        observe_writer: Any | None = None,
     ) -> None:
         self._cfg = cfg
         self._state = state
@@ -334,6 +336,7 @@ class ProactiveEngine:
         # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
         self._passive_busy_fn = passive_busy_fn
         self._stage_trace_writer = stage_trace_writer
+        self._observe_writer = observe_writer
 
     async def tick(self) -> float | None:
         """执行一次主动判断循环。
@@ -728,6 +731,15 @@ class ProactiveEngine:
         if not decide.should_send:
             logger.info("[proactive] 决定不主动发送")
             logger.info("[proactive] 本轮未发送，不标记 seen，后续可再次尝试")
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="decision_reject",
+                should_send=False,
+                action="idle",
+                delivery_attempted=False,
+                delivery_result="not_sent",
+            )
             await self._reject_and_try_skill_action(ctx, evidence)
             return
 
@@ -753,6 +765,17 @@ class ProactiveEngine:
                 len(evidence.evidence_entries),
             )
             logger.info("[proactive] selected_action=idle reason=delivery_dedupe")
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="delivery_dedupe",
+                should_send=True,
+                action="idle",
+                delivery_key=delivery_key,
+                is_delivery_duplicate=True,
+                delivery_attempted=False,
+                delivery_result="delivery_dedupe",
+            )
             return
 
         # 4. 再做 state summary 防复读，必要时重写或拒绝这次发送。
@@ -781,6 +804,16 @@ class ProactiveEngine:
                 " selected_action=idle reason=passive_busy",
                 state.session_key,
             )
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="passive_busy",
+                should_send=True,
+                action="idle",
+                delivery_key=delivery_key,
+                delivery_attempted=False,
+                delivery_result="passive_busy",
+            )
             return
 
         # 7. 真正发送；成功后落 delivery/seen/ack，失败则保持可重试状态。
@@ -796,9 +829,29 @@ class ProactiveEngine:
             self._finalize_successful_send(ctx, evidence, delivery_key)
             logger.debug("[proactive] 已发送成功并标记本轮条目为 seen")
             logger.debug("[proactive] selected_action=chat")
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="sent",
+                should_send=True,
+                action="chat",
+                delivery_key=delivery_key,
+                delivery_attempted=True,
+                delivery_result="sent",
+            )
         else:
             logger.info("[proactive] 本轮发送未成功，不标记 seen，后续可再次尝试")
             logger.info("[proactive] selected_action=idle reason=send_failed")
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="send_failed",
+                should_send=True,
+                action="idle",
+                delivery_key=delivery_key,
+                delivery_attempted=True,
+                delivery_result="send_failed",
+            )
 
     def _compute_score_snapshot(self, ctx: DecisionContext) -> float:
         """把 score 阶段的纯计算部分集中到一个 helper，避免和副作用混在一起。"""
@@ -1334,6 +1387,15 @@ class ProactiveEngine:
                 "[proactive] 当前沉默周期内 state_summary_tag=%s 已出现，且重写失败，跳过发送",
                 original_tag,
             )
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="state_summary_repeat",
+                should_send=True,
+                action="idle",
+                delivery_attempted=False,
+                delivery_result="state_summary_repeat",
+            )
             await self._reject_and_try_skill_action(ctx, evidence)
             return False
 
@@ -1342,6 +1404,15 @@ class ProactiveEngine:
             logger.info(
                 "[proactive] state_summary_tag=%s 重写后仍重复，跳过发送",
                 rewritten_tag,
+            )
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="state_summary_repeat",
+                should_send=True,
+                action="idle",
+                delivery_attempted=False,
+                delivery_result="state_summary_repeat",
             )
             await self._reject_and_try_skill_action(ctx, evidence)
             return False
@@ -1369,6 +1440,16 @@ class ProactiveEngine:
             return True
         logger.info("[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason)
         logger.info("[proactive] selected_action=idle reason=message_dedupe")
+        self._emit_observe_decision(
+            ctx,
+            stage="act",
+            reason_code="message_dedupe",
+            should_send=True,
+            action="idle",
+            is_message_duplicate=True,
+            delivery_attempted=False,
+            delivery_result="message_dedupe",
+        )
         await self._reject_and_try_skill_action(ctx, evidence)
         return False
 
@@ -1431,6 +1512,107 @@ class ProactiveEngine:
             )
         except Exception:
             logger.exception("[proactive] stage trace write failed stage=%s", stage)
+        self._emit_observe_decision(ctx, stage=stage, result=result)
+
+    def _emit_observe_decision(
+        self,
+        ctx: DecisionContext,
+        *,
+        stage: str,
+        result: object | None = None,
+        reason_code: str | None = None,
+        should_send: bool | None = None,
+        action: str | None = None,
+        delivery_key: str | None = None,
+        is_delivery_duplicate: bool | None = None,
+        is_message_duplicate: bool | None = None,
+        delivery_attempted: bool | None = None,
+        delivery_result: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        writer = self._observe_writer
+        if writer is None:
+            return
+        state = ctx.state
+        fetch = ctx.fetch
+        score = ctx.score
+        decide = ctx.decide
+        candidate_item_ids = (
+            [self._item_id_for(item) for item in self._feed_items(fetch.new_items[:5])]
+            if fetch is not None
+            else []
+        )
+        decision = decide.decision if decide is not None else None
+        decision_signals = decide.decision_signals if decide is not None else {}
+        scores = (
+            decision_signals.get("scores", {})
+            if isinstance(decision_signals.get("scores", {}), dict)
+            else {}
+        )
+        trace = ProactiveDecisionTrace(
+            session_key=state.session_key or "",
+            stage=stage,
+            reason_code=reason_code
+            or getattr(result, "reason_code", None)
+            or delivery_result,
+            should_send=(
+                should_send
+                if should_send is not None
+                else (decide.should_send if decide is not None else None)
+            ),
+            action=action,
+            gate_reason=(
+                decide.history_gate_reason
+                if decide is not None and decide.history_gate_reason != "disabled"
+                else None
+            ),
+            pre_score=score.pre_score if score is not None else None,
+            base_score=score.base_score if score is not None else None,
+            draw_score=score.draw_score if score is not None else None,
+            decision_score=getattr(decision, "score", None),
+            send_threshold=(
+                float(scores.get("send_threshold"))
+                if "send_threshold" in scores
+                else self._cfg.threshold
+            ),
+            interruptibility=(
+                float(decision_signals.get("interruptibility"))
+                if "interruptibility" in decision_signals
+                else (ctx.sense.interruptibility if ctx.sense is not None else None)
+            ),
+            candidate_count=(len(fetch.new_items) if fetch is not None else None),
+            candidate_item_ids=candidate_item_ids,
+            user_replied_after_last_proactive=(
+                bool(decision_signals["user_replied_after_last_proactive"])
+                if "user_replied_after_last_proactive" in decision_signals
+                else None
+            ),
+            proactive_sent_24h=(
+                int(decision_signals["proactive_sent_24h"])
+                if "proactive_sent_24h" in decision_signals
+                else (score.sent_24h if score is not None else None)
+            ),
+            fresh_items_24h=(
+                int(decision_signals["fresh_items_24h"])
+                if "fresh_items_24h" in decision_signals
+                else (score.fresh_items_24h if score is not None else None)
+            ),
+            delivery_key=delivery_key,
+            is_delivery_duplicate=is_delivery_duplicate,
+            is_message_duplicate=is_message_duplicate,
+            delivery_attempted=delivery_attempted,
+            delivery_result=delivery_result,
+            reasoning_preview=(
+                str(getattr(decision, "reasoning", ""))[:500] or None
+                if decision is not None
+                else None
+            ),
+            error=error,
+        )
+        try:
+            writer.emit(trace)
+        except Exception:
+            logger.exception("[proactive] observe emit failed stage=%s", stage)
 
     async def _try_skill_action(self, *, now_utc: datetime) -> None:
         """在 chat idle 时，尝试从注册的 skill actions 中随机抽取并执行一个。"""

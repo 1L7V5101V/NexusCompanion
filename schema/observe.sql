@@ -1,6 +1,6 @@
 -- Observe DB schema
 -- Agent Loop + Proactive Loop 可观测性数据库
--- 版本：1 (2026-03-14)
+-- 版本：2 (2026-03-14)
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
@@ -72,6 +72,41 @@ CREATE TABLE IF NOT EXISTS rag_items (
 
 CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
 CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
+
+-- ─────────────────────────────────────────────
+-- 4. proactive_decisions  主动链路关键决策
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS proactive_decisions (
+    id                               INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                               TEXT    NOT NULL,
+    session_key                      TEXT    NOT NULL,
+    stage                            TEXT    NOT NULL,
+    reason_code                      TEXT,
+    should_send                      INTEGER,
+    action                           TEXT,
+    gate_reason                      TEXT,
+    pre_score                        REAL,
+    base_score                       REAL,
+    draw_score                       REAL,
+    decision_score                   REAL,
+    send_threshold                   REAL,
+    interruptibility                 REAL,
+    candidate_count                  INTEGER,
+    candidate_item_ids               TEXT,
+    user_replied_after_last_proactive INTEGER,
+    proactive_sent_24h               INTEGER,
+    fresh_items_24h                  INTEGER,
+    delivery_key                     TEXT,
+    is_delivery_duplicate            INTEGER,
+    is_message_duplicate             INTEGER,
+    delivery_attempted               INTEGER,
+    delivery_result                  TEXT,
+    reasoning_preview                TEXT,
+    error                            TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_pd_sk_ts   ON proactive_decisions (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_pd_stage   ON proactive_decisions (stage, ts);
 
 -- ─────────────────────────────────────────────
 -- 淘汰策略（由 retention.py 执行，不在 schema 里 enforce）

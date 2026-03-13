@@ -19,6 +19,7 @@ logger = logging.getLogger("observe.retention")
 _RETENTION_DAYS = {
     "turns": 180,
     "rag_events": 90,
+    "proactive_decisions": 90,
 }
 _STAMP_FILE = ".last_cleanup"
 

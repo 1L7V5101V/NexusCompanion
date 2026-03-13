@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.observe.db import open_db
-from core.observe.events import RagItemTrace, RagTrace, TurnTrace
+from core.observe.events import ProactiveDecisionTrace, RagItemTrace, RagTrace, TurnTrace
 
 logger = logging.getLogger("observe.writer")
 
@@ -43,14 +43,16 @@ def _serialize_tool_calls(tool_calls: list[dict]) -> str | None:
 class TraceWriter:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._queue: asyncio.Queue[TurnTrace | RagTrace] = asyncio.Queue(
+        self._queue: asyncio.Queue[
+            TurnTrace | RagTrace | ProactiveDecisionTrace
+        ] = asyncio.Queue(
             maxsize=_QUEUE_MAX
         )
         self._dropped = 0
 
     # ── 公共接口 ─────────────────────────────────
 
-    def emit(self, event: TurnTrace | RagTrace) -> None:
+    def emit(self, event: TurnTrace | RagTrace | ProactiveDecisionTrace) -> None:
         """非阻塞 emit。Queue 满时 drop 并记录计数。"""
         try:
             self._queue.put_nowait(event)
@@ -83,12 +85,16 @@ class TraceWriter:
 
     # ── 内部写入 ─────────────────────────────────
 
-    def _write_one(self, conn, event: TurnTrace | RagTrace) -> None:
+    def _write_one(
+        self, conn, event: TurnTrace | RagTrace | ProactiveDecisionTrace
+    ) -> None:
         ts = _now_iso()
         if isinstance(event, TurnTrace):
             _write_turn(conn, event, ts)
         elif isinstance(event, RagTrace):
             _write_rag(conn, event, ts)
+        elif isinstance(event, ProactiveDecisionTrace):
+            _write_proactive_decision(conn, event, ts)
 
 
 # ── DB 写入函数 ───────────────────────────────────────────────────────────────
@@ -169,3 +175,64 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
                     for item in e.items
                 ],
             )
+
+
+def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO proactive_decisions (
+                ts, session_key, stage, reason_code, should_send, action, gate_reason,
+                pre_score, base_score, draw_score, decision_score, send_threshold,
+                interruptibility, candidate_count, candidate_item_ids,
+                user_replied_after_last_proactive, proactive_sent_24h, fresh_items_24h,
+                delivery_key, is_delivery_duplicate, is_message_duplicate,
+                delivery_attempted, delivery_result, reasoning_preview, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ts,
+                e.session_key,
+                e.stage,
+                e.reason_code,
+                None if e.should_send is None else (1 if e.should_send else 0),
+                e.action,
+                e.gate_reason,
+                e.pre_score,
+                e.base_score,
+                e.draw_score,
+                e.decision_score,
+                e.send_threshold,
+                e.interruptibility,
+                e.candidate_count,
+                json.dumps(e.candidate_item_ids, ensure_ascii=False)
+                if e.candidate_item_ids
+                else None,
+                (
+                    None
+                    if e.user_replied_after_last_proactive is None
+                    else (1 if e.user_replied_after_last_proactive else 0)
+                ),
+                e.proactive_sent_24h,
+                e.fresh_items_24h,
+                e.delivery_key,
+                (
+                    None
+                    if e.is_delivery_duplicate is None
+                    else (1 if e.is_delivery_duplicate else 0)
+                ),
+                (
+                    None
+                    if e.is_message_duplicate is None
+                    else (1 if e.is_message_duplicate else 0)
+                ),
+                (
+                    None
+                    if e.delivery_attempted is None
+                    else (1 if e.delivery_attempted else 0)
+                ),
+                e.delivery_result,
+                e.reasoning_preview,
+                e.error,
+            ),
+        )

@@ -50,3 +50,33 @@ class TurnTrace:
     tool_calls: list[dict] = field(default_factory=list)
     # 每个 tool call: {name, args, result}（args/result 会截断）
     error: str | None = None
+
+
+@dataclass
+class ProactiveDecisionTrace:
+    """主动链路的结构化决策 trace，用于解释为什么发/没发。"""
+
+    session_key: str
+    stage: str
+    reason_code: str | None = None
+    should_send: bool | None = None
+    action: str | None = None
+    gate_reason: str | None = None
+    pre_score: float | None = None
+    base_score: float | None = None
+    draw_score: float | None = None
+    decision_score: float | None = None
+    send_threshold: float | None = None
+    interruptibility: float | None = None
+    candidate_count: int | None = None
+    candidate_item_ids: list[str] = field(default_factory=list)
+    user_replied_after_last_proactive: bool | None = None
+    proactive_sent_24h: int | None = None
+    fresh_items_24h: int | None = None
+    delivery_key: str | None = None
+    is_delivery_duplicate: bool | None = None
+    is_message_duplicate: bool | None = None
+    delivery_attempted: bool | None = None
+    delivery_result: str | None = None
+    reasoning_preview: str | None = None
+    error: str | None = None
