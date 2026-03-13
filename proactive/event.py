@@ -240,10 +240,24 @@ class GenericContentEvent(ContentEvent):
 
     _kind: str = field(default="content", repr=False)
     _ack_server: str | None = field(default=None, repr=False)
+    _display_text: str = field(default="", repr=False)
 
     @property
     def kind(self) -> str:
         return self._kind
+
+    def to_feed_item(self) -> "FeedItem":
+        from feeds.base import FeedItem
+        return FeedItem(
+            source_name=self.source_name,
+            source_type=self.source_type,
+            title=self.title,
+            content=self.content,
+            url=self.url,
+            author=None,
+            published_at=self.published_at,
+            display_text=self._display_text,
+        )
 
     @classmethod
     def from_mcp_payload(cls, payload: dict) -> "GenericContentEvent":
@@ -258,6 +272,7 @@ class GenericContentEvent(ContentEvent):
             except Exception:
                 pass
         ack_server = str(payload.get("ack_server", "")).strip() or None
+        display_text = str(payload.get("display_text") or "").strip()
         return cls(
             event_id=event_id,
             source_type=str(payload.get("source_type", "")).strip(),
@@ -268,4 +283,5 @@ class GenericContentEvent(ContentEvent):
             published_at=published_at,
             _kind=str(payload.get("kind", "content")).strip(),
             _ack_server=ack_server,
+            _display_text=display_text,
         )

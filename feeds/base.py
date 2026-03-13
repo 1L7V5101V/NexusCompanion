@@ -23,6 +23,7 @@ class FeedItem:
     url: str | None
     author: str | None
     published_at: datetime | None
+    display_text: str = ""  # MCP 侧提供的预格式化展示文本；为空时由 _format_items 自动拼
 
 
 @dataclass

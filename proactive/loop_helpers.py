@@ -51,20 +51,27 @@ def _decision_with_randomized_score(
 def _format_items(items: list[FeedItem]) -> str:
     out = []
     for i, item in enumerate(items, 1):
-        title = item.title or "（无标题）"
-        content = (item.content or "").strip().replace("\n", " ")
-        if len(content) > 300:
-            content = content[:300] + "..."
-        meta = []
-        if item.source_name:
-            meta.append(item.source_name)
-        if item.author:
-            meta.append(item.author)
-        if item.published_at:
-            meta.append(str(item.published_at))
-        meta_str = f" [{' / '.join(meta)}]" if meta else ""
-        url_line = f"\n原文链接: {item.url}" if item.url else ""
-        out.append(f"{i}. {title}{meta_str}\n{content}{url_line}")
+        if item.display_text:
+            # MCP 侧已提供预格式化文本，直接使用；URL 兜底追加保证溯源链不断
+            text = item.display_text
+            if item.url and item.url not in text:
+                text += f"\n原文链接: {item.url}"
+        else:
+            title = item.title or "（无标题）"
+            content = (item.content or "").strip().replace("\n", " ")
+            if len(content) > 300:
+                content = content[:300] + "..."
+            meta = []
+            if item.source_name:
+                meta.append(item.source_name)
+            if item.author:
+                meta.append(item.author)
+            if item.published_at:
+                meta.append(str(item.published_at))
+            meta_str = f" [{' / '.join(meta)}]" if meta else ""
+            url_line = f"\n原文链接: {item.url}" if item.url else ""
+            text = f"{title}{meta_str}\n{content}{url_line}"
+        out.append(f"{i}. {text}")
     return "\n\n".join(out)
 
 
