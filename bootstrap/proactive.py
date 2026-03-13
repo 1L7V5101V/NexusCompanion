@@ -29,6 +29,7 @@ def build_proactive_runtime(
     memory_store: "MemoryPort | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
+    observe_writer=None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     if not config.proactive.enabled:
@@ -56,6 +57,7 @@ def build_proactive_runtime(
         passive_busy_fn=(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
+        observe_writer=observe_writer,
     )
     tasks.append(proactive_loop.run())
 

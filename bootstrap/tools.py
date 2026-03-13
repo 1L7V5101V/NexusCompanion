@@ -239,6 +239,7 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
+    observe_writer=None,
 ) -> tuple:
     bus = MessageBus()
     provider, light_provider = build_providers(config)
@@ -276,6 +277,7 @@ def build_core_runtime(
         tool_search_enabled=config.tool_search_enabled,
         memory_hyde_enabled=config.memory_v2.hyde_enabled,
         memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+        observe_writer=observe_writer,
     )
 
     scheduler.agent_loop = loop

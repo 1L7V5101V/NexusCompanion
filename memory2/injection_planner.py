@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
-    from memory2.hyde_enhancer import HyDEEnhancer
+    from memory2.hyde_enhancer import HyDEAugmentResult, HyDEEnhancer
 
 
 @dataclass
@@ -44,6 +44,7 @@ async def retrieve_history_items(
     allow_global: bool = True,
     context: str = "",
     hyde_enhancer: "HyDEEnhancer | None" = None,
+    on_hyde_result: "Callable[[HyDEAugmentResult], None] | None" = None,
 ) -> tuple[list[dict], str]:
     if prefer_scoped and scope_channel and scope_chat_id:
         # 单次 embed，scoped 和 global 共用 query_vec 并发查询，省去重复的远端 embedding 调用。
@@ -108,14 +109,16 @@ async def retrieve_history_items(
     scope_mode = "global-fallback" if prefer_scoped else "global"
 
     if hyde_enhancer is not None:
-        items, used_hyde = await hyde_enhancer.augment(
+        hyde_result = await hyde_enhancer.augment(
             raw_query=query,
             context=context,
             retrieve_fn=memory.retrieve_related,
             top_k=top_k,
             **global_kwargs,
         )
-        return items, f"{scope_mode}+hyde" if used_hyde else scope_mode
+        if on_hyde_result is not None:
+            on_hyde_result(hyde_result)
+        return hyde_result.items, f"{scope_mode}+hyde" if hyde_result.used_hyde else scope_mode
 
     items = await memory.retrieve_related(query, top_k=top_k, **global_kwargs)
     return items, scope_mode

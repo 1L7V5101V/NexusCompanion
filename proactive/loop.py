@@ -68,6 +68,7 @@ class ProactiveLoop(
         light_provider: LLMProvider | None = None,
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
+        observe_writer=None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -82,6 +83,7 @@ class ProactiveLoop(
         self._rng = rng
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
+        self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
         self._init_runtime_state(config)
         self._init_runtime_components()

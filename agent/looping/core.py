@@ -76,6 +76,7 @@ class AgentLoop(
         tool_search_enabled: bool = False,
         memory_hyde_enabled: bool = False,
         memory_hyde_timeout_ms: int = 2000,
+        observe_writer=None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -137,6 +138,7 @@ class AgentLoop(
         self._memory_port = memory_port
         self.context = ContextBuilder(workspace, memory=self._memory_port)
         self._post_mem_failures = 0
+        self._observe_writer = observe_writer
         self._conversation_handler = ConversationTurnHandler(self)
         self._internal_event_handler = InternalEventHandler(self)
 

@@ -12,12 +12,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class HyDEAugmentResult:
+    """augment() 的返回值，包含 raw/hyde 两路的原始数据，供 trace 使用。"""
+
+    items: list[dict]               # 合并后的最终结果（raw ∪ hyde_added）
+    used_hyde: bool                 # HyDE 是否实际追加了新条目
+    hypothesis: str | None          # LLM 生成的假设文本
+    raw_hits: list[dict] = field(default_factory=list)  # raw query 检索到的条目
+
+    def __iter__(self):
+        """兼容旧调用方的二元解包：results, used_hyde = augment(...)。"""
+        yield self.items
+        yield self.used_hyde
 
 
 class HyDEEnhancer:
@@ -78,10 +94,10 @@ class HyDEEnhancer:
         retrieve_fn: Callable[..., Awaitable[list[dict]]],
         top_k: int,
         **retrieve_kwargs,
-    ) -> tuple[list[dict], bool]:
+    ) -> HyDEAugmentResult:
         """
         双路检索 + union dedup。
-        返回 (results, used_hyde)，used_hyde=True 表示 HyDE 实际追加了新条目。
+        返回 HyDEAugmentResult，包含合并结果、是否追加了新条目、假设文本和 raw hits。
         raw 结果完整保留，hyde 只追加 raw 中不存在的新条目。
         """
         # 并行：raw 检索 + hypothesis 生成
@@ -93,26 +109,32 @@ class HyDEEnhancer:
 
         if not hypothesis:
             logger.debug("hyde: no hypothesis, using raw results only")
-            return raw_hits, False
+            return HyDEAugmentResult(
+                items=raw_hits, used_hyde=False, hypothesis=None, raw_hits=raw_hits
+            )
 
         # hypothesis 就绪后，串行发起第二次检索
         try:
             hyde_hits = await retrieve_fn(hypothesis, top_k=top_k, **retrieve_kwargs)
         except Exception as e:
             logger.debug("hyde retrieve failed: %s", e)
-            return raw_hits, False
+            return HyDEAugmentResult(
+                items=raw_hits, used_hyde=False, hypothesis=hypothesis, raw_hits=raw_hits
+            )
 
-        result = _union_dedup(raw_hits, hyde_hits)
-        used_hyde = len(result) > len(raw_hits)
+        merged = _union_dedup(raw_hits, hyde_hits)
+        used_hyde = len(merged) > len(raw_hits)
         logger.info(
             "hyde: raw=%d hyde=%d merged=%d used_hyde=%s hypothesis=%r",
             len(raw_hits),
             len(hyde_hits),
-            len(result),
+            len(merged),
             used_hyde,
             hypothesis[:60],
         )
-        return result, used_hyde
+        return HyDEAugmentResult(
+            items=merged, used_hyde=used_hyde, hypothesis=hypothesis, raw_hits=raw_hits
+        )
 
 
 def _union_dedup(raw: list[dict], hyde: list[dict]) -> list[dict]:

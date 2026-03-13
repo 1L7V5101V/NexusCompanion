@@ -17,6 +17,8 @@ from memory2.injection_planner import (
 
 if TYPE_CHECKING:
     from agent.looping.core import AgentLoop
+    from core.observe.events import RagItemTrace, RagTrace, TurnTrace
+    from memory2.hyde_enhancer import HyDEAugmentResult
 
 logger = logging.getLogger("agent.loop_handlers")
 
@@ -33,7 +35,7 @@ class ConversationTurnHandler:
         skill_mentions = self._collect_skill_mentions(msg)
         main_history = session.get_history(max_messages=loop.memory_window)
         # 2. 再独立跑 memory 注入，尽量让主执行链只拿最终 block。
-        retrieved_block = await self._retrieve_memory_block(
+        retrieved_block, rag_trace = await self._retrieve_memory_block(
             msg=msg,
             key=key,
             session=session,
@@ -56,6 +58,15 @@ class ConversationTurnHandler:
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
+        # 5. 写入 observe trace（非阻塞）。
+        self._emit_observe_traces(
+            loop=loop,
+            key=key,
+            msg=msg,
+            final_content=final_content,
+            tool_chain=tool_chain,
+            rag_trace=rag_trace,
+        )
         return self._build_outbound_message(
             msg=msg,
             final_content=final_content,
@@ -77,10 +88,11 @@ class ConversationTurnHandler:
         key: str,
         session,
         main_history: list[dict],
-    ) -> str:
+    ) -> tuple[str, "RagTrace | None"]:
         """为主对话路径准备 memory block，并把 route / injection 细节写入 trace。"""
         loop = self._loop
         retrieved_block = ""
+        rag_trace: RagTrace | None = None
         try:
             route_decision = "RETRIEVE"
             rewritten_query = msg.content
@@ -129,6 +141,12 @@ class ConversationTurnHandler:
 
             h_items: list[dict] = []
             h_scope_mode = "disabled"
+            _hyde_result: HyDEAugmentResult | None = None
+
+            def _capture_hyde(r: "HyDEAugmentResult") -> None:
+                nonlocal _hyde_result
+                _hyde_result = r
+
             if needs_history:
                 h_items, h_scope_mode = await retrieve_history_items(
                     loop._memory_port,
@@ -138,6 +156,7 @@ class ConversationTurnHandler:
                     allow_global=True,
                     context=hyde_context,
                     hyde_enhancer=loop._hyde_enhancer,
+                    on_hyde_result=_capture_hyde,
                 )
 
             # 3. 把 procedure/history 合并成最终 injection block，并做 SOP guard 记录。
@@ -149,7 +168,6 @@ class ConversationTurnHandler:
             selected_items = injection.selected_items
             retrieved_block = injection.block
             injected_item_ids = injection.item_ids
-            total_hits = len(p_items) + len(h_items)
             logger.info(
                 "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，筛选后 %d 条注入%s",
                 route_decision,
@@ -206,6 +224,23 @@ class ConversationTurnHandler:
                 injected_item_ids=injected_item_ids,
                 gate_latency_ms=gate_latency_ms,
             )
+
+            # 5. 组装 RagTrace（供 observe DB 写入）。
+            injected_id_set = set(injected_item_ids)
+            rag_trace = _build_agent_rag_trace(
+                session_key=key,
+                user_msg=msg.content,
+                rewritten_query=rewritten_query,
+                route_decision=route_decision,
+                route_latency_ms=route_ms,
+                h_scope_mode=h_scope_mode,
+                p_items=p_items,
+                h_items=h_items,
+                hyde_result=_hyde_result,
+                injected_id_set=injected_id_set,
+                injected_block=retrieved_block,
+                fallback_reason=fallback_reason,
+            )
         except Exception as e:
             logger.warning(f"memory2 retrieve 失败，跳过: {e}")
             loop._trace_memory_retrieve(
@@ -218,7 +253,22 @@ class ConversationTurnHandler:
                 fallback_reason="retrieve_exception",
                 error=str(e),
             )
-        return retrieved_block
+            rag_trace = _build_agent_rag_trace(
+                session_key=key,
+                user_msg=msg.content,
+                rewritten_query=msg.content,
+                route_decision=None,
+                route_latency_ms=None,
+                h_scope_mode=None,
+                p_items=[],
+                h_items=[],
+                hyde_result=None,
+                injected_id_set=set(),
+                injected_block="",
+                fallback_reason="retrieve_exception",
+                error=str(e),
+            )
+        return retrieved_block, rag_trace
 
     async def _run_conversation_turn(
         self,
@@ -308,6 +358,109 @@ class ConversationTurnHandler:
                 "tool_chain": tool_chain,
             },
         )
+
+    @staticmethod
+    def _emit_observe_traces(
+        *,
+        loop: "AgentLoop",
+        key: str,
+        msg: InboundMessage,
+        final_content: str,
+        tool_chain: list[dict],
+        rag_trace: "RagTrace | None",
+    ) -> None:
+        writer = getattr(loop, "_observe_writer", None)
+        if writer is None:
+            return
+        from core.observe.events import TurnTrace
+
+        tool_calls = [
+            {
+                "name": call.get("name", ""),
+                "args": str(call.get("arguments", ""))[:300],
+                "result": str(call.get("result", ""))[:500],
+            }
+            for group in tool_chain
+            for call in (group.get("calls") or [])
+        ]
+        writer.emit(
+            TurnTrace(
+                source="agent",
+                session_key=key,
+                user_msg=msg.content,
+                llm_output=final_content,
+                tool_calls=tool_calls,
+            )
+        )
+        if rag_trace is not None:
+            writer.emit(rag_trace)
+
+
+def _build_agent_rag_trace(
+    *,
+    session_key: str,
+    user_msg: str,
+    rewritten_query: str,
+    route_decision: str | None,
+    route_latency_ms: int | None,
+    h_scope_mode: str | None,
+    p_items: list[dict],
+    h_items: list[dict],
+    hyde_result: "HyDEAugmentResult | None",
+    injected_id_set: set[str],
+    injected_block: str,
+    fallback_reason: str = "",
+    error: str | None = None,
+) -> "RagTrace":
+    """把本次 agent memory 检索的原始数据组装成 RagTrace。"""
+    from core.observe.events import RagItemTrace, RagTrace
+    import json as _json
+
+    def _item_to_trace(item: dict, path: str) -> "RagItemTrace":
+        raw_extra = item.get("extra_json")
+        extra_str = _json.dumps(raw_extra, ensure_ascii=False) if raw_extra else None
+        return RagItemTrace(
+            item_id=str(item.get("id", "")),
+            memory_type=str(item.get("memory_type", "")),
+            score=float(item.get("score", 0.0)),
+            summary=str(item.get("summary", "")),
+            happened_at=item.get("happened_at"),
+            extra_json=extra_str,
+            retrieval_path=path,
+            injected=str(item.get("id", "")) in injected_id_set,
+        )
+
+    trace_items: list[RagItemTrace] = []
+
+    # procedure items
+    for item in p_items:
+        trace_items.append(_item_to_trace(item, "procedure"))
+
+    # history items：区分 raw vs hyde_added
+    if hyde_result is not None:
+        raw_ids = {str(i.get("id", "")) for i in hyde_result.raw_hits}
+        for item in h_items:
+            path = "history_raw" if str(item.get("id", "")) in raw_ids else "history_hyde"
+            trace_items.append(_item_to_trace(item, path))
+    else:
+        for item in h_items:
+            trace_items.append(_item_to_trace(item, "history_raw"))
+
+    return RagTrace(
+        source="agent",
+        session_key=session_key,
+        original_query=user_msg,
+        query=rewritten_query,
+        route_decision=route_decision,
+        route_latency_ms=route_latency_ms,
+        hyde_hypothesis=hyde_result.hypothesis if hyde_result else None,
+        history_scope_mode=h_scope_mode,
+        history_gate_reason=None,
+        items=trace_items,
+        injected_block=injected_block,
+        fallback_reason=fallback_reason,
+        error=error,
+    )
 
 
 class InternalEventHandler:

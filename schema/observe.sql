@@ -1,0 +1,82 @@
+-- Observe DB schema
+-- Agent Loop + Proactive Loop 可观测性数据库
+-- 版本：1 (2026-03-14)
+
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous  = NORMAL;
+
+-- ─────────────────────────────────────────────
+-- 1. turns  每轮 agent 对话 / proactive tick
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS turns (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT    NOT NULL,           -- ISO8601 UTC
+    source      TEXT    NOT NULL,           -- 'agent' | 'proactive'
+    session_key TEXT    NOT NULL,
+    user_msg    TEXT,                       -- agent: 用户原文; proactive: NULL
+    llm_output  TEXT    NOT NULL DEFAULT '', -- LLM 最终输出完整文本
+    tool_calls  TEXT,                       -- JSON: [{name, args, result}]（每次 tool 调用）
+    error       TEXT                        -- NULL = 正常
+);
+
+CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
+
+-- ─────────────────────────────────────────────
+-- 2. rag_events  每次 memory 检索事件
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rag_events (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                  TEXT    NOT NULL,
+    source              TEXT    NOT NULL,   -- 'agent' | 'proactive'
+    session_key         TEXT    NOT NULL,
+    -- query 链路
+    original_query      TEXT    NOT NULL,   -- agent: user_msg; proactive: build_proactive_memory_query 输出前的原始 query
+    query               TEXT    NOT NULL,   -- 实际用于检索的 query（route decision 改写后）
+    route_decision      TEXT,               -- 'RETRIEVE' | 'NO_RETRIEVE'（仅 agent）
+    route_latency_ms    INTEGER,
+    -- HyDE
+    hyde_hypothesis     TEXT,               -- HyDE 生成的假设文本（NULL = 未使用 HyDE）
+    -- history 检索元信息
+    history_scope_mode  TEXT,               -- scoped / global / global-fallback / disabled
+    history_gate_reason TEXT,               -- 仅 proactive
+    -- 最终注入内容（完整，不截断）
+    injected_block      TEXT,
+    preference_block    TEXT,
+    preference_query    TEXT,
+    fallback_reason     TEXT,
+    error               TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
+
+-- ─────────────────────────────────────────────
+-- 3. rag_items  每个检索到的 item 展开一行（raw data）
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS rag_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    rag_event_id    INTEGER NOT NULL REFERENCES rag_events (id),
+    -- vector_search 原始返回字段，不加工
+    item_id         TEXT    NOT NULL,
+    memory_type     TEXT    NOT NULL,       -- event | profile | procedure | preference
+    score           REAL    NOT NULL,
+    summary         TEXT    NOT NULL,       -- 完整 summary
+    happened_at     TEXT,
+    extra_json      TEXT,                   -- 原始 extra_json 序列化为 JSON string
+    -- 检索路径（区分来源）
+    retrieval_path  TEXT    NOT NULL,
+    -- procedure | history_raw | history_hyde | preference
+    injected        INTEGER NOT NULL DEFAULT 0  -- 1 = 最终注入到 context
+);
+
+CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
+CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
+
+-- ─────────────────────────────────────────────
+-- 淘汰策略（由 retention.py 执行，不在 schema 里 enforce）
+-- turns:      180 天
+-- rag_events:  90 天
+-- rag_items:   90 天（随 rag_events 级联）
+-- 例外：error IS NOT NULL 的行永久保留
+-- ─────────────────────────────────────────────

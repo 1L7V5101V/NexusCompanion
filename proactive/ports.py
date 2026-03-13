@@ -170,11 +170,13 @@ class DefaultMemoryRetrievalPort:
         memory: "MemoryPort | None",
         item_id_fn: Callable[[FeedItem], str],
         trace_writer: Callable[[dict[str, Any]], None] | None = None,
+        observe_writer: Any | None = None,
     ) -> None:
         self._cfg = cfg
         self._memory = memory
         self._item_id = item_id_fn
         self._trace_writer = trace_writer
+        self._observe_writer = observe_writer
 
     async def retrieve_proactive_context(
         self,
@@ -333,6 +335,9 @@ class DefaultMemoryRetrievalPort:
                 candidate_items=items,
                 preference_query=pref_query_used,
                 preference_hit_count=pref_hit_count,
+                p_items_raw=p_items,
+                h_items_raw=h_items,
+                pref_items_raw=raw_pref_items,
             )
             return result
         except Exception:
@@ -384,33 +389,105 @@ class DefaultMemoryRetrievalPort:
         candidate_items: list[FeedItem],
         preference_query: str = "",
         preference_hit_count: int = 0,
+        p_items_raw: list[dict] | None = None,
+        h_items_raw: list[dict] | None = None,
+        pref_items_raw: list[dict] | None = None,
     ) -> None:
         if not bool(getattr(self._cfg, "memory_trace_enabled", True)):
             return
-        if not self._trace_writer:
-            return
-        payload = {
-            "session_key": session_key,
-            "channel": channel,
-            "chat_id": chat_id,
-            "memory_query": result.query,
-            "history_channel_open": result.history_channel_open,
-            "history_gate_reason": result.history_gate_reason,
-            "history_scope_mode": result.history_scope_mode,
-            "procedure_hits": result.procedure_hits,
-            "history_hits": result.history_hits,
-            "injected_item_ids": result.item_ids,
-            "injected_block_preview": (result.block or "")[:240],
-            "candidate_item_ids": [self._item_id(item) for item in candidate_items[:5]],
-            "fallback_reason": result.fallback_reason,
-            "preference_query": preference_query,
-            "preference_hit_count": preference_hit_count,
-            "preference_block_preview": (result.preference_block or "")[:120],
-        }
-        try:
-            self._trace_writer(payload)
-        except Exception:
-            logger.exception("[proactive.memory] trace writer failed")
+        # JSONL trace（保留原有行为）
+        if self._trace_writer:
+            payload = {
+                "session_key": session_key,
+                "channel": channel,
+                "chat_id": chat_id,
+                "memory_query": result.query,
+                "history_channel_open": result.history_channel_open,
+                "history_gate_reason": result.history_gate_reason,
+                "history_scope_mode": result.history_scope_mode,
+                "procedure_hits": result.procedure_hits,
+                "history_hits": result.history_hits,
+                "injected_item_ids": result.item_ids,
+                "injected_block_preview": (result.block or "")[:240],
+                "candidate_item_ids": [self._item_id(item) for item in candidate_items[:5]],
+                "fallback_reason": result.fallback_reason,
+                "preference_query": preference_query,
+                "preference_hit_count": preference_hit_count,
+                "preference_block_preview": (result.preference_block or "")[:120],
+            }
+            try:
+                self._trace_writer(payload)
+            except Exception:
+                logger.exception("[proactive.memory] trace writer failed")
+        # observe DB trace（新增）
+        if self._observe_writer is not None:
+            try:
+                self._emit_observe_rag(
+                    session_key=session_key,
+                    result=result,
+                    preference_query=preference_query,
+                    p_items_raw=p_items_raw or [],
+                    h_items_raw=h_items_raw or [],
+                    pref_items_raw=pref_items_raw or [],
+                )
+            except Exception:
+                logger.exception("[proactive.memory] observe emit failed")
+
+    def _emit_observe_rag(
+        self,
+        *,
+        session_key: str,
+        result: ProactiveRetrievedMemory,
+        preference_query: str,
+        p_items_raw: list[dict],
+        h_items_raw: list[dict],
+        pref_items_raw: list[dict],
+    ) -> None:
+        import json as _json
+
+        from core.observe.events import RagItemTrace, RagTrace
+
+        injected_id_set = set(result.item_ids)
+
+        def _to_trace(item: dict, path: str) -> RagItemTrace:
+            raw_extra = item.get("extra_json")
+            extra_str = _json.dumps(raw_extra, ensure_ascii=False) if raw_extra else None
+            return RagItemTrace(
+                item_id=str(item.get("id", "")),
+                memory_type=str(item.get("memory_type", "")),
+                score=float(item.get("score", 0.0)),
+                summary=str(item.get("summary", "")),
+                happened_at=item.get("happened_at"),
+                extra_json=extra_str,
+                retrieval_path=path,
+                injected=str(item.get("id", "")) in injected_id_set,
+            )
+
+        trace_items: list[RagItemTrace] = []
+        for item in p_items_raw:
+            trace_items.append(_to_trace(item, "procedure"))
+        for item in h_items_raw:
+            trace_items.append(_to_trace(item, "history_raw"))
+        for item in pref_items_raw:
+            trace_items.append(_to_trace(item, "preference"))
+
+        rag = RagTrace(
+            source="proactive",
+            session_key=session_key,
+            original_query=result.query,
+            query=result.query,
+            route_decision=None,
+            route_latency_ms=None,
+            hyde_hypothesis=None,
+            history_scope_mode=result.history_scope_mode,
+            history_gate_reason=result.history_gate_reason,
+            items=trace_items,
+            injected_block=result.block,
+            preference_block=result.preference_block,
+            preference_query=preference_query or None,
+            fallback_reason=result.fallback_reason,
+        )
+        self._observe_writer.emit(rag)
 
 
 class DefaultSensePort:

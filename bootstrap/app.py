@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import sys
 from pathlib import Path
@@ -17,6 +18,8 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from core.observe.writer import TraceWriter
+from core.observe.retention import run_retention_if_needed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +73,8 @@ class AppRuntime:
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
+        self.observe_writer: TraceWriter | None = None
+        self.observe_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
         self._shutdown = False
         self._started = False
@@ -79,6 +84,16 @@ class AppRuntime:
             return
         configure_default_shared_http_resources(self.http_resources)
         try:
+            # 初始化 observe writer
+            observe_db_path = self.workspace / "observe" / "observe.db"
+            self.observe_writer = TraceWriter(observe_db_path)
+            asyncio.create_task(
+                run_retention_if_needed(observe_db_path), name="observe_retention"
+            )
+
+            build_core_kwargs = {}
+            if "observe_writer" in inspect.signature(build_core_runtime).parameters:
+                build_core_kwargs["observe_writer"] = self.observe_writer
             (
                 self.agent_loop,
                 self.bus,
@@ -91,7 +106,12 @@ class AppRuntime:
                 self.mcp_registry,
                 self.memory_runtime,
                 self.presence,
-            ) = build_core_runtime(self.config, self.workspace, self.http_resources)
+            ) = build_core_runtime(
+                self.config,
+                self.workspace,
+                self.http_resources,
+                **build_core_kwargs,
+            )
             await self.mcp_registry.load_and_connect_all()
 
             self.ipc, self.tg_channel, self.qq_channel = await start_channels(
@@ -107,6 +127,10 @@ class AppRuntime:
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
+            if self.observe_writer is not None:
+                self.observe_task = asyncio.create_task(
+                    self.observe_writer.run(), name="observe_writer"
+                )
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
@@ -117,6 +141,7 @@ class AppRuntime:
                 memory_store=self.memory_runtime.port,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
+                observe_writer=self.observe_writer,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
@@ -147,6 +172,12 @@ class AppRuntime:
             return
         self._shutdown = True
         try:
+            if self.observe_task is not None:
+                self.observe_task.cancel()
+                try:
+                    await self.observe_task
+                except asyncio.CancelledError:
+                    pass
             await _run_cleanup_steps(
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
