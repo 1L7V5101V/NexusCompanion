@@ -261,7 +261,6 @@ class ScoreResult:
     return_score: float | None
     reason_code: Literal[
         "continue",
-        "no_candidates",
         "draw_score_below_threshold",
         "draw_score_force_reflect",
     ]
@@ -862,18 +861,11 @@ class ProactiveEngine:
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
-        # 1. 没有候选、没有健康事件、也没有强制兜底时，直接 no_candidates 早退。
+        # 1. 无候选内容时不再硬退出，仍走 draw_score 门槛判断。
+        # 能量和时间信号足够时（D_energy + D_recent），即使没有 feed 内容也可进入反思，
+        # 允许 LLM 基于持久上下文（如 steam/github 等背景知识）主动发起对话。
         if not fetch.new_items and not sense.health_events and not score.force_reflect:
-            logger.info("[proactive] 无候选信息且无健康事件，跳过本轮反思")
-            logger.info("[proactive] selected_action=idle reason=no_candidates")
-            return ScoreResult(
-                proceed=False,
-                return_score=score.base_score,
-                reason_code="no_candidates",
-                base_score=score.base_score,
-                draw_score=score.draw_score,
-                force_reflect=score.force_reflect,
-            )
+            logger.info("[proactive] 无候选内容，继续走 draw_score 门槛判断（关心模式）")
         # 2. 正常情况下先记录完整 score 诊断信息，便于理解本轮为什么继续/停止。
         logger.info(
             "[proactive] base_score=%.3f  D_energy=%.3f D_content=%.3f D_recent=%.3f"

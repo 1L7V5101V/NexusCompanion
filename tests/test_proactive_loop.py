@@ -317,7 +317,9 @@ async def test_engine_stage_sense_returns_structured_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_score_returns_snapshot_fields_for_no_candidates():
+async def test_engine_stage_score_no_candidates_falls_through_to_draw_threshold():
+    # 无候选内容时不再硬退出，继续走 draw_score 门槛判断。
+    # de=0.2 dr=0.1 D_content=0 → base_score 远低于 0.6 阈值，应走 draw_score_below_threshold。
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         score_content_halfsat=3.0,
@@ -348,8 +350,7 @@ async def test_engine_stage_score_returns_snapshot_fields_for_no_candidates():
     result = await engine._stage_score(ctx)
 
     assert result.proceed is False
-    assert result.reason_code == "no_candidates"
-    assert result.return_score == score.base_score
+    assert result.reason_code == "draw_score_below_threshold"
     assert result.base_score == score.base_score
     assert result.draw_score == score.draw_score
     assert result.force_reflect is False
