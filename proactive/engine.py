@@ -18,7 +18,6 @@ from proactive.energy import (
     d_recent,
     random_weight,
 )
-from proactive.interest import select_interesting_items
 from proactive.json_utils import extract_json_object
 from proactive.presence import PresenceStore
 from proactive.anyaction import AnyActionGate
@@ -639,38 +638,10 @@ class ProactiveEngine:
 
         feed_views = [(event, event.to_feed_item()) for event in mcp_content_events]
         fetch.items = [item for _, item in feed_views]
-        logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
+        logger.debug("[proactive] 从 MCP 拉取到 %d 条内容（已过兴趣筛选）", len(fetch.items))
 
-        # 2. 兴趣筛选仍由主 agent 完成，这样能继续复用 memory 偏好逻辑。
-        if self._cfg.interest_filter.enabled and feed_views:
-            memory_text = self._sense.read_memory_text()
-            if memory_text:
-                candidate_items = [item for _, item in feed_views]
-                filtered_items, ranked = select_interesting_items(
-                    candidate_items, memory_text, self._cfg.interest_filter
-                )
-                keep_obj_ids = {id(item) for item in filtered_items}
-                old_count = len(feed_views)
-                feed_views = [
-                    (event, item)
-                    for event, item in feed_views
-                    if id(item) in keep_obj_ids
-                ]
-                fetch.items = [item for _, item in feed_views]
-                top_preview = ", ".join(
-                    f"{(pair[0].title or '')[:28]}:{pair[1]:.2f}" for pair in ranked[:3]
-                )
-                logger.info(
-                    "[proactive] memory 兴趣筛选 old=%d kept=%d min_score=%.2f top=%s",
-                    old_count,
-                    len(feed_views),
-                    self._cfg.interest_filter.min_score,
-                    top_preview or "-",
-                )
-            else:
-                logger.info("[proactive] memory 兴趣筛选跳过：memory 为空")
-
-        # 3. 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
+        # 2. 兴趣筛选已移至 MCP 层（feed_mcp interest_filter），直接使用返回结果。
+        # 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
         fetch.new_items = [event for event, _ in feed_views]
         fetch.new_entries = [
             (
@@ -1270,10 +1241,15 @@ class ProactiveEngine:
         )
 
     def _reject_current_candidates(self, entries: list[tuple[str, str]]) -> None:
-        self._state.mark_rejection_cooldown(
-            entries,
-            hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-        )
+        # LLM / feature score 拒绝时，通过 MCP pending 给候选内容一段冷却期，
+        # 避免下次 tick 立即重复评估同一批内容。冷却时长由 MCP 的 pending_ttl_hours 控制。
+        if not entries:
+            return
+        try:
+            from proactive import mcp_sources
+            mcp_sources.mark_content_entries_pending(entries)
+        except Exception as e:
+            logger.warning("[proactive] rejection pending 标记失败: %s", e)
 
     async def _reject_and_try_skill_action(
         self,
@@ -1389,13 +1365,8 @@ class ProactiveEngine:
             self._state.mark_delivery(state.session_key, delivery_key)
         try:
             from proactive import mcp_sources
-
-            deferred_entries = [
-                entry
-                for entry in ctx.ensure_fetch().new_entries
-                if entry not in evidence.evidence_entries
-            ]
-            mcp_sources.mark_content_entries_pending(deferred_entries)
+            # 只 ack 本次作为证据发出的条目（7天不再返回）。
+            # 未用到的候选保持 eligible，下次 tick 继续参与评分，避免错过感兴趣的内容。
             mcp_sources.acknowledge_content_entries(evidence.evidence_entries)
         except Exception as _ack_err:
             logger.warning("[proactive] MCP content ack 失败: %s", _ack_err)

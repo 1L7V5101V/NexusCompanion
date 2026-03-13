@@ -21,7 +21,6 @@ from agent.config_models import (
     TelegramChannelConfig,
 )
 from proactive.config import ProactiveConfig
-from proactive.interest import InterestFilterConfig
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -103,7 +102,6 @@ def load_config(path: str | Path = "config.json") -> Config:
 
     proactive = ProactiveConfig()
     if p := data.get("proactive"):
-        if_cfg = p.get("interest_filter", {}) or {}
         proactive = ProactiveConfig(
             enabled=p.get("enabled", False),
             interval_seconds=p.get("interval_seconds", 1800),
@@ -127,15 +125,6 @@ def load_config(path: str | Path = "config.json") -> Config:
             ),
             use_global_memory=bool(p.get("use_global_memory", True)),
             global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
-            interest_filter=InterestFilterConfig(
-                enabled=bool(if_cfg.get("enabled", False)),
-                memory_max_chars=int(if_cfg.get("memory_max_chars", 4000)),
-                keyword_max_count=int(if_cfg.get("keyword_max_count", 80)),
-                min_token_len=int(if_cfg.get("min_token_len", 2)),
-                min_score=float(if_cfg.get("min_score", 0.14)),
-                top_k=int(if_cfg.get("top_k", 10)),
-                exploration_ratio=float(if_cfg.get("exploration_ratio", 0.20)),
-            ),
             score_weight_energy=float(p.get("score_weight_energy", 0.40)),
             score_weight_content=float(p.get("score_weight_content", 0.40)),
             score_weight_recent=float(p.get("score_weight_recent", 0.20)),

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from proactive.interest import InterestFilterConfig
-
-
 @dataclass
 class ProactiveConfig:
     enabled: bool = False
@@ -25,7 +22,6 @@ class ProactiveConfig:
     semantic_dedupe_text_max_chars: int = 240
     use_global_memory: bool = True
     global_memory_max_chars: int = 3000
-    interest_filter: InterestFilterConfig = field(default_factory=InterestFilterConfig)
     score_weight_energy: float = 0.40
     score_weight_content: float = 0.40
     score_weight_recent: float = 0.20

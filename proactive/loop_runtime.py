@@ -248,13 +248,6 @@ class ProactiveLoopRuntimeMixin:
             self._cfg.use_global_memory,
             self._cfg.global_memory_max_chars,
         )
-        logger.info(
-            "[proactive] interest_filter enabled=%s min_score=%.2f top_k=%d explore=%.2f",
-            self._cfg.interest_filter.enabled,
-            self._cfg.interest_filter.min_score,
-            self._cfg.interest_filter.top_k,
-            self._cfg.interest_filter.exploration_ratio,
-        )
 
     def _init_runtime_components(self) -> None:
         self._log_runtime_config()
