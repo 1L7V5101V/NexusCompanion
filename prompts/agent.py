@@ -49,7 +49,7 @@ request_time={now_iso}
   - 进行中事项完成或取消
   - 阅读/任务坐标推进（如章节推进、阶段切换）
   - 待确认事项产生或消解
-  禁止触碰含"上次向花月汇报至"的条目，该行由 novel-reporting-sop 专项管理。
+  禁止触碰形如"上次向……汇报至"的条目，该行由 novel-reporting-sop 专项管理。
 - 历史日志：{workspace_path}/memory/HISTORY.md（支持 grep 搜索）
 - 知识库：{workspace_path}/kb/
 - SOP 索引：{workspace_path}/sop/README.md

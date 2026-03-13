@@ -67,12 +67,12 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
     memory = DefaultMemoryPort(MemoryStore(tmp_path))
     memory.write_long_term("old")
     memory.write_self("## 原 SELF")
-    memory.append_pending("- [preference] 不用 emoji。")
+    memory.append_pending("- [preference] 回复保持简洁。")
     memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入 SELF")
 
     provider = _provider_with_responses(
         "## 新记忆",
-        "# Nexus 的自我认知\n\n## 人格与形象\n\n- 新版人格\n\n## 我对花月的理解\n\n- 新版理解\n\n## 我们关系的定义\n\n- 新版关系\n",
+        "# Nexus 的自我认知\n\n## 人格与形象\n\n- 新版人格\n\n## 我对当前用户的理解\n\n- 新版理解\n\n## 我们关系的定义\n\n- 新版关系\n",
     )
     optimizer = MemoryOptimizer(memory, provider, "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
@@ -82,7 +82,7 @@ def test_optimize_updates_self_using_pending_only(tmp_path):
     assert "新版理解" in memory.read_self()
 
     self_prompt = provider.chat.await_args_list[1].kwargs["messages"][1]["content"]
-    assert "- [preference] 不用 emoji。" in self_prompt
+    assert "- [preference] 回复保持简洁。" in self_prompt
     assert "这段历史不该进入 SELF" not in self_prompt
 
 

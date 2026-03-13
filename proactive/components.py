@@ -47,7 +47,7 @@ def build_proactive_preference_query(
     """构建针对候选 item 来源/话题的偏好专项查询。
 
     用于独立检索 preference 类型记忆，问题是“用户对这些内容来源的态度/偏好是什么”，
-    而非通用记忆查询。返回的查询字符串应能命中向量库中类似“用户只关注 Falcons 和 NiKo”
+    而非通用记忆查询。返回的查询字符串应能命中向量库中类似“用户只关注 TeamAtlas 和 PlayerNova”
     的偏好记忆。
     """
     lines: list[str] = ["用户偏好 兴趣 关注"]

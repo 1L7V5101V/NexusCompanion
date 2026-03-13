@@ -7,8 +7,8 @@ TDD: 用户偏好应影响 proactive loop 是否发送消息。
   - 补充 compose_message/reflect 约束用例（preference_block 必须传入生成阶段）
   - 补充 config 加载用例（config.json 中 preference 字段能被正确解析）
 
-场景：向量数据库中存有用户偏好（如"只关注 Falcons 和 NiKo，不关心其他战队"），
-当主动推送候选内容来自 NAVI 等用户明确不关注的来源时，
+场景：向量数据库中存有用户偏好（如"只关注 TeamAtlas 和 PlayerNova，不关心其他战队"），
+当主动推送候选内容来自 TeamOrbit 等用户明确不关注的来源时，
 proactive loop 不应该发出消息（哪怕信息本身"值得一发"）。
 
 测试边界：
@@ -42,25 +42,25 @@ from proactive.components import build_proactive_preference_query
 # ---------------------------------------------------------------------------
 
 
-def _navi_item() -> FeedItem:
+def _orbit_item() -> FeedItem:
     return FeedItem(
         source_name="HLTV",
         source_type="rss",
-        title="NAVI beat 3DMAX to march to EPL playoffs",
-        content="NAVI defeated 3DMAX in a convincing match.",
-        url="https://www.hltv.org/news/44042/navi-beat-3dmax",
+        title="TeamOrbit beat TeamForge to march to EPL playoffs",
+        content="TeamOrbit defeated TeamForge in a convincing match.",
+        url="https://www.hltv.org/news/44042/teamorbit-beat-teamforge",
         author=None,
         published_at=None,
     )
 
 
-def _falcons_item() -> FeedItem:
+def _atlas_item() -> FeedItem:
     return FeedItem(
         source_name="HLTV",
         source_type="rss",
-        title="Falcons win ESL Pro League",
-        content="Falcons secured the trophy with NiKo at the helm.",
-        url="https://www.hltv.org/news/00001/falcons-win-epl",
+        title="TeamAtlas win ESL Pro League",
+        content="TeamAtlas secured the trophy with PlayerNova at the helm.",
+        url="https://www.hltv.org/news/00001/teamatlas-win-epl",
         author=None,
         published_at=None,
     )
@@ -70,14 +70,14 @@ def _hltv_major_race_item() -> FeedItem:
     return FeedItem(
         source_name="HLTV",
         source_type="rss",
-        title="科隆 Major 名额冲刺分析：B8 势头很猛，Legacy 基本稳了",
+        title="科隆 Major 名额冲刺分析：TeamComet 势头很猛，TeamDelta 基本稳了",
         content=(
-            "刚看到 HLTV 的科隆 Major 名额冲刺分析，B8 势头很猛，Legacy 基本稳了。"
-            "虽然没直接提到 NiKo 和 Falcons 的战况，但大赛前的格局变动总是值得留意。"
+            "刚看到 HLTV 的科隆 Major 名额冲刺分析，TeamComet 势头很猛，TeamDelta 基本稳了。"
+            "虽然没直接提到 PlayerNova 和 TeamAtlas 的战况，但大赛前的格局变动总是值得留意。"
         ),
         url=(
             "https://www.hltv.org/news/44056/"
-            "cologne-major-race-update-b8-surge-after-pcc-sign-up-legacy-all-but-confirm-spot-after-epl-run"
+            "cologne-major-race-update-teamcomet-surge-teamdelta-all-but-confirm-spot-after-epl-run"
         ),
         author=None,
         published_at=None,
@@ -87,8 +87,8 @@ def _hltv_major_race_item() -> FeedItem:
 class _FakePreferenceEmbedder:
     _KEYWORDS = (
         ("hltv", "cs", "counter-strike"),
-        ("falcons", "niko"),
-        ("major", "名额", "冲刺", "科隆", "b8", "legacy", "race", "格局"),
+        ("teamatlas", "playernova"),
+        ("major", "名额", "冲刺", "科隆", "teamcomet", "teamdelta", "race", "格局"),
         ("只想看", "只关注", "不想看", "不关心", "偏好"),
     )
 
@@ -174,32 +174,32 @@ def _sense_with_item(item: FeedItem):
 
 def test_preference_query_includes_item_source_name():
     """偏好查询字符串中应包含 item 的 source_name 和标题关键词。"""
-    items = [_navi_item()]
+    items = [_orbit_item()]
     query = build_proactive_preference_query(items=items, max_items=3)
     assert (
         "HLTV" in query or "hltv" in query.lower()
     ), f"偏好查询未包含来源名称 HLTV: {query!r}"
     assert (
-        "NAVI" in query or "navi" in query.lower()
-    ), f"偏好查询未包含内容关键词 NAVI: {query!r}"
+        "TeamOrbit" in query or "teamorbit" in query.lower()
+    ), f"偏好查询未包含内容关键词 TeamOrbit: {query!r}"
 
 
 def test_preference_query_includes_multiple_sources():
     """多条 item 时，偏好查询应覆盖所有来源。"""
-    items = [_navi_item(), _falcons_item()]
+    items = [_orbit_item(), _atlas_item()]
     query = build_proactive_preference_query(items=items, max_items=3)
     query_lower = query.lower()
     assert (
         "hltv" in query_lower or "HLTV" in query
     ), f"偏好查询未包含来源 HLTV: {query!r}"
     assert (
-        "falcons" in query_lower or "navi" in query_lower
+        "teamatlas" in query_lower or "teamorbit" in query_lower
     ), f"偏好查询未包含任何 item 关键词: {query!r}"
 
 
 def test_preference_query_contains_preference_signal_words():
     """偏好查询应包含"偏好/关注/兴趣/不喜欢"等检索信号词。"""
-    query = build_proactive_preference_query(items=[_navi_item()], max_items=3)
+    query = build_proactive_preference_query(items=[_orbit_item()], max_items=3)
     preference_words = [
         "偏好",
         "兴趣",
@@ -255,7 +255,7 @@ async def test_memory_port_sends_preference_specific_query():
                     {
                         "id": "p1",
                         "memory_type": "preference",
-                        "summary": "只关注 Falcons 和 NiKo，不关心其他战队",
+                        "summary": "只关注 TeamAtlas 和 PlayerNova，不关心其他战队",
                     }
                 ]
             if kwargs.get("memory_types") == ["procedure", "preference"]:
@@ -282,7 +282,7 @@ async def test_memory_port_sends_preference_specific_query():
         session_key="telegram:123",
         channel="telegram",
         chat_id="123",
-        items=[_navi_item()],
+        items=[_orbit_item()],
         recent=[],
         decision_signals={},
         is_crisis=False,
@@ -292,7 +292,7 @@ async def test_memory_port_sends_preference_specific_query():
     # 查询应包含 item 来源相关信息
     pref_query = pref_calls[0]["query"].lower()
     assert (
-        "hltv" in pref_query or "navi" in pref_query
+        "hltv" in pref_query or "teamorbit" in pref_query
     ), f"偏好查询未包含 item 来源信息: {pref_query!r}"
 
 
@@ -307,7 +307,7 @@ async def test_memory_port_populates_preference_block():
                     {
                         "id": "p1",
                         "memory_type": "preference",
-                        "summary": "只关注 Falcons 和 NiKo",
+                        "summary": "只关注 TeamAtlas 和 PlayerNova",
                     }
                 ]
             return []
@@ -318,7 +318,7 @@ async def test_memory_port_populates_preference_block():
         def format_injection_with_ids(self, items):
             if not items:
                 return "", []
-            return "## 用户偏好\n- 只关注 Falcons 和 NiKo", ["p1"]
+            return "## 用户偏好\n- 只关注 TeamAtlas 和 PlayerNova", ["p1"]
 
     cfg = ProactiveConfig()
     port = DefaultMemoryRetrievalPort(
@@ -330,7 +330,7 @@ async def test_memory_port_populates_preference_block():
         session_key="telegram:123",
         channel="telegram",
         chat_id="123",
-        items=[_navi_item()],
+        items=[_orbit_item()],
         recent=[],
         decision_signals={},
         is_crisis=False,
@@ -338,7 +338,7 @@ async def test_memory_port_populates_preference_block():
 
     assert result.preference_block, "偏好 RAG 有返回但 preference_block 为空"
     assert (
-        "Falcons" in result.preference_block or "偏好" in result.preference_block
+        "TeamAtlas" in result.preference_block or "偏好" in result.preference_block
     ), f"preference_block 内容不符预期: {result.preference_block!r}"
 
 
@@ -366,7 +366,7 @@ async def test_memory_port_preference_block_empty_when_no_preference_hits():
         session_key="telegram:123",
         channel="telegram",
         chat_id="123",
-        items=[_navi_item()],
+        items=[_orbit_item()],
         recent=[],
         decision_signals={},
         is_crisis=False,
@@ -402,7 +402,7 @@ def _base_sense():
             }
 
         async def fetch_items(self, n):
-            return [_navi_item()]
+            return [_orbit_item()]
 
         def filter_new_items(self, items):
             return items, [("rss:hltv", "item1")], []
@@ -442,7 +442,7 @@ def _decide_with_interest(interest_match: float, *, send_called_out: list):
             }
 
         async def compose_message(self, **kw):
-            return "NAVI beat 3DMAX!"
+            return "TeamOrbit beat TeamForge!"
 
         async def reflect(self, *a, **kw):
             raise AssertionError("feature_scoring_enabled=true 时不应走 reflect")
@@ -509,7 +509,7 @@ async def test_engine_does_not_send_when_interest_match_below_veto_threshold(tmp
         sense=_base_sense(),
         decide=_decide_with_interest(0.05, send_called_out=score_calls),  # 极低
         act=_Act(),
-        memory_retrieval=_retrieval_with_preference("用户只关注 Falcons 和 NiKo"),
+        memory_retrieval=_retrieval_with_preference("用户只关注 TeamAtlas 和 PlayerNova"),
     )
 
     await engine.tick()
@@ -587,7 +587,7 @@ async def test_engine_sends_when_preference_veto_disabled(tmp_path):
         sense=_base_sense(),
         decide=_decide_with_interest(0.05, send_called_out=score_calls),
         act=_Act(),
-        memory_retrieval=_retrieval_with_preference("用户只关注 Falcons 和 NiKo"),
+        memory_retrieval=_retrieval_with_preference("用户只关注 TeamAtlas 和 PlayerNova"),
     )
 
     await engine.tick()
@@ -664,7 +664,7 @@ async def test_engine_passes_preference_block_to_score_features(tmp_path):
         sense=_base_sense(),
         decide=_Decide(),
         act=_Act(),
-        memory_retrieval=_retrieval_with_preference("## 偏好\n- 只关注 Falcons"),
+        memory_retrieval=_retrieval_with_preference("## 偏好\n- 只关注 TeamAtlas"),
     )
 
     await engine.tick()
@@ -672,7 +672,7 @@ async def test_engine_passes_preference_block_to_score_features(tmp_path):
     assert (
         captured.get("preference_block") != "MISSING"
     ), "score_features 未收到 preference_block 参数"
-    assert "Falcons" in captured.get(
+    assert "TeamAtlas" in captured.get(
         "preference_block", ""
     ), f"preference_block 内容不正确: {captured.get('preference_block')!r}"
 
@@ -705,7 +705,7 @@ async def test_engine_normal_flow_when_preference_block_empty(tmp_path):
             }
 
         async def compose_message(self, **kw):
-            return "Falcons win!"
+            return "TeamAtlas win!"
 
         async def reflect(self, *a, **kw):
             raise AssertionError("不应走 reflect")
@@ -761,8 +761,8 @@ async def test_engine_normal_flow_when_preference_block_empty(tmp_path):
 @pytest.mark.asyncio
 async def test_e2e_preference_rag_populates_block_for_disliked_source():
     """
-    端到端链路：DefaultMemoryRetrievalPort 对 NAVI 相关 item 发起偏好查询，
-    向量库返回"只关注 Falcons/NiKo"偏好记忆 → preference_block 非空。
+    端到端链路：DefaultMemoryRetrievalPort 对 TeamOrbit 相关 item 发起偏好查询，
+    向量库返回"只关注 TeamAtlas/PlayerNova"偏好记忆 → preference_block 非空。
     这覆盖了"RSS候选 → 偏好检索 → preference_block"的真实链路，
     而不是 mock DecidePort 直接返回数值。
     """
@@ -774,12 +774,12 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
             mt = kwargs.get("memory_types", [])
             if mt == ["preference"]:
                 preference_retrieval_queries.append(query)
-                # 模拟向量库命中"不关心 NAVI"偏好记忆
+                # 模拟向量库命中"不关心 TeamOrbit"偏好记忆
                 return [
                     {
                         "id": "pref-001",
                         "memory_type": "preference",
-                        "summary": "用户只关注 Falcons 和 NiKo，不关心 NAVI 等其他战队",
+                        "summary": "用户只关注 TeamAtlas 和 PlayerNova，不关心 TeamOrbit 等其他战队",
                     }
                 ]
             if mt == ["procedure", "preference"]:
@@ -809,8 +809,8 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
         session_key="telegram:123",
         channel="telegram",
         chat_id="123",
-        items=[_navi_item()],
-        recent=[{"role": "user", "content": "只看 Falcons"}],
+        items=[_orbit_item()],
+        recent=[{"role": "user", "content": "只看 TeamAtlas"}],
         decision_signals={},
         is_crisis=False,
     )
@@ -821,7 +821,8 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
     ), "未发起 preference 类型 RAG 查询，preference_block 无法被填充"
     # 查询应包含 item 来源相关词
     assert any(
-        "hltv" in q.lower() or "navi" in q.lower() for q in preference_retrieval_queries
+        "hltv" in q.lower() or "teamorbit" in q.lower()
+        for q in preference_retrieval_queries
     ), f"偏好查询未包含 item 来源信息: {preference_retrieval_queries}"
 
     # preference_block 必须被填充
@@ -829,7 +830,8 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
         result.preference_block
     ), "向量库返回了负偏好命中，但 preference_block 未被填充"
     assert (
-        "Falcons" in result.preference_block or "NiKo" in result.preference_block
+        "TeamAtlas" in result.preference_block
+        or "PlayerNova" in result.preference_block
     ), f"preference_block 未包含偏好内容: {result.preference_block!r}"
 
 
@@ -900,7 +902,7 @@ async def test_compose_message_receives_preference_block(tmp_path):
         sense=_base_sense(),
         decide=_Decide(),
         act=_Act(),
-        memory_retrieval=_retrieval_with_preference("## 偏好\n- 只关注 Falcons"),
+        memory_retrieval=_retrieval_with_preference("## 偏好\n- 只关注 TeamAtlas"),
     )
 
     await engine.tick()
@@ -908,7 +910,7 @@ async def test_compose_message_receives_preference_block(tmp_path):
     assert (
         "preference_block" in compose_kwargs_captured
     ), "compose_message 未收到 preference_block 参数"
-    assert "Falcons" in compose_kwargs_captured.get("preference_block", ""), (
+    assert "TeamAtlas" in compose_kwargs_captured.get("preference_block", ""), (
         f"compose_message 收到的 preference_block 内容不正确: "
         f"{compose_kwargs_captured.get('preference_block')!r}"
     )
@@ -966,8 +968,8 @@ async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
     port = _build_real_preference_memory_port(tmp_path)
     await port.save_item(
         summary=(
-            "HLTV 的 CS 资讯里，我只想看 NiKo、Falcons 相关消息；"
-            "不想看 B8、Legacy 这种 Major 名额分析。"
+            "HLTV 的 CS 资讯里，我只想看 PlayerNova、TeamAtlas 相关消息；"
+            "不想看 TeamComet、TeamDelta 这种 Major 名额分析。"
         ),
         memory_type="preference",
         extra={},
@@ -998,10 +1000,10 @@ async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
         is_crisis=False,
     )
 
-    assert "NiKo" in result.preference_block
-    assert "Falcons" in result.preference_block
-    assert "B8" in result.preference_block
-    assert "Legacy" in result.preference_block
+    assert "PlayerNova" in result.preference_block
+    assert "TeamAtlas" in result.preference_block
+    assert "TeamComet" in result.preference_block
+    assert "TeamDelta" in result.preference_block
 
 
 @pytest.mark.asyncio
@@ -1011,8 +1013,8 @@ async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_pat
     port = _build_real_preference_memory_port(tmp_path)
     await port.save_item(
         summary=(
-            "HLTV 的 CS 资讯里，我只想看 NiKo、Falcons 相关消息；"
-            "不想看 B8、Legacy 这种 Major 名额分析。"
+            "HLTV 的 CS 资讯里，我只想看 PlayerNova、TeamAtlas 相关消息；"
+            "不想看 TeamComet、TeamDelta 这种 Major 名额分析。"
         ),
         memory_type="preference",
         extra={},
@@ -1089,5 +1091,5 @@ async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_pat
     await engine.tick()
 
     assert score_inputs
-    assert "NiKo" in score_inputs[0].get("preference_block", "")
+    assert "PlayerNova" in score_inputs[0].get("preference_block", "")
     assert not send_calls

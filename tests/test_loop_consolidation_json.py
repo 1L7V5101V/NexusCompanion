@@ -10,7 +10,7 @@ from agent.looping.consolidation import (
 
 def test_parse_consolidation_payload_supports_fenced_json():
     result = _parse_consolidation_payload(
-        '```json\n{"history_entry":"[2026-03-09 12:00] 用户确认信息","pending_items":[{"tag":"preference","content":"不用 emoji。"}]}\n```'
+        '```json\n{"history_entry":"[2026-03-09 12:00] 用户确认信息","pending_items":[{"tag":"preference","content":"回复保持简洁。"}]}\n```'
     )
 
     assert result is not None

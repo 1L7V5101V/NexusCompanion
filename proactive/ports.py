@@ -292,7 +292,7 @@ class DefaultMemoryRetrievalPort:
             )
 
             # 偏好专项 RAG：针对候选 item 来源/话题独立查询 preference 类型记忆。
-            # 目的：检索"用户只关注 Falcons/NiKo 不关心其他战队"之类的明确偏好，
+            # 目的：检索"用户只关注 TeamAtlas/PlayerNova 不关心其他战队"之类的明确偏好，
             # 用于引擎层的偏好否决门（engine preference_veto_enabled）。
             preference_block = ""
             pref_hit_count = len(raw_pref_items)
