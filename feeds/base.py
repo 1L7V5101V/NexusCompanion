@@ -1,54 +1,18 @@
-"""
-信息流基础类型。
-
-FeedItem         — 单条信息流内容
-FeedSubscription — 持久化的订阅记录
-FeedSource       — 信息源抽象基类
-"""
+"""主仓库仍保留的最小内容视图类型。"""
 
 from __future__ import annotations
 
-import uuid
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass
 class FeedItem:
     source_name: str  # "Paul Graham's Blog"
-    source_type: str  # "rss"
+    source_type: str  # "content" 子来源类型，如 rss / github / steam
     title: str | None
     content: str  # 正文摘要（截断后）
     url: str | None
     author: str | None
     published_at: datetime | None
     display_text: str = ""  # MCP 侧提供的预格式化展示文本；为空时由 _format_items 自动拼
-
-
-@dataclass
-class FeedSubscription:
-    id: str
-    type: str  # "rss"
-    name: str  # 人类可读名称，如 "Paul Graham"
-    url: str | None = None  # RSS 地址
-    note: str | None = None  # 用户备注
-    enabled: bool = True
-    added_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @classmethod
-    def new(cls, **kwargs) -> FeedSubscription:
-        return cls(id=str(uuid.uuid4()), **kwargs)
-
-
-class FeedSource(ABC):
-    @property
-    @abstractmethod
-    def name(self) -> str: ...
-
-    @property
-    @abstractmethod
-    def source_type(self) -> str: ...
-
-    @abstractmethod
-    async def fetch(self, limit: int = 5) -> list[FeedItem]: ...

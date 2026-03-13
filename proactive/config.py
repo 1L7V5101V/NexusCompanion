@@ -81,12 +81,6 @@ class ProactiveConfig:
     pending_candidate_limit: int = 3
     pending_max_per_source: int = 20
     pending_max_total: int = 200
-    feed_poller_enabled: bool = False
-    feed_poller_interval_seconds: int = 300
-    feed_poller_fetch_limit: int = 20
-    feed_poller_buffer_ttl_hours: int = 48
-    feed_poller_buffer_max_per_source: int = 100
-    feed_poller_read_limit: int = 50
     skill_actions_enabled: bool = False
     skill_actions_path: str = ""
     fitbit_enabled: bool = False

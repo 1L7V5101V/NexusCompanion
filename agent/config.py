@@ -229,18 +229,6 @@ def load_config(path: str | Path = "config.json") -> Config:
             pending_candidate_limit=max(1, int(p.get("pending_candidate_limit", 3))),
             pending_max_per_source=max(1, int(p.get("pending_max_per_source", 20))),
             pending_max_total=max(1, int(p.get("pending_max_total", 200))),
-            feed_poller_enabled=bool(p.get("feed_poller_enabled", False)),
-            feed_poller_interval_seconds=max(
-                5, int(p.get("feed_poller_interval_seconds", 300))
-            ),
-            feed_poller_fetch_limit=max(1, int(p.get("feed_poller_fetch_limit", 20))),
-            feed_poller_buffer_ttl_hours=max(
-                1, int(p.get("feed_poller_buffer_ttl_hours", 48))
-            ),
-            feed_poller_buffer_max_per_source=max(
-                1, int(p.get("feed_poller_buffer_max_per_source", 100))
-            ),
-            feed_poller_read_limit=max(0, int(p.get("feed_poller_read_limit", 50))),
             skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
             skill_actions_path=str(p.get("skill_actions_path", "")),
             fitbit_enabled=bool(p.get("fitbit_enabled", False)),

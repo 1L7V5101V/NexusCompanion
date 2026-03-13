@@ -4,9 +4,8 @@ proactive/event.py — Proactive 信息源统一事件类型。
 设计层次：
 - ProactiveEvent     — 抽象基类，定义引擎可调用的统一接口
 - AlertEvent         — 告警通道：紧急事件，bypass 内容评分，需要 ack（如健康告警、传感器报警）
-- ContentEvent       — 内容流通道：参与评分、去重、pending queue（如 RSS、网页内容）
+- ContentEvent       — 内容流通道：参与评分、去重、pending queue（如 MCP 内容事件）
 - GenericAlertEvent  — MCP 通道接入的通用告警事件（kind 由 payload 决定）
-- FeedEvent          — 来自订阅信息流的内容条目（ContentEvent）
 
 扩展原则：
 - 新告警源通过 MCP server 接入，返回标准 schema，engine 统一包装为 GenericAlertEvent
@@ -189,7 +188,6 @@ class ContentEvent(ProactiveEvent, ABC):
         """返回供下游 port 接口使用的 FeedItem 视图。
 
         默认从自身字段构建，确保任何 ContentEvent 子类都不会被静默丢弃。
-        FeedEvent 覆盖此方法返回原始对象，以保留 dedup / pending / seen 所需的 identity。
         """
         from feeds.base import FeedItem  # 延迟 import，避免循环依赖
         return FeedItem(
@@ -201,38 +199,6 @@ class ContentEvent(ProactiveEvent, ABC):
             author=None,
             published_at=self.published_at,
         )
-
-
-@dataclass
-class FeedEvent(ContentEvent):
-    """来自订阅信息流的内容条目（RSS、网页等）。
-
-    event_id 由调用方传入（复用 compute_item_id 的现有逻辑）。
-    """
-
-    _raw_feed: "FeedItem | None" = field(default=None, repr=False)
-
-    @property
-    def kind(self) -> str:
-        return "feed"
-
-    def to_feed_item(self) -> "FeedItem":
-        # 返回原始对象，保留 identity，dedup / pending / seen 逻辑依赖此一致性
-        return self._raw_feed if self._raw_feed is not None else super().to_feed_item()
-
-    @classmethod
-    def from_item(cls, item: "FeedItem", item_id: str) -> "FeedEvent":
-        return cls(
-            event_id=item_id,
-            source_type=item.source_type or "",
-            source_name=item.source_name or "",
-            content=item.content or "",
-            title=item.title,
-            url=item.url,
-            published_at=item.published_at,
-            _raw_feed=item,
-        )
-
 
 @dataclass
 class GenericContentEvent(ContentEvent):

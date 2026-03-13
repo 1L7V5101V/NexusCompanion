@@ -13,7 +13,7 @@ from core.net.http import (
     configure_default_shared_http_resources,
 )
 from feeds.base import FeedItem
-from proactive.event import FeedEvent, GenericContentEvent
+from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
 from proactive.engine import DecisionContext, GateResult, ProactiveEngine, _STOP_NONE
 from proactive.item_id import compute_item_id
@@ -578,7 +578,17 @@ async def test_engine_stage_decide_feature_mode_still_composes_and_sets_candidat
     act = ctx.ensure_act()
     ctx.state.session_key = "telegram:1"
     ctx.state.now_utc = datetime.now(timezone.utc)
-    fetch.new_items = [FeedEvent.from_item(_raw_item, "item-1")]
+    fetch.new_items = [
+        GenericContentEvent(
+            event_id="item-1",
+            source_type=_raw_item.source_type or "",
+            source_name=_raw_item.source_name or "",
+            content=_raw_item.content or "",
+            title=_raw_item.title,
+            url=_raw_item.url,
+            published_at=_raw_item.published_at,
+        )
+    ]
     fetch.new_entries = [("rss:test", "item-1")]
     sense.recent = []
     sense.health_events = []
@@ -1610,4 +1620,3 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
 
     new_items, new_entries, _ = item_filter.filter_new_items([item])
     assert len(new_items) == 0, "rejection_cooldown 中的条目应被过滤掉"
-

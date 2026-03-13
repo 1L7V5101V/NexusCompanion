@@ -339,7 +339,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
             enabled=False,
             skill_actions_enabled=False,
             skill_actions_path="",
-            feed_poller_enabled=False,
             fitbit_enabled=False,
             fitbit_monitor_path="",
         ),
