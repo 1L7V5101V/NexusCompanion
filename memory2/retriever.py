@@ -222,7 +222,7 @@ class Retriever:
         return "\n\n".join(final_parts), injected_ids
 
     def select_for_injection(self, items: list[dict]) -> list[dict]:
-        """按分类型阈值 + 相对阈值过滤检索结果，减少无关上下文注入。"""
+        """按分类型阈值 + 相对阈值 + 数量上限过滤检索结果，减少无关上下文注入。"""
         if not items:
             return []
 
@@ -242,6 +242,9 @@ class Retriever:
                 type_best[mtype] = score
 
         selected: list[dict] = []
+        forced_count = 0
+        norm_count = 0
+        event_count = 0
         for item in sorted_items:
             mtype = str(item.get("memory_type", "") or "")
             score = float(item.get("score", 0.0) or 0.0)
@@ -251,6 +254,9 @@ class Retriever:
                 and mtype == "procedure"
                 and extra.get("tool_requirement")
             ):
+                if forced_count >= self._inject_max_forced:
+                    continue
+                forced_count += 1
                 selected.append(item)
                 continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
@@ -259,6 +265,14 @@ class Retriever:
                 continue
             if score < floor:
                 continue
+            if mtype in ("procedure", "preference"):
+                if norm_count >= self._inject_max_procedure_preference:
+                    continue
+                norm_count += 1
+            elif mtype in ("event", "profile"):
+                if event_count >= self._inject_max_event_profile:
+                    continue
+                event_count += 1
             selected.append(item)
 
         return selected

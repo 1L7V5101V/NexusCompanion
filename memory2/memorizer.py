@@ -48,23 +48,34 @@ class Memorizer:
         # 1. history_entry → event
         if history_entry and history_entry.strip():
             try:
-                embedding = await self._embedder.embed(history_entry.strip())
-                result = self._store.upsert_consolidation_event(
-                    source_ref=source_ref,
-                    summary=history_entry.strip(),
-                    embedding=embedding,
-                    extra={
-                        "scope_channel": scope_channel,
-                        "scope_chat_id": scope_chat_id,
-                    },
-                )
-                if result.startswith("skipped:"):
+                text = history_entry.strip()
+                if self._store.has_consolidation_source_ref(source_ref):
                     logger.info(
                         "memory2 consolidation skip duplicated source_ref=%s",
                         source_ref,
                     )
-                else:
-                    logger.info(f"memory2 event saved: {result}")
+                    text = ""
+                if text:
+                    embedding = await self._embedder.embed(text)
+                    if self._should_semantic_dedup_event(embedding):
+                        text = ""
+                if text:
+                    result = self._store.upsert_consolidation_event(
+                        source_ref=source_ref,
+                        summary=text,
+                        embedding=embedding,
+                        extra={
+                            "scope_channel": scope_channel,
+                            "scope_chat_id": scope_chat_id,
+                        },
+                    )
+                    if result.startswith("skipped:"):
+                        logger.info(
+                            "memory2 consolidation skip duplicated source_ref=%s",
+                            source_ref,
+                        )
+                    else:
+                        logger.info(f"memory2 event saved: {result}")
             except Exception as e:
                 logger.warning(f"memory2 event save 失败: {e}")
 
@@ -74,6 +85,23 @@ class Memorizer:
                 "memory2 consolidation skip behavior_updates (%d): handled by post-response worker",
                 len(behavior_updates),
             )
+
+    def _should_semantic_dedup_event(self, embedding: list[float] | None) -> bool:
+        if embedding is None:
+            return False
+        similar_ids = self._store.find_similar_recent_events(
+            embedding,
+            threshold=0.92,
+            days_back=7,
+        )
+        if not similar_ids:
+            return False
+        self._store.reinforce_items_batch(similar_ids[:1])
+        logger.info(
+            "memory2 event semantic-dedup: similar=%s",
+            similar_ids[:1],
+        )
+        return True
 
     def supersede_batch(self, ids: list[str]) -> None:
         self._store.mark_superseded_batch(ids)

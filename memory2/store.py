@@ -9,7 +9,7 @@ import json
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +46,14 @@ def _now_iso() -> str:
 def _content_hash(summary: str, memory_type: str) -> str:
     text = re.sub(r"\s+", " ", summary.lower().strip()) + memory_type
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    va = np.array(a, dtype=np.float32)
+    vb = np.array(b, dtype=np.float32)
+    a_norm = float(np.linalg.norm(va)) + 1e-9
+    b_norm = float(np.linalg.norm(vb)) + 1e-9
+    return float(va @ vb) / a_norm / b_norm
 
 
 class MemoryStore2:
@@ -212,6 +220,13 @@ class MemoryStore2:
                 pass
             raise
 
+    def has_consolidation_source_ref(self, source_ref: str) -> bool:
+        row = self._db.execute(
+            "SELECT 1 FROM consolidation_events WHERE source_ref=? LIMIT 1",
+            ((source_ref or "").strip(),),
+        ).fetchone()
+        return row is not None
+
     def mark_superseded(self, item_id: str) -> None:
         """将指定条目标记为已退休。"""
         self._db.execute(
@@ -226,6 +241,16 @@ class MemoryStore2:
         now = _now_iso()
         self._db.executemany(
             "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
+            [(now, item_id) for item_id in ids],
+        )
+        self._db.commit()
+
+    def reinforce_items_batch(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        now = _now_iso()
+        self._db.executemany(
+            "UPDATE memory_items SET reinforcement=reinforcement+1, updated_at=? WHERE id=?",
             [(now, item_id) for item_id in ids],
         )
         self._db.commit()
@@ -320,6 +345,33 @@ class MemoryStore2:
                 }
             )
         return result
+
+    def find_similar_recent_events(
+        self,
+        embedding: list[float],
+        *,
+        days_back: int = 7,
+        threshold: float = 0.92,
+        top_k: int = 3,
+    ) -> list[str]:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(1, int(days_back)))
+        ).isoformat()
+        rows = self._db.execute(
+            "SELECT id, embedding FROM memory_items "
+            "WHERE memory_type='event' AND status='active' "
+            "AND embedding IS NOT NULL AND created_at >= ?",
+            (cutoff,),
+        ).fetchall()
+        scored: list[tuple[str, float]] = []
+        for row_id, emb_json in rows:
+            if not emb_json:
+                continue
+            score = _cosine_similarity(embedding, json.loads(emb_json))
+            if score >= float(threshold):
+                scored.append((row_id, score))
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return [row_id for row_id, _score in scored[: max(1, int(top_k))]]
 
     def delete_by_source_ref(self, source_ref: str) -> int:
         """删除指定 source_ref 的所有条目，返回删除行数。"""

@@ -323,13 +323,14 @@ class ConversationTurnHandler:
             retrieved_block = injection.block
             injected_item_ids = injection.item_ids
             logger.info(
-                "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，筛选后 %d 条注入%s",
+                "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
                 route_decision,
                 h_scope_mode,
                 rewritten_query[:50],
                 len(p_items),
                 len(h_items),
                 len(selected_items),
+                len(injected_item_ids),
                 "" if retrieved_block else "（无内容注入）",
             )
             if selected_items:
