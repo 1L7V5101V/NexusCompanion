@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 
 from feeds.base import FeedItem
 from memory2.injection_planner import (
-    build_memory_injection_result,
     retrieve_history_items,
     retrieve_procedure_items,
 )
@@ -284,12 +283,9 @@ class DefaultMemoryRetrievalPort:
             h_items: list[dict]
             h_items, history_scope_mode = h_result
 
-            injection = build_memory_injection_result(
-                self._memory,
-                procedure_items=p_items,
-                history_items=h_items,
-                history_scope_mode=history_scope_mode,
-            )
+            merged_items = _merge_memory_items(p_items + h_items)
+            selected_items = self._memory.select_for_injection(merged_items)
+            block, item_ids = _build_injection_block(self._memory, merged_items)
 
             # 偏好专项 RAG：针对候选 item 来源/话题独立查询 preference 类型记忆。
             # 目的：检索"用户只关注 TeamAtlas/PlayerNova 不关心其他战队"之类的明确偏好，
@@ -297,23 +293,22 @@ class DefaultMemoryRetrievalPort:
             preference_block = ""
             pref_hit_count = len(raw_pref_items)
             if raw_pref_items:
-                pref_injection = build_memory_injection_result(
+                pref_items = _merge_memory_items(raw_pref_items)
+                preference_block, _pref_ids = _build_injection_block(
                     self._memory,
-                    procedure_items=raw_pref_items,
-                    history_items=[],
+                    pref_items,
                 )
-                preference_block = pref_injection.block
 
             result = ProactiveRetrievedMemory(
                 query=query,
-                block=injection.block,
-                item_ids=injection.item_ids,
-                items=injection.selected_items,
-                procedure_hits=injection.procedure_hits,
-                history_hits=injection.history_hits,
+                block=block,
+                item_ids=item_ids,
+                items=selected_items,
+                procedure_hits=len(p_items),
+                history_hits=len(h_items),
                 history_channel_open=history_open,
                 history_gate_reason=history_reason,
-                history_scope_mode=injection.history_scope_mode,
+                history_scope_mode=history_scope_mode,
                 preference_block=preference_block,
             )
             if result.items or preference_block:
@@ -870,3 +865,25 @@ class DefaultDecidePort:
                 }
             )
         return entries
+
+
+def _merge_memory_items(items: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    merged: list[dict] = []
+    for item in items:
+        item_id = str(item.get("id", "") or "")
+        if item_id and item_id in seen:
+            continue
+        if item_id:
+            seen.add(item_id)
+        merged.append(item)
+    return merged
+
+
+def _build_injection_block(
+    memory: "MemoryPort",
+    items: list[dict],
+) -> tuple[str, list[str]]:
+    if callable(getattr(memory, "build_injection_block", None)):
+        return memory.build_injection_block(items)
+    return memory.format_injection_with_ids(items)

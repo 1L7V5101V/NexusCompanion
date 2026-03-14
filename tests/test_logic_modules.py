@@ -108,6 +108,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
         retrieve=AsyncMock(return_value=[{"id": "1"}]),
         embed=AsyncMock(return_value=[1.0]),
         retrieve_with_vec=AsyncMock(return_value=[{"id": "2"}]),
+        build_injection_block=lambda items: ("block", ["1"]),
         format_injection_block=lambda items: "block",
         format_injection_with_ids=lambda items: ("block", ["1"]),
         select_for_injection=lambda items: items[:1],
@@ -119,6 +120,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert await port.retrieve_related("q") == [{"id": "1"}]
     assert await port.embed_query("q") == [1.0]
     assert await port.retrieve_related_vec([1.0]) == [{"id": "2"}]
+    assert port.build_injection_block([]) == ("block", ["1"])
     assert port.format_injection_block([]) == "block"
     assert port.format_injection_with_ids([]) == ("block", ["1"])
     assert port.select_for_injection([{"id": "1"}, {"id": "2"}]) == [{"id": "1"}]
@@ -155,6 +157,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             retrieve=AsyncMock(side_effect=RuntimeError("x")),
             embed=AsyncMock(side_effect=RuntimeError("x")),
             retrieve_with_vec=AsyncMock(side_effect=RuntimeError("x")),
+            build_injection_block=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
             format_injection_block=lambda items: "block",
             format_injection_with_ids=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
             select_for_injection=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
@@ -165,6 +168,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert await broken.retrieve_related("q") == []
     assert await broken.embed_query("q") == []
     assert await broken.retrieve_related_vec([1.0]) == []
+    assert broken.build_injection_block([]) == ("block", [])
     assert broken.format_injection_with_ids([]) == ("block", [])
     assert broken.select_for_injection([{"id": "1"}]) == [{"id": "1"}]
     assert await broken.save_item("s", "procedure", {}, "src") == ""

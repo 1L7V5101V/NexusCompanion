@@ -15,7 +15,7 @@ from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
 from core.memory.port import DefaultMemoryPort
-from memory2.query_rewriter import RewriteDecision
+from memory2.query_rewriter import GateDecision
 from memory2.sufficiency_checker import SufficiencyResult
 
 
@@ -203,6 +203,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(side_effect=_slow_retrieve)
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
 
     async def _slow_route_decision(*args, **kwargs):
@@ -228,22 +229,6 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     # 若串行应接近 0.24s；并行时应接近单个分支耗时。
     assert elapsed < 0.22
 
-
-def test_build_procedure_context_hint_handles_none_media():
-    loop = _make_loop(_Provider())
-    handler = ConversationTurnHandler(loop)
-    msg = InboundMessage(
-        channel="cli",
-        sender="u",
-        chat_id="1",
-        content="hello",
-        media=None,  # type: ignore[arg-type]
-        metadata={},
-    )
-
-    assert handler._build_procedure_context_hint(msg) == ""
-
-
 def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
     loop = _make_loop(_Provider())
     session = _DummySession("cli:1")
@@ -251,11 +236,9 @@ def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
     loop._trace_memory_retrieve = MagicMock()
     loop._query_rewriter = MagicMock()
     loop._query_rewriter.decide = AsyncMock(
-        return_value=RewriteDecision(
-            needs_retrieval=False,
-            procedure_query="下载",
-            history_query="下载历史",
-            memory_types_hint=["procedure"],
+        return_value=GateDecision(
+            needs_episodic=False,
+            episodic_query="下载历史",
             latency_ms=12,
         )
     )
@@ -263,44 +246,40 @@ def test_retrieve_memory_block_prefers_query_rewriter_primary_path():
         side_effect=AssertionError("should not call history route fallback")
     )
     loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
 
-    with patch(
-        "agent.looping.handlers.build_procedure_queries",
-        side_effect=AssertionError("should not call fallback query builder"),
-    ):
-        asyncio.run(
-            handler._retrieve_memory_block(
-                msg=msg,
-                key=msg.session_key,
-                session=session,
-                main_history=[],
-            )
+    asyncio.run(
+        handler._retrieve_memory_block(
+            msg=msg,
+            key=msg.session_key,
+            session=session,
+            main_history=[],
         )
-
+    )
     loop._query_rewriter.decide.assert_awaited_once()
     assert loop._trace_memory_retrieve.call_args.kwargs["gate_type"] == "query_rewriter"
 
 
-def test_retrieve_memory_block_passes_procedure_query_and_user_msg_to_multi_query():
+def test_retrieve_memory_block_query_rewriter_path_uses_raw_msg_for_procedure_lane():
     loop = _make_loop(_Provider())
     session = _DummySession("cli:1")
     handler = ConversationTurnHandler(loop)
     loop._trace_memory_retrieve = MagicMock()
     loop._query_rewriter = MagicMock()
     loop._query_rewriter.decide = AsyncMock(
-        return_value=RewriteDecision(
-            needs_retrieval=True,
-            procedure_query="B站视频下载流程",
-            history_query="用户的B站下载偏好历史",
-            memory_types_hint=["procedure", "preference"],
+        return_value=GateDecision(
+            needs_episodic=True,
+            episodic_query="用户的B站下载偏好历史",
             latency_ms=8,
         )
     )
     loop._memory_port = MagicMock()
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     msg = InboundMessage(
         channel="cli",
@@ -315,8 +294,8 @@ def test_retrieve_memory_block_passes_procedure_query_and_user_msg_to_multi_quer
             new=AsyncMock(return_value=[]),
         ) as proc_mock,
         patch(
-            "agent.looping.handlers.retrieve_history_items",
-            new=AsyncMock(return_value=([], "disabled")),
+            "agent.looping.handlers.retrieve_episodic",
+            new=AsyncMock(return_value=([], "disabled", None)),
         ),
     ):
         asyncio.run(
@@ -329,10 +308,7 @@ def test_retrieve_memory_block_passes_procedure_query_and_user_msg_to_multi_quer
         )
 
     proc_mock.assert_awaited_once()
-    assert proc_mock.call_args.kwargs["queries"] == [
-        "B站视频下载流程",
-        "把这个B站视频下载下来",
-    ]
+    assert proc_mock.call_args.kwargs["query"] == "把这个B站视频下载下来"
 
 
 def test_process_inner_schedules_consolidation_only_after_append_messages():
@@ -353,6 +329,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(return_value=[])
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._decide_history_route = AsyncMock(
         return_value=RouteDecision(
@@ -390,15 +367,13 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
 
 
 def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
-    """当检索结果最高分低于阈值时，sufficiency checker 被调用。"""
+    """当注入 block 为空时，sufficiency checker 被调用。"""
     loop = _make_loop(_Provider())
     loop._query_rewriter = MagicMock()
     loop._query_rewriter.decide = AsyncMock(
-        return_value=RewriteDecision(
-            needs_retrieval=True,
-            procedure_query="仁王游戏讨论",
-            history_query="用户关于仁王的历史",
-            memory_types_hint=["event"],
+        return_value=GateDecision(
+            needs_episodic=True,
+            episodic_query="用户关于仁王的历史",
             latency_ms=10,
         )
     )
@@ -423,7 +398,8 @@ def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
     loop._sufficiency_checker = checker_mock
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(return_value=low_score_items)
-    loop._memory_port.select_for_injection = MagicMock(return_value=low_score_items)
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._trace_memory_retrieve = MagicMock()
 
@@ -453,11 +429,9 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
     loop = _make_loop(_Provider())
     loop._query_rewriter = MagicMock()
     loop._query_rewriter.decide = AsyncMock(
-        return_value=RewriteDecision(
-            needs_retrieval=True,
-            procedure_query="仁王游戏讨论",
-            history_query="用户关于仁王的历史",
-            memory_types_hint=["event"],
+        return_value=GateDecision(
+            needs_episodic=True,
+            episodic_query="用户关于仁王的历史",
             latency_ms=10,
         )
     )
@@ -483,6 +457,7 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
             },
         ]
     )
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._trace_memory_retrieve = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(return_value=[])
@@ -499,10 +474,10 @@ def test_retrieve_memory_block_uses_refined_query_on_insufficient():
 
     async def _fake_history_items(memory, query, **kwargs):
         history_calls.append(query)
-        return [], "disabled"
+        return [], "disabled", None
 
     with patch(
-        "agent.looping.handlers.retrieve_history_items",
+        "agent.looping.handlers.retrieve_episodic",
         side_effect=_fake_history_items,
     ):
         asyncio.run(
@@ -525,6 +500,7 @@ def test_retrieve_memory_block_skips_sufficiency_check_when_checker_is_none():
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(return_value=[])
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._trace_memory_retrieve = MagicMock()
 
@@ -547,11 +523,9 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
     loop = _make_loop(_Provider())
     loop._query_rewriter = MagicMock()
     loop._query_rewriter.decide = AsyncMock(
-        return_value=RewriteDecision(
-            needs_retrieval=True,
-            procedure_query="天气查询",
-            history_query="用户天气偏好",
-            memory_types_hint=["procedure"],
+        return_value=GateDecision(
+            needs_episodic=True,
+            episodic_query="用户天气偏好",
             latency_ms=10,
         )
     )
@@ -583,6 +557,7 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
     loop._memory_port = MagicMock()
     loop._memory_port.retrieve_related = AsyncMock(side_effect=_count_retrieve)
     loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.build_injection_block = MagicMock(return_value=("", []))
     loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
     loop._trace_memory_retrieve = MagicMock()
 

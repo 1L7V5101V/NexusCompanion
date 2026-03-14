@@ -11,18 +11,14 @@ _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周�
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
 from memory2.injection_planner import (
-    build_memory_injection_result,
-    retrieve_history_items,
+    retrieve_episodic,
     retrieve_procedure_items,
 )
-from memory2.query_builder import build_procedure_queries
-from memory2.query_rewriter import RewriteDecision
-from memory2.sufficiency_checker import should_check_sufficiency
+from memory2.query_rewriter import GateDecision
 
 if TYPE_CHECKING:
     from agent.looping.core import AgentLoop
     from core.observe.events import RagItemTrace, RagTrace, TurnTrace
-    from memory2.hyde_enhancer import HyDEAugmentResult
 
 logger = logging.getLogger("agent.loop_handlers")
 
@@ -85,150 +81,6 @@ class ConversationTurnHandler:
             logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
         return skill_mentions
 
-    def _build_procedure_context_hint(self, msg: InboundMessage) -> str:
-        # 1. 收集 media 里的显式链接或文件线索。
-        parts = [str(item).strip() for item in (msg.media or []) if str(item).strip()]
-
-        # 2. 再补充 metadata 里常见的 URL / 工具名字符串线索。
-        for key in ("url", "urls", "link", "links", "tool", "tool_name"):
-            value = msg.metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                parts.append(value.strip())
-            elif isinstance(value, list):
-                parts.extend(str(item).strip() for item in value if str(item).strip())
-
-        # 3. 最后拼成一个轻量 hint，供 procedure query builder 做语义补足。
-        return " ".join(parts)
-
-    @staticmethod
-    def _history_memory_types_from_hint(memory_types_hint: list[str]) -> list[str]:
-        if not memory_types_hint:
-            return ["event", "profile"]
-        return [item for item in memory_types_hint if item in {"event", "profile"}]
-
-    @staticmethod
-    def _build_query_rewriter_gate_result(
-        decision: RewriteDecision,
-    ) -> dict[str, object]:
-        return {
-            "gate_type": "query_rewriter",
-            "procedure_query": decision.procedure_query,
-            "history_query": decision.history_query,
-            "route_decision": "RETRIEVE" if decision.needs_retrieval else "NO_RETRIEVE",
-            "route_latency_ms": decision.latency_ms,
-            "fallback_reason": "",
-            "history_memory_types": ConversationTurnHandler._history_memory_types_from_hint(
-                decision.memory_types_hint
-            ),
-        }
-
-    async def _run_history_route_fallback(
-        self,
-        *,
-        msg: InboundMessage,
-        recent_turns: str,
-        runtime_md: dict,
-    ) -> tuple[list[dict], dict[str, object]]:
-        loop = self._loop
-        p_queries = build_procedure_queries(
-            msg.content,
-            context_hint=self._build_procedure_context_hint(msg),
-        )
-        p_task = asyncio.create_task(
-            retrieve_procedure_items(
-                loop._memory_port,
-                queries=p_queries,
-                top_k=loop._memory_top_k_procedure,
-            )
-        )
-        route_task = asyncio.create_task(
-            loop._decide_history_route(
-                user_msg=msg.content,
-                metadata=runtime_md,
-                recent_history=recent_turns,
-            )
-        )
-        p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
-        route_reason = loop._trace_route_reason(route_decision_obj)
-        gate_result = {
-            "gate_type": "history_route",
-            "procedure_query": p_queries[0] if p_queries else msg.content,
-            "history_query": route_decision_obj.rewritten_query,
-            "route_decision": "RETRIEVE" if route_decision_obj.needs_history else "NO_RETRIEVE",
-            "route_latency_ms": route_decision_obj.latency_ms,
-            "fallback_reason": "" if route_reason == "ok" else route_reason,
-            "history_memory_types": ["event", "profile"],
-        }
-        return p_items, gate_result
-
-    @staticmethod
-    def _empty_sufficiency_trace() -> dict[str, object]:
-        return {
-            "triggered": False,
-            "result": "",
-            "refined_query": "",
-            "retry_count": 0,
-        }
-
-    async def _maybe_run_sufficiency_check(
-        self,
-        *,
-        msg: InboundMessage,
-        recent_turns: str,
-        procedure_items: list[dict],
-        history_items: list[dict],
-        history_scope_mode: str,
-        history_query: str,
-        history_memory_types: list[str],
-        route_decision: str = "RETRIEVE",
-    ) -> tuple[object, list[dict], str, dict[str, object]]:
-        loop = self._loop
-        injection = build_memory_injection_result(
-            loop._memory_port,
-            procedure_items=procedure_items,
-            history_items=history_items,
-            history_scope_mode=history_scope_mode,
-        )
-        sufficiency_trace = self._empty_sufficiency_trace()
-        checker = getattr(loop, "_sufficiency_checker", None)
-        # gate 已判定不需要检索，不允许 sufficiency check 覆盖该决定
-        if route_decision != "RETRIEVE":
-            return injection, history_items, history_scope_mode, sufficiency_trace
-        if checker is None or not should_check_sufficiency(injection.selected_items):
-            return injection, history_items, history_scope_mode, sufficiency_trace
-
-        sufficiency_trace["triggered"] = True
-        result = await checker.check(
-            query=history_query or msg.content,
-            items=injection.selected_items,
-            context=recent_turns,
-        )
-        sufficiency_trace["result"] = result.reason
-        sufficiency_trace["refined_query"] = result.refined_query or ""
-        if result.is_sufficient or not result.refined_query or not history_memory_types:
-            if not history_memory_types and not result.is_sufficient and result.refined_query:
-                logger.debug("sufficiency check: no history_memory_types, skip retry")
-            return injection, history_items, history_scope_mode, sufficiency_trace
-
-        extra_h_items, extra_scope_mode = await retrieve_history_items(
-            loop._memory_port,
-            result.refined_query,
-            memory_types=history_memory_types,
-            top_k=loop._memory_top_k_history,
-            allow_global=True,
-            context=recent_turns,
-            hyde_enhancer=loop._hyde_enhancer,
-        )
-        sufficiency_trace["retry_count"] = 1
-        merged_history_items = history_items + extra_h_items
-        reinjection = build_memory_injection_result(
-            loop._memory_port,
-            procedure_items=procedure_items,
-            history_items=merged_history_items,
-            history_scope_mode=extra_scope_mode or history_scope_mode,
-        )
-        return reinjection, merged_history_items, extra_scope_mode or history_scope_mode, sufficiency_trace
-
     async def _retrieve_memory_block(
         self,
         *,
@@ -241,169 +93,66 @@ class ConversationTurnHandler:
         loop = self._loop
         retrieved_block = ""
         rag_trace: RagTrace | None = None
+        gate_type = "history_route"
+        sufficiency_trace: dict[str, object] = self._empty_sufficiency_state()
         try:
-            route_decision = "RETRIEVE"
-            rewritten_query = msg.content
-            gate_type = "history_route"
-            fallback_reason = ""
-            gate_latency_ms: dict[str, int] = {}
-            sufficiency_trace = self._empty_sufficiency_trace()
-            runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
-
-            # 1. 先做 gate 决策：正式主路径优先 query_rewriter，缺失时回退旧 history_route。
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
-            now = datetime.now()
-            date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
-            hyde_turns = loop._format_gate_history(
-                main_history, max_turns=3, max_content_len=None
+            hyde_context = self._build_hyde_context(main_history)
+            gate_result, p_items = await self._resolve_memory_gate(
+                msg=msg,
+                session=session,
+                recent_turns=recent_turns,
             )
-            hyde_context = (
-                f"当前时间：{date_str}\n{hyde_turns}"
-                if hyde_turns
-                else f"当前时间：{date_str}"
-            )
-            if loop._query_rewriter is not None:
-                gate_result = self._build_query_rewriter_gate_result(
-                    await loop._query_rewriter.decide(
-                        user_msg=msg.content,
-                        recent_history=recent_turns,
-                    )
-                )
-                if gate_result["route_decision"] == "RETRIEVE":
-                    p_items = await retrieve_procedure_items(
-                        loop._memory_port,
-                        queries=[str(gate_result["procedure_query"]), msg.content],
-                        top_k=loop._memory_top_k_procedure,
-                    )
-                else:
-                    p_items = []
-            else:
-                p_items, gate_result = await self._run_history_route_fallback(
-                    msg=msg,
-                    recent_turns=recent_turns,
-                    runtime_md=runtime_md,
-                )
-
             gate_type = str(gate_result["gate_type"])
-            rewritten_query = str(gate_result["history_query"])
+            rewritten_query = str(gate_result["episodic_query"])
             route_decision = str(gate_result["route_decision"])
             route_ms = int(gate_result["route_latency_ms"])
             fallback_reason = str(gate_result["fallback_reason"])
             history_memory_types = list(gate_result["history_memory_types"])
-            gate_latency_ms["route"] = route_ms
-            needs_history = route_decision == "RETRIEVE" and bool(history_memory_types)
-
-            h_items: list[dict] = []
-            h_scope_mode = "disabled"
-            _hyde_result: HyDEAugmentResult | None = None
-
-            def _capture_hyde(r: "HyDEAugmentResult") -> None:
-                nonlocal _hyde_result
-                _hyde_result = r
-
-            if needs_history:
-                h_items, h_scope_mode = await retrieve_history_items(
-                    loop._memory_port,
-                    rewritten_query,
-                    memory_types=history_memory_types,
-                    top_k=loop._memory_top_k_history,
-                    allow_global=True,
-                    context=hyde_context,
-                    hyde_enhancer=loop._hyde_enhancer,
-                    on_hyde_result=_capture_hyde,
-                )
-
-            # 3. 先合并 injection，再按需做一次 sufficiency check + 单次重查。
-            injection, h_items, h_scope_mode, sufficiency_trace = await self._maybe_run_sufficiency_check(
-                msg=msg,
-                recent_turns=recent_turns,
+            gate_latency_ms = {"route": route_ms}
+            h_items, h_scope_mode, hyde_hypothesis = await self._retrieve_episodic_items(
+                route_decision=route_decision,
+                rewritten_query=rewritten_query,
+                history_memory_types=history_memory_types,
+                hyde_context=hyde_context,
+            )
+            selected_items, retrieved_block, injected_item_ids = self._build_injection_payload(
                 procedure_items=p_items,
                 history_items=h_items,
-                history_scope_mode=h_scope_mode,
-                history_query=rewritten_query,
-                history_memory_types=history_memory_types,
-                route_decision=route_decision,
             )
-            selected_items = injection.selected_items
-            retrieved_block = injection.block
-            injected_item_ids = injection.item_ids
-            logger.info(
-                "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
-                route_decision,
-                h_scope_mode,
-                rewritten_query[:50],
-                len(p_items),
-                len(h_items),
-                len(selected_items),
-                len(injected_item_ids),
-                "" if retrieved_block else "（无内容注入）",
-            )
-            if selected_items:
-                injected_preview = " | ".join(
-                    f"{str(item.get('memory_type', ''))}:{str(item.get('summary', ''))[:40]}"
-                    for item in selected_items[:4]
-                    if isinstance(item, dict)
+            h_items, h_scope_mode, selected_items, retrieved_block, injected_item_ids = (
+                await self._retry_empty_episodic_block(
+                    msg=msg,
+                    recent_turns=recent_turns,
+                    route_decision=route_decision,
+                    rewritten_query=rewritten_query,
+                    history_memory_types=history_memory_types,
+                    procedure_items=p_items,
+                    history_items=h_items,
+                    history_scope_mode=h_scope_mode,
+                    selected_items=selected_items,
+                    retrieved_block=retrieved_block,
+                    injected_item_ids=injected_item_ids,
+                    sufficiency_trace=sufficiency_trace,
                 )
-                logger.info("memory2 injected_summary: %s", injected_preview)
-            for _item in selected_items:
-                logger.debug(
-                    "memory2 injected: id=%s score=%.3f type=%s summary=%s",
-                    _item.get("id", ""),
-                    float(_item.get("score", 0.0)),
-                    _item.get("memory_type", ""),
-                    str(_item.get("summary", ""))[:60],
-                )
-
-            protected_ids = {
-                str(i.get("id", ""))
-                for i in p_items
-                if isinstance(i, dict)
-                and i.get("memory_type") == "procedure"
-                and (i.get("extra_json") or {}).get("tool_requirement")
-                and i.get("id")
-            }
-            sop_guard_applied = bool(
-                loop._memory_sop_guard_enabled
-                and any(item_id in protected_ids for item_id in injected_item_ids)
             )
-
-            # 4. 无论命中还是失败，最后都把 route / retrieve 信息写入 trace。
-            loop._trace_memory_retrieve(
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_msg=msg.content,
-                items=selected_items,
-                injected_block=retrieved_block,
+            rag_trace = self._finalize_memory_retrieval(
+                key=key,
+                msg=msg,
                 gate_type=gate_type,
                 route_decision=route_decision,
                 rewritten_query=rewritten_query,
+                route_ms=route_ms,
                 fallback_reason=fallback_reason,
-                sop_guard_applied=sop_guard_applied,
-                procedure_hits=len(p_items),
-                history_hits=len(h_items),
-                injected_item_ids=injected_item_ids,
                 gate_latency_ms=gate_latency_ms,
-                sufficiency_check=sufficiency_trace,
-            )
-
-            # 5. 组装 RagTrace（供 observe DB 写入）。
-            injected_id_set = set(injected_item_ids)
-            rag_trace = _build_agent_rag_trace(
-                session_key=key,
-                user_msg=msg.content,
-                rewritten_query=rewritten_query,
-                gate_type=gate_type,
-                route_decision=route_decision,
-                route_latency_ms=route_ms,
-                h_scope_mode=h_scope_mode,
                 p_items=p_items,
                 h_items=h_items,
-                hyde_result=_hyde_result,
-                injected_id_set=injected_id_set,
-                injected_block=retrieved_block,
-                sufficiency_check=sufficiency_trace,
-                fallback_reason=fallback_reason,
+                h_scope_mode=h_scope_mode,
+                hyde_hypothesis=hyde_hypothesis,
+                selected_items=selected_items,
+                retrieved_block=retrieved_block,
+                injected_item_ids=injected_item_ids,
+                sufficiency_trace=sufficiency_trace,
             )
         except Exception as e:
             logger.warning(f"memory2 retrieve 失败，跳过: {e}")
@@ -429,7 +178,7 @@ class ConversationTurnHandler:
                 h_scope_mode=None,
                 p_items=[],
                 h_items=[],
-                hyde_result=None,
+                hyde_hypothesis=None,
                 injected_id_set=set(),
                 injected_block="",
                 sufficiency_check=sufficiency_trace,
@@ -437,6 +186,299 @@ class ConversationTurnHandler:
                 error=str(e),
             )
         return retrieved_block, rag_trace
+
+    def _empty_sufficiency_state(self) -> dict[str, object]:
+        return {
+            "triggered": False,
+            "result": "",
+            "refined_query": "",
+            "retry_count": 0,
+        }
+
+    def _build_hyde_context(self, main_history: list[dict]) -> str:
+        now = datetime.now()
+        date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
+        hyde_turns = self._loop._format_gate_history(
+            main_history,
+            max_turns=3,
+            max_content_len=None,
+        )
+        return f"当前时间：{date_str}\n{hyde_turns}" if hyde_turns else f"当前时间：{date_str}"
+
+    async def _resolve_memory_gate(
+        self,
+        *,
+        msg: InboundMessage,
+        session,
+        recent_turns: str,
+    ) -> tuple[dict[str, object], list[dict]]:
+        loop = self._loop
+        if loop._query_rewriter is not None:
+            decision: GateDecision = await loop._query_rewriter.decide(
+                user_msg=msg.content,
+                recent_history=recent_turns,
+            )
+            p_items = await retrieve_procedure_items(
+                loop._memory_port,
+                query=msg.content,
+                top_k=loop._memory_top_k_procedure,
+            )
+            return {
+                "gate_type": "query_rewriter",
+                "episodic_query": decision.episodic_query,
+                "route_decision": "RETRIEVE" if decision.needs_episodic else "NO_RETRIEVE",
+                "route_latency_ms": decision.latency_ms,
+                "fallback_reason": "",
+                "history_memory_types": ["event", "profile"],
+            }, p_items
+        return await self._resolve_fallback_memory_gate(
+            msg=msg,
+            session=session,
+            recent_turns=recent_turns,
+        )
+
+    async def _resolve_fallback_memory_gate(
+        self,
+        *,
+        msg: InboundMessage,
+        session,
+        recent_turns: str,
+    ) -> tuple[dict[str, object], list[dict]]:
+        loop = self._loop
+        runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
+        p_task = asyncio.create_task(
+            retrieve_procedure_items(
+                loop._memory_port,
+                query=msg.content,
+                top_k=loop._memory_top_k_procedure,
+            )
+        )
+        route_task = asyncio.create_task(
+            loop._decide_history_route(
+                user_msg=msg.content,
+                metadata=runtime_md,
+                recent_history=recent_turns,
+            )
+        )
+        p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
+        route_reason = loop._trace_route_reason(route_decision_obj)
+        return {
+            "gate_type": "history_route",
+            "episodic_query": route_decision_obj.rewritten_query,
+            "route_decision": "RETRIEVE" if route_decision_obj.needs_history else "NO_RETRIEVE",
+            "route_latency_ms": route_decision_obj.latency_ms,
+            "fallback_reason": "" if route_reason == "ok" else route_reason,
+            "history_memory_types": ["event", "profile"],
+        }, p_items
+
+    async def _retrieve_episodic_items(
+        self,
+        *,
+        route_decision: str,
+        rewritten_query: str,
+        history_memory_types: list[str],
+        hyde_context: str,
+    ) -> tuple[list[dict], str, str | None]:
+        if route_decision != "RETRIEVE" or not history_memory_types:
+            return [], "disabled", None
+        return await retrieve_episodic(
+            self._loop._memory_port,
+            rewritten_query,
+            memory_types=history_memory_types,
+            top_k=self._loop._memory_top_k_history,
+            context=hyde_context,
+            hyde_enhancer=self._loop._hyde_enhancer,
+        )
+
+    def _build_injection_payload(
+        self,
+        *,
+        procedure_items: list[dict],
+        history_items: list[dict],
+    ) -> tuple[list[dict], str, list[str]]:
+        memory = self._loop._memory_port
+        merged = self._merge_memory_items(procedure_items + history_items)
+        selected_items = memory.select_for_injection(merged)
+        block, item_ids = memory.build_injection_block(merged)
+        return selected_items, block, item_ids
+
+    async def _retry_empty_episodic_block(
+        self,
+        *,
+        msg: InboundMessage,
+        recent_turns: str,
+        route_decision: str,
+        rewritten_query: str,
+        history_memory_types: list[str],
+        procedure_items: list[dict],
+        history_items: list[dict],
+        history_scope_mode: str,
+        selected_items: list[dict],
+        retrieved_block: str,
+        injected_item_ids: list[str],
+        sufficiency_trace: dict[str, object],
+    ) -> tuple[list[dict], str, list[dict], str, list[str]]:
+        checker = getattr(self._loop, "_sufficiency_checker", None)
+        if route_decision != "RETRIEVE" or checker is None or retrieved_block:
+            return (
+                history_items,
+                history_scope_mode,
+                selected_items,
+                retrieved_block,
+                injected_item_ids,
+            )
+        sufficiency_trace["triggered"] = True
+        result = await checker.check(
+            query=rewritten_query or msg.content,
+            items=selected_items,
+            context=recent_turns,
+        )
+        sufficiency_trace["result"] = result.reason
+        sufficiency_trace["refined_query"] = result.refined_query or ""
+        if result.is_sufficient or not result.refined_query or not history_memory_types:
+            if not history_memory_types and not result.is_sufficient and result.refined_query:
+                logger.debug("sufficiency check: no history_memory_types, skip retry")
+            return (
+                history_items,
+                history_scope_mode,
+                selected_items,
+                retrieved_block,
+                injected_item_ids,
+            )
+        extra_h_items, extra_scope_mode, _retry_hypothesis = await retrieve_episodic(
+            self._loop._memory_port,
+            result.refined_query,
+            memory_types=history_memory_types,
+            top_k=self._loop._memory_top_k_history,
+            context=recent_turns,
+            hyde_enhancer=self._loop._hyde_enhancer,
+        )
+        sufficiency_trace["retry_count"] = 1
+        history_items = history_items + extra_h_items
+        history_scope_mode = extra_scope_mode or history_scope_mode
+        selected_items, retrieved_block, injected_item_ids = self._build_injection_payload(
+            procedure_items=procedure_items,
+            history_items=history_items,
+        )
+        return history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids
+
+    def _merge_memory_items(self, items: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for item in items:
+            item_id = str(item.get("id", "") or "")
+            if item_id and item_id in seen:
+                continue
+            if item_id:
+                seen.add(item_id)
+            merged.append(item)
+        return merged
+
+    def _finalize_memory_retrieval(
+        self,
+        *,
+        key: str,
+        msg: InboundMessage,
+        gate_type: str,
+        route_decision: str,
+        rewritten_query: str,
+        route_ms: int,
+        fallback_reason: str,
+        gate_latency_ms: dict[str, int],
+        p_items: list[dict],
+        h_items: list[dict],
+        h_scope_mode: str,
+        hyde_hypothesis: str | None,
+        selected_items: list[dict],
+        retrieved_block: str,
+        injected_item_ids: list[str],
+        sufficiency_trace: dict[str, object],
+    ) -> "RagTrace":
+        # 1. 先打本轮命中日志，便于排查注入结果。
+        logger.info(
+            "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
+            route_decision,
+            h_scope_mode,
+            rewritten_query[:50],
+            len(p_items),
+            len(h_items),
+            len(selected_items),
+            len(injected_item_ids),
+            "" if retrieved_block else "（无内容注入）",
+        )
+        self._log_memory_injection(selected_items)
+        # 2. 再把检索细节写入 jsonl trace。
+        sop_guard_applied = self._has_sop_guard_hit(p_items, injected_item_ids)
+        self._loop._trace_memory_retrieve(
+            session_key=key,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            user_msg=msg.content,
+            items=selected_items,
+            injected_block=retrieved_block,
+            gate_type=gate_type,
+            route_decision=route_decision,
+            rewritten_query=rewritten_query,
+            fallback_reason=fallback_reason,
+            sop_guard_applied=sop_guard_applied,
+            procedure_hits=len(p_items),
+            history_hits=len(h_items),
+            injected_item_ids=injected_item_ids,
+            gate_latency_ms=gate_latency_ms,
+            sufficiency_check=sufficiency_trace,
+        )
+        # 3. 最后构造 observe 用的 RagTrace。
+        return _build_agent_rag_trace(
+            session_key=key,
+            user_msg=msg.content,
+            rewritten_query=rewritten_query,
+            gate_type=gate_type,
+            route_decision=route_decision,
+            route_latency_ms=route_ms,
+            h_scope_mode=h_scope_mode,
+            p_items=p_items,
+            h_items=h_items,
+            hyde_hypothesis=hyde_hypothesis,
+            injected_id_set=set(injected_item_ids),
+            injected_block=retrieved_block,
+            sufficiency_check=sufficiency_trace,
+            fallback_reason=fallback_reason,
+        )
+
+    def _log_memory_injection(self, selected_items: list[dict]) -> None:
+        if selected_items:
+            injected_preview = " | ".join(
+                f"{str(item.get('memory_type', ''))}:{str(item.get('summary', ''))[:40]}"
+                for item in selected_items[:4]
+                if isinstance(item, dict)
+            )
+            logger.info("memory2 injected_summary: %s", injected_preview)
+        for item in selected_items:
+            logger.debug(
+                "memory2 injected: id=%s score=%.3f type=%s summary=%s",
+                item.get("id", ""),
+                float(item.get("score", 0.0)),
+                item.get("memory_type", ""),
+                str(item.get("summary", ""))[:60],
+            )
+
+    def _has_sop_guard_hit(
+        self,
+        procedure_items: list[dict],
+        injected_item_ids: list[str],
+    ) -> bool:
+        protected_ids = {
+            str(item.get("id", ""))
+            for item in procedure_items
+            if isinstance(item, dict)
+            and item.get("memory_type") == "procedure"
+            and (item.get("extra_json") or {}).get("tool_requirement")
+            and item.get("id")
+        }
+        return bool(
+            self._loop._memory_sop_guard_enabled
+            and any(item_id in protected_ids for item_id in injected_item_ids)
+        )
 
     async def _run_conversation_turn(
         self,
@@ -595,7 +637,7 @@ def _build_agent_rag_trace(
     h_scope_mode: str | None,
     p_items: list[dict],
     h_items: list[dict],
-    hyde_result: "HyDEAugmentResult | None",
+    hyde_hypothesis: str | None,
     injected_id_set: set[str],
     injected_block: str,
     sufficiency_check: dict[str, object],
@@ -626,15 +668,10 @@ def _build_agent_rag_trace(
     for item in p_items:
         trace_items.append(_item_to_trace(item, "procedure"))
 
-    # history items：区分 raw vs hyde_added
-    if hyde_result is not None:
-        raw_ids = {str(i.get("id", "")) for i in hyde_result.raw_hits}
-        for item in h_items:
-            path = "history_raw" if str(item.get("id", "")) in raw_ids else "history_hyde"
-            trace_items.append(_item_to_trace(item, path))
-    else:
-        for item in h_items:
-            trace_items.append(_item_to_trace(item, "history_raw"))
+    # history items：retrieve_episodic 已直接标好 raw / hyde 路径。
+    for item in h_items:
+        path = str(item.get("_retrieval_path", "history_raw") or "history_raw")
+        trace_items.append(_item_to_trace(item, path))
 
     return RagTrace(
         source="agent",
@@ -644,7 +681,7 @@ def _build_agent_rag_trace(
         gate_type=gate_type,
         route_decision=route_decision,
         route_latency_ms=route_latency_ms,
-        hyde_hypothesis=hyde_result.hypothesis if hyde_result else None,
+        hyde_hypothesis=hyde_hypothesis,
         history_scope_mode=h_scope_mode,
         history_gate_reason=None,
         items=trace_items,

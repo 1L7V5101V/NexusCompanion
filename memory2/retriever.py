@@ -113,67 +113,117 @@ class Retriever:
         return text[: max_len - 1].rstrip() + "…"
 
     def format_injection_block(self, items: list[dict]) -> str:
-        block, _ = self.format_injection_with_ids(items)
+        block, _ = self.build_injection_block(items)
         return block
 
-    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
-        """
-        格式化为 system prompt 注入块：
-        - procedure with tool_requirement → ## 【强制约束】段
-        - procedure without tool_requirement, preference → ## 【流程规范】段
-        - event → ## 【相关历史】段
-        """
-        if not items:
+    def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
+        """单次流程：筛选条目 → 分段格式化 → 应用字符预算。"""
+        selected, forced, norms, events = self._prepare_injection_sections(items)
+        if not selected:
             return "", []
 
+        parts = self._build_section_parts(forced, norms, events)
+        return self._apply_char_budget(parts, has_forced=bool(forced))
+
+    def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
+        """兼容旧接口：内部统一走 build_injection_block。"""
+        return self.build_injection_block(items)
+
+    def select_for_injection(self, items: list[dict]) -> list[dict]:
+        """兼容旧接口：内部统一走 build_injection_block 的筛选阶段。"""
+        selected, _forced, _norms, _events = self._prepare_injection_sections(items)
+        return selected
+
+    def _prepare_injection_sections(
+        self,
+        items: list[dict],
+    ) -> tuple[list[dict], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
+        """1. 筛选条目 2. 按段落准备格式化文本。"""
+        if not items:
+            return [], [], [], []
+
         sorted_items = sorted(
-            items,
+            [i for i in items if isinstance(i, dict)],
             key=lambda x: float(x.get("score", 0.0) or 0.0),
             reverse=True,
         )
+        if not sorted_items:
+            return [], [], [], []
 
+        type_best: dict[str, float] = {}
+        for item in sorted_items:
+            mtype = str(item.get("memory_type", "") or "")
+            score = float(item.get("score", 0.0) or 0.0)
+            if mtype not in type_best or score > type_best[mtype]:
+                type_best[mtype] = score
+
+        selected: list[dict] = []
         forced: list[tuple[str, str]] = []
         norms: list[tuple[str, str]] = []
         events: list[tuple[str, str]] = []
-
+        forced_count = 0
+        norm_count = 0
+        event_count = 0
         for item in sorted_items:
+            mtype = str(item.get("memory_type", "") or "")
+            score = float(item.get("score", 0.0) or 0.0)
+            extra = item.get("extra_json") or {}
             item_id = str(item.get("id", "") or "")
-            mtype = item.get("memory_type", "")
             summary = self._shorten(item.get("summary", ""), self._inject_line_max)
+            happened_at = item.get("happened_at") or ""
+            if (
+                self._sop_guard_enabled
+                and mtype == "procedure"
+                and extra.get("tool_requirement")
+            ):
+                if forced_count >= self._inject_max_forced:
+                    continue
+                forced_count += 1
+                selected.append(item)
+                if summary:
+                    tool_req = extra.get("tool_requirement")
+                    forced.append((item_id, f"- {summary}（必须调用工具：{tool_req}）"))
+                continue
+            type_th = self._score_thresholds.get(mtype, self._score_threshold)
+            floor = type_best.get(mtype, score) - self._relative_delta
+            if score < type_th:
+                continue
+            if score < floor:
+                continue
+            if mtype in ("procedure", "preference"):
+                if norm_count >= self._inject_max_procedure_preference:
+                    continue
+                norm_count += 1
+            elif mtype in ("event", "profile"):
+                if event_count >= self._inject_max_event_profile:
+                    continue
+                event_count += 1
+            else:
+                continue
+            selected.append(item)
             if not summary:
                 continue
-            extra = item.get("extra_json") or {}
-            happened_at = item.get("happened_at") or ""
-
             if mtype == "procedure":
-                tool_req = extra.get("tool_requirement")
-                if tool_req:
-                    if len(forced) >= self._inject_max_forced:
-                        continue
-                    line = f"- {summary}（必须调用工具：{tool_req}）"
-                    forced.append((item_id, line))
+                steps = extra.get("steps") or []
+                if steps:
+                    step_text = "；".join(str(s) for s in steps)
+                    norms.append((item_id, f"- {summary}（步骤：{step_text}）"))
                 else:
-                    if len(norms) >= self._inject_max_procedure_preference:
-                        continue
-                    steps = extra.get("steps") or []
-                    if steps:
-                        step_text = "；".join(str(s) for s in steps)
-                        line = f"- {summary}（步骤：{step_text}）"
-                    else:
-                        line = f"- {summary}"
-                    norms.append((item_id, line))
+                    norms.append((item_id, f"- {summary}"))
             elif mtype == "preference":
-                if len(norms) >= self._inject_max_procedure_preference:
-                    continue
                 norms.append((item_id, f"- {summary}"))
             elif mtype in ("event", "profile"):
-                if len(events) >= min(
-                    self.INJECT_MAX_EVENTS, self._inject_max_event_profile
-                ):
-                    continue
                 ts = f"[{happened_at}] " if happened_at else ""
                 events.append((item_id, f"- {ts}{summary}"))
 
+        return selected, forced, norms, events
+
+    def _build_section_parts(
+        self,
+        forced: list[tuple[str, str]],
+        norms: list[tuple[str, str]],
+        events: list[tuple[str, str]],
+    ) -> list[tuple[str, list[str]]]:
         parts: list[tuple[str, list[str]]] = []
         if forced:
             parts.append(
@@ -199,7 +249,14 @@ class Retriever:
                     [item_id for item_id, _ in events if item_id],
                 )
             )
+        return parts
 
+    def _apply_char_budget(
+        self,
+        parts: list[tuple[str, list[str]]],
+        *,
+        has_forced: bool,
+    ) -> tuple[str, list[str]]:
         if not parts:
             return "", []
 
@@ -209,7 +266,7 @@ class Retriever:
         total = 0
         for idx, (part, part_ids) in enumerate(parts):
             add_len = len(part) + (2 if final_parts else 0)
-            is_forced_part = idx == 0 and bool(forced)
+            is_forced_part = idx == 0 and has_forced
             if total + add_len > self._inject_max_chars and not is_forced_part:
                 continue
             final_parts.append(part)
@@ -218,61 +275,4 @@ class Retriever:
                 if item_id and item_id not in seen_ids:
                     seen_ids.add(item_id)
                     injected_ids.append(item_id)
-
         return "\n\n".join(final_parts), injected_ids
-
-    def select_for_injection(self, items: list[dict]) -> list[dict]:
-        """按分类型阈值 + 相对阈值 + 数量上限过滤检索结果，减少无关上下文注入。"""
-        if not items:
-            return []
-
-        sorted_items = sorted(
-            [i for i in items if isinstance(i, dict)],
-            key=lambda x: float(x.get("score", 0.0) or 0.0),
-            reverse=True,
-        )
-        if not sorted_items:
-            return []
-
-        type_best: dict[str, float] = {}
-        for item in sorted_items:
-            mtype = str(item.get("memory_type", "") or "")
-            score = float(item.get("score", 0.0) or 0.0)
-            if mtype not in type_best or score > type_best[mtype]:
-                type_best[mtype] = score
-
-        selected: list[dict] = []
-        forced_count = 0
-        norm_count = 0
-        event_count = 0
-        for item in sorted_items:
-            mtype = str(item.get("memory_type", "") or "")
-            score = float(item.get("score", 0.0) or 0.0)
-            extra = item.get("extra_json") or {}
-            if (
-                self._sop_guard_enabled
-                and mtype == "procedure"
-                and extra.get("tool_requirement")
-            ):
-                if forced_count >= self._inject_max_forced:
-                    continue
-                forced_count += 1
-                selected.append(item)
-                continue
-            type_th = self._score_thresholds.get(mtype, self._score_threshold)
-            floor = type_best.get(mtype, score) - self._relative_delta
-            if score < type_th:
-                continue
-            if score < floor:
-                continue
-            if mtype in ("procedure", "preference"):
-                if norm_count >= self._inject_max_procedure_preference:
-                    continue
-                norm_count += 1
-            elif mtype in ("event", "profile"):
-                if event_count >= self._inject_max_event_profile:
-                    continue
-                event_count += 1
-            selected.append(item)
-
-        return selected

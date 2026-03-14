@@ -2,23 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
     from memory2.hyde_enhancer import HyDEAugmentResult, HyDEEnhancer
-
-
-@dataclass
-class MemoryInjectionResult:
-    selected_items: list[dict] = field(default_factory=list)
-    block: str = ""
-    item_ids: list[str] = field(default_factory=list)
-    procedure_hits: int = 0
-    history_hits: int = 0
-    history_scope_mode: str = "disabled"
-
 
 async def retrieve_procedure_items(
     memory: "MemoryPort",
@@ -51,6 +39,34 @@ async def retrieve_procedure_items(
         key=lambda item: (_item_score(item), str(item.get("id", ""))),
         reverse=True,
     )[:top_k]
+
+
+async def retrieve_episodic(
+    memory: "MemoryPort",
+    query: str,
+    *,
+    memory_types: list[str] | None = None,
+    top_k: int,
+    context: str = "",
+    hyde_enhancer: "HyDEEnhancer | None" = None,
+) -> tuple[list[dict], str, str | None]:
+    """Global episodic 检索（event + profile），返回 (items, scope_mode, hyde_hypothesis)。
+
+    不含 scoped 路径——scoped 路径由 proactive 的 retrieve_history_items 负责。
+    """
+    mtypes: list[str] = memory_types if memory_types is not None else ["event", "profile"]
+    if hyde_enhancer is not None:
+        result = await hyde_enhancer.augment(
+            raw_query=query,
+            context=context,
+            retrieve_fn=memory.retrieve_related,
+            top_k=top_k,
+            memory_types=mtypes,
+        )
+        scope = "global+hyde" if result.used_hyde else "global"
+        return _mark_hyde_history_paths(result.raw_hits, result.items), scope, result.hypothesis
+    items = await memory.retrieve_related(query, memory_types=mtypes, top_k=top_k)
+    return _mark_history_path(items, "history_raw"), "global", None
 
 
 async def retrieve_history_items(
@@ -145,26 +161,6 @@ async def retrieve_history_items(
     return items, scope_mode
 
 
-def build_memory_injection_result(
-    memory: "MemoryPort",
-    *,
-    procedure_items: list[dict],
-    history_items: list[dict],
-    history_scope_mode: str = "disabled",
-) -> MemoryInjectionResult:
-    merged = _dedupe_memory_items(procedure_items + history_items)
-    selected = memory.select_for_injection(merged)
-    block, ids = memory.format_injection_with_ids(selected)
-    return MemoryInjectionResult(
-        selected_items=selected,
-        block=block,
-        item_ids=ids,
-        procedure_hits=len(procedure_items),
-        history_hits=len(history_items),
-        history_scope_mode=history_scope_mode,
-    )
-
-
 def _dedupe_memory_items(items: list[dict]) -> list[dict]:
     seen: set[str] = set()
     out: list[dict] = []
@@ -220,3 +216,24 @@ def _item_score(item: dict) -> float:
         return float(item.get("score", 0.0) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _mark_history_path(items: list[dict], path: str) -> list[dict]:
+    marked: list[dict] = []
+    for item in items:
+        cloned = deepcopy(item)
+        cloned["_retrieval_path"] = path
+        marked.append(cloned)
+    return marked
+
+
+def _mark_hyde_history_paths(raw_hits: list[dict], merged_items: list[dict]) -> list[dict]:
+    raw_ids = {str(item.get("id", "")) for item in raw_hits if str(item.get("id", ""))}
+    marked: list[dict] = []
+    for item in merged_items:
+        item_id = str(item.get("id", ""))
+        path = "history_raw" if item_id in raw_ids else "history_hyde"
+        cloned = deepcopy(item)
+        cloned["_retrieval_path"] = path
+        marked.append(cloned)
+    return marked

@@ -460,3 +460,28 @@ def test_retriever_forced_block_not_dropped_by_char_budget():
     block, injected_ids = retriever.format_injection_with_ids(items)
     assert "【强制约束】" in block
     assert "p1" in injected_ids
+
+
+def test_retriever_build_injection_block_matches_legacy_format_api():
+    retriever = Retriever(
+        store=MagicMock(),
+        embedder=MagicMock(),
+        score_threshold=0.0,
+    )
+    items = [
+        {"id": "p1", "memory_type": "procedure", "score": 0.91, "summary": "规则1"},
+        {"id": "e1", "memory_type": "event", "score": 0.88, "summary": "事件1"},
+    ]
+
+    block, injected_ids = retriever.build_injection_block(items)
+    legacy_block, legacy_ids = retriever.format_injection_with_ids(items)
+
+    assert block == legacy_block
+    assert injected_ids == legacy_ids
+
+
+def test_retriever_build_injection_block_empty_input_returns_tuple():
+    retriever = Retriever(store=MagicMock(), embedder=MagicMock())
+    block, injected_ids = retriever.build_injection_block([])
+    assert block == ""
+    assert injected_ids == []

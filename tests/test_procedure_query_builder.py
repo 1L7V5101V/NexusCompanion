@@ -20,9 +20,9 @@ def test_no_hardcoded_caozuoguifan_suffix():
 
 
 def test_returns_at_least_two_queries():
-    """至少返回 2 个不同角度的 query，才能做 max-pool。"""
+    """Refactor 后保守退化为单 query。"""
     queries = build_procedure_queries("把这个B站视频下载下来")
-    assert len(queries) >= 2
+    assert queries == ["把这个B站视频下载下来"]
 
 
 def test_all_queries_are_non_empty_strings():
@@ -46,28 +46,14 @@ def test_short_message_still_works():
 def test_generic_message_with_no_keywords_returns_original_only():
     """对于没有命中领域关键词的普通消息，只返回原始消息本身。
 
-    这是 Phase 0 的预期行为：去掉坏后缀比强行补 query 更安全。
+    Refactor 后所有消息都统一走这个保守行为。
     """
     queries = build_procedure_queries("帮我创建一个新技能")
     assert queries == ["帮我创建一个新技能"]
 
 
-def test_bilibili_download_query_contains_action_keywords():
-    """B站下载场景的 queries 里，至少有一个 query 不是简单重复原文、
-    且包含动作相关词（下载/B站/bilibili/视频）。
-    这样才能覆盖 stored summary 里的「B站链接」「下载」场景。
-    """
+def test_context_hint_no_longer_expands_query():
+    """context_hint 保留签名兼容，但不再触发额外 query 扩展。"""
     msg = "把这个视频发给我"
     queries = build_procedure_queries(msg, context_hint="bilibili.com")
-    action_keywords = {"下载", "B站", "bilibili", "视频", "链接"}
-    has_action_query = any(
-        any(kw.lower() in q.lower() for kw in action_keywords) for q in queries
-    )
-    assert has_action_query
-
-
-def test_rss_query_preserves_domain_keyword():
-    """RSS 场景：原消息中的领域词（rss、订阅）应被保留在某个 query 里。"""
-    msg = "给我一个bilibili的rss订阅"
-    queries = build_procedure_queries(msg)
-    assert any("rss" in q.lower() or "订阅" in q for q in queries)
+    assert queries == [msg]

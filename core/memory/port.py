@@ -118,6 +118,7 @@ class MemoryPort(Protocol):
         require_scope_match: bool = False,
     ) -> list[dict]: ...
 
+    def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]: ...
     def format_injection_block(self, items: list[dict]) -> str: ...
     def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]: ...
     def select_for_injection(self, items: list[dict]) -> list[dict]: ...
@@ -344,6 +345,16 @@ class DefaultMemoryPort:
         if not self._retriever:
             return ""
         return self._retriever.format_injection_block(items)
+
+    def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
+        if not self._retriever:
+            return "", []
+        if hasattr(self._retriever, "build_injection_block"):
+            try:
+                return self._retriever.build_injection_block(items)
+            except Exception as e:
+                logger.warning("[memory_port] build_injection_block failed: %s", e)
+        return self.format_injection_with_ids(items)
 
     def format_injection_with_ids(self, items: list[dict]) -> tuple[str, list[str]]:
         if not self._retriever:
