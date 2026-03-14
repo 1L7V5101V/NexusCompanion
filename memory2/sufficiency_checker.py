@@ -15,16 +15,17 @@ class SufficiencyResult:
     latency_ms: int
 
 
-def should_check_sufficiency(
-    items: list[dict],
-    threshold: float = 0.52,
-) -> bool:
-    """触发条件：items 为空、或最高分低于阈值、且没有 forced procedure。"""
+def should_check_sufficiency(items: list[dict]) -> bool:
+    """触发条件：RETRIEVE 路径返回空结果，且没有 forced procedure。
+
+    有结果时不重查——分数过滤已在 select_for_injection 完成，
+    低分条目不会进入 selected_items，无需再做一次 LLM 质量判断。
+    """
     if not items:
         return True
     if _has_forced_procedure(items):
         return False
-    return _top_score(items) < float(threshold)
+    return False
 
 
 class SufficiencyChecker:
@@ -172,11 +173,3 @@ def _has_forced_procedure(items: list[dict]) -> bool:
     return False
 
 
-def _top_score(items: list[dict]) -> float:
-    scores: list[float] = []
-    for item in items:
-        try:
-            scores.append(float(item.get("score", 0.0) or 0.0))
-        except (TypeError, ValueError):
-            scores.append(0.0)
-    return max(scores, default=0.0)

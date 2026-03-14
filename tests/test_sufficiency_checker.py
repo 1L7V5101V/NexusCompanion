@@ -44,23 +44,22 @@ def test_should_check_when_no_items():
     assert should_check_sufficiency([]) is True
 
 
-def test_should_check_when_top_score_below_threshold():
+def test_should_not_check_when_items_present():
+    """有结果时不触发——分数过滤已在 select_for_injection 完成。"""
     from memory2.sufficiency_checker import should_check_sufficiency
 
     items = [
         _item("procedure", 0.479, "西历2236读书进度"),
         _item("procedure", 0.461, "其他规则"),
     ]
-    assert should_check_sufficiency(items, threshold=0.52) is True
+    assert should_check_sufficiency(items) is False
 
 
-def test_should_not_check_when_top_score_above_threshold():
+def test_should_not_check_when_single_item_present():
     from memory2.sufficiency_checker import should_check_sufficiency
 
-    items = [
-        _item("procedure", 0.538, "天气查询强制走 weather 技能"),
-    ]
-    assert should_check_sufficiency(items, threshold=0.52) is False
+    items = [_item("procedure", 0.538, "天气查询强制走 weather 技能")]
+    assert should_check_sufficiency(items) is False
 
 
 def test_should_not_check_when_forced_procedure_present():
@@ -76,7 +75,7 @@ def test_should_not_check_when_forced_procedure_present():
             "extra_json": {"tool_requirement": "skill_action_status"},
         },
     ]
-    assert should_check_sufficiency(items, threshold=0.52) is False
+    assert should_check_sufficiency(items) is False
 
 
 @pytest.mark.asyncio

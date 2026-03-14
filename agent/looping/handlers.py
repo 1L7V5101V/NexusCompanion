@@ -180,6 +180,7 @@ class ConversationTurnHandler:
         history_scope_mode: str,
         history_query: str,
         history_memory_types: list[str],
+        route_decision: str = "RETRIEVE",
     ) -> tuple[object, list[dict], str, dict[str, object]]:
         loop = self._loop
         injection = build_memory_injection_result(
@@ -190,6 +191,9 @@ class ConversationTurnHandler:
         )
         sufficiency_trace = self._empty_sufficiency_trace()
         checker = getattr(loop, "_sufficiency_checker", None)
+        # gate 已判定不需要检索，不允许 sufficiency check 覆盖该决定
+        if route_decision != "RETRIEVE":
+            return injection, history_items, history_scope_mode, sufficiency_trace
         if checker is None or not should_check_sufficiency(injection.selected_items):
             return injection, history_items, history_scope_mode, sufficiency_trace
 
@@ -318,6 +322,7 @@ class ConversationTurnHandler:
                 history_scope_mode=h_scope_mode,
                 history_query=rewritten_query,
                 history_memory_types=history_memory_types,
+                route_decision=route_decision,
             )
             selected_items = injection.selected_items
             retrieved_block = injection.block
