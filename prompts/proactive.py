@@ -19,6 +19,8 @@ def build_reflect_prompt_messages(
     self_text: str,
     retrieved_memory_block: str,
     now_ongoing_text: str,
+    preference_block: str = "",
+    content_statuses: list[str] | None = None,
 ) -> tuple[str, str]:
     system_msg = (
         "你是 Nexus，一个有自己想法和感受的人。"
@@ -39,6 +41,25 @@ def build_reflect_prompt_messages(
         )
         _alert_section = f"\n\n## ⚠️ 当前告警（最高优先）\n\n{_alert_lines}\n"
 
+    preference_section = ""
+    if preference_block:
+        preference_section = (
+            "\n## 用户偏好（约束：与此矛盾的内容应降低分数或不发）\n"
+            + preference_block
+            + "\n"
+        )
+    content_constraint = ""
+    if any(
+        status in {"fetch_failed", "title_only"}
+        for status in (content_statuses or [])
+    ):
+        content_constraint = (
+            "\n## ⚠️ 内容限制\n"
+            "以下条目仅有标题/摘要，原文抓取失败或未完成。\n"
+            "**禁止**在 message 中描述条目未提供的具体细节（选手名、比赛结果、队伍归属等）。\n"
+            "若要引用，只能说\"有条新内容值得看\"并附链接，不得展开评论。\n"
+        )
+
     user_msg = f"""当前时间：{prompt_context.now_str}
 （ISO格式：{prompt_context.now_iso}）
 {_alert_section}
@@ -51,11 +72,13 @@ def build_reflect_prompt_messages(
 ## 订阅信息流（最新内容）
 
 {prompt_context.feed_text}
+{content_constraint}
 
 ## 长期记忆（用户画像/偏好）
 
 {prompt_context.memory_text}
 {f"## 相关记忆（本次触达召回）\n\n{retrieved_memory_block}\n" if retrieved_memory_block else ""}
+{preference_section}
 {f"## 用户近期状态\n\n{now_ongoing_text}\n" if now_ongoing_text else ""}
 ## 近期对话
 

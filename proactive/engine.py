@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ from proactive.energy import (
 from proactive.json_utils import extract_json_object
 from proactive.presence import PresenceStore
 from proactive.anyaction import AnyActionGate
+from proactive.components import classify_content_quality
 from proactive.ports import (
     ActPort,
     DecidePort,
@@ -36,6 +38,8 @@ from proactive.state import ProactiveStateStore
 from proactive.skill_action import SkillActionRunner
 from core.common.strategy_trace import build_strategy_trace_envelope
 from core.observe.events import ProactiveDecisionTrace
+from agent.tools.web_fetch import WebFetchTool
+from core.net.http import get_default_http_requester
 
 logger = logging.getLogger(__name__)
 
@@ -206,6 +210,7 @@ class DecideSnapshot:
     history_scope_mode: str = "disabled"
     memory_fallback_reason: str = ""
     preference_block: str = ""  # 偏好专项 RAG 结果，独立字段传给 score_features
+    prefetch_urls: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -370,6 +375,7 @@ class ProactiveEngine:
         self._skill_action_runner = skill_action_runner
         self._light_provider = light_provider
         self._light_model = light_model
+        self._prefetch_fetcher: WebFetchTool | None = None
         # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
         self._passive_busy_fn = passive_busy_fn
         self._stage_trace_writer = stage_trace_writer
@@ -745,12 +751,18 @@ class ProactiveEngine:
         self._populate_decision_signals(ctx)
         # 2. 再补记忆检索结果，把 memory block 和 route 元信息挂到 decide snapshot。
         await self._retrieve_decision_memory(ctx)
-        # 3. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
+        # 3. 在 LLM 决策前做预抓取，避免摘要内容被硬补细节。
+        fetch = ctx.ensure_fetch()
+        decide = ctx.ensure_decide()
+        fetch.new_items, decide.prefetch_urls = await self._prefetch_candidate_content(
+            fetch.new_items
+        )
+        # 4. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
         if self._cfg.feature_scoring_enabled:
             self._prepare_feature_compose_candidates(ctx)
             return await self._run_feature_decision(ctx)
         await self._run_reflect_decision(ctx)
-        # 4. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
+        # 5. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
         return self._build_continue_decide_result(ctx, decision_mode="reflect")
 
     # ------------------------------------------------------------------
@@ -782,7 +794,22 @@ class ProactiveEngine:
             await self._reject_and_try_skill_action(ctx, evidence)
             return
 
-        # 2. 准备本轮 delivery key 和证据集，后面的所有去重都围绕这组输入。
+        # 2. 发送前做轻量内容校验，避免摘要/标题导致事实扩写。
+        await self._apply_content_validation(ctx, evidence)
+        if not decide.should_send:
+            logger.info("[proactive] 内容校验后转为不发送")
+            self._emit_observe_decision(
+                ctx,
+                stage="act",
+                reason_code="content_validation_reject",
+                should_send=False,
+                action="idle",
+                delivery_attempted=False,
+                delivery_result="not_sent",
+            )
+            return
+
+        # 3. 准备本轮 delivery key 和证据集，后面的所有去重都围绕这组输入。
         delivery_key = self._prepare_delivery_attempt(ctx, evidence)
         logger.info(
             "[proactive] 发送前去重检查 session=%s evidence_count=%d delivery_key=%s",
@@ -818,9 +845,13 @@ class ProactiveEngine:
             return
 
         # 4. 再做 state summary 防复读，必要时重写或拒绝这次发送。
-        recent_proactive = self._sense.collect_recent_proactive(
-            getattr(self._cfg, "message_dedupe_recent_n", 5)
-        )
+        sense_port = getattr(self, "_sense", None)
+        if sense_port is not None:
+            recent_proactive = sense_port.collect_recent_proactive(
+                getattr(self._cfg, "message_dedupe_recent_n", 5)
+            )
+        else:
+            recent_proactive = []
         if not await self._rewrite_or_reject_repeated_state_summary(
             ctx,
             evidence,
@@ -1037,9 +1068,13 @@ class ProactiveEngine:
             and state.last_proactive_at
             and state.target_last_user > state.last_proactive_at
         )
-        recent_proactive = self._sense.collect_recent_proactive(
-            getattr(self._cfg, "message_dedupe_recent_n", 5)
-        )
+        sense_port = getattr(self, "_sense", None)
+        if sense_port is not None:
+            recent_proactive = sense_port.collect_recent_proactive(
+                getattr(self._cfg, "message_dedupe_recent_n", 5)
+            )
+        else:
+            recent_proactive = []
         # 2. 再组织成给 feature / reflect 共用的 decision_signals。
         sleep_signal: dict[str, object] = {"state": "unavailable"}
         if sense.sleep_ctx is not None:
@@ -1302,6 +1337,10 @@ class ProactiveEngine:
             retrieved_memory_block=decide.retrieved_memory_block,
             preference_block=decide.preference_block,
         )
+        if decide.prefetch_urls and hasattr(decide.decision, "fetched_urls"):
+            existing = list(getattr(decide.decision, "fetched_urls", None) or [])
+            merged = list(dict.fromkeys(decide.prefetch_urls + existing))
+            decide.decision.fetched_urls = merged
         # 2. 再叠加随机化决策，并用最终阈值决定 should_send。
         decide.decision, decision_delta = self._decide.randomize_decision(
             decide.decision
@@ -1335,6 +1374,61 @@ class ProactiveEngine:
             history_gate_reason=decide.history_gate_reason,
             history_scope_mode=decide.history_scope_mode,
         )
+
+    async def _prefetch_candidate_content(
+        self,
+        items: list[ContentEvent],
+        *,
+        max_items: int = 2,
+        timeout_s: float = 5.0,
+    ) -> tuple[list[ContentEvent], list[str]]:
+        # 1. 先为所有候选打上内容质量标签，同时挑出需要补抓的条目。
+        to_fetch: list[ContentEvent] = []
+        for item in items:
+            quality = classify_content_quality(item)
+            setattr(item, "content_status", quality)
+            if quality != "full" and item.url and len(to_fetch) < max(1, int(max_items)):
+                to_fetch.append(item)
+
+        if not to_fetch:
+            return items, []
+
+        # 2. 再并发抓取正文，能提取出足够正文就覆盖 content。
+        if getattr(self, "_prefetch_fetcher", None) is None:
+            try:
+                self._prefetch_fetcher = WebFetchTool(
+                    get_default_http_requester("external_default")
+                )
+            except Exception as e:
+                logger.info("[proactive] prefetch init failed: %s", e)
+                return items, []
+
+        async def _fetch_one(item: ContentEvent) -> tuple[str, str]:
+            url = item.url or ""
+            try:
+                raw = await asyncio.wait_for(
+                    self._prefetch_fetcher.execute(
+                        url=url,
+                        format="text",
+                        timeout=int(max(1, int(timeout_s))),
+                    ),
+                    timeout=timeout_s,
+                )
+                data = json.loads(raw or "{}")
+                text = str(data.get("text", "") or "").strip()
+                if text and len(text) > 200:
+                    item.content = text[:3000]
+                    setattr(item, "content_status", "fetched")
+                    return url, "fetched"
+            except Exception as e:
+                logger.info("[proactive] prefetch failed url=%s err=%s", url, e)
+            setattr(item, "content_status", "fetch_failed")
+            return url, "fetch_failed"
+
+        results = await asyncio.gather(*[_fetch_one(item) for item in to_fetch])
+        # 3. 最后收集成功抓取的 URL，供 trace 记录。
+        fetched_urls = [url for url, status in results if url and status == "fetched"]
+        return items, fetched_urls
 
     def _build_evidence_bundle(self, ctx: DecisionContext) -> EvidenceBundle:
         """统一构建 act 阶段要消费的证据视图，避免 source/evidence 概念混用。"""
@@ -1370,6 +1464,86 @@ class ProactiveEngine:
             evidence_item_ids=evidence_item_ids,
             source_refs=self._build_source_refs(evidence_items),
         )
+
+    async def _apply_content_validation(
+        self,
+        ctx: DecisionContext,
+        evidence: EvidenceBundle,
+    ) -> None:
+        # 1. 仅在有消息与候选内容时校验，且 light model 可用。
+        decide = ctx.ensure_decide()
+        message = (decide.decision_message or "").strip()
+        if not message:
+            return
+        items = evidence.source_items or evidence.evidence_items
+        if not items:
+            return
+        if self._light_provider is None or not self._light_model:
+            return
+        # 2. 执行轻量校验，不通过则降级为“仅给链接”的安全消息。
+        is_valid = await self._validate_message_against_content(message, items)
+        if is_valid:
+            return
+        fallback = self._build_fallback_message(items)
+        if fallback:
+            decide.decision_message = fallback
+            if decide.decision is not None and hasattr(decide.decision, "message"):
+                decide.decision.message = fallback
+            return
+        decide.should_send = False
+        decide.decision_message = ""
+        if decide.decision is not None and hasattr(decide.decision, "should_send"):
+            decide.decision.should_send = False
+
+    async def _validate_message_against_content(
+        self,
+        message: str,
+        items: list[FeedItem],
+    ) -> bool:
+        # 1. 把候选条目压缩成可校验的上下文，避免过长。
+        parts: list[str] = []
+        for item in items[:3]:
+            title = (item.title or "").strip()
+            content = re.sub(r"\s+", " ", (item.content or "").strip())[:400]
+            url = (item.url or "").strip()
+            lines = [f"标题: {title}" if title else "标题: (无)"]
+            if content:
+                lines.append(f"内容: {content}")
+            if url:
+                lines.append(f"链接: {url}")
+            parts.append("\n".join(lines))
+        items_text = "\n\n".join(parts) if parts else "（无）"
+        # 2. 用轻量模型判断 message 是否包含条目未提供的事实性细节。
+        system_prompt = (
+            "你是内容校验器。判断消息是否包含条目未提供的具体事实细节。"
+            "只输出 JSON：{\"valid\": true|false, \"reason\": \"\"}。"
+            "valid=false 表示消息提到了条目中不存在的人名/队伍/结果等具体事实。"
+        )
+        user_prompt = f"候选条目：\n{items_text}\n\n待发送消息：\n{message}\n"
+        try:
+            content = await self._request_light_text(
+                system_content=system_prompt,
+                user_content=user_prompt,
+                max_tokens=96,
+            )
+            data = extract_json_object(content)
+            if isinstance(data, dict):
+                return bool(data.get("valid", False))
+        except Exception:
+            logger.debug("[proactive] 内容校验失败，按通过处理")
+        return True
+
+    @staticmethod
+    def _build_fallback_message(items: list[FeedItem]) -> str:
+        # 1. 仅保留标题 + 链接，避免扩写细节。
+        item = items[0] if items else None
+        if item is None:
+            return ""
+        title = (item.title or "").strip() or "有条新内容值得看"
+        url = (item.url or "").strip()
+        if url:
+            return f"{title}\n{url}"
+        return title
 
     def _candidate_entries_for_rejection(
         self,
@@ -1598,7 +1772,7 @@ class ProactiveEngine:
         delivery_result: str | None = None,
         error: str | None = None,
     ) -> None:
-        writer = self._observe_writer
+        writer = getattr(self, "_observe_writer", None)
         if writer is None:
             return
         state = ctx.state
@@ -2135,7 +2309,14 @@ class ProactiveEngine:
     def _feed_items(events: list[ContentEvent]) -> list[FeedItem]:
         """从 ContentEvent 列表中提取 FeedItem 视图，供仍接受 FeedItem 的 port 接口使用。
         每个事件通过 to_feed_item() 提供视图，不会静默丢弃任何 ContentEvent 子类。"""
-        return [e.to_feed_item() for e in events]
+        items: list[FeedItem] = []
+        for event in events:
+            item = event.to_feed_item()
+            status = getattr(event, "content_status", "")
+            if status:
+                setattr(item, "content_status", status)
+            items.append(item)
+        return items
 
     def _item_id_for(self, item: FeedItem) -> str:
         try:

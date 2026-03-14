@@ -41,6 +41,19 @@ _TOOL_LOOP_REPEAT_LIMIT = 3
 _SUMMARY_MAX_TOKENS = 384
 
 
+def classify_content_quality(item: object) -> str:
+    """粗粒度判断内容质量，决定是否需要补抓原文。"""
+    content = str(getattr(item, "content", "") or "").strip()
+    title = str(getattr(item, "title", "") or "").strip()
+    if len(content) > 300:
+        return "full"
+    if len(content) > 60:
+        return "snippet"
+    if title:
+        return "title_only"
+    return "empty"
+
+
 def build_proactive_preference_query(
     *,
     items: list[FeedItem],
@@ -368,20 +381,6 @@ class ProactiveReflector:
     ) -> Any:
         # 1. 先把决策信号复制成可安全扩展的字典，避免污染上游对象。
         signal_payload: dict[str, object] = dict(decision_signals or {})
-        # 偏好块作为强约束前置注入 retrieved_memory_block，reflect 模式同样需要遵守。
-        if preference_block:
-            pref_section = (
-                "## 用户偏好（硬约束）\n"
-                + preference_block
-                + "\n"
-                + "若上述偏好明确排斥某来源或话题，不得在消息中提及，"
-                + "禁止出现逆偏好措辞。"
-            )
-            retrieved_memory_block = (
-                pref_section + "\n\n" + retrieved_memory_block
-                if retrieved_memory_block
-                else pref_section
-            )
         prompt_context = _build_proactive_prompt_context(
             items=items,
             recent=recent,
@@ -443,6 +442,11 @@ class ProactiveReflector:
         except Exception as e:
             logger.warning("[proactive] context reflect 失败，回退原始 reflect: %s", e)
 
+        content_statuses = [
+            str(getattr(item, "content_status", "") or "").strip()
+            for item in items
+            if str(getattr(item, "content_status", "") or "").strip()
+        ]
         system_msg, user_msg = build_reflect_prompt_messages(
             prompt_context=prompt_context,
             energy=energy,
@@ -452,6 +456,8 @@ class ProactiveReflector:
             self_text=self_text,
             retrieved_memory_block=retrieved_memory_block,
             now_ongoing_text=now_ongoing_text,
+            preference_block=preference_block,
+            content_statuses=content_statuses,
         )
 
         try:

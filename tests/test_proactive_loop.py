@@ -990,7 +990,7 @@ async def test_tick_calls_llm_in_crisis_mode_no_content(tmp_path):
 
     await loop._tick()
 
-    provider.chat.assert_called_once()
+    assert provider.chat.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -1008,7 +1008,7 @@ async def test_tick_calls_llm_when_no_presence_data(tmp_path):
 
     await loop._tick()
 
-    provider.chat.assert_called_once()
+    assert provider.chat.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -1067,8 +1067,8 @@ async def test_reflect_prompt_allows_interest_based_new_topic(tmp_path):
     await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
 
     user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "只是加分项，不是前置条件" in user_prompt
-    assert "长期兴趣高度匹配" in user_prompt
+    assert "近期对话只是背景" in user_prompt
+    assert "会感兴趣的东西，有就是发送的理由" in user_prompt
 
 
 @pytest.mark.asyncio
@@ -1086,8 +1086,8 @@ async def test_reflect_prompt_discourages_repeating_user_state_summary(tmp_path)
     await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
 
     user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "用户此后还没有回复，则新消息禁止重复这一层" in user_prompt
-    assert "若本次只是新资讯，直接进入新内容" in user_prompt
+    assert "不在消息体里重复那层情感关怀" in user_prompt
+    assert "若上一条主动消息已表达过" in user_prompt
 
 
 @pytest.mark.asyncio
@@ -1105,11 +1105,8 @@ async def test_reflect_prompt_requires_evidence_and_exact_source(tmp_path):
     await loop._reflect(items=[], recent=[], energy=0.06, urge=0.82)
 
     user_prompt = provider.chat.await_args.kwargs["messages"][1]["content"]
-    assert "只有在你能指出消息依据的确切证据时" in user_prompt
-    assert (
-        "若你找不到确切证据或来源不清，应降低 score，并把 should_send 设为 false"
-        in user_prompt
-    )
+    assert "不得用自身背景知识补充条目未提供的细节" in user_prompt
+    assert "严禁捏造不存在的文章/新闻" in user_prompt
     assert "优先自然带上“来源名 + 可点击原文链接”" in user_prompt
     assert "系统不会在发送前替你自动补来源" in user_prompt
 
@@ -1208,7 +1205,7 @@ async def test_tick_calls_llm_when_low_energy_with_memory(tmp_path):
 
     await loop._tick()
 
-    provider.chat.assert_called_once()
+    assert provider.chat.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -1249,7 +1246,7 @@ async def test_tick_without_new_items_still_runs_when_low_energy_and_memory(tmp_
 
     await loop._tick()
 
-    provider.chat.assert_called_once()
+    assert provider.chat.call_count == 2
 
 
 @pytest.mark.asyncio

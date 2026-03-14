@@ -225,7 +225,7 @@ class DefaultMemoryRetrievalPort:
             )
 
             # 同步准备各路参数
-            p_query = f"{query} 操作规范 用户偏好"
+            p_query = query
             top_k_proc = min(
                 _MAX_PROCEDURE_RETRIEVE_K,
                 max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
