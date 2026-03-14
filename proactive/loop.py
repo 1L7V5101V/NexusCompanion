@@ -95,12 +95,8 @@ class ProactiveLoop(
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
         last_base_score: float | None = None
-        try:
-            # 启动后立即执行一次 tick，避免首次触达还要额外等待一个 interval。
-            last_base_score = await self._tick()
-        except Exception:
-            logger.exception("ProactiveLoop 启动即刻 tick 异常")
-            last_base_score = None
+        # 启动后立即执行一次 tick，避免首次触达还要额外等待一个 interval。
+        # last_base_score = await self._tick()
         while self._running:
             interval = self._next_interval(last_base_score)
             logger.info("[proactive] 下次 tick 间隔=%ds", interval)

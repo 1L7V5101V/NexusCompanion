@@ -26,6 +26,7 @@ from agent.tools.message_push import MessagePushTool
 from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from prompts.proactive import (
+    build_context_reflect_prompt_messages,
     build_feature_scoring_prompt_messages,
     build_reflect_prompt_messages,
 )
@@ -256,6 +257,14 @@ class ProactivePromptContext:
     memory_text: str
 
 
+@dataclass(frozen=True)
+class ContextReflectDecision:
+    primary_context: str = "none"
+    background_role: str = "secondary"
+    topic_hint: str = ""
+    reasoning: str = ""
+
+
 def _build_proactive_prompt_context(
     *,
     items: list[FeedItem],
@@ -306,6 +315,46 @@ class ProactiveReflector:
         self._web_fetch_schemas: list[dict[str, Any]] | None = None
         self._web_fetch_tool_map: dict[str, Tool] | None = None
 
+    async def _reflect_context_plan(
+        self,
+        *,
+        prompt_context: ProactivePromptContext,
+        decision_signals: dict[str, object] | None,
+        retrieved_memory_block: str,
+        now_ongoing_text: str,
+    ) -> ContextReflectDecision:
+        # 1. 先构造一个只做主次上下文裁决的轻量 prompt。
+        system_msg, user_msg = build_context_reflect_prompt_messages(
+            prompt_context=prompt_context,
+            decision_signals=decision_signals,
+            retrieved_memory_block=retrieved_memory_block,
+            now_ongoing_text=now_ongoing_text,
+        )
+        # 2. 再用同模型跑一次无工具 JSON 裁决，避免边写消息边跑偏。
+        resp = await self._provider.chat(
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            tools=[],
+            model=self._model,
+            max_tokens=min(self._max_tokens, 256),
+        )
+        # 3. 最后规范化字段，只把允许的裁决结果带回主 reflect。
+        data = extract_json_object(resp.content or "")
+        primary = str(data.get("primary_context", "none") or "none").strip().lower()
+        role = str(data.get("background_role", "secondary") or "secondary").strip().lower()
+        if primary not in {"alert", "feed", "background_context", "none"}:
+            primary = "none"
+        if role not in {"primary", "secondary", "suppress"}:
+            role = "secondary"
+        return ContextReflectDecision(
+            primary_context=primary,
+            background_role=role,
+            topic_hint=str(data.get("topic_hint", "") or "").strip(),
+            reasoning=str(data.get("reasoning", "") or "").strip(),
+        )
+
     async def reflect(
         self,
         items: list[FeedItem],
@@ -317,6 +366,8 @@ class ProactiveReflector:
         retrieved_memory_block: str = "",
         preference_block: str = "",
     ) -> Any:
+        # 1. 先把决策信号复制成可安全扩展的字典，避免污染上游对象。
+        signal_payload: dict[str, object] = dict(decision_signals or {})
         # 偏好块作为强约束前置注入 retrieved_memory_block，reflect 模式同样需要遵守。
         if preference_block:
             pref_section = (
@@ -375,12 +426,29 @@ class ProactiveReflector:
                 f"{topic_section}"
             )
 
+        try:
+            # 2. 先做一轮轻量上下文裁决，把 alert/feed/background 的主次关系想清楚。
+            context_plan = await self._reflect_context_plan(
+                prompt_context=prompt_context,
+                decision_signals=signal_payload,
+                retrieved_memory_block=retrieved_memory_block,
+                now_ongoing_text=now_ongoing_text,
+            )
+            signal_payload["context_reflect"] = {
+                "primary_context": context_plan.primary_context,
+                "background_role": context_plan.background_role,
+                "topic_hint": context_plan.topic_hint,
+                "reasoning": context_plan.reasoning,
+            }
+        except Exception as e:
+            logger.warning("[proactive] context reflect 失败，回退原始 reflect: %s", e)
+
         system_msg, user_msg = build_reflect_prompt_messages(
             prompt_context=prompt_context,
             energy=energy,
             urge=urge,
             crisis_hint=crisis_hint,
-            decision_signals=decision_signals,
+            decision_signals=signal_payload,
             self_text=self_text,
             retrieved_memory_block=retrieved_memory_block,
             now_ongoing_text=now_ongoing_text,

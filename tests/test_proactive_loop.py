@@ -15,10 +15,17 @@ from core.net.http import (
 from feeds.base import FeedItem
 from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
-from proactive.engine import DecisionContext, GateResult, ProactiveEngine, _STOP_NONE
+from proactive.components import ProactiveReflector, ReflectHooks
+from proactive.engine import (
+    DecisionContext,
+    GateResult,
+    ProactiveEngine,
+    _STOP_NONE,
+    _build_recent_proactive_context_signal,
+)
 from proactive.item_id import compute_item_id
 from proactive.loop import ProactiveLoop, _parse_decision
-from proactive.ports import ProactiveSendMeta, ProactiveSourceRef
+from proactive.ports import ProactiveSendMeta, ProactiveSourceRef, RecentProactiveMessage
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -59,6 +66,16 @@ class _Resp:
         self.content = content
 
 
+class _QueuedProvider:
+    def __init__(self, responses: list[str]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+
+    async def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        return _Resp(self._responses.pop(0))
+
+
 @pytest.fixture(autouse=True)
 async def _shared_http_resources():
     resources = SharedHttpResources()
@@ -89,6 +106,87 @@ def test_parse_decision_string_false_is_false():
     assert d.should_send is False
 
 
+@pytest.mark.asyncio
+async def test_reflector_injects_context_reflect_before_final_reflect():
+    provider = _QueuedProvider(
+        [
+            '{"primary_context":"feed","background_role":"secondary","topic_hint":"新 feed","reasoning":"feed 更适合做主语境"}',
+            '{"score":0.8,"should_send":true,"message":"今天这条新内容更适合直接聊。","reasoning":"按 context_reflect 选择 feed 为主"}',
+        ]
+    )
+    reflector = ProactiveReflector(
+        provider=provider,
+        model="test-model",
+        max_tokens=256,
+        cfg=SimpleNamespace(),
+        memory_store=None,
+        presence=None,
+        fitbit_url="",
+        hooks=ReflectHooks(
+            format_items=lambda items: "1. Feed A",
+            format_recent=lambda recent: "用户: hi",
+            parse_decision=_parse_decision,
+            collect_global_memory=lambda: "用户偏好游戏与资讯",
+            sample_random_memory=lambda n: [],
+            target_session_key=lambda: "telegram:1",
+            on_reflect_error=lambda e: e,
+        ),
+    )
+
+    decision = await reflector.reflect(
+        items=[],
+        recent=[{"role": "user", "content": "hi"}],
+        decision_signals={
+            "background_context": {
+                "sources": [{"type": "steam", "recent_games": [{"name": "仁王 2"}]}]
+            },
+            "recent_proactive_context": {
+                "exists": True,
+                "count_since_last_user": 1,
+                "already_followed_up": True,
+                "followup_fatigue": "medium",
+                "has_new_feed": False,
+                "latest_excerpt": "刚刚已经补过一句了",
+            },
+        },
+    )
+
+    assert decision.should_send is True
+    assert len(provider.calls) == 2
+    final_prompt = provider.calls[1]["messages"][1]["content"]
+    assert '"context_reflect"' in final_prompt
+    assert '"primary_context": "feed"' in final_prompt
+    assert '"background_role": "secondary"' in final_prompt
+    assert '"recent_proactive_context"' in final_prompt
+
+
+def test_build_recent_proactive_context_signal_marks_followup_fatigue():
+    last_user_at = datetime(2026, 3, 15, 1, 0, tzinfo=timezone.utc)
+    msgs = [
+        RecentProactiveMessage(
+            content="第一条补充",
+            timestamp=datetime(2026, 3, 15, 1, 5, tzinfo=timezone.utc),
+        ),
+        RecentProactiveMessage(
+            content="第二条补充",
+            timestamp=datetime(2026, 3, 15, 1, 10, tzinfo=timezone.utc),
+        ),
+    ]
+
+    signal = _build_recent_proactive_context_signal(
+        msgs,
+        last_user_at=last_user_at,
+        candidate_items_count=0,
+    )
+
+    assert signal["exists"] is True
+    assert signal["count_since_last_user"] == 2
+    assert signal["already_followed_up"] is True
+    assert signal["followup_fatigue"] == "high"
+    assert signal["has_new_feed"] is False
+    assert signal["latest_excerpt"] == "第二条补充"
+
+
 def test_decision_context_groups_fields_into_snapshots():
     ctx = DecisionContext()
     sense = ctx.ensure_sense()
@@ -113,7 +211,7 @@ def test_decision_context_groups_fields_into_snapshots():
 
 
 @pytest.mark.asyncio
-async def test_proactive_loop_run_ticks_immediately_before_waiting():
+async def test_proactive_loop_run_waits_before_first_tick():
     loop = ProactiveLoop.__new__(ProactiveLoop)
     loop._cfg = SimpleNamespace(
         threshold=0.36,
@@ -128,8 +226,13 @@ async def test_proactive_loop_run_ticks_immediately_before_waiting():
         loop._running = False
         return 0.5
 
+    interval_calls = {"count": 0}
+
     def _next_interval(base_score=None):
-        assert ticked["done"], "run() 应先执行一次 tick，再计算下次间隔"
+        interval_calls["count"] += 1
+        assert ticked["done"] is False, "run() 首次启动不应立即执行 tick"
+        loop._running = False
+        loop._manual_trigger_event.set()
         return 60
 
     loop._tick = _tick
@@ -137,7 +240,8 @@ async def test_proactive_loop_run_ticks_immediately_before_waiting():
 
     await loop.run()
 
-    assert ticked["done"] is True
+    assert ticked["done"] is False
+    assert interval_calls["count"] == 1
 
 
 @pytest.mark.asyncio

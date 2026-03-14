@@ -91,6 +91,40 @@ def _json_safe(value: Any) -> Any:
     return repr(value)
 
 
+def _excerpt_text(text: str, limit: int = 80) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "..."
+
+
+def _build_recent_proactive_context_signal(
+    recent_proactive: list[RecentProactiveMessage],
+    *,
+    last_user_at: datetime | None,
+    candidate_items_count: int,
+) -> dict[str, object]:
+    # 1. 先筛出“自上次用户发言后”的主动消息，识别当前沉默期里 agent 已经主动续写了几次。
+    active_since_user: list[RecentProactiveMessage] = []
+    for msg in recent_proactive:
+        ts = getattr(msg, "timestamp", None)
+        if last_user_at is not None and ts is not None and ts <= last_user_at:
+            continue
+        active_since_user.append(msg)
+    latest = active_since_user[-1] if active_since_user else None
+    # 2. 再把“连续主动续写”的强弱信号压成结构化字段，交给 reflect 自己判断是否该收住。
+    return {
+        "exists": latest is not None,
+        "count_since_last_user": len(active_since_user),
+        "already_followed_up": len(active_since_user) >= 1,
+        "followup_fatigue": "high" if len(active_since_user) >= 2 else ("medium" if len(active_since_user) == 1 else "none"),
+        "has_new_feed": candidate_items_count > 0,
+        "latest_excerpt": (
+            _excerpt_text(getattr(latest, "content", "")) if latest is not None else ""
+        ),
+    }
+
+
 def _sleep_policy_note(state: str, available: bool, prob: float | None = None) -> str:
     if not available:
         return "fitbit_unavailable: 不调整 chat/idle 概率"
@@ -1003,6 +1037,9 @@ class ProactiveEngine:
             and state.last_proactive_at
             and state.target_last_user > state.last_proactive_at
         )
+        recent_proactive = self._sense.collect_recent_proactive(
+            getattr(self._cfg, "message_dedupe_recent_n", 5)
+        )
         # 2. 再组织成给 feature / reflect 共用的 decision_signals。
         sleep_signal: dict[str, object] = {"state": "unavailable"}
         if sense.sleep_ctx is not None:
@@ -1033,6 +1070,11 @@ class ProactiveEngine:
             },
             "candidate_items": len(fetch.new_items),
             "fresh_items_24h": score.fresh_items_24h,
+            "recent_proactive_context": _build_recent_proactive_context_signal(
+                recent_proactive,
+                last_user_at=state.target_last_user,
+                candidate_items_count=len(fetch.new_items),
+            ),
         }
         # background_context：持久背景感知数据（如 Steam 游戏活动），每次反思均可读取。
         if fetch.background_context:
