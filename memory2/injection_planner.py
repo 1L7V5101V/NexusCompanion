@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -21,15 +22,35 @@ class MemoryInjectionResult:
 
 async def retrieve_procedure_items(
     memory: "MemoryPort",
-    query: str,
+    query: str = "",
+    queries: list[str] | None = None,
     *,
     top_k: int,
 ) -> list[dict]:
-    return await memory.retrieve_related(
-        query,
-        memory_types=["procedure", "preference"],
-        top_k=top_k,
-    )
+    active_queries = _normalize_procedure_queries(query=query, queries=queries)
+    if not active_queries:
+        return []
+
+    # 1. 并发执行多路 procedure/preference 检索，保持门控链路延迟稳定。
+    tasks = [
+        memory.retrieve_related(
+            item_query,
+            memory_types=["procedure", "preference"],
+            top_k=top_k,
+        )
+        for item_query in active_queries
+    ]
+    raw_results = await asyncio.gather(*tasks)
+
+    # 2. 同 id 命中做 max-pool，保留最高分版本。
+    pooled = _max_pool_memory_items(raw_results)
+
+    # 3. 最后按分数降序截断 top_k，兼容旧接口返回形态。
+    return sorted(
+        pooled,
+        key=lambda item: (_item_score(item), str(item.get("id", ""))),
+        reverse=True,
+    )[:top_k]
 
 
 async def retrieve_history_items(
@@ -155,3 +176,47 @@ def _dedupe_memory_items(items: list[dict]) -> list[dict]:
             seen.add(item_id)
         out.append(item)
     return out
+
+
+def _normalize_procedure_queries(
+    *,
+    query: str = "",
+    queries: list[str] | None = None,
+) -> list[str]:
+    raw_queries = list(queries or [])
+    if not raw_queries and query:
+        raw_queries = [query]
+
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in raw_queries:
+        value = " ".join(str(item or "").split())
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _max_pool_memory_items(result_sets: list[list[dict]]) -> list[dict]:
+    pooled_by_id: dict[str, dict] = {}
+    passthrough: list[dict] = []
+
+    for items in result_sets:
+        for item in items:
+            item_id = str(item.get("id", "") or "")
+            if not item_id:
+                passthrough.append(deepcopy(item))
+                continue
+            current = pooled_by_id.get(item_id)
+            if current is None or _item_score(item) > _item_score(current):
+                pooled_by_id[item_id] = deepcopy(item)
+
+    return list(pooled_by_id.values()) + passthrough
+
+
+def _item_score(item: dict) -> float:
+    try:
+        return float(item.get("score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0

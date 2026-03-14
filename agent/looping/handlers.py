@@ -14,6 +14,7 @@ from memory2.injection_planner import (
     retrieve_history_items,
     retrieve_procedure_items,
 )
+from memory2.query_builder import build_procedure_queries
 
 if TYPE_CHECKING:
     from agent.looping.core import AgentLoop
@@ -81,6 +82,21 @@ class ConversationTurnHandler:
             logger.info(f"检测到 $skill 提及，直接注入完整内容: {skill_mentions}")
         return skill_mentions
 
+    def _build_procedure_context_hint(self, msg: InboundMessage) -> str:
+        # 1. 收集 media 里的显式链接或文件线索。
+        parts = [str(item).strip() for item in (msg.media or []) if str(item).strip()]
+
+        # 2. 再补充 metadata 里常见的 URL / 工具名字符串线索。
+        for key in ("url", "urls", "link", "links", "tool", "tool_name"):
+            value = msg.metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+            elif isinstance(value, list):
+                parts.extend(str(item).strip() for item in value if str(item).strip())
+
+        # 3. 最后拼成一个轻量 hint，供 procedure query builder 做语义补足。
+        return " ".join(parts)
+
     async def _retrieve_memory_block(
         self,
         *,
@@ -101,7 +117,10 @@ class ConversationTurnHandler:
             runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
 
             # 1. 先并行获取 procedure items 和 history route decision，压缩门控延迟。
-            p_query = f"{msg.content} 操作规范"
+            p_queries = build_procedure_queries(
+                msg.content,
+                context_hint=self._build_procedure_context_hint(msg),
+            )
             recent_turns = loop._format_gate_history(main_history, max_turns=3)
             now = datetime.now()
             date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
@@ -116,7 +135,7 @@ class ConversationTurnHandler:
             p_task = asyncio.create_task(
                 retrieve_procedure_items(
                     loop._memory_port,
-                    p_query,
+                    queries=p_queries,
                     top_k=loop._memory_top_k_procedure,
                 )
             )

@@ -7,6 +7,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.looping.core import AgentLoop
+from agent.looping.handlers import ConversationTurnHandler
 from agent.memory import MemoryStore
 from agent.policies.history_route import DecisionMeta, RouteDecision
 from agent.provider import LLMResponse
@@ -224,6 +225,21 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
 
     # 若串行应接近 0.24s；并行时应接近单个分支耗时。
     assert elapsed < 0.22
+
+
+def test_build_procedure_context_hint_handles_none_media():
+    loop = _make_loop(_Provider())
+    handler = ConversationTurnHandler(loop)
+    msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="hello",
+        media=None,  # type: ignore[arg-type]
+        metadata={},
+    )
+
+    assert handler._build_procedure_context_hint(msg) == ""
 
 
 def test_process_inner_schedules_consolidation_only_after_append_messages():
