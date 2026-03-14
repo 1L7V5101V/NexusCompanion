@@ -133,8 +133,8 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
                 hyde_hypothesis,
                 history_scope_mode, history_gate_reason,
                 injected_block, preference_block, preference_query,
-                fallback_reason, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                sufficiency_check_json, fallback_reason, error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ts,
@@ -152,6 +152,7 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
                 e.injected_block or None,
                 e.preference_block or None,
                 e.preference_query or None,
+                e.sufficiency_check_json,
                 e.fallback_reason or None,
                 e.error,
             ),

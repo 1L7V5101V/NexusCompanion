@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     injected_block      TEXT,
     preference_block    TEXT,
     preference_query    TEXT,
+    sufficiency_check_json TEXT,
     fallback_reason     TEXT,
     error               TEXT
 );

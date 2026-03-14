@@ -28,6 +28,7 @@ class AgentLoopMemoryGateMixin:
         history_hits: int = 0,
         injected_item_ids: list[str] | None = None,
         gate_latency_ms: dict | None = None,
+        sufficiency_check: dict | None = None,
         error: str = "",
     ) -> None:
         try:
@@ -50,6 +51,7 @@ class AgentLoopMemoryGateMixin:
                 "sop_guard_applied": sop_guard_applied,
                 "injected_item_ids": injected_item_ids or [],
                 "gate_latency_ms": gate_latency_ms or {},
+                "sufficiency_check": sufficiency_check or {},
                 "error": error,
                 "top_items": [
                     {

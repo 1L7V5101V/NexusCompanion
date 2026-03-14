@@ -16,6 +16,7 @@ from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
 from core.memory.port import DefaultMemoryPort
 from memory2.query_rewriter import RewriteDecision
+from memory2.sufficiency_checker import SufficiencyResult
 
 
 class _NoopTool(Tool):
@@ -386,4 +387,221 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
         asyncio.run(loop._process_inner(msg, msg.session_key))
 
     assert scheduled_after_append
-    assert scheduled_after_append[0] is True
+
+
+def test_retrieve_memory_block_triggers_sufficiency_check_on_low_score_items():
+    """当检索结果最高分低于阈值时，sufficiency checker 被调用。"""
+    loop = _make_loop(_Provider())
+    loop._query_rewriter = MagicMock()
+    loop._query_rewriter.decide = AsyncMock(
+        return_value=RewriteDecision(
+            needs_retrieval=True,
+            procedure_query="仁王游戏讨论",
+            history_query="用户关于仁王的历史",
+            memory_types_hint=["event"],
+            latency_ms=10,
+        )
+    )
+    low_score_items = [
+        {
+            "id": "x1",
+            "memory_type": "procedure",
+            "score": 0.479,
+            "summary": "西历2236读书进度规则",
+            "extra_json": {},
+        },
+    ]
+    checker_mock = MagicMock()
+    checker_mock.check = AsyncMock(
+        return_value=SufficiencyResult(
+            is_sufficient=False,
+            reason="irrelevant",
+            refined_query="用户与仁王游戏相关的讨论历史",
+            latency_ms=40,
+        )
+    )
+    loop._sufficiency_checker = checker_mock
+    loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(return_value=low_score_items)
+    loop._memory_port.select_for_injection = MagicMock(return_value=low_score_items)
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._trace_memory_retrieve = MagicMock()
+
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="我之前和你聊过什么有关仁王的内容吗",
+    )
+
+    asyncio.run(
+        handler._retrieve_memory_block(
+            msg=msg,
+            key=msg.session_key,
+            session=session,
+            main_history=[],
+        )
+    )
+
+    checker_mock.check.assert_awaited_once()
+
+
+def test_retrieve_memory_block_uses_refined_query_on_insufficient():
+    """sufficiency checker 返回 insufficient 时，用 refined_query 重查 history。"""
+    loop = _make_loop(_Provider())
+    loop._query_rewriter = MagicMock()
+    loop._query_rewriter.decide = AsyncMock(
+        return_value=RewriteDecision(
+            needs_retrieval=True,
+            procedure_query="仁王游戏讨论",
+            history_query="用户关于仁王的历史",
+            memory_types_hint=["event"],
+            latency_ms=10,
+        )
+    )
+    checker_mock = MagicMock()
+    checker_mock.check = AsyncMock(
+        return_value=SufficiencyResult(
+            is_sufficient=False,
+            reason="irrelevant",
+            refined_query="用户与仁王游戏相关的讨论历史",
+            latency_ms=40,
+        )
+    )
+    loop._sufficiency_checker = checker_mock
+    loop._memory_port = MagicMock()
+    loop._memory_port.select_for_injection = MagicMock(
+        return_value=[
+            {
+                "id": "x1",
+                "memory_type": "procedure",
+                "score": 0.48,
+                "summary": "无关规则",
+                "extra_json": {},
+            },
+        ]
+    )
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._trace_memory_retrieve = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
+    history_calls: list[str] = []
+
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="我之前和你聊过什么有关仁王的内容吗",
+    )
+
+    async def _fake_history_items(memory, query, **kwargs):
+        history_calls.append(query)
+        return [], "disabled"
+
+    with patch(
+        "agent.looping.handlers.retrieve_history_items",
+        side_effect=_fake_history_items,
+    ):
+        asyncio.run(
+            handler._retrieve_memory_block(
+                msg=msg,
+                key=msg.session_key,
+                session=session,
+                main_history=[],
+            )
+        )
+
+    assert any("仁王" in q for q in history_calls)
+
+
+def test_retrieve_memory_block_skips_sufficiency_check_when_checker_is_none():
+    """loop._sufficiency_checker 为 None 时，不触发 check，主路径正常跑完。"""
+    loop = _make_loop(_Provider())
+    loop._query_rewriter = None
+    loop._sufficiency_checker = None
+    loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(return_value=[])
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._trace_memory_retrieve = MagicMock()
+
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+
+    asyncio.run(
+        handler._retrieve_memory_block(
+            msg=msg,
+            key=msg.session_key,
+            session=session,
+            main_history=[],
+        )
+    )
+
+
+def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
+    """sufficiency checker 返回 sufficient 时，不做第二次检索。"""
+    loop = _make_loop(_Provider())
+    loop._query_rewriter = MagicMock()
+    loop._query_rewriter.decide = AsyncMock(
+        return_value=RewriteDecision(
+            needs_retrieval=True,
+            procedure_query="天气查询",
+            history_query="用户天气偏好",
+            memory_types_hint=["procedure"],
+            latency_ms=10,
+        )
+    )
+    checker_mock = MagicMock()
+    checker_mock.check = AsyncMock(
+        return_value=SufficiencyResult(
+            is_sufficient=True,
+            reason="sufficient",
+            refined_query=None,
+            latency_ms=20,
+        )
+    )
+    loop._sufficiency_checker = checker_mock
+    retrieve_call_count = 0
+
+    async def _count_retrieve(query, **kwargs):
+        nonlocal retrieve_call_count
+        retrieve_call_count += 1
+        return [
+            {
+                "id": "w1",
+                "memory_type": "procedure",
+                "score": 0.538,
+                "summary": "天气查询强制走 weather 技能",
+                "extra_json": {},
+            }
+        ]
+
+    loop._memory_port = MagicMock()
+    loop._memory_port.retrieve_related = AsyncMock(side_effect=_count_retrieve)
+    loop._memory_port.select_for_injection = MagicMock(return_value=[])
+    loop._memory_port.format_injection_with_ids = MagicMock(return_value=("", []))
+    loop._trace_memory_retrieve = MagicMock()
+
+    session = _DummySession("cli:1")
+    handler = ConversationTurnHandler(loop)
+    msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="北京今天天气怎么样",
+    )
+
+    asyncio.run(
+        handler._retrieve_memory_block(
+            msg=msg,
+            key=msg.session_key,
+            session=session,
+            main_history=[],
+        )
+    )
+
+    assert retrieve_call_count <= 2

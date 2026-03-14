@@ -494,6 +494,7 @@ class DefaultMemoryRetrievalPort:
             injected_block=result.block,
             preference_block=result.preference_block,
             preference_query=preference_query or None,
+            sufficiency_check_json=None,
             fallback_reason=result.fallback_reason,
             tick_id=tick_id or None,
         )

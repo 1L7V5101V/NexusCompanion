@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS rag_events (
     injected_block      TEXT,
     preference_block    TEXT,
     preference_query    TEXT,
+    sufficiency_check_json TEXT,
     fallback_reason     TEXT,
     error               TEXT
 );
@@ -159,6 +160,7 @@ _PROACTIVE_DECISION_COLUMNS: dict[str, str] = {
 _RAG_EVENT_COLUMNS: dict[str, str] = {
     "tick_id": "TEXT",
     "gate_type": "TEXT",
+    "sufficiency_check_json": "TEXT",
 }
 
 _TURNS_COLUMNS: dict[str, str] = {

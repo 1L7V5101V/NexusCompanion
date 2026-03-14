@@ -37,6 +37,7 @@ from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from memory2.query_rewriter import QueryRewriter
+from memory2.sufficiency_checker import SufficiencyChecker
 from proactive.presence import PresenceStore
 from session.manager import SessionManager
 
@@ -291,6 +292,10 @@ def build_core_runtime(
             )
             if config.memory_v2.route_intention_enabled
             else None
+        ),
+        sufficiency_checker=SufficiencyChecker(
+            llm_client=light_provider or provider,
+            model=config.light_model or config.model,
         ),
     )
 

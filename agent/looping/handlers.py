@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -16,6 +17,7 @@ from memory2.injection_planner import (
 )
 from memory2.query_builder import build_procedure_queries
 from memory2.query_rewriter import RewriteDecision
+from memory2.sufficiency_checker import should_check_sufficiency
 
 if TYPE_CHECKING:
     from agent.looping.core import AgentLoop
@@ -100,8 +102,9 @@ class ConversationTurnHandler:
 
     @staticmethod
     def _history_memory_types_from_hint(memory_types_hint: list[str]) -> list[str]:
-        result = [item for item in memory_types_hint if item in {"event", "profile"}]
-        return result or ["event", "profile"]
+        if not memory_types_hint:
+            return ["event", "profile"]
+        return [item for item in memory_types_hint if item in {"event", "profile"}]
 
     @staticmethod
     def _build_query_rewriter_gate_result(
@@ -158,6 +161,70 @@ class ConversationTurnHandler:
         }
         return p_items, gate_result
 
+    @staticmethod
+    def _empty_sufficiency_trace() -> dict[str, object]:
+        return {
+            "triggered": False,
+            "result": "",
+            "refined_query": "",
+            "retry_count": 0,
+        }
+
+    async def _maybe_run_sufficiency_check(
+        self,
+        *,
+        msg: InboundMessage,
+        recent_turns: str,
+        procedure_items: list[dict],
+        history_items: list[dict],
+        history_scope_mode: str,
+        history_query: str,
+        history_memory_types: list[str],
+    ) -> tuple[object, list[dict], str, dict[str, object]]:
+        loop = self._loop
+        injection = build_memory_injection_result(
+            loop._memory_port,
+            procedure_items=procedure_items,
+            history_items=history_items,
+            history_scope_mode=history_scope_mode,
+        )
+        sufficiency_trace = self._empty_sufficiency_trace()
+        checker = getattr(loop, "_sufficiency_checker", None)
+        if checker is None or not should_check_sufficiency(injection.selected_items):
+            return injection, history_items, history_scope_mode, sufficiency_trace
+
+        sufficiency_trace["triggered"] = True
+        result = await checker.check(
+            query=history_query or msg.content,
+            items=injection.selected_items,
+            context=recent_turns,
+        )
+        sufficiency_trace["result"] = result.reason
+        sufficiency_trace["refined_query"] = result.refined_query or ""
+        if result.is_sufficient or not result.refined_query or not history_memory_types:
+            if not history_memory_types and not result.is_sufficient and result.refined_query:
+                logger.debug("sufficiency check: no history_memory_types, skip retry")
+            return injection, history_items, history_scope_mode, sufficiency_trace
+
+        extra_h_items, extra_scope_mode = await retrieve_history_items(
+            loop._memory_port,
+            result.refined_query,
+            memory_types=history_memory_types,
+            top_k=loop._memory_top_k_history,
+            allow_global=True,
+            context=recent_turns,
+            hyde_enhancer=loop._hyde_enhancer,
+        )
+        sufficiency_trace["retry_count"] = 1
+        merged_history_items = history_items + extra_h_items
+        reinjection = build_memory_injection_result(
+            loop._memory_port,
+            procedure_items=procedure_items,
+            history_items=merged_history_items,
+            history_scope_mode=extra_scope_mode or history_scope_mode,
+        )
+        return reinjection, merged_history_items, extra_scope_mode or history_scope_mode, sufficiency_trace
+
     async def _retrieve_memory_block(
         self,
         *,
@@ -176,6 +243,7 @@ class ConversationTurnHandler:
             gate_type = "history_route"
             fallback_reason = ""
             gate_latency_ms: dict[str, int] = {}
+            sufficiency_trace = self._empty_sufficiency_trace()
             runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
 
             # 1. 先做 gate 决策：正式主路径优先 query_rewriter，缺失时回退旧 history_route。
@@ -219,7 +287,7 @@ class ConversationTurnHandler:
             fallback_reason = str(gate_result["fallback_reason"])
             history_memory_types = list(gate_result["history_memory_types"])
             gate_latency_ms["route"] = route_ms
-            needs_history = route_decision == "RETRIEVE"
+            needs_history = route_decision == "RETRIEVE" and bool(history_memory_types)
 
             h_items: list[dict] = []
             h_scope_mode = "disabled"
@@ -241,11 +309,15 @@ class ConversationTurnHandler:
                     on_hyde_result=_capture_hyde,
                 )
 
-            # 3. 把 procedure/history 合并成最终 injection block，并做 SOP guard 记录。
-            injection = build_memory_injection_result(
-                loop._memory_port,
+            # 3. 先合并 injection，再按需做一次 sufficiency check + 单次重查。
+            injection, h_items, h_scope_mode, sufficiency_trace = await self._maybe_run_sufficiency_check(
+                msg=msg,
+                recent_turns=recent_turns,
                 procedure_items=p_items,
                 history_items=h_items,
+                history_scope_mode=h_scope_mode,
+                history_query=rewritten_query,
+                history_memory_types=history_memory_types,
             )
             selected_items = injection.selected_items
             retrieved_block = injection.block
@@ -306,6 +378,7 @@ class ConversationTurnHandler:
                 history_hits=len(h_items),
                 injected_item_ids=injected_item_ids,
                 gate_latency_ms=gate_latency_ms,
+                sufficiency_check=sufficiency_trace,
             )
 
             # 5. 组装 RagTrace（供 observe DB 写入）。
@@ -323,6 +396,7 @@ class ConversationTurnHandler:
                 hyde_result=_hyde_result,
                 injected_id_set=injected_id_set,
                 injected_block=retrieved_block,
+                sufficiency_check=sufficiency_trace,
                 fallback_reason=fallback_reason,
             )
         except Exception as e:
@@ -336,6 +410,7 @@ class ConversationTurnHandler:
                 injected_block="",
                 gate_type=gate_type,
                 fallback_reason="retrieve_exception",
+                sufficiency_check=sufficiency_trace,
                 error=str(e),
             )
             rag_trace = _build_agent_rag_trace(
@@ -351,6 +426,7 @@ class ConversationTurnHandler:
                 hyde_result=None,
                 injected_id_set=set(),
                 injected_block="",
+                sufficiency_check=sufficiency_trace,
                 fallback_reason="retrieve_exception",
                 error=str(e),
             )
@@ -516,6 +592,7 @@ def _build_agent_rag_trace(
     hyde_result: "HyDEAugmentResult | None",
     injected_id_set: set[str],
     injected_block: str,
+    sufficiency_check: dict[str, object],
     fallback_reason: str = "",
     error: str | None = None,
 ) -> "RagTrace":
@@ -566,6 +643,7 @@ def _build_agent_rag_trace(
         history_gate_reason=None,
         items=trace_items,
         injected_block=injected_block,
+        sufficiency_check_json=json.dumps(sufficiency_check, ensure_ascii=False),
         fallback_reason=fallback_reason,
         error=error,
     )

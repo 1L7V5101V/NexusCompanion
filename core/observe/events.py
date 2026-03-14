@@ -36,6 +36,7 @@ class RagTrace:
     injected_block: str = ""
     preference_block: str = ""
     preference_query: str | None = None
+    sufficiency_check_json: str | None = None
     fallback_reason: str = ""
     error: str | None = None
     tick_id: str | None = None      # proactive: 关联 proactive_decisions.tick_id

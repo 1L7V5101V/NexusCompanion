@@ -22,6 +22,7 @@ from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.query_rewriter import QueryRewriter
+from memory2.sufficiency_checker import SufficiencyChecker
 from proactive.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
@@ -79,6 +80,7 @@ class AgentLoop(
         memory_hyde_timeout_ms: int = 2000,
         observe_writer=None,
         query_rewriter: QueryRewriter | None = None,
+        sufficiency_checker: SufficiencyChecker | None = None,
     ) -> None:
         self.bus = bus
         self.provider = provider
@@ -142,6 +144,7 @@ class AgentLoop(
         self._post_mem_failures = 0
         self._observe_writer = observe_writer
         self._query_rewriter = query_rewriter
+        self._sufficiency_checker = sufficiency_checker
         self._conversation_handler = ConversationTurnHandler(self)
         self._internal_event_handler = InternalEventHandler(self)
 
