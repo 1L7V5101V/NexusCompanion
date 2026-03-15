@@ -109,6 +109,11 @@ class ProfileFactExtractor:
 - 纯技术讨论、闲聊、打招呼，不输出
 - 若 existing_profile 已有相同事实，不重复输出
 - summary 要简洁、可独立检索
+- 每一件具体的事单独一条，绝对不要合并
+  ✗ 错误："用户购买了多件商品"
+  ✓ 正确：每件商品单独一条，写出具体名称/型号
+- 涉及列举时（多件购买、多个决定）每项单独输出
+- summary 写出具体内容而非概括：写"用户购买了罗技 MX Master 3 鼠标"而非"用户购买了外设"
 
 当前已有 profile（用于查重）：
 {existing_profile or "（空）"}
@@ -147,6 +152,12 @@ class ProfileFactExtractor:
 - 任何不是用户本人事实的内容
 
 若 existing_profile 已有同一事实，不重复输出。
+
+提取粒度要求：
+- 每一件具体的事单独一条，不要合并
+- 写出具体名称/型号/数量，不要用概括性词语
+  ✗ 错误："用户购买了游戏外设"
+  ✓ 正确："用户购买了罗技 G Pro X 耳机"
 
 当前已有 profile（用于查重）：
 {existing_profile or "（空）"}
