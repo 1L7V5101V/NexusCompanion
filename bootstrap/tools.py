@@ -271,6 +271,7 @@ def build_core_runtime(
         model=config.model,
         max_iterations=config.max_iterations,
         max_tokens=config.max_tokens,
+        memory_window=config.memory_window,
         presence=presence,
         light_model=config.light_model,
         light_provider=light_provider,

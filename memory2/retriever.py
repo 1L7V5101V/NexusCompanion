@@ -244,7 +244,7 @@ class Retriever:
         if events:
             parts.append(
                 (
-                    "## 【相关历史】你与当前用户的过往对话（来自记忆检索，时间戳可信，可直接引用，不得自行否定）\n"
+                    "## 【相关历史】你与当前用户的过往对话（来自记忆检索，时间戳可信，可直接引用，不得自行否定；数字/金额/地名等具体值以记录为准，不得用常识替换；可根据上下文合理推断，如去某城市探望姐姐可推断姐姐住在该城市）\n"
                     + "\n".join(line for _, line in events),
                     [item_id for item_id, _ in events if item_id],
                 )

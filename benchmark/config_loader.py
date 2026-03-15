@@ -40,8 +40,26 @@ class _SyncEmbedder:
             response = self._client.embeddings.create(model=self._model, input=[text])
         return response.data[0].embedding
 
+    BATCH_SIZE = 10  # DashScope text-embedding-v3 单次最多 10 条
+
     def _embed_batch_sync(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed_sync(text) for text in texts]
+        """批量 embed：一次 API 请求处理多条文本，比逐条调用快 ~20x。"""
+        clean = [(t or "").strip()[: self.MAX_TEXT_LEN] for t in texts]
+        result: list[list[float]] = [[] for _ in clean]
+        non_empty = [(i, t) for i, t in enumerate(clean) if t]
+        if not non_empty:
+            return result
+        for chunk_start in range(0, len(non_empty), self.BATCH_SIZE):
+            chunk = non_empty[chunk_start: chunk_start + self.BATCH_SIZE]
+            indices, batch_texts = zip(*chunk)
+            with self._lock:
+                resp = self._client.embeddings.create(
+                    model=self._model, input=list(batch_texts)
+                )
+            embeddings = [item.embedding for item in sorted(resp.data, key=lambda x: x.index)]
+            for idx, emb in zip(indices, embeddings):
+                result[idx] = emb
+        return result
 
 
 @dataclass

@@ -46,3 +46,4 @@ memory/
 benchmark/result*.json
 benchmark/data/
 qa_error_log_*.txt
+lme_error_log_*.txt
