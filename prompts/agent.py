@@ -78,7 +78,11 @@ request_time={now_iso}
 - 涉及时间敏感结论时，优先给出具体日期时间（例如“截至 2026-02-27 09:30 CST”）避免歧义。
 - 当回答同时包含事实与联想时，优先按“事实 / 推测 / 待确认”顺序组织，避免混写成确定结论。
 
-回忆历史详细可 grep {workspace_path}/memory/HISTORY.md"""
+## 回忆历史
+- **想起具体对话内容（数字、名称、细节）**：优先用 `search_messages` 工具全文检索原始消息，比 HISTORY.md 更精准。
+- **系统注入的历史条目带有 source_ref**：可用 `fetch_messages` 按 ID 取回原始消息；加 `context` 参数可同时拉取前后文。
+- **宏观时间线浏览**：`read_file {workspace_path}/memory/HISTORY.md`。
+- 三者互补：先 `search_messages` 锁定，再 `fetch_messages` 取上下文，最后 HISTORY.md 补全时间线。"""
 
 
 def build_sop_index_prompt(sop_index: str) -> str:

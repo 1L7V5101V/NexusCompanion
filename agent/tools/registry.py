@@ -49,6 +49,9 @@ _PHRASE_SYNONYMS: dict[str, list[str]] = {
     "搜索网络": ["web_search", "search"],
     "读取网页": ["web_fetch", "fetch"],
     "抓取网页": ["web_fetch", "fetch"],
+    "消息回溯": ["fetch_messages", "message", "source_ref"],
+    "原始对话": ["search_messages", "message", "history"],
+    "历史消息": ["search_messages", "message", "history"],
     "执行命令": ["shell", "bash", "command"],
     "运行脚本": ["shell", "bash", "script"],
     "更新记忆": ["update_now", "memory"],
@@ -80,6 +83,7 @@ _TOKEN_SYNONYMS: dict[str, list[str]] = {
     "通知": ["notify", "message_push", "push"],
     "发送": ["send", "push"],
     "消息": ["message", "push"],
+    "对话": ["message", "search_messages"],
     # 订阅
     "订阅": ["feed", "rss", "subscribe"],
     "rss": ["feed", "rss"],

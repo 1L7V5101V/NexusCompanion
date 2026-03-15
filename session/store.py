@@ -257,6 +257,57 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
+    def fetch_by_ids_with_context(self, ids: list[str], context: int) -> list[dict[str, Any]]:
+        """Fetch messages by ID, expanding each hit by ±context rows in its session.
+
+        Returns messages ordered by (session_key, seq).
+        Each dict includes ``in_source_ref: bool`` to distinguish hits from context.
+        """
+        if not ids:
+            return []
+        if context == 0:
+            result = self.fetch_by_ids(ids)
+            for m in result:
+                m["in_source_ref"] = True
+            return result
+
+        id_set = set(ids)
+        session_seqs: dict[str, set[int]] = {}
+        for msg_id in ids:
+            parts = msg_id.rsplit(":", 1)
+            if len(parts) != 2:
+                continue
+            sk, seq_str = parts
+            try:
+                seq = int(seq_str)
+            except ValueError:
+                continue
+            if sk not in session_seqs:
+                session_seqs[sk] = set()
+            session_seqs[sk].add(seq)
+
+        if not session_seqs:
+            return []
+
+        results: list[dict[str, Any]] = []
+        with self._lock:
+            for sk, seqs in session_seqs.items():
+                expanded: set[int] = set()
+                for seq in seqs:
+                    for s in range(max(0, seq - context), seq + context + 1):
+                        expanded.add(s)
+                placeholders = ",".join("?" * len(expanded))
+                rows = self._conn.execute(
+                    f"SELECT id, session_key, seq, role, content, tool_chain, extra, ts "
+                    f"FROM messages WHERE session_key = ? AND seq IN ({placeholders}) ORDER BY seq",
+                    [sk, *expanded],
+                ).fetchall()
+                for row in rows:
+                    msg = self._row_to_message(row)
+                    msg["in_source_ref"] = msg["id"] in id_set
+                    results.append(msg)
+        return results
+
     def fetch_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         if not ids:
             return []
@@ -290,33 +341,41 @@ class SessionStore:
         where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
         if self._has_fts:
-            sql = (
+            fts_params = [query] + params[:]
+            fts_sql = (
                 "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
                 "FROM messages_fts f JOIN messages m ON m.rowid = f.rowid "
                 "WHERE f.content MATCH ? "
             )
-            params = [query] + params
             if where_sql:
-                sql += "AND " + where_sql[6:] + " "
-            sql += "ORDER BY f.rank, m.seq DESC LIMIT ?"
-            params.append(limit)
-        else:
-            sql = (
-                "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
-                "FROM messages m "
-                f"{where_sql} "
-            )
-            params_sql = params[:]
-            if where_sql:
-                sql += "AND m.content LIKE ? "
-            else:
-                sql += "WHERE m.content LIKE ? "
-            params_sql.append(f"%{query}%")
-            sql += "ORDER BY m.seq DESC LIMIT ?"
-            params = params_sql + [limit]
+                fts_sql += "AND " + where_sql[6:] + " "
+            fts_sql += "ORDER BY f.rank, m.seq DESC LIMIT ?"
+            fts_params.append(limit)
+            try:
+                with self._lock:
+                    rows = self._conn.execute(fts_sql, tuple(fts_params)).fetchall()
+                if rows:
+                    return [self._row_to_message(row) for row in rows]
+            except sqlite3.OperationalError:
+                pass
+            # FTS5 returned empty or had a syntax error (e.g. special chars like %)
+            # fall through to LIKE
 
+        like_sql = (
+            "SELECT m.id, m.session_key, m.seq, m.role, m.content, m.tool_chain, m.extra, m.ts "
+            "FROM messages m "
+            f"{where_sql} "
+        )
+        like_params = params[:]
+        if where_sql:
+            like_sql += "AND m.content LIKE ? "
+        else:
+            like_sql += "WHERE m.content LIKE ? "
+        like_params.append(f"%{query}%")
+        like_sql += "ORDER BY m.seq DESC LIMIT ?"
+        like_params.append(limit)
         with self._lock:
-            rows = self._conn.execute(sql, tuple(params)).fetchall()
+            rows = self._conn.execute(like_sql, tuple(like_params)).fetchall()
         return [self._row_to_message(row) for row in rows]
 
     def _row_to_message(self, row: sqlite3.Row) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from agent.mcp.registry import McpServerRegistry
 from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tool_bundles import build_fitbit_tools, build_readonly_research_tools
 from agent.tools.message_push import MessagePushTool
+from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 from agent.tools.shell import ShellTool
@@ -56,6 +57,7 @@ def _build_readonly_tools(http_resources: SharedHttpResources) -> dict[str, obje
 def _register_meta_and_common_tools(
     tools: ToolRegistry,
     readonly_tools: dict[str, object],
+    session_store,
 ) -> MessagePushTool:
     tools.register(ToolSearchTool(tools), always_on=True, tags=["meta"], risk="read-only")
     tools.register(ListToolsTool(tools), always_on=True, tags=["meta"], risk="read-only")
@@ -92,6 +94,19 @@ def _register_meta_and_common_tools(
         tags=["filesystem"],
         risk="read-only",
         search_keywords=["查看目录", "列出文件", "ls", "目录内容", "浏览目录", "dir"],
+    )
+    tools.register(
+        FetchMessagesTool(session_store),
+        tags=["memory", "session"],
+        risk="read-only",
+        search_keywords=["消息回溯", "按ID查消息", "fetch messages", "source_ref"],
+    )
+    tools.register(
+        SearchMessagesTool(session_store),
+        always_on=True,
+        tags=["memory", "session"],
+        risk="read-only",
+        search_keywords=["搜索历史消息", "全文检索消息", "search messages", "原始对话", "你之前说", "聊过什么", "具体内容"],
     )
     push_tool = MessagePushTool()
     tools.register(
@@ -204,12 +219,15 @@ def build_registered_tools(
     bus: MessageBus,
     provider,
     light_provider,
+    session_store=None,
     tools: ToolRegistry | None = None,
     observe_writer=None,
 ) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime]:
+    from session.store import SessionStore
     tools = tools or ToolRegistry()
     readonly_tools = _build_readonly_tools(http_resources)
-    push_tool = _register_meta_and_common_tools(tools, readonly_tools)
+    store = session_store or SessionStore(workspace / "sessions.db")
+    push_tool = _register_meta_and_common_tools(tools, readonly_tools, store)
     _register_skill_action_tools(tools, workspace)
     _register_fitbit_tools(tools, config, http_resources)
     subagent_manager = _register_spawn_tool(
@@ -250,6 +268,7 @@ def build_core_runtime(
 ) -> tuple:
     bus = MessageBus()
     provider, light_provider = build_providers(config)
+    session_manager = SessionManager(workspace)
     tools, push_tool, scheduler, mcp_registry, memory_runtime = build_registered_tools(
         config,
         workspace,
@@ -257,9 +276,9 @@ def build_core_runtime(
         bus=bus,
         provider=provider,
         light_provider=light_provider,
+        session_store=session_manager._store,
         observe_writer=observe_writer,
     )
-    session_manager = SessionManager(workspace)
     presence = PresenceStore(workspace / "presence.json")
     processing_state = ProcessingState()
     loop = AgentLoop(
