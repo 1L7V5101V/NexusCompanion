@@ -41,3 +41,8 @@ memory/
 /scripts/fitbit-monitor/stat_events.json
 /.pytest_artifacts/
 /rss/
+
+# Benchmark 运行产物
+benchmark/result*.json
+benchmark/data/
+qa_error_log_*.txt
