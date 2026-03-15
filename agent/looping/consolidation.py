@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 
@@ -82,15 +83,12 @@ def _select_consolidation_window(
     )
 
 
-def _build_consolidation_source_ref(
-    session,
-    *,
-    consolidate_up_to: int,
-    archive_all: bool,
-) -> str:
-    if archive_all:
-        return f"{session.key}@archive_all"
-    return f"{session.key}@{session.last_consolidated}-{consolidate_up_to}"
+def _build_consolidation_source_ref(window: ConsolidationWindow) -> str:
+    """返回本次 consolidation 窗口内所有消息 ID 的 JSON 列表。
+    缺失 id 的消息（迁移前的历史脏数据）直接跳过。
+    """
+    ids = [str(msg["id"]) for msg in window.old_messages if msg.get("id")]
+    return json.dumps(ids, ensure_ascii=False)
 
 
 def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
@@ -215,11 +213,7 @@ class AgentLoopConsolidationMixin:
             # archive_all=False 的早退已在上面处理；这里只是让类型检查和控制流保持明确。
             return
 
-        source_ref = _build_consolidation_source_ref(
-            session,
-            consolidate_up_to=window.consolidate_up_to,
-            archive_all=archive_all,
-        )
+        source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
 
@@ -334,15 +328,12 @@ class AgentLoopConsolidationMixin:
             scope_channel = getattr(session, "_channel", "")
             scope_chat_id = getattr(session, "_chat_id", "")
             save_tasks: list[asyncio.Task] = []
-            for i, entry in enumerate(history_entries):
-                entry_ref = (
-                    f"{source_ref}#{i}" if len(history_entries) > 1 else source_ref
-                )
+            for entry in history_entries:
                 task = asyncio.create_task(
                     self._memory_port.save_from_consolidation(
                         history_entry=entry,
                         behavior_updates=[],
-                        source_ref=entry_ref,
+                        source_ref=source_ref,
                         scope_channel=scope_channel,
                         scope_chat_id=scope_chat_id,
                     )

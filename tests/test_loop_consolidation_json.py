@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from agent.looping.consolidation import (
@@ -41,25 +42,17 @@ def test_select_consolidation_window_uses_half_window_tail_keep():
     assert [m["content"] for m in window.old_messages] == ["2", "3", "4", "5", "6"]
 
 
-def test_build_consolidation_source_ref_matches_existing_shape():
-    session = SimpleNamespace(key="telegram:123", last_consolidated=4)
+def test_build_consolidation_source_ref_returns_message_id_list_json():
+    window = SimpleNamespace(
+        old_messages=[
+            {"id": "telegram:123:4", "content": "a"},
+            {"id": "telegram:123:5", "content": "b"},
+            {"content": "missing id"},
+        ]
+    )
 
-    assert (
-        _build_consolidation_source_ref(
-            session,
-            consolidate_up_to=9,
-            archive_all=False,
-        )
-        == "telegram:123@4-9"
-    )
-    assert (
-        _build_consolidation_source_ref(
-            session,
-            consolidate_up_to=9,
-            archive_all=True,
-        )
-        == "telegram:123@archive_all"
-    )
+    ref = _build_consolidation_source_ref(window)
+    assert json.loads(ref) == ["telegram:123:4", "telegram:123:5"]
 
 
 def test_format_conversation_for_consolidation_skips_tool_messages():

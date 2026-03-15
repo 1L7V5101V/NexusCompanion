@@ -80,8 +80,16 @@ async def test_consolidation_helpers(
     assert _select_consolidation_window(session, memory_window=10, archive_all=False) is None
     window = _select_consolidation_window(session, memory_window=4, archive_all=True)
     assert window and window.consolidate_up_to == 4
-    assert _build_consolidation_source_ref(session, consolidate_up_to=2, archive_all=False) == "telegram:1@0-2"
-    assert _build_consolidation_source_ref(session, consolidate_up_to=2, archive_all=True) == "telegram:1@archive_all"
+    window_with_ids = SimpleNamespace(
+        old_messages=[
+            {"id": "telegram:1:0"},
+            {"id": "telegram:1:1"},
+            {"content": "missing id"},
+        ]
+    )
+    assert json.loads(
+        _build_consolidation_source_ref(window_with_ids)
+    ) == ["telegram:1:0", "telegram:1:1"]
     assert _format_conversation_for_consolidation(session.messages).count("USER") == 1
 
     harness = _ConsolidationHarness(
