@@ -275,23 +275,29 @@ def build_compose_prompt_messages(
     no_content_token: str = "<no_content/>",
 ) -> tuple[str, str]:
     system_msg = (
-        "你是用户的主动助手。"
-        "只负责写一条值得发送的主动消息，不做是否打扰的决策。"
-        f"若内容没有价值，直接输出 {no_content_token}。"
-        "输出纯文本，不要 JSON。"
+        "你是用户的主动助手。负责把今天的真实新内容提炼成一条值得发送的消息。\n"
+        "【严格规则】\n"
+        "1. 偏好记录仅用于判断哪条内容更值得推送，绝不能作为创作素材。\n"
+        "   偏好 ≠ 事实。用户喜欢某个游戏，不代表该游戏有新动态。\n"
+        "2. 消息中出现的每一个具体事实（人名/游戏名/功能/数字/时间）\n"
+        "   必须能在「今天的新内容」中找到原文依据。\n"
+        "3. 发现自己在补充「新内容」未提及的细节时，立即停止并输出"
+        f" {no_content_token}。\n"
+        "4. 消息末尾必须附上对应来源的原文链接（取自新内容中的「原文链接:」字段）。\n"
+        "5. 输出纯文本，不要 JSON，不要提问收尾。"
     )
     user_msg = f"""当前时间：{prompt_context.now_str}
 
-## 今天的新内容
+## 今天的新内容（唯一可用的事实来源）
 {prompt_context.feed_text}
 
-## 用户最近聊过的话题
+## 用户最近聊过的话题（仅供了解上下文）
 {prompt_context.chat_text}
-{f"## 用户偏好记录\n{preference_block}\n" if preference_block else ""}
+{f"## 用户偏好记录（仅用于选题，不得用于编造内容）\n{preference_block}\n" if preference_block else ""}
 任务：
-1. 写一条简短主动消息，告知最值得关注的一点。
-2. 若以上内容都不值得推送，输出 `{no_content_token}`。
-3. 不要提问收尾，不要输出解释。"""
+1. 从「今天的新内容」中选出最值得推送的一条，写一句简短说明（基于原文，不扩写）。
+2. 在消息末尾另起一行附上该条内容的原文链接。
+3. 若以上内容都不值得推送，或无法找到原文依据，输出 `{no_content_token}`。"""
     return system_msg, user_msg
 
 

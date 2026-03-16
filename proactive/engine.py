@@ -108,7 +108,7 @@ def _build_recent_proactive_context_signal(
     last_user_at: datetime | None,
     candidate_items_count: int,
 ) -> dict[str, object]:
-    # 1. 先筛出“自上次用户发言后”的主动消息，识别当前沉默期里 agent 已经主动续写了几次。
+    # 1. 先筛出"自上次用户发言后"的主动消息，识别当前沉默期里 agent 已经主动续写了几次。
     active_since_user: list[RecentProactiveMessage] = []
     for msg in recent_proactive:
         ts = getattr(msg, "timestamp", None)
@@ -116,7 +116,7 @@ def _build_recent_proactive_context_signal(
             continue
         active_since_user.append(msg)
     latest = active_since_user[-1] if active_since_user else None
-    # 2. 再把“连续主动续写”的强弱信号压成结构化字段，交给 reflect 自己判断是否该收住。
+    # 2. 再把"连续主动续写"的强弱信号压成结构化字段，交给 reflect 自己判断是否该收住。
     return {
         "exists": latest is not None,
         "count_since_last_user": len(active_since_user),
@@ -773,7 +773,7 @@ class ProactiveEngine:
         # 4. compose+judge 开关开启时，走 compose -> post-judge 链路。
         if getattr(self._cfg, "compose_judge_enabled", False):
             return await self._run_compose_judge_decision(ctx)
-        # 5. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
+        # 5. feature 模式走"评分 + compose"的闭环；否则走 reflect 模式。
         if self._cfg.feature_scoring_enabled:
             self._prepare_feature_compose_candidates(ctx)
             return await self._run_feature_decision(ctx)
@@ -875,7 +875,7 @@ class ProactiveEngine:
         ):
             return
 
-        # 5. 再做 message 语义去重，挡住“话术不同但本质重复”的消息。
+        # 5. 再做 message 语义去重，挡住"话术不同但本质重复"的消息。
         if not await self._passes_message_deduper(ctx, evidence, recent_proactive):
             return
 
@@ -1068,7 +1068,7 @@ class ProactiveEngine:
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
-        # 1. 先把与“最近是否被打扰过”有关的时间差算出来。
+        # 1. 先把与"最近是否被打扰过"有关的时间差算出来。
         mins_since_last_user = (
             int((state.now_utc - state.target_last_user).total_seconds() / 60)
             if state.target_last_user
@@ -1226,6 +1226,13 @@ class ProactiveEngine:
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         self._prepare_feature_compose_candidates(ctx)
+        logger.info(
+            "[compose_judge] 进入 compose+judge 决策 "
+            "feed_items=%d compose_candidates=%d pref_block=%d字符",
+            len(fetch.new_items),
+            len(act.compose_items),
+            len(decide.preference_block or ""),
+        )
         decide.compose_no_content = False
         decide.judge_dims = {}
         decide.judge_final_score = None
@@ -1607,20 +1614,30 @@ class ProactiveEngine:
         ctx: DecisionContext,
         evidence: EvidenceBundle,
     ) -> None:
-        # 1. 仅在有消息与候选内容时校验，且 light model 可用。
         decide = ctx.ensure_decide()
         message = (decide.decision_message or "").strip()
         if not message:
             return
+        # compose_judge 路径已经有 judge 把关，compose 本身也被要求贴近内容，
+        # 不再做内容校验（校验器容易把合理推断误判为捏造）。
+        if getattr(decide, "compose_no_content", None) is not None:
+            logger.debug("[content_validation] compose_judge 路径跳过内容校验")
+            return
+        act = ctx.ensure_act()
         items = evidence.source_items or evidence.evidence_items
         if not items:
             return
         if self._light_provider is None or not self._light_model:
             return
-        # 2. 执行轻量校验，不通过则降级为“仅给链接”的安全消息。
+        # 执行轻量校验，不通过则降级为"仅给链接"的安全消息。
         is_valid = await self._validate_message_against_content(message, items)
         if is_valid:
+            logger.debug("[content_validation] 消息内容校验通过")
             return
+        logger.info(
+            "[content_validation] 消息校验不通过，降级为 fallback 消息 msg_preview=%r",
+            message[:60],
+        )
         fallback = self._build_fallback_message(items)
         if fallback:
             decide.decision_message = fallback
@@ -2284,7 +2301,7 @@ class ProactiveEngine:
         if self._light_provider is None or not self._light_model:
             return heuristic
         prompt = (
-            "你是主动消息分类器。判断消息是否包含“用户状态总结/安慰框架”。\n"
+            "你是主动消息分类器。判断消息是否包含「用户状态总结/安慰框架」。\n"
             "只允许输出 JSON："
             '{"state_summary_tag":"none"}\n'
             "可选标签只有：none, interview_anxiety_reassurance, health_nudge, sleep_concern, general_encouragement。\n"

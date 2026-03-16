@@ -908,6 +908,11 @@ class ProactiveJudge:
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
     ) -> str:
+        logger.info(
+            "[compose] 开始生成消息 items=%d pref_block=%d字符",
+            len(items),
+            len(preference_block),
+        )
         # 1. 基于候选内容、近期对话、偏好构造最小 compose prompt。
         prompt_context = _build_proactive_prompt_context(
             items=items,
@@ -933,12 +938,14 @@ class ProactiveJudge:
                 max_tokens=min(512, self._max_tokens),
             )
         except Exception as e:
-            logger.warning("[judge] compose_for_judge 失败: %s", e)
+            logger.warning("[compose] compose_for_judge 失败: %s", e)
             return ""
         # 3. 规范化输出，显式支持 no_content token。
         text = (resp.content or "").strip()
         if text.startswith(no_content_token):
+            logger.info("[compose] → <no_content/>，内容无价值，提前退出")
             return no_content_token
+        logger.info("[compose] → 生成成功 %d字符: %s", len(text), text[:80].replace("\n", " "))
         return text
 
     async def judge_message(
@@ -957,8 +964,19 @@ class ProactiveJudge:
             sent_24h=sent_24h,
             interrupt_factor=interrupt_factor,
         )
+        logger.info(
+            "[judge] 确定性维度 urgency=%.3f balance=%.3f dynamics=%.3f"
+            "  (age_hours=%.1f sent_24h=%d interrupt=%.3f)",
+            deterministic["urgency"],
+            deterministic["balance"],
+            deterministic["dynamics"],
+            age_hours,
+            sent_24h,
+            interrupt_factor,
+        )
         vetoed = self._deterministic_veto(deterministic)
         if vetoed:
+            logger.info("[judge] 确定性否决 vetoed_by=%s → 不发送", vetoed)
             return ProactiveJudgeResult(0.0, False, vetoed, deterministic, {}, {})
         # 2. 再请求 LLM 三维打分并校验维度下限。
         llm_dims, llm_dims_raw = await self._score_llm_dims(
@@ -966,8 +984,19 @@ class ProactiveJudge:
             recent=recent,
             recent_proactive_text=recent_proactive_text,
         )
+        logger.info(
+            "[judge] LLM维度 info_gap=%d relevance=%d impact=%d (归一化 %.2f/%.2f/%.2f)",
+            llm_dims_raw.get("information_gap", 0),
+            llm_dims_raw.get("relevance", 0),
+            llm_dims_raw.get("expected_impact", 0),
+            llm_dims.get("information_gap", 0.0),
+            llm_dims.get("relevance", 0.0),
+            llm_dims.get("expected_impact", 0.0),
+        )
         llm_veto_min = (int(getattr(self._cfg, "judge_veto_llm_dim_min", 2)) - 1) / 4.0
         if any(v < llm_veto_min for v in llm_dims.values()):
+            low_dims = [k for k, v in llm_dims.items() if v < llm_veto_min]
+            logger.info("[judge] LLM维度否决 low_dims=%s → 不发送", low_dims)
             return ProactiveJudgeResult(
                 0.0,
                 False,
@@ -979,9 +1008,16 @@ class ProactiveJudge:
         # 3. 最后按权重汇总总分并输出是否发送。
         final_score = self._compute_final_score(deterministic, llm_dims)
         threshold = float(getattr(self._cfg, "judge_send_threshold", 0.60))
+        should_send = final_score >= threshold
+        logger.info(
+            "[judge] final_score=%.3f 阈值=%.2f → %s",
+            final_score,
+            threshold,
+            "发送" if should_send else "不发送",
+        )
         return ProactiveJudgeResult(
             final_score,
-            final_score >= threshold,
+            should_send,
             None,
             deterministic,
             llm_dims,

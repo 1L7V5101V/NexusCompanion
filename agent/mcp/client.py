@@ -11,6 +11,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
+_STREAM_LIMIT = 4 * 1024 * 1024  # 4 MB，防止大响应触发 StreamReader 行限
 
 
 @dataclass
@@ -63,6 +64,7 @@ class McpClient:
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
             cwd=self.cwd,
+            limit=_STREAM_LIMIT,
         )
         asyncio.create_task(self._drain_stderr())
 
