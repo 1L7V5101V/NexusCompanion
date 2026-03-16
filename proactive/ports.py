@@ -394,8 +394,9 @@ class DefaultMemoryRetrievalPort:
         items: list[FeedItem],
         top_k_per_source: int,
     ) -> tuple[list[dict], list[str]]:
-        # 1. 先按 source 去重并限制最多查询来源数，避免单向量质心漂移。
-        unique_items = self._unique_items_by_source(items)
+        # 1. 先按条目/topic 去重，而不是按 source 去重。
+        #    同一来源下可能同时混有用户高度关心与完全无关的内容；
+        unique_items = self._unique_items_by_topic(items)
         max_sources = max(1, int(getattr(self._cfg, "preference_max_sources", 5)))
         selected_items = unique_items[:max_sources]
         if not selected_items:
@@ -427,20 +428,23 @@ class DefaultMemoryRetrievalPort:
         return _merge_memory_items(merged), queries
 
     @staticmethod
-    def _unique_items_by_source(items: list[FeedItem]) -> list[FeedItem]:
+    def _unique_items_by_topic(items: list[FeedItem]) -> list[FeedItem]:
         seen: set[str] = set()
         unique: list[FeedItem] = []
         for item in items:
-            source = (item.source_name or "").strip().lower()
-            source_type = (item.source_type or "").strip().lower()
-            if source or source_type:
-                key = f"{source_type}:{source}"
+            title = re.sub(r"\s+", " ", (item.title or "").strip()).lower()
+            url = (item.url or "").strip().lower()
+            if title or url:
+                key = f"{title}|{url}"
             else:
-                key = "fallback:" + hashlib.sha1(
-                    f"{(item.title or '').strip()}|{(item.url or '').strip()}|{(item.content or '').strip()[:80]}".encode(
-                        "utf-8"
-                    )
-                ).hexdigest()[:12]
+                source = (item.source_name or "").strip().lower()
+                source_type = (item.source_type or "").strip().lower()
+                if source or source_type:
+                    key = f"{source_type}:{source}"
+                else:
+                    key = "fallback:" + hashlib.sha1(
+                        f"{(item.content or '').strip()[:80]}".encode("utf-8")
+                    ).hexdigest()[:12]
             if key in seen:
                 continue
             seen.add(key)

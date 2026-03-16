@@ -1009,6 +1009,49 @@ def test_config_loader_parses_preference_fields(tmp_path):
     ), f"preference_top_k 未被正确加载: {p.preference_top_k!r}"
 
 
+def test_config_loader_parses_interest_filter_fields(tmp_path):
+    """agent/config.py 的 config loader 必须解析 interest_filter 字段。"""
+    import json
+    from agent.config import load_config
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(
+        json.dumps(
+            {
+                "provider": "anthropic",
+                "model": "claude-test",
+                "api_key": "test",
+                "proactive": {
+                    "enabled": False,
+                    "default_chat_id": "123",
+                    "interest_filter": {
+                        "enabled": True,
+                        "memory_max_chars": 5000,
+                        "keyword_max_count": 120,
+                        "min_token_len": 3,
+                        "min_score": 0.22,
+                        "top_k": 6,
+                        "exploration_ratio": 0.1,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(str(cfg_file))
+    interest_filter = getattr(cfg.proactive, "interest_filter", None)
+
+    assert interest_filter is not None, "interest_filter 未被正确加载"
+    assert interest_filter.enabled is True
+    assert interest_filter.memory_max_chars == 5000
+    assert interest_filter.keyword_max_count == 120
+    assert interest_filter.min_token_len == 3
+    assert interest_filter.min_score == 0.22
+    assert interest_filter.top_k == 6
+    assert interest_filter.exploration_ratio == 0.1
+
+
 @pytest.mark.asyncio
 async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
     port = _build_real_preference_memory_port(tmp_path)

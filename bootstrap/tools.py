@@ -253,6 +253,7 @@ def build_registered_tools(
         UpdateNowTool(memory_runtime.port),
         tags=["memory"],
         risk="write",
+        always_on=True,
         search_keywords=["更新记忆", "同步记忆", "刷新知识库", "memory更新"],
     )
     scheduler = _build_scheduler(workspace, push_tool)

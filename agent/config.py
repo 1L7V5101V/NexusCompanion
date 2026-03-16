@@ -10,6 +10,7 @@ import os
 import re
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
@@ -281,6 +282,16 @@ def load_config(path: str | Path = "config.json") -> Config:
             judge_veto_urgency_min=float(p.get("judge_veto_urgency_min", 0.05)),
             judge_veto_llm_dim_min=max(1, int(p.get("judge_veto_llm_dim_min", 2))),
             judge_send_threshold=float(p.get("judge_send_threshold", 0.60)),
+        )
+        interest_filter = p.get("interest_filter") or {}
+        proactive.interest_filter = SimpleNamespace(
+            enabled=bool(interest_filter.get("enabled", False)),
+            memory_max_chars=max(1, int(interest_filter.get("memory_max_chars", 4000))),
+            keyword_max_count=max(1, int(interest_filter.get("keyword_max_count", 80))),
+            min_token_len=max(1, int(interest_filter.get("min_token_len", 2))),
+            min_score=float(interest_filter.get("min_score", 0.14)),
+            top_k=max(1, int(interest_filter.get("top_k", 10))),
+            exploration_ratio=float(interest_filter.get("exploration_ratio", 0.2)),
         )
 
     mv2 = data.get("memory_v2", {})

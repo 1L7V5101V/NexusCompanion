@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -2253,27 +2252,18 @@ class ProactiveEngine:
         if not items:
             return [], []
         max_items = min(3, len(items))
-        best_items = items[:1]
-        best_index = 0
-        for idx, seed in enumerate(items):
-            group = [seed]
-            for candidate in items[idx + 1 :]:
-                if self._is_same_topic(seed, candidate):
-                    group.append(candidate)
-                if len(group) >= max_items:
-                    break
-            # 1. 兴趣排序后的更早 seed 优先；只在当前最佳组仍是单条时，才允许更大组覆盖。
-            if len(best_items) <= 1 and len(group) > len(best_items):
-                best_items = group
-                best_index = idx
-            elif len(group) == len(best_items) and idx < best_index:
-                best_items = group
-                best_index = idx
-            # 2. 一旦命中多条同主题组，就直接采用当前最高兴趣 seed 的结果。
-            if len(best_items) > 1:
+        seed = items[0]
+        group = [seed]
+        for candidate in items[1:]:
+            if self._is_same_topic(seed, candidate):
+                group.append(candidate)
+            if len(group) >= max_items:
                 break
-        best_items = self._sort_items_by_published_at(best_items)
-        return best_items, self._entries_for_items(best_items, entries)
+        # 1. 兴趣第一位：只围绕最高兴趣 seed 补同 topic 上下文。
+        # 2. 不再允许后续更大但兴趣更低的 group 覆盖当前 seed。
+        # 3. 最后仅做组内时间正序，保证叙事时序正确。
+        group = self._sort_items_by_published_at(group)
+        return group, self._entries_for_items(group, entries)
 
     def _sort_items_by_published_at(self, items: list[FeedItem]) -> list[FeedItem]:
         if len(items) <= 1:

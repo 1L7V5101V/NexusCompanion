@@ -1556,6 +1556,58 @@ def test_select_compose_items_sorts_group_by_published_at_asc():
     assert compose_items[0].title == "Niko semifinal"
 
 
+def test_select_compose_items_keeps_top_interest_single_item_over_larger_lower_interest_group():
+    from datetime import datetime, timezone, timedelta
+    from feeds.base import FeedItem
+    from proactive.engine import ProactiveEngine
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+
+    now = datetime.now(timezone.utc)
+    niko = FeedItem(
+        source_name="NiKo Twitter",
+        source_type="rss",
+        title="NiKo Twitter clip",
+        content="",
+        url="https://example.com/niko",
+        author=None,
+        published_at=now,
+    )
+    hooxi = FeedItem(
+        source_name="HLTV News",
+        source_type="rss",
+        title="HooXi on G2 changes",
+        content="",
+        url="https://example.com/hooxi",
+        author=None,
+        published_at=now - timedelta(minutes=10),
+    )
+    navi = FeedItem(
+        source_name="HLTV News",
+        source_type="rss",
+        title="NAVI win EPL playoffs",
+        content="",
+        url="https://example.com/navi",
+        author=None,
+        published_at=now - timedelta(minutes=5),
+    )
+
+    # 1. 输入顺序已经代表 interest rank 结果：NiKo 最高，其余较低。
+    items = [niko, hooxi, navi]
+    entries = [
+        ("rss:niko", "NiKo Twitter clip"),
+        ("rss:hltv", "HooXi on G2 changes"),
+        ("rss:hltv", "NAVI win EPL playoffs"),
+    ]
+
+    # 2. 选择 compose 候选时，应只围绕最高兴趣 seed 补上下文。
+    compose_items, compose_entries = engine._select_compose_items(items, entries)
+
+    # 3. 高兴趣单条不能再被更大但低兴趣的组覆盖。
+    assert [item.title for item in compose_items] == ["NiKo Twitter clip"]
+    assert len(compose_entries) == 1
+
+
 @pytest.mark.asyncio
 async def test_compose_judge_reject_marks_rejection_cooldown():
     from types import SimpleNamespace
@@ -1611,3 +1663,4 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         [("rss:hltv", "Niko semifinal")],
         hours=12,
     )
+

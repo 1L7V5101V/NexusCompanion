@@ -22,6 +22,18 @@ def _item() -> FeedItem:
     )
 
 
+def _item_with(*, source_name: str, title: str, url: str) -> FeedItem:
+    return FeedItem(
+        source_name=source_name,
+        source_type="rss",
+        title=title,
+        content=title,
+        url=url,
+        author=None,
+        published_at=None,
+    )
+
+
 def test_build_proactive_memory_query_contains_source_labels():
     q = build_proactive_memory_query(
         items=[_item()],
@@ -232,6 +244,60 @@ async def test_history_channel_skips_scoped_when_channel_or_chat_missing():
 
     event_calls = [c for c in calls if c.get("memory_types") == ["event"]]
     assert len(event_calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_preference_retrieval_queries_same_source_items_separately():
+    calls: list[dict] = []
+
+    class _Memory:
+        async def retrieve_related(self, query, **kwargs):
+            calls.append({"query": query, **kwargs})
+            if kwargs.get("memory_types") == ["procedure", "preference"]:
+                return []
+            if kwargs.get("memory_types") == ["event"]:
+                return []
+            if kwargs.get("memory_types") == ["preference", "profile"]:
+                return [{"id": query, "memory_type": "preference", "summary": query}]
+            return []
+
+        def select_for_injection(self, items):
+            return items
+
+        def format_injection_with_ids(self, items):
+            return "## block", [str(i.get("id")) for i in items if i.get("id")]
+
+    cfg = ProactiveConfig(preference_retrieval_enabled=True, preference_per_source_top_k=2)
+    port = DefaultMemoryRetrievalPort(
+        cfg=cfg,
+        memory=_Memory(),
+        item_id_fn=lambda _: "item1",
+    )
+    await port.retrieve_proactive_context(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        items=[
+            _item_with(
+                source_name="HLTV News",
+                title="w0nderful shines as NAVI beat Aurora to lift EPL",
+                url="https://www.hltv.org/news/1",
+            ),
+            _item_with(
+                source_name="HLTV News",
+                title='HooXi on people writing him off after G2: "It feels good"',
+                url="https://www.hltv.org/news/2",
+            ),
+        ],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+
+    pref_calls = [c for c in calls if c.get("memory_types") == ["preference", "profile"]]
+    assert len(pref_calls) == 2
+    assert "w0nderful shines as NAVI beat Aurora to lift EPL" in pref_calls[0]["query"]
+    assert 'HooXi on people writing him off after G2: "It feels good"' in pref_calls[1]["query"]
 
 
 @pytest.mark.asyncio
