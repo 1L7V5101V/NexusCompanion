@@ -26,8 +26,10 @@ from agent.tools.message_push import MessagePushTool
 from core.net.http import get_default_http_requester
 from feeds.base import FeedItem
 from prompts.proactive import (
+    build_compose_prompt_messages,
     build_context_reflect_prompt_messages,
     build_feature_scoring_prompt_messages,
+    build_post_judge_prompt_messages,
     build_reflect_prompt_messages,
 )
 from proactive.json_utils import extract_json_object
@@ -276,6 +278,16 @@ class ContextReflectDecision:
     background_role: str = "secondary"
     topic_hint: str = ""
     reasoning: str = ""
+
+
+@dataclass(frozen=True)
+class ProactiveJudgeResult:
+    final_score: float
+    should_send: bool
+    vetoed_by: str | None
+    dims_deterministic: dict[str, float]
+    dims_llm: dict[str, float]
+    dims_llm_raw: dict[str, int]
 
 
 def _build_proactive_prompt_context(
@@ -866,6 +878,196 @@ class ProactiveFeatureScorer:
             "confidence": get("confidence", 0.5),
             "confidence_reason": reason("confidence_reason"),
         }
+
+
+class ProactiveJudge:
+    """compose 后置评分器：聚合确定性维度与 LLM 维度。"""
+
+    def __init__(
+        self,
+        *,
+        provider: LLMProvider,
+        model: str,
+        max_tokens: int,
+        format_items: Callable[[list[FeedItem]], str],
+        format_recent: Callable[[list[dict]], str],
+        cfg: Any,
+    ) -> None:
+        self._provider = provider
+        self._model = model
+        self._max_tokens = max_tokens
+        self._format_items = format_items
+        self._format_recent = format_recent
+        self._cfg = cfg
+
+    async def compose_for_judge(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        preference_block: str = "",
+        no_content_token: str = "<no_content/>",
+    ) -> str:
+        # 1. 基于候选内容、近期对话、偏好构造最小 compose prompt。
+        prompt_context = _build_proactive_prompt_context(
+            items=items,
+            recent=recent,
+            format_items=self._format_items,
+            format_recent=self._format_recent,
+            collect_global_memory=lambda: "",
+        )
+        system_msg, user_msg = build_compose_prompt_messages(
+            prompt_context=prompt_context,
+            preference_block=preference_block,
+            no_content_token=no_content_token,
+        )
+        # 2. 仅做一次无工具调用，让模型专注生成内容本身。
+        try:
+            resp = await self._provider.chat(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                tools=[],
+                model=self._model,
+                max_tokens=min(512, self._max_tokens),
+            )
+        except Exception as e:
+            logger.warning("[judge] compose_for_judge 失败: %s", e)
+            return ""
+        # 3. 规范化输出，显式支持 no_content token。
+        text = (resp.content or "").strip()
+        if text.startswith(no_content_token):
+            return no_content_token
+        return text
+
+    async def judge_message(
+        self,
+        *,
+        message: str,
+        recent: list[dict],
+        recent_proactive_text: str,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> ProactiveJudgeResult:
+        # 1. 先计算确定性维度并执行硬否决。
+        deterministic = self._build_deterministic_dims(
+            age_hours=age_hours,
+            sent_24h=sent_24h,
+            interrupt_factor=interrupt_factor,
+        )
+        vetoed = self._deterministic_veto(deterministic)
+        if vetoed:
+            return ProactiveJudgeResult(0.0, False, vetoed, deterministic, {}, {})
+        # 2. 再请求 LLM 三维打分并校验维度下限。
+        llm_dims, llm_dims_raw = await self._score_llm_dims(
+            message=message,
+            recent=recent,
+            recent_proactive_text=recent_proactive_text,
+        )
+        llm_veto_min = (int(getattr(self._cfg, "judge_veto_llm_dim_min", 2)) - 1) / 4.0
+        if any(v < llm_veto_min for v in llm_dims.values()):
+            return ProactiveJudgeResult(
+                0.0,
+                False,
+                "llm_dim",
+                deterministic,
+                llm_dims,
+                llm_dims_raw,
+            )
+        # 3. 最后按权重汇总总分并输出是否发送。
+        final_score = self._compute_final_score(deterministic, llm_dims)
+        threshold = float(getattr(self._cfg, "judge_send_threshold", 0.60))
+        return ProactiveJudgeResult(
+            final_score,
+            final_score >= threshold,
+            None,
+            deterministic,
+            llm_dims,
+            llm_dims_raw,
+        )
+
+    def _build_deterministic_dims(
+        self,
+        *,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> dict[str, float]:
+        daily_max = max(1, int(getattr(self._cfg, "judge_balance_daily_max", 8)))
+        urgency_horizon = max(
+            1.0, float(getattr(self._cfg, "judge_urgency_horizon_hours", 12.0))
+        )
+        urgency = max(0.0, 1.0 - (max(age_hours, 0.0) / urgency_horizon))
+        balance = max(0.0, 1.0 - (max(sent_24h, 0) / float(daily_max)))
+        dynamics = 0.6 + 0.4 * max(0.0, min(1.0, float(interrupt_factor)))
+        return {"urgency": urgency, "balance": balance, "dynamics": dynamics}
+
+    def _deterministic_veto(self, deterministic: dict[str, float]) -> str | None:
+        if deterministic["balance"] < float(getattr(self._cfg, "judge_veto_balance_min", 0.1)):
+            return "balance"
+        if deterministic["urgency"] < float(getattr(self._cfg, "judge_veto_urgency_min", 0.05)):
+            return "urgency"
+        return None
+
+    async def _score_llm_dims(
+        self,
+        *,
+        message: str,
+        recent: list[dict],
+        recent_proactive_text: str,
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        system_msg, user_msg = build_post_judge_prompt_messages(
+            recent_summary=self._format_recent(recent) or "（无近期对话）",
+            last_proactive=recent_proactive_text or "（无近期主动消息）",
+            composed_message=message,
+        )
+        try:
+            resp = await self._provider.chat(
+                messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+                tools=[],
+                model=self._model,
+                max_tokens=min(256, self._max_tokens),
+            )
+            raw = extract_json_object(resp.content or "")
+        except Exception:
+            raw = {}
+        raw_dims = {
+            "information_gap": self._clamp_dim(raw.get("information_gap")),
+            "relevance": self._clamp_dim(raw.get("relevance")),
+            "expected_impact": self._clamp_dim(raw.get("expected_impact")),
+        }
+        normalized = {k: (v - 1) / 4.0 for k, v in raw_dims.items()}
+        return normalized, raw_dims
+
+    @staticmethod
+    def _clamp_dim(raw: object) -> int:
+        try:
+            value = int(raw)
+        except Exception:
+            value = 2
+        return max(1, min(5, value))
+
+    def _compute_final_score(
+        self,
+        deterministic: dict[str, float],
+        llm_dims: dict[str, float],
+    ) -> float:
+        weights = {
+            "urgency": float(getattr(self._cfg, "judge_weight_urgency", 0.15)),
+            "balance": float(getattr(self._cfg, "judge_weight_balance", 0.10)),
+            "dynamics": float(getattr(self._cfg, "judge_weight_dynamics", 0.10)),
+            "information_gap": float(getattr(self._cfg, "judge_weight_information_gap", 0.25)),
+            "relevance": float(getattr(self._cfg, "judge_weight_relevance", 0.20)),
+            "expected_impact": float(getattr(self._cfg, "judge_weight_expected_impact", 0.20)),
+        }
+        all_dims: dict[str, float] = dict(deterministic)
+        all_dims.update(llm_dims)
+        weight_sum = sum(weights.get(k, 0.0) for k in all_dims.keys())
+        if weight_sum <= 0:
+            return 0.0
+        return sum(weights.get(k, 0.0) * all_dims[k] for k in all_dims.keys()) / weight_sum
 
 
 class ProactiveMessageDeduper:

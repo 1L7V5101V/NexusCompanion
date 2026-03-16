@@ -23,7 +23,6 @@ from memory2.injection_planner import (
 )
 from proactive.components import (
     build_proactive_memory_query,
-    build_proactive_preference_query,
 )
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
@@ -98,6 +97,24 @@ class DecidePort(Protocol):
         retrieved_memory_block: str = "",
         preference_block: str = "",
     ) -> str: ...
+    async def compose_for_judge(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        preference_block: str = "",
+        no_content_token: str = "<no_content/>",
+    ) -> str: ...
+    async def judge_message(
+        self,
+        *,
+        message: str,
+        recent: list[dict],
+        recent_proactive_text: str,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> Any: ...
     async def reflect(
         self,
         items: list[FeedItem],
@@ -231,29 +248,25 @@ class DefaultMemoryRetrievalPort:
                 max(1, int(getattr(self._cfg, "memory_top_k_procedure", 4))),
             )
             top_k_hist = max(1, int(getattr(self._cfg, "memory_top_k_history", 6)))
-            top_k_pref = max(1, int(getattr(self._cfg, "preference_top_k", 4)))
+            top_k_pref = max(
+                1, int(getattr(self._cfg, "preference_per_source_top_k", 2))
+            )
             pref_enabled = bool(
                 getattr(self._cfg, "preference_retrieval_enabled", True) and items
             )
-            pref_query_used = ""
-            if pref_enabled:
-                pref_query_used = build_proactive_preference_query(
-                    items=items,
-                    max_items=max(
-                        1, int(getattr(self._cfg, "memory_query_max_items", 3))
-                    ),
-                )
+            pref_queries_used: list[str] = []
 
             # preference 是可选路，失败时降级为空并记录，不影响主路径的异常语义。
             async def _safe_pref() -> list[dict]:
-                if not (pref_enabled and pref_query_used):
+                if not pref_enabled:
                     return []
                 try:
-                    return await self._memory.retrieve_related(
-                        pref_query_used,
-                        memory_types=["preference"],
-                        top_k=top_k_pref,
+                    pref_items, used_queries = await self._retrieve_preference_by_sources(
+                        items=items,
+                        top_k_per_source=top_k_pref,
                     )
+                    pref_queries_used.extend(used_queries)
+                    return pref_items
                 except Exception as _e:
                     logger.warning("[proactive.memory] preference 检索失败: %s", _e)
                     return []
@@ -331,7 +344,7 @@ class DefaultMemoryRetrievalPort:
                 chat_id=chat_id,
                 result=result,
                 candidate_items=items,
-                preference_query=pref_query_used,
+                preference_query="\n".join(pref_queries_used),
                 preference_hit_count=pref_hit_count,
                 p_items_raw=p_items,
                 h_items_raw=h_items,
@@ -378,6 +391,65 @@ class DefaultMemoryRetrievalPort:
         if len(recent_texts) >= 2 or sum(len(t) for t in recent_texts) >= 40:
             return True, "recent_continuity"
         return False, "insufficient_topic_signal"
+
+    async def _retrieve_preference_by_sources(
+        self,
+        *,
+        items: list[FeedItem],
+        top_k_per_source: int,
+    ) -> tuple[list[dict], list[str]]:
+        # 1. 先按 source 去重并限制最多查询来源数，避免单向量质心漂移。
+        unique_items = self._unique_items_by_source(items)
+        max_sources = max(1, int(getattr(self._cfg, "preference_max_sources", 5)))
+        selected_items = unique_items[:max_sources]
+        if not selected_items:
+            return [], []
+        # 2. 再并发跑多路偏好检索，扩大命中 profile/preference 两类记忆。
+        queries = [
+            (
+                f"用户对 {item.source_name or item.source_type or '该来源'} 的偏好和态度；"
+                f"相关话题：{re.sub(r'\\s+', ' ', (item.title or '').strip())[:80]}"
+            )
+            for item in selected_items
+        ]
+        tasks = [
+            self._memory.retrieve_related(
+                query,
+                memory_types=["preference", "profile"],
+                top_k=top_k_per_source,
+            )
+            for query in queries
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # 3. 最后合并去重，单路异常按 fail-open 忽略。
+        merged: list[dict] = []
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("[proactive.memory] preference 分路检索失败: %s", result)
+                continue
+            merged.extend(result or [])
+        return _merge_memory_items(merged), queries
+
+    @staticmethod
+    def _unique_items_by_source(items: list[FeedItem]) -> list[FeedItem]:
+        seen: set[str] = set()
+        unique: list[FeedItem] = []
+        for item in items:
+            source = (item.source_name or "").strip().lower()
+            source_type = (item.source_type or "").strip().lower()
+            if source or source_type:
+                key = f"{source_type}:{source}"
+            else:
+                key = "fallback:" + hashlib.sha1(
+                    f"{(item.title or '').strip()}|{(item.url or '').strip()}|{(item.content or '').strip()[:80]}".encode(
+                        "utf-8"
+                    )
+                ).hexdigest()[:12]
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return unique
 
     def _trace(
         self,
@@ -749,6 +821,7 @@ class DefaultDecidePort:
         semantic_text_max_chars: int,
         feature_scorer: Any | None = None,
         message_composer: Any | None = None,
+        judge: Any | None = None,
     ) -> None:
         self._reflector = reflector
         self._randomize_fn = randomize_fn
@@ -758,6 +831,7 @@ class DefaultDecidePort:
         self._semantic_text_max_chars = semantic_text_max_chars
         self._feature_scorer = feature_scorer
         self._message_composer = message_composer
+        self._judge = judge
 
     async def score_features(
         self,
@@ -795,6 +869,44 @@ class DefaultDecidePort:
             decision_signals=decision_signals,
             retrieved_memory_block=retrieved_memory_block,
             preference_block=preference_block,
+        )
+
+    async def compose_for_judge(
+        self,
+        *,
+        items: list[FeedItem],
+        recent: list[dict],
+        preference_block: str = "",
+        no_content_token: str = "<no_content/>",
+    ) -> str:
+        if not self._judge:
+            return ""
+        return await self._judge.compose_for_judge(
+            items=items,
+            recent=recent,
+            preference_block=preference_block,
+            no_content_token=no_content_token,
+        )
+
+    async def judge_message(
+        self,
+        *,
+        message: str,
+        recent: list[dict],
+        recent_proactive_text: str,
+        age_hours: float,
+        sent_24h: int,
+        interrupt_factor: float,
+    ) -> Any:
+        if not self._judge:
+            return None
+        return await self._judge.judge_message(
+            message=message,
+            recent=recent,
+            recent_proactive_text=recent_proactive_text,
+            age_hours=age_hours,
+            sent_24h=sent_24h,
+            interrupt_factor=interrupt_factor,
         )
 
     async def reflect(

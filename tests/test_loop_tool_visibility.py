@@ -107,7 +107,7 @@ class TestVisibilityGuard:
         )
         loop = _make_loop(tmp_path, provider, reg)
 
-        final, tools_used, _, _ = asyncio.run(
+        final, tools_used, _, _, _ = asyncio.run(
             loop._run_agent_loop([{"role": "user", "content": "test"}])
         )
 
@@ -128,7 +128,7 @@ class TestVisibilityGuard:
         )
         loop = _make_loop(tmp_path, provider, reg)
 
-        final, tools_used, _, _ = asyncio.run(
+        final, tools_used, _, _, _ = asyncio.run(
             loop._run_agent_loop([{"role": "user", "content": "test"}])
         )
 
@@ -150,7 +150,7 @@ class TestVisibilityGuard:
         )
         loop = _make_loop(tmp_path, provider, reg, tool_search_enabled=False)
 
-        _, tools_used, _, _ = asyncio.run(
+        _, tools_used, _, _, _ = asyncio.run(
             loop._run_agent_loop([{"role": "user", "content": "test"}])
         )
 
@@ -197,7 +197,7 @@ class TestVisibilityGuard:
         )
         loop = _make_loop(tmp_path, provider, reg)
 
-        final, tools_used, _, _ = asyncio.run(
+        final, tools_used, _, _, _ = asyncio.run(
             loop._run_agent_loop([{"role": "user", "content": "use target"}])
         )
 

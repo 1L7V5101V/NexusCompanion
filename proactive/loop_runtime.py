@@ -10,6 +10,7 @@ from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.components import (
     ProactiveFeatureScorer,
     ProactiveItemFilter,
+    ProactiveJudge,
     ProactiveMessageComposer,
     ProactiveMessageDeduper,
     ProactiveReflector,
@@ -151,6 +152,16 @@ class ProactiveLoopRuntimeMixin:
             fitbit_url=fitbit_url,
         )
 
+    def _build_judge(self) -> ProactiveJudge:
+        return ProactiveJudge(
+            provider=self._light_provider or self._provider,
+            model=self._light_model or self._model,
+            max_tokens=self._max_tokens,
+            format_items=_format_items,
+            format_recent=_format_recent,
+            cfg=self._cfg,
+        )
+
     def _build_anyaction_gate(self) -> AnyActionGate:
         if hasattr(self._state, "path"):
             quota_path = self._state.path.parent / "proactive_quota.json"
@@ -189,6 +200,7 @@ class ProactiveLoopRuntimeMixin:
             semantic_text_max_chars=self._cfg.semantic_dedupe_text_max_chars,
             feature_scorer=self._feature_scorer,
             message_composer=self._message_composer,
+            judge=self._judge,
         )
 
     def _build_memory_retrieval_port(self) -> DefaultMemoryRetrievalPort:
@@ -259,6 +271,7 @@ class ProactiveLoopRuntimeMixin:
         self._sender = self._build_sender()
         self._feature_scorer = self._build_feature_scorer()
         self._message_composer = self._build_message_composer(fitbit_url)
+        self._judge = self._build_judge()
         self._anyaction = self._build_anyaction_gate()
         fitbit_provider = self._build_fitbit_provider()
         self._sense = self._build_sense_port(fitbit_provider)

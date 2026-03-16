@@ -174,6 +174,10 @@ def load_config(path: str | Path = "config.json") -> Config:
                 p.get("anyaction_idle_scale_minutes", 240.0)
             ),
             feature_scoring_enabled=bool(p.get("feature_scoring_enabled", False)),
+            compose_judge_enabled=bool(p.get("compose_judge_enabled", False)),
+            compose_no_content_token=str(
+                p.get("compose_no_content_token", "<no_content/>")
+            ),
             feature_send_threshold=float(p.get("feature_send_threshold", 0.52)),
             feature_weight_topic_continuity=float(
                 p.get("feature_weight_topic_continuity", 0.16)
@@ -255,6 +259,28 @@ def load_config(path: str | Path = "config.json") -> Config:
                 p.get("preference_retrieval_enabled", True)
             ),
             preference_top_k=max(1, int(p.get("preference_top_k", 4))),
+            preference_per_source_top_k=max(
+                1, int(p.get("preference_per_source_top_k", 2))
+            ),
+            preference_max_sources=max(1, int(p.get("preference_max_sources", 5))),
+            judge_weight_urgency=float(p.get("judge_weight_urgency", 0.15)),
+            judge_weight_balance=float(p.get("judge_weight_balance", 0.10)),
+            judge_weight_dynamics=float(p.get("judge_weight_dynamics", 0.10)),
+            judge_weight_information_gap=float(
+                p.get("judge_weight_information_gap", 0.25)
+            ),
+            judge_weight_relevance=float(p.get("judge_weight_relevance", 0.20)),
+            judge_weight_expected_impact=float(
+                p.get("judge_weight_expected_impact", 0.20)
+            ),
+            judge_urgency_horizon_hours=float(
+                p.get("judge_urgency_horizon_hours", 12.0)
+            ),
+            judge_balance_daily_max=max(1, int(p.get("judge_balance_daily_max", 8))),
+            judge_veto_balance_min=float(p.get("judge_veto_balance_min", 0.1)),
+            judge_veto_urgency_min=float(p.get("judge_veto_urgency_min", 0.05)),
+            judge_veto_llm_dim_min=max(1, int(p.get("judge_veto_llm_dim_min", 2))),
+            judge_send_threshold=float(p.get("judge_send_threshold", 0.60)),
         )
 
     mv2 = data.get("memory_v2", {})

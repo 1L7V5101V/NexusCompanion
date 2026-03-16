@@ -54,6 +54,8 @@ class ProactiveConfig:
     anyaction_probability_max: float = 0.45
     anyaction_idle_scale_minutes: float = 240.0
     feature_scoring_enabled: bool = False
+    compose_judge_enabled: bool = False
+    compose_no_content_token: str = "<no_content/>"
     feature_send_threshold: float = 0.52
     feature_weight_topic_continuity: float = 0.16
     feature_weight_interest_match: float = 0.32
@@ -100,4 +102,18 @@ class ProactiveConfig:
     # 偏好专项 RAG
     preference_retrieval_enabled: bool = True
     preference_top_k: int = 4
+    preference_per_source_top_k: int = 2
+    preference_max_sources: int = 5
+    judge_weight_urgency: float = 0.15
+    judge_weight_balance: float = 0.10
+    judge_weight_dynamics: float = 0.10
+    judge_weight_information_gap: float = 0.25
+    judge_weight_relevance: float = 0.20
+    judge_weight_expected_impact: float = 0.20
+    judge_urgency_horizon_hours: float = 12.0
+    judge_balance_daily_max: int = 8
+    judge_veto_balance_min: float = 0.1
+    judge_veto_urgency_min: float = 0.05
+    judge_veto_llm_dim_min: int = 2
+    judge_send_threshold: float = 0.60
     bg_context_main_topic_min_interval_hours: int = 6

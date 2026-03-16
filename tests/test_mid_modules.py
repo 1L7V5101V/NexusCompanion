@@ -69,21 +69,21 @@ async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
     harness = _SafetyHarness(
         [
             ContentSafetyError("bad"),
-            ("ok", ["tool_search", "x", "y"], [{"calls": []}], None),
+            ("ok", ["tool_search", "x", "y"], [{"calls": []}], None, None),
         ]
     )
-    content, tools_used, _ = await harness._run_with_safety_retry(msg, session)
+    content, tools_used, _, _ = await harness._run_with_safety_retry(msg, session)
     assert content == "ok"
     assert tools_used == ["tool_search", "x", "y"]
     assert list(harness._unlocked_tools["s:1"].keys())[-2:] == ["x", "y"]
 
     harness = _SafetyHarness([ContextLengthError("long")] * 3)
-    content, tools_used, chain = await harness._run_with_safety_retry(msg, session)
+    content, tools_used, chain, _ = await harness._run_with_safety_retry(msg, session)
     assert "上下文过长" in content
     assert tools_used == []
     assert chain == []
 
-    harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None)])
+    harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None, None)])
     harness._update_lru("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"])
     assert "always" not in harness._unlocked_tools["s:1"]
     assert len(harness._unlocked_tools["s:1"]) == 5

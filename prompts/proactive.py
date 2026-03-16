@@ -266,3 +266,68 @@ def build_feature_scoring_prompt_messages(
 }}
 """
     return system_msg, user_msg
+
+
+def build_compose_prompt_messages(
+    *,
+    prompt_context: Any,
+    preference_block: str = "",
+    no_content_token: str = "<no_content/>",
+) -> tuple[str, str]:
+    system_msg = (
+        "你是用户的主动助手。"
+        "只负责写一条值得发送的主动消息，不做是否打扰的决策。"
+        f"若内容没有价值，直接输出 {no_content_token}。"
+        "输出纯文本，不要 JSON。"
+    )
+    user_msg = f"""当前时间：{prompt_context.now_str}
+
+## 今天的新内容
+{prompt_context.feed_text}
+
+## 用户最近聊过的话题
+{prompt_context.chat_text}
+{f"## 用户偏好记录\n{preference_block}\n" if preference_block else ""}
+任务：
+1. 写一条简短主动消息，告知最值得关注的一点。
+2. 若以上内容都不值得推送，输出 `{no_content_token}`。
+3. 不要提问收尾，不要输出解释。"""
+    return system_msg, user_msg
+
+
+def build_post_judge_prompt_messages(
+    *,
+    recent_summary: str,
+    last_proactive: str,
+    composed_message: str,
+) -> tuple[str, str]:
+    system_msg = (
+        "你是主动消息评分器。"
+        "仅对信息价值维度打分，不要做发送结论。"
+        "只输出 JSON。"
+    )
+    user_msg = f"""用户最近对话摘要：
+{recent_summary}
+
+用户已收到的最近几条推送：
+{last_proactive}
+
+待发送消息：
+{composed_message}
+
+对以下三个维度打分（1=很低，5=很高）：
+- information_gap：这条消息包含用户尚不知道的新信息吗？
+- relevance：这条消息和用户当前关注的话题匹配吗？
+- expected_impact：用户收到后会觉得有价值吗？
+
+评分标尺（请严格使用）：
+- 1：明显不成立/几乎没有价值
+- 2：偏弱，价值不足
+- 3：一般，价值不确定
+- 4：较强，明显有价值
+- 5：很强，强价值且很贴合
+
+请基于“是否应该推动发送”来打分：分数越高代表越应该发送，分数越低代表应保守抑制发送。
+
+输出 JSON：{{"information_gap": int, "relevance": int, "expected_impact": int}}"""
+    return system_msg, user_msg

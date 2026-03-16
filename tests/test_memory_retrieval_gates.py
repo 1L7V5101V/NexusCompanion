@@ -194,7 +194,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     session = _DummySession("cli:1")
     loop.session_manager.get_or_create.return_value = session
     loop.session_manager.append_messages = AsyncMock(return_value=None)
-    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], []))
+    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], [], None))
 
     async def _slow_retrieve(*args, **kwargs):
         await asyncio.sleep(0.12)
@@ -316,7 +316,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     session = _DummySession("cli:1")
     session.messages = [{"role": "user", "content": "x"} for _ in range(41)]
     loop.session_manager.get_or_create.return_value = session
-    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], []))
+    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], [], None))
 
     append_done = False
 

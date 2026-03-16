@@ -214,6 +214,50 @@ def test_preference_query_contains_preference_signal_words():
     ), f"偏好查询中缺少偏好信号词: {query!r}"
 
 
+@pytest.mark.asyncio
+async def test_memory_port_preference_query_includes_title_and_fallback_source():
+    calls: list[str] = []
+
+    class _Memory:
+        async def retrieve_related(self, query: str, **kwargs):
+            if set(kwargs.get("memory_types") or []) == {"preference", "profile"}:
+                calls.append(query)
+            return []
+
+        def select_for_injection(self, items):
+            return items
+
+        def format_injection_with_ids(self, items):
+            return "", []
+
+    item = FeedItem(
+        source_name="",
+        source_type="",
+        title="这是一条没有来源标记但有标题的话题偏好测试",
+        content="",
+        url=None,
+        author=None,
+        published_at=None,
+    )
+    port = DefaultMemoryRetrievalPort(
+        cfg=ProactiveConfig(preference_retrieval_enabled=True),
+        memory=_Memory(),
+        item_id_fn=lambda _: "x",
+    )
+    await port.retrieve_proactive_context(
+        session_key="telegram:1",
+        channel="telegram",
+        chat_id="1",
+        items=[item],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+    assert calls, "无来源标记的 item 也应进入偏好检索"
+    assert "相关话题" in calls[0]
+    assert "话题偏好测试" in calls[0]
+
+
 # ---------------------------------------------------------------------------
 # Test 2: ProactiveRetrievedMemory 有独立 preference_block 字段
 # ---------------------------------------------------------------------------
@@ -249,7 +293,8 @@ async def test_memory_port_sends_preference_specific_query():
 
     class _Memory:
         async def retrieve_related(self, query: str, **kwargs):
-            if kwargs.get("memory_types") == ["preference"]:
+            memory_types = kwargs.get("memory_types") or []
+            if set(memory_types) == {"preference", "profile"}:
                 pref_calls.append({"query": query, **kwargs})
                 return [
                     {
@@ -302,7 +347,8 @@ async def test_memory_port_populates_preference_block():
 
     class _Memory:
         async def retrieve_related(self, query: str, **kwargs):
-            if kwargs.get("memory_types") == ["preference"]:
+            memory_types = kwargs.get("memory_types") or []
+            if set(memory_types) == {"preference", "profile"}:
                 return [
                     {
                         "id": "p1",
@@ -772,7 +818,7 @@ async def test_e2e_preference_rag_populates_block_for_disliked_source():
     class _RealMemory:
         async def retrieve_related(self, query: str, **kwargs):
             mt = kwargs.get("memory_types", [])
-            if mt == ["preference"]:
+            if set(mt) == {"preference", "profile"}:
                 preference_retrieval_queries.append(query)
                 # 模拟向量库命中"不关心 TeamOrbit"偏好记忆
                 return [
@@ -1007,7 +1053,9 @@ async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_path):
+async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(
+    tmp_path, monkeypatch
+):
     send_calls: list[str] = []
     score_inputs: list[dict] = []
     port = _build_real_preference_memory_port(tmp_path)
@@ -1065,6 +1113,25 @@ async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_pat
             send_calls.append(message)
             return True
 
+    item = _hltv_major_race_item()
+    monkeypatch.setattr(
+        "proactive.mcp_sources.fetch_content_events",
+        lambda: [
+            {
+                "kind": "content",
+                "event_id": "evt-major-race",
+                "source_type": item.source_type,
+                "source_name": item.source_name,
+                "title": item.title,
+                "content": item.content,
+                "url": item.url,
+                "published_at": None,
+            }
+        ],
+    )
+    monkeypatch.setattr("proactive.mcp_sources.fetch_context_data", lambda: [])
+    monkeypatch.setattr("proactive.mcp_sources.fetch_alert_events", lambda: [])
+
     engine = ProactiveEngine(
         cfg=ProactiveConfig(
             enabled=True,
@@ -1079,7 +1146,7 @@ async def test_engine_vetoes_hltv_major_race_after_real_vector_retrieval(tmp_pat
         state=ProactiveStateStore(tmp_path / "state.json"),
         presence=None,
         rng=None,
-        sense=_sense_with_item(_hltv_major_race_item()),
+        sense=_sense_with_item(item),
         decide=_Decide(),
         act=_Act(),
         memory_retrieval=retrieval,

@@ -211,6 +211,10 @@ class DecideSnapshot:
     memory_fallback_reason: str = ""
     preference_block: str = ""  # 偏好专项 RAG 结果，独立字段传给 score_features
     prefetch_urls: list[str] = field(default_factory=list)
+    compose_no_content: bool = False
+    judge_dims: dict[str, object] = field(default_factory=dict)
+    judge_final_score: float | None = None
+    judge_vetoed_by: str | None = None
 
 
 @dataclass
@@ -327,11 +331,20 @@ class FetchFilterResult:
 class DecideResult:
     proceed: bool
     return_score: float | None
-    reason_code: Literal["continue", "feature_score_reject"]
+    reason_code: Literal[
+        "continue",
+        "feature_score_reject",
+        "compose_no_content",
+        "judge_reject",
+    ]
     should_send: bool
     decision_message: str
-    decision_mode: Literal["feature", "reflect"]
+    decision_mode: Literal["feature", "reflect", "compose_judge"]
     feature_final_score: float | None
+    judge_dims: dict[str, object]
+    judge_final_score: float | None
+    judge_vetoed_by: str | None
+    compose_no_content: bool
     history_gate_reason: str
     history_scope_mode: str
 
@@ -757,12 +770,15 @@ class ProactiveEngine:
         fetch.new_items, decide.prefetch_urls = await self._prefetch_candidate_content(
             fetch.new_items
         )
-        # 4. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
+        # 4. compose+judge 开关开启时，走 compose -> post-judge 链路。
+        if getattr(self._cfg, "compose_judge_enabled", False):
+            return await self._run_compose_judge_decision(ctx)
+        # 5. feature 模式走“评分 + compose”的闭环；否则走 reflect 模式。
         if self._cfg.feature_scoring_enabled:
             self._prepare_feature_compose_candidates(ctx)
             return await self._run_feature_decision(ctx)
         await self._run_reflect_decision(ctx)
-        # 5. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
+        # 6. 两条分支最后都统一落成 DecideResult，交给 act 阶段消费。
         return self._build_continue_decide_result(ctx, decision_mode="reflect")
 
     # ------------------------------------------------------------------
@@ -1201,6 +1217,115 @@ class ProactiveEngine:
             fetch.new_entries,
         )
 
+    async def _run_compose_judge_decision(self, ctx: DecisionContext) -> DecideResult:
+        """compose + post-judge 模式：先生成消息，再做多维评分。"""
+        # 1. 先挑出 compose 候选并执行 compose-only。
+        sense = ctx.ensure_sense()
+        fetch = ctx.ensure_fetch()
+        score = ctx.ensure_score()
+        decide = ctx.ensure_decide()
+        act = ctx.ensure_act()
+        self._prepare_feature_compose_candidates(ctx)
+        decide.compose_no_content = False
+        decide.judge_dims = {}
+        decide.judge_final_score = None
+        decide.judge_vetoed_by = None
+        no_content_token = str(getattr(self._cfg, "compose_no_content_token", "<no_content/>"))
+        decide.decision_message = await self._decide.compose_for_judge(
+            items=act.compose_items,
+            recent=sense.recent,
+            preference_block=decide.preference_block,
+            no_content_token=no_content_token,
+        )
+        msg = (decide.decision_message or "").strip()
+        if not msg or msg == no_content_token:
+            decide.compose_no_content = True
+            decide.should_send = False
+            decide.decision_message = ""
+            return DecideResult(
+                proceed=False,
+                return_score=score.base_score,
+                reason_code="compose_no_content",
+                should_send=False,
+                decision_message="",
+                decision_mode="compose_judge",
+                feature_final_score=None,
+                judge_dims={},
+                judge_final_score=None,
+                judge_vetoed_by="compose_no_content",
+                compose_no_content=True,
+                history_gate_reason=decide.history_gate_reason,
+                history_scope_mode=decide.history_scope_mode,
+            )
+        # 2. 计算 deterministic 评分输入并调用 judge。
+        age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
+        recent_proactive_text = self._recent_proactive_text()
+        judge_result = await self._decide.judge_message(
+            message=msg,
+            recent=sense.recent,
+            recent_proactive_text=recent_proactive_text,
+            age_hours=age_hours,
+            sent_24h=score.sent_24h,
+            interrupt_factor=sense.interrupt_factor,
+        )
+        if judge_result is None:
+            decide.should_send = True
+            decide.judge_final_score = 1.0
+            decide.judge_vetoed_by = None
+            decide.judge_dims = {}
+            return self._build_continue_decide_result(ctx, decision_mode="compose_judge")
+        # 3. 落 trace 字段并根据 judge 结论决定是否发送。
+        decide.judge_dims = {
+            "deterministic": dict(getattr(judge_result, "dims_deterministic", {}) or {}),
+            "llm": dict(getattr(judge_result, "dims_llm", {}) or {}),
+            "llm_raw": dict(getattr(judge_result, "dims_llm_raw", {}) or {}),
+        }
+        decide.judge_final_score = float(getattr(judge_result, "final_score", 0.0) or 0.0)
+        decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
+        decide.should_send = bool(getattr(judge_result, "should_send", False))
+        if not decide.should_send:
+            return DecideResult(
+                proceed=False,
+                return_score=score.base_score,
+                reason_code="judge_reject",
+                should_send=False,
+                decision_message=decide.decision_message,
+                decision_mode="compose_judge",
+                feature_final_score=None,
+                judge_dims=decide.judge_dims,
+                judge_final_score=decide.judge_final_score,
+                judge_vetoed_by=decide.judge_vetoed_by,
+                compose_no_content=False,
+                history_gate_reason=decide.history_gate_reason,
+                history_scope_mode=decide.history_scope_mode,
+            )
+        return self._build_continue_decide_result(ctx, decision_mode="compose_judge")
+
+    def _candidate_age_hours(
+        self,
+        items: list[ContentEvent],
+        *,
+        now_utc: datetime,
+    ) -> float:
+        ages: list[float] = []
+        for item in self._feed_items(items):
+            published = getattr(item, "published_at", None)
+            if published is None:
+                continue
+            ages.append(max(0.0, (now_utc - published).total_seconds() / 3600.0))
+        if not ages:
+            return 24.0
+        return min(ages)
+
+    def _recent_proactive_text(self, limit: int = 5) -> str:
+        sense_port = getattr(self, "_sense", None)
+        if sense_port is None:
+            return ""
+        rows = sense_port.collect_recent_proactive(limit)
+        lines = [str(getattr(row, "content", "") or "").strip() for row in rows]
+        lines = [line for line in lines if line]
+        return "\n---\n".join(lines)
+
     async def _run_feature_decision(self, ctx: DecisionContext) -> DecideResult:
         """feature 模式：先打分，再在通过阈值时 compose_message。"""
         sense = ctx.ensure_sense()
@@ -1273,6 +1398,10 @@ class ProactiveEngine:
                     decision_message="",
                     decision_mode="feature",
                     feature_final_score=decide.feature_final_score,
+                    judge_dims={},
+                    judge_final_score=None,
+                    judge_vetoed_by=None,
+                    compose_no_content=False,
                     history_gate_reason=decide.history_gate_reason,
                     history_scope_mode=decide.history_scope_mode,
                 )
@@ -1291,6 +1420,10 @@ class ProactiveEngine:
                 decision_message="",
                 decision_mode="feature",
                 feature_final_score=decide.feature_final_score,
+                judge_dims={},
+                judge_final_score=None,
+                judge_vetoed_by=None,
+                compose_no_content=False,
                 history_gate_reason=decide.history_gate_reason,
                 history_scope_mode=decide.history_scope_mode,
             )
@@ -1360,7 +1493,7 @@ class ProactiveEngine:
         self,
         ctx: DecisionContext,
         *,
-        decision_mode: Literal["feature", "reflect"],
+        decision_mode: Literal["feature", "reflect", "compose_judge"],
     ) -> DecideResult:
         decide = ctx.ensure_decide()
         return DecideResult(
@@ -1371,6 +1504,10 @@ class ProactiveEngine:
             decision_message=decide.decision_message,
             decision_mode=decision_mode,
             feature_final_score=decide.feature_final_score,
+            judge_dims=decide.judge_dims,
+            judge_final_score=decide.judge_final_score,
+            judge_vetoed_by=decide.judge_vetoed_by,
+            compose_no_content=decide.compose_no_content,
             history_gate_reason=decide.history_gate_reason,
             history_scope_mode=decide.history_scope_mode,
         )
