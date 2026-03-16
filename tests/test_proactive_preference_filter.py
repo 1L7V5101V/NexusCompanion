@@ -986,6 +986,8 @@ def test_config_loader_parses_preference_fields(tmp_path):
                     "preference_interest_veto_threshold": 0.25,
                     "preference_retrieval_enabled": False,
                     "preference_top_k": 8,
+                    "preference_hyde_enabled": True,
+                    "preference_hyde_timeout_ms": 3200,
                 },
             }
         ),
@@ -1007,6 +1009,12 @@ def test_config_loader_parses_preference_fields(tmp_path):
     assert (
         p.preference_top_k == 8
     ), f"preference_top_k 未被正确加载: {p.preference_top_k!r}"
+    assert (
+        p.preference_hyde_enabled is True
+    ), f"preference_hyde_enabled 未被正确加载: {p.preference_hyde_enabled!r}"
+    assert (
+        p.preference_hyde_timeout_ms == 3200
+    ), f"preference_hyde_timeout_ms 未被正确加载: {p.preference_hyde_timeout_ms!r}"
 
 
 def test_config_loader_parses_interest_filter_fields(tmp_path):

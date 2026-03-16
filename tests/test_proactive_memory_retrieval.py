@@ -5,6 +5,7 @@ import pytest
 from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
 from proactive.engine import ProactiveEngine
+from proactive.components import build_proactive_preference_hyde_prompt
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 from proactive.components import build_proactive_memory_query
@@ -43,6 +44,18 @@ def test_build_proactive_memory_query_contains_source_labels():
     )
     assert "来源标签: rss:testfeed" in q
     assert "来源域名: example.com" in q
+
+
+def test_build_proactive_preference_hyde_prompt_matches_preference_style():
+    prompt = build_proactive_preference_hyde_prompt(
+        query="用户对 HLTV News 的偏好和态度；相关话题：HooXi on people writing him off after G2",
+        context="候选内容：HooXi on people writing him off after G2\n来源：HLTV News",
+    )
+    assert "偏好记忆系统" in prompt
+    assert "用户明确" in prompt
+    assert "长期偏好" in prompt
+    assert "不要总结新闻事实本身" in prompt
+    assert "负向偏好" in prompt or "反感" in prompt
 
 
 @pytest.mark.asyncio
@@ -298,6 +311,129 @@ async def test_preference_retrieval_queries_same_source_items_separately():
     assert len(pref_calls) == 2
     assert "w0nderful shines as NAVI beat Aurora to lift EPL" in pref_calls[0]["query"]
     assert 'HooXi on people writing him off after G2: "It feels good"' in pref_calls[1]["query"]
+
+
+@pytest.mark.asyncio
+async def test_preference_retrieval_uses_hyde_query_when_enabled():
+    calls: list[str] = []
+    prompts: list[str] = []
+
+    class _Provider:
+        async def chat(self, **kwargs):
+            prompts.append(kwargs["messages"][0]["content"])
+            from agent.provider import LLMResponse
+
+            return LLMResponse(
+                content="用户明确关注 HooXi 与 NiKo、G2 旧阵容相关的人物动态。",
+                tool_calls=[],
+            )
+
+    class _Memory:
+        async def retrieve_related(self, query, **kwargs):
+            if kwargs.get("memory_types") == ["preference", "profile"]:
+                calls.append(query)
+                return [{"id": query, "memory_type": "preference", "summary": query}]
+            if kwargs.get("memory_types") == ["procedure", "preference"]:
+                return []
+            if kwargs.get("memory_types") == ["event"]:
+                return []
+            return []
+
+        def select_for_injection(self, items):
+            return items
+
+        def format_injection_with_ids(self, items):
+            summaries = [str(i.get("summary", "")) for i in items]
+            ids = [str(i.get("id")) for i in items if i.get("id")]
+            return "\n".join(summaries), ids
+
+    cfg = ProactiveConfig(
+        preference_retrieval_enabled=True,
+        preference_hyde_enabled=True,
+        preference_per_source_top_k=2,
+    )
+    port = DefaultMemoryRetrievalPort(
+        cfg=cfg,
+        memory=_Memory(),
+        item_id_fn=lambda _: "item1",
+        light_provider=_Provider(),
+        light_model="qwen-flash",
+    )
+    result = await port.retrieve_proactive_context(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        items=[
+            _item_with(
+                source_name="HLTV News",
+                title='HooXi on people writing him off after G2: "It feels good"',
+                url="https://www.hltv.org/news/2",
+            )
+        ],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+
+    assert len(calls) == 2
+    assert "相关话题" in calls[0]
+    assert "用户明确关注 HooXi 与 NiKo、G2 旧阵容相关的人物动态。" == calls[1]
+    assert prompts and "不要总结新闻事实本身" in prompts[0]
+    assert "用户明确关注 HooXi" in result.preference_block
+
+
+@pytest.mark.asyncio
+async def test_preference_retrieval_hyde_falls_back_to_raw_on_failure():
+    calls: list[str] = []
+
+    class _BrokenProvider:
+        async def chat(self, **kwargs):
+            raise RuntimeError("hyde failed")
+
+    class _Memory:
+        async def retrieve_related(self, query, **kwargs):
+            if kwargs.get("memory_types") == ["preference", "profile"]:
+                calls.append(query)
+                return [{"id": query, "memory_type": "preference", "summary": query}]
+            if kwargs.get("memory_types") == ["procedure", "preference"]:
+                return []
+            if kwargs.get("memory_types") == ["event"]:
+                return []
+            return []
+
+        def select_for_injection(self, items):
+            return items
+
+        def format_injection_with_ids(self, items):
+            summaries = [str(i.get("summary", "")) for i in items]
+            ids = [str(i.get("id")) for i in items if i.get("id")]
+            return "\n".join(summaries), ids
+
+    cfg = ProactiveConfig(
+        preference_retrieval_enabled=True,
+        preference_hyde_enabled=True,
+        preference_per_source_top_k=2,
+    )
+    port = DefaultMemoryRetrievalPort(
+        cfg=cfg,
+        memory=_Memory(),
+        item_id_fn=lambda _: "item1",
+        light_provider=_BrokenProvider(),
+        light_model="qwen-flash",
+    )
+    result = await port.retrieve_proactive_context(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        items=[_item()],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+
+    assert len(calls) == 1
+    assert "Elden Ring DLC" in calls[0]
+    assert "Elden Ring DLC" in result.preference_block
 
 
 @pytest.mark.asyncio

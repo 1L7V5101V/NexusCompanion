@@ -180,6 +180,8 @@ class ProactiveLoopRuntimeMixin:
             item_id_fn=_item_id,
             trace_writer=self._trace_proactive_memory_retrieve,
             observe_writer=getattr(self, "_observe_writer", None),
+            light_provider=self._light_provider,
+            light_model=self._light_model,
         )
 
     def _build_message_deduper(self) -> ProactiveMessageDeduper | None:

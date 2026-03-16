@@ -264,6 +264,10 @@ def load_config(path: str | Path = "config.json") -> Config:
                 1, int(p.get("preference_per_source_top_k", 2))
             ),
             preference_max_sources=max(1, int(p.get("preference_max_sources", 5))),
+            preference_hyde_enabled=bool(p.get("preference_hyde_enabled", False)),
+            preference_hyde_timeout_ms=max(
+                200, int(p.get("preference_hyde_timeout_ms", 2000))
+            ),
             judge_weight_urgency=float(p.get("judge_weight_urgency", 0.15)),
             judge_weight_balance=float(p.get("judge_weight_balance", 0.10)),
             judge_weight_dynamics=float(p.get("judge_weight_dynamics", 0.10)),

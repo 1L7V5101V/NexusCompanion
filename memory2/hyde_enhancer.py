@@ -45,10 +45,12 @@ class HyDEEnhancer:
         light_provider: "LLMProvider",
         light_model: str,
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        prompt_builder: Callable[[str, str], str] | None = None,
     ) -> None:
         self._provider = light_provider
         self._model = light_model
         self._timeout_s = max(0.5, float(timeout_s))
+        self._prompt_builder = prompt_builder or self._build_default_prompt
 
     async def generate_hypothesis(self, query: str, context: str) -> str | None:
         """
@@ -58,18 +60,7 @@ class HyDEEnhancer:
         - 保持原问题的语义极性（否定问题生成否定式条目）
         - 只改写语态为第三人称书面陈述，不添加原问题没有的信息
         """
-        context_section = f"\n近期对话背景：\n{context}\n" if context else ""
-        prompt = (
-            "你是个人助手的记忆系统。根据用户提问，生成一条"
-            "**如果该信息存在于记忆数据库中会长什么样**的假想条目。\n"
-            f"{context_section}"
-            "规则：\n"
-            "- 始终生成肯定式条目，描述**如果该记忆存在会记录什么事实**，不要否定该事件的存在\n"
-            '- 第三人称（"用户..."），与数据库条目语体一致（简洁的事实陈述）\n'
-            "- 只输出那一条文本，不要解释，不要回答问题本身\n\n"
-            f"用户提问：{query}\n"
-            "假想记忆条目："
-        )
+        prompt = self._prompt_builder(query, context)
         try:
             resp = await asyncio.wait_for(
                 self._provider.chat(
@@ -85,6 +76,21 @@ class HyDEEnhancer:
         except Exception as e:
             logger.debug("hyde hypothesis generation failed: %s", e)
             return None
+
+    @staticmethod
+    def _build_default_prompt(query: str, context: str) -> str:
+        context_section = f"\n近期对话背景：\n{context}\n" if context else ""
+        return (
+            "你是个人助手的记忆系统。根据用户提问，生成一条"
+            "**如果该信息存在于记忆数据库中会长什么样**的假想条目。\n"
+            f"{context_section}"
+            "规则：\n"
+            "- 始终生成肯定式条目，描述**如果该记忆存在会记录什么事实**，不要否定该事件的存在\n"
+            '- 第三人称（"用户..."），与数据库条目语体一致（简洁的事实陈述）\n'
+            "- 只输出那一条文本，不要解释，不要回答问题本身\n\n"
+            f"用户提问：{query}\n"
+            "假想记忆条目："
+        )
 
     async def augment(
         self,

@@ -14,15 +14,18 @@ logger = logging.getLogger(__name__)
 _MAX_PROCEDURE_RETRIEVE_K = 3
 
 if TYPE_CHECKING:
+    from agent.provider import LLMProvider
     from core.memory.port import MemoryPort
 
 from feeds.base import FeedItem
+from memory2.hyde_enhancer import HyDEEnhancer
 from memory2.injection_planner import (
     retrieve_history_items,
     retrieve_procedure_items,
 )
 from proactive.components import (
     build_proactive_memory_query,
+    build_proactive_preference_hyde_prompt,
 )
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
@@ -184,12 +187,18 @@ class DefaultMemoryRetrievalPort:
         item_id_fn: Callable[[FeedItem], str],
         trace_writer: Callable[[dict[str, Any]], None] | None = None,
         observe_writer: Any | None = None,
+        light_provider: "LLMProvider | None" = None,
+        light_model: str = "",
     ) -> None:
         self._cfg = cfg
         self._memory = memory
         self._item_id = item_id_fn
         self._trace_writer = trace_writer
         self._observe_writer = observe_writer
+        self._preference_hyde = self._build_preference_hyde_enhancer(
+            light_provider=light_provider,
+            light_model=light_model,
+        )
 
     async def retrieve_proactive_context(
         self,
@@ -401,31 +410,93 @@ class DefaultMemoryRetrievalPort:
         selected_items = unique_items[:max_sources]
         if not selected_items:
             return [], []
-        # 2. 再并发跑多路偏好检索，扩大命中 profile/preference 两类记忆。
-        queries = [
-            (
-                f"用户对 {item.source_name or item.source_type or '该来源'} 的偏好和态度；"
-                f"相关话题：{re.sub(r'\\s+', ' ', (item.title or '').strip())[:80]}"
-            )
-            for item in selected_items
-        ]
+        # 2. 并发跑逐条偏好检索；每条先 raw，再按需追加 HyDE。
         tasks = [
-            self._memory.retrieve_related(
-                query,
-                memory_types=["preference", "profile"],
-                top_k=top_k_per_source,
-            )
-            for query in queries
+            self._retrieve_preference_hits_for_item(item, top_k_per_source)
+            for item in selected_items
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         # 3. 最后合并去重，单路异常按 fail-open 忽略。
         merged: list[dict] = []
+        queries: list[str] = []
         for result in results:
             if isinstance(result, Exception):
                 logger.warning("[proactive.memory] preference 分路检索失败: %s", result)
                 continue
-            merged.extend(result or [])
+            hit_items, used_queries = result
+            merged.extend(hit_items or [])
+            queries.extend(used_queries or [])
         return _merge_memory_items(merged), queries
+
+    def _build_preference_hyde_enhancer(
+        self,
+        *,
+        light_provider: "LLMProvider | None",
+        light_model: str,
+    ) -> HyDEEnhancer | None:
+        if (
+            not getattr(self._cfg, "preference_hyde_enabled", False)
+            or light_provider is None
+            or not light_model
+        ):
+            return None
+        return HyDEEnhancer(
+            light_provider=light_provider,
+            light_model=light_model,
+            timeout_s=max(
+                0.2,
+                float(getattr(self._cfg, "preference_hyde_timeout_ms", 2000)) / 1000.0,
+            ),
+            prompt_builder=build_proactive_preference_hyde_prompt,
+        )
+
+    async def _retrieve_preference_hits_for_item(
+        self,
+        item: FeedItem,
+        top_k_per_source: int,
+    ) -> tuple[list[dict], list[str]]:
+        # 1. 先跑原始偏好 query，保持现有命中路径可用。
+        query = self._build_preference_query_for_item(item)
+        if self._preference_hyde is None:
+            hits = await self._memory.retrieve_related(
+                query,
+                memory_types=["preference", "profile"],
+                top_k=top_k_per_source,
+            )
+            return hits or [], [query]
+        # 2. 再复用 HyDEEnhancer 生成偏好风格假想记忆，并追加第二路检索。
+        result = await self._preference_hyde.augment(
+            raw_query=query,
+            context=self._build_preference_hyde_context(item),
+            retrieve_fn=self._memory.retrieve_related,
+            top_k=top_k_per_source,
+            memory_types=["preference", "profile"],
+        )
+        # 3. 最后返回合并结果，并把 raw/hyde 两路 query 都带回 trace。
+        queries = [query]
+        if result.hypothesis:
+            queries.append(result.hypothesis)
+        return result.items, queries
+
+    @staticmethod
+    def _build_preference_query_for_item(item: FeedItem) -> str:
+        source = item.source_name or item.source_type or "该来源"
+        title = re.sub(r"\s+", " ", (item.title or "").strip())[:80]
+        return f"用户对 {source} 的偏好和态度；相关话题：{title}"
+
+    @staticmethod
+    def _build_preference_hyde_context(item: FeedItem) -> str:
+        lines: list[str] = []
+        title = re.sub(r"\s+", " ", (item.title or "").strip())
+        source = (item.source_name or item.source_type or "").strip()
+        content = re.sub(r"\s+", " ", (item.content or "").strip())[:160]
+        if title:
+            lines.append(f"候选内容：{title}")
+        if source:
+            lines.append(f"来源：{source}")
+        if content and content != title:
+            lines.append(f"摘要：{content}")
+        return "\n".join(lines)
 
     @staticmethod
     def _unique_items_by_topic(items: list[FeedItem]) -> list[FeedItem]:

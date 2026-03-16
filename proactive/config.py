@@ -104,6 +104,8 @@ class ProactiveConfig:
     preference_top_k: int = 4
     preference_per_source_top_k: int = 2
     preference_max_sources: int = 5
+    preference_hyde_enabled: bool = False
+    preference_hyde_timeout_ms: int = 2000
     judge_weight_urgency: float = 0.15
     judge_weight_balance: float = 0.10
     judge_weight_dynamics: float = 0.10

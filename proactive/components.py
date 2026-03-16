@@ -80,6 +80,25 @@ def build_proactive_preference_query(
     return "\n".join(lines)
 
 
+def build_proactive_preference_hyde_prompt(query: str, context: str = "") -> str:
+    """为 preference 检索生成更像真实偏好记忆的 HyDE prompt。"""
+    context_section = f"\n候选上下文：\n{context}\n" if context else ""
+    return (
+        "你是个人助手的偏好记忆系统。根据当前候选内容与偏好检索问题，生成一条"
+        "如果这类长期偏好已经存入记忆库时会长什么样的假想偏好记忆条目。\n"
+        f"{context_section}"
+        "规则：\n"
+        "- 输出风格贴近 preference 记忆 summary：使用“用户明确... / 用户不喜欢... / 主动消息...”这类第三人称陈述\n"
+        "- 优先生成最可能命中长期偏好的那一条记忆；如果候选更像用户会反感、过滤、排斥或不想被推送的内容，就生成负向偏好记忆，而不是勉强生成正向兴趣\n"
+        "- 聚焦长期偏好、反感、过滤倾向或关注方向，不要总结新闻事实本身\n"
+        "- 特别注意用户对平台、设备生态、题材、内容来源的长期厌恶或排斥，这类负向偏好和正向关注同样重要\n"
+        "- 不要提问，不要解释，不要输出多条\n"
+        "- 只输出一条简洁中文文本\n\n"
+        f"偏好检索问题：{query}\n"
+        "假想偏好记忆条目："
+    )
+
+
 def build_proactive_memory_query(
     *,
     items: list[FeedItem],
