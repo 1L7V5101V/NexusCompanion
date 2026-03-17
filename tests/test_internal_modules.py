@@ -18,6 +18,7 @@ from agent.looping.consolidation import (
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
+from memory2.profile_extractor import ProfileFactExtractor
 from memory2.post_response_worker import PostResponseMemoryWorker
 from proactive.fitbit_sleep import (
     FitbitSleepProvider,
@@ -257,6 +258,69 @@ async def test_post_response_worker_fallback_and_preference_helpers():
         set(),
     )
     assert len(items) == 1
+
+
+@pytest.mark.asyncio
+async def test_consolidation_profile_extractor_skips_memory_test_question():
+    class _ProfileClient:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def chat(self, *, messages, **kwargs):
+            prompt = str(messages[0]["content"])
+            self.prompts.append(prompt)
+            assert "你还记得我什么时候开始戴fitbit手环的吗" in prompt
+            assert "记忆测试句都不算事实披露" in prompt
+            return _Resp("<facts></facts>")
+
+    harness = _ConsolidationHarness(
+        json.dumps(
+            {
+                "history_entries": [
+                    "[2026-03-17 15:07] 用户询问助手是否记得其开始佩戴 Fitbit 手环的具体时间。"
+                ],
+                "pending_items": [],
+            }
+        )
+    )
+    profile_client = _ProfileClient()
+    harness._profile_extractor = ProfileFactExtractor(llm_client=profile_client)
+    harness._memory_port.save_item = AsyncMock(return_value="new:profile-1")
+    session = SimpleNamespace(
+        key="telegram:fitbit",
+        last_consolidated=0,
+        messages=[
+            {
+                "role": "assistant",
+                "content": "嗯，刚看到个挺有意思的消息。",
+                "timestamp": "2026-03-17T15:05:00",
+                "proactive": True,
+            },
+            {
+                "role": "assistant",
+                "content": "嗯，刚看到个挺硬核的更新。",
+                "timestamp": "2026-03-17T15:06:00",
+                "proactive": True,
+            },
+            {
+                "role": "user",
+                "content": "你还记得我什么时候开始戴fitbit手环的吗",
+                "timestamp": "2026-03-17T15:07:00",
+            },
+        ],
+        _channel="telegram",
+        _chat_id="fitbit",
+    )
+
+    await harness._consolidate_memory(
+        session,
+        archive_all=True,
+        await_vector_store=True,
+    )
+
+    harness._memory_port.save_from_consolidation.assert_awaited_once()
+    harness._memory_port.save_item.assert_not_awaited()
+    assert profile_client.prompts
 
 @pytest.mark.asyncio
 async def test_fitbit_sleep_provider_and_bootstrap_paths(

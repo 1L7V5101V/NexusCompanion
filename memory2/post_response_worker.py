@@ -58,6 +58,7 @@ class PostResponseMemoryWorker:
         self._profile_extractor = profile_extractor
         self._profile_supersede_enabled = profile_supersede_enabled
         self._observe_writer = observe_writer
+        self._current_run_session_key = ""
 
     async def run(
         self,
@@ -69,9 +70,23 @@ class PostResponseMemoryWorker:
     ) -> None:
         self._current_run_session_key = session_key
         token_budget = self.TOKEN_BUDGET_PER_RUN
+        logger.debug(
+            "post_response_memorize start session=%s source_ref=%s user_len=%d resp_len=%d tool_steps=%d",
+            session_key or "-",
+            source_ref or "-",
+            len((user_msg or "").strip()),
+            len((agent_response or "").strip()),
+            len(tool_chain or []),
+        )
         try:
             already_memorized, protected_ids = self._collect_explicit_memorized(
                 tool_chain
+            )
+            logger.debug(
+                "post_response_memorize explicit_memories session=%s summaries=%d protected_ids=%d",
+                session_key or "-",
+                len(already_memorized),
+                len(protected_ids),
             )
 
             # 先处理"旧的有误/需要遗忘"的显式废弃信号，无需新规则即可 supersede
@@ -88,10 +103,22 @@ class PostResponseMemoryWorker:
                 already_memorized,
                 token_budget,
             )
+            logger.debug(
+                "post_response_memorize implicit_extracted session=%s count=%d remain_budget=%d",
+                session_key or "-",
+                len(new_items),
+                token_budget,
+            )
             new_items = await self._dedupe_against_explicit(
                 new_items,
                 already_memorized,
                 protected_ids,
+            )
+            logger.debug(
+                "post_response_memorize implicit_after_dedupe session=%s count=%d remain_budget=%d",
+                session_key or "-",
+                len(new_items),
+                token_budget,
             )
             for item in new_items:
                 token_budget = await self._save_with_supersede(
@@ -107,6 +134,12 @@ class PostResponseMemoryWorker:
                     source_ref,
                     token_budget,
                 )
+            logger.debug(
+                "post_response_memorize done session=%s source_ref=%s remain_budget=%d",
+                session_key or "-",
+                source_ref or "-",
+                token_budget,
+            )
         except Exception as e:
             logger.warning(f"post_response_memorize run failed: {e}")
 
@@ -122,6 +155,13 @@ class PostResponseMemoryWorker:
         text = re.sub(r"\s+", "", text)
         text = re.sub(r"[，。！？、；：,.!?;:\-—_`'\"()\[\]{}<>《》]", "", text)
         return text
+
+    @staticmethod
+    def _preview_text(text: str, limit: int = 80) -> str:
+        compact = re.sub(r"\s+", " ", str(text or "").strip())
+        if len(compact) <= limit:
+            return compact
+        return compact[:limit] + "..."
 
     async def _dedupe_against_explicit(
         self,
@@ -191,6 +231,13 @@ class PostResponseMemoryWorker:
         topics, token_budget = await self._extract_invalidation_topics(
             user_msg,
             token_budget,
+        )
+        logger.debug(
+            "post_response invalidation_topics session=%s count=%d remain_budget=%d topics=%s",
+            self._current_run_session_key or "-",
+            len(topics),
+            token_budget,
+            [self._preview_text(topic, 40) for topic in topics[:3]],
         )
         if not topics:
             return token_budget
@@ -460,11 +507,22 @@ ASSISTANT: {agent_response}
                 text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json_repair.loads(text)
             if isinstance(result, list):
-                return [
+                items = [
                     self._normalize_extracted_item(r)
                     for r in result
                     if isinstance(r, dict) and r.get("summary")
-                ], token_budget
+                ]
+                log_fn = logger.info if items else logger.debug
+                log_fn(
+                    "post_response_memorize extract_result session=%s count=%d items=%s",
+                    self._current_run_session_key or "-",
+                    len(items),
+                    [
+                        f"{str(item.get('memory_type', 'procedure'))}:{self._preview_text(item.get('summary', ''), 50)}"
+                        for item in items[:3]
+                    ],
+                )
+                return items, token_budget
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
         return [], token_budget
@@ -612,7 +670,14 @@ ASSISTANT: {agent_response}
                 extra=extra,
                 source_ref=source_ref,
             )
-            logger.debug(f"post_response_memorize saved ({mtype}): {result}")
+            logger.info(
+                "post_response_memorize saved session=%s source_ref=%s type=%s result=%s summary=%s",
+                self._current_run_session_key or "-",
+                source_ref or "-",
+                mtype,
+                result,
+                self._preview_text(summary, 80),
+            )
             if self._observe_writer is not None and self._current_run_session_key:
                 try:
                     from core.observe.events import MemoryWriteTrace
@@ -648,12 +713,28 @@ ASSISTANT: {agent_response}
         try:
             # 2. 再加载少量近期 profile 摘要，供 extractor 做轻量查重提示。
             existing_profile = await self._load_existing_profile_context(user_msg)
+            logger.debug(
+                "post_response profile_context session=%s existing_count=%d",
+                self._current_run_session_key or "-",
+                len([line for line in existing_profile.splitlines() if line.strip()]),
+            )
 
             # 3. 最后提取并逐条写入 profile facts。
             facts = await self._profile_extractor.extract_from_exchange(
                 user_msg,
                 agent_response,
                 existing_profile=existing_profile,
+            )
+            log_fn = logger.info if facts else logger.debug
+            log_fn(
+                "post_response profile_extracted session=%s count=%d facts=%s remain_budget=%d",
+                self._current_run_session_key or "-",
+                len(facts),
+                [
+                    f"{fact.category}:{self._preview_text(fact.summary, 50)}"
+                    for fact in facts[:3]
+                ],
+                token_budget,
             )
             for fact in facts:
                 token_budget = await self._save_profile_with_supersede(
@@ -702,6 +783,15 @@ ASSISTANT: {agent_response}
                 source_ref=source_ref,
                 happened_at=fact.happened_at,
             )
+            logger.info(
+                "post_response profile_saved session=%s source_ref=%s category=%s result=%s summary=%s happened_at=%s",
+                self._current_run_session_key or "-",
+                source_ref or "-",
+                fact.category,
+                saved_result,
+                self._preview_text(fact.summary, 80),
+                fact.happened_at or "-",
+            )
         except Exception as e:
             logger.warning("post_response profile save failed: %s", e)
             return token_budget
@@ -747,6 +837,13 @@ ASSISTANT: {agent_response}
             logger.warning("profile supersede check failed: %s", e)
             return token_budget
         if supersede_ids:
+            logger.info(
+                "post_response profile_supersede session=%s saved_id=%s supersede_ids=%s summary=%s",
+                self._current_run_session_key or "-",
+                saved_id or "-",
+                supersede_ids,
+                self._preview_text(fact.summary, 80),
+            )
             self._memorizer.supersede_batch(supersede_ids)
         return token_budget
 
