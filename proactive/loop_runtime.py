@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.components import (
-    ProactiveItemFilter,
     ProactiveJudge,
     ProactiveMessageDeduper,
     ProactiveSender,
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
     from proactive.config import ProactiveConfig
     from proactive.presence import PresenceStore
-    from proactive.schedule import ScheduleStore
     from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -81,17 +79,6 @@ class ProactiveLoopRuntimeMixin:
         )
         return provider
 
-    def _build_item_filter(self) -> ProactiveItemFilter:
-        return ProactiveItemFilter(
-            cfg=self._cfg,
-            state=self._state,
-            source_key_fn=_source_key,
-            item_id_fn=_item_id,
-            semantic_text_fn=_semantic_text,
-            build_tfidf_vectors_fn=_build_tfidf_vectors,
-            cosine_fn=_cosine_sparse,
-        )
-
     def _build_sender(self) -> ProactiveSender:
         return ProactiveSender(
             cfg=self._cfg,
@@ -126,10 +113,8 @@ class ProactiveLoopRuntimeMixin:
             cfg=self._cfg,
             sessions=self._sessions,
             state=self._state,
-            item_filter=self._item_filter,
             memory=self._memory,
             presence=self._presence,
-            schedule=self._schedule,
             rng=self._rng,
             fitbit=fitbit_provider,
         )
@@ -212,7 +197,6 @@ class ProactiveLoopRuntimeMixin:
 
     def _init_runtime_components(self) -> None:
         self._log_runtime_config()
-        self._item_filter = self._build_item_filter()
         self._sender = self._build_sender()
         self._judge = self._build_judge()
         self._anyaction = self._build_anyaction_gate()

@@ -10,7 +10,6 @@ from agent.tools.message_push import MessagePushTool
 from proactive.loop import ProactiveLoop
 from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from proactive.presence import PresenceStore
-from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -36,7 +35,6 @@ def build_proactive_runtime(
         return tasks, None
 
     proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
-    schedule_store = ScheduleStore(workspace / "schedule.json")
     proactive_cfg = config.proactive
     if proactive_cfg.skill_actions_enabled and not proactive_cfg.skill_actions_path:
         proactive_cfg.skill_actions_path = str(workspace / "skill_actions.json")
@@ -51,7 +49,6 @@ def build_proactive_runtime(
         state_store=proactive_state,
         memory_store=memory_store,
         presence=presence,
-        schedule=schedule_store,
         light_provider=light_provider,
         light_model=config.light_model,
         passive_busy_fn=(

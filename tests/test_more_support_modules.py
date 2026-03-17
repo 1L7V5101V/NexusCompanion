@@ -368,7 +368,6 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     )
     monkeypatch.setattr("bootstrap.proactive.ProactiveLoop", lambda **kwargs: proactive_loop)
     monkeypatch.setattr("bootstrap.proactive.ProactiveStateStore", lambda path: path)
-    monkeypatch.setattr("bootstrap.proactive.ScheduleStore", lambda path: path)
     monkeypatch.setattr(
         "bootstrap.proactive.MemoryOptimizer",
         lambda **kwargs: SimpleNamespace(**kwargs),

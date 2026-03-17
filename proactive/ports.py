@@ -29,7 +29,6 @@ from proactive.components import (
 )
 from proactive.energy import compute_energy, d_recent
 from proactive.presence import PresenceStore
-from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -70,10 +69,6 @@ class SensePort(Protocol):
         now_utc: datetime,
         recent_msg_count: int,
     ) -> tuple[float, dict[str, float]]: ...
-    async def fetch_items(self, limit_per_source: int) -> list[FeedItem]: ...
-    def filter_new_items(
-        self, items: list[FeedItem]
-    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]: ...
     def read_memory_text(self) -> str: ...
     def has_global_memory(self) -> bool: ...
     def last_user_at(self) -> datetime | None: ...
@@ -629,20 +624,16 @@ class DefaultSensePort:
         cfg: Any,
         sessions: SessionManager,
         state: ProactiveStateStore,
-        item_filter: Any,
         memory: "MemoryPort | None",
         presence: PresenceStore | None,
-        schedule: ScheduleStore | None,
         rng: Any,
         fitbit: Any | None = None,
     ) -> None:
         self._cfg = cfg
         self._sessions = sessions
         self._state = state
-        self._item_filter = item_filter
         self._memory = memory
         self._presence = presence
-        self._schedule = schedule
         self._rng = rng
         self._fitbit = fitbit
 
@@ -856,12 +847,6 @@ class DefaultSensePort:
             return list(reversed(results))
         except Exception:
             return []
-
-    def filter_new_items(
-        self, items: list[FeedItem]
-    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
-        return self._item_filter.filter_new_items(items)
-
 
 class DefaultDecidePort:
     def __init__(

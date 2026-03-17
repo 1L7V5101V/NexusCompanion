@@ -24,7 +24,6 @@ from bus.queue import MessageBus
 from core.common import timekit
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from proactive.loop_trigger import ProactiveLoopTriggerMixin
-from proactive.schedule import ScheduleStore
 
 
 class _DummyTool(Tool):
@@ -398,16 +397,9 @@ async def test_message_bus_covers_flows(
 
 
 @pytest.mark.asyncio
-async def test_schedule_store_loop_trigger_and_main_entry_cover_paths(
+async def test_loop_trigger_and_main_entry_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    store = ScheduleStore(tmp_path / "schedule.json")
-    assert store.load() == {}
-    store.path.write_text('{"a":1}', encoding="utf-8")
-    assert store.load()["a"] == 1
-    store.path.write_text("{bad", encoding="utf-8")
-    assert store.load() == {}
-
     class _Action:
         def __init__(self, enabled: bool = True) -> None:
             self.id = "a1"

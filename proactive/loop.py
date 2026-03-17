@@ -34,7 +34,6 @@ from proactive.loop_trigger import ProactiveLoopTriggerMixin
 from proactive.loop_traces import ProactiveLoopTraceMixin
 from proactive.memory_sampler import sample_memory_chunks
 from proactive.presence import PresenceStore
-from proactive.schedule import ScheduleStore
 from proactive.state import ProactiveStateStore
 from session.manager import SessionManager
 
@@ -59,7 +58,6 @@ class ProactiveLoop(
         state_path: Path | None = None,
         memory_store: "MemoryPort | None" = None,
         presence: PresenceStore | None = None,
-        schedule: ScheduleStore | None = None,
         rng: _random_module.Random | None = None,
         light_provider: LLMProvider | None = None,
         light_model: str = "",
@@ -75,7 +73,6 @@ class ProactiveLoop(
         self._state = self._build_state_store(state_store, state_path)
         self._memory = memory_store
         self._presence = presence
-        self._schedule = schedule
         self._rng = rng
         self._light_provider = light_provider or provider
         self._light_model = light_model or (config.model or model)
@@ -148,10 +145,6 @@ class ProactiveLoop(
     def _target_session_key(self) -> str:
         return self._sense.target_session_key()
 
-    def _quiet_hours(self) -> tuple[int, int, float]:
-        """从 schedule.json 读取静默时段配置，缺失时回退 cfg 默认值。"""
-        return self._sense.quiet_hours()
-
     def stop(self) -> None:
         self._running = False
 
@@ -197,11 +190,6 @@ class ProactiveLoop(
         返回 base_score 供调度器调整间隔；None 表示 gate 按能量自算（不强制最长间隔）。
         """
         return await self._engine.tick()
-
-    def _filter_new_items(
-        self, items: list[FeedItem]
-    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
-        return self._sense.filter_new_items(items)
 
     def _collect_recent(self) -> list[dict]:
         """取目标会话最近 N 条消息（只取 user/assistant 文本）。"""
