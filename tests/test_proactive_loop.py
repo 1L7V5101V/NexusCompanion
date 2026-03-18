@@ -16,9 +16,9 @@ from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
 from proactive.tick import (
     DecisionContext,
-    GateResult,
+    EvaluateResult,
+    GateSenseResult,
     ProactiveEngine,
-    _STOP_NONE,
     _build_recent_proactive_context_signal,
 )
 from proactive.item_id import compute_item_id
@@ -218,7 +218,7 @@ async def test_engine_request_light_text_uses_expected_chat_kwargs():
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_gate_returns_structured_result_for_scheduler_reject():
+async def test_engine_gate_and_sense_returns_structured_result_for_scheduler_reject():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         dedupe_seen_ttl_hours=24,
@@ -232,24 +232,43 @@ async def test_engine_stage_gate_returns_structured_result_for_scheduler_reject(
         should_act=lambda **kwargs: (False, {"reason": "min_interval"})
     )
 
-    result = await engine._stage_gate(DecisionContext())
+    result = await engine._gate_and_sense(DecisionContext())
 
     assert result.proceed is False
-    assert result.stop_result is _STOP_NONE
+    assert result.return_score is None
     assert result.reason_code == "scheduler_reject"
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_gate_bypasses_quota_when_alert_exists():
+async def test_engine_gate_and_sense_bypasses_quota_when_alert_exists():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         dedupe_seen_ttl_hours=24,
         delivery_dedupe_hours=24,
         semantic_dedupe_window_hours=24,
         anyaction_enabled=True,
+        score_recent_scale=10,
+        score_weight_energy=1.0,
+        score_weight_recent=1.0,
+        score_pre_threshold=0.0,
     )
     engine._state = SimpleNamespace(cleanup=MagicMock())
-    engine._sense = SimpleNamespace(last_user_at=lambda: None)
+    engine._sense = SimpleNamespace(
+        last_user_at=lambda: None,
+        refresh_sleep_context=lambda: False,
+        sleep_context=lambda: None,
+        compute_energy=lambda: 0.4,
+        collect_recent=lambda: [],
+        compute_interruptibility=lambda **kwargs: (
+            1.0,
+            {
+                "f_reply": 1.0,
+                "f_activity": 1.0,
+                "f_fatigue": 1.0,
+                "random_delta": 0.0,
+            },
+        ),
+    )
     engine._anyaction = SimpleNamespace(
         should_act=lambda **kwargs: (False, {"reason": "quota_exhausted"})
     )
@@ -267,41 +286,47 @@ async def test_engine_stage_gate_bypasses_quota_when_alert_exists():
     with mock.patch(
         "proactive.mcp_sources.fetch_alert_events", return_value=fake_alert_payload
     ):
-        result = await engine._stage_gate(DecisionContext())
+        result = await engine._gate_and_sense(DecisionContext())
 
     assert result.proceed is True
-    assert result.stop_result is None
-    assert result.reason_code == "pass"
+    assert result.return_score is None
+    assert result.reason_code == "continue"
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_pre_score_returns_structured_below_threshold_result():
+async def test_engine_gate_and_sense_returns_structured_below_threshold_result():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
+        dedupe_seen_ttl_hours=24,
+        delivery_dedupe_hours=24,
+        semantic_dedupe_window_hours=24,
+        anyaction_enabled=False,
+        score_recent_scale=10,
         score_weight_energy=1.0,
         score_weight_recent=1.0,
         score_pre_threshold=0.5,
     )
+    engine._state = SimpleNamespace(cleanup=MagicMock())
+    engine._sense = SimpleNamespace(
+        refresh_sleep_context=lambda: False,
+        sleep_context=lambda: None,
+        compute_energy=lambda: 0.2,
+        collect_recent=lambda: [],
+        compute_interruptibility=lambda **kwargs: (
+            1.0,
+            {
+                "f_reply": 1.0,
+                "f_activity": 1.0,
+                "f_fatigue": 1.0,
+                "random_delta": 0.0,
+            },
+        ),
+    )
     engine._try_skill_action = AsyncMock()
     ctx = DecisionContext()
-    sense = ctx.ensure_sense()
     score = ctx.ensure_score()
-    sense.de = 0.1
-    sense.dr = 0.1
-    sense.interrupt_factor = 1.0
-    sense.interruptibility = 1.0
-    sense.interrupt_detail = {
-        "f_reply": 1.0,
-        "f_activity": 1.0,
-        "f_fatigue": 1.0,
-        "random_delta": 0.0,
-    }
-    sense.sleep_mod = 1.0
-    sense.energy = 0.2
-    sense.recent = []
-    sense.health_events = []
 
-    result = await engine._stage_pre_score(ctx)
+    result = await engine._gate_and_sense(ctx)
 
     assert result.proceed is False
     assert result.return_score == score.pre_score
@@ -310,7 +335,7 @@ async def test_engine_stage_pre_score_returns_structured_below_threshold_result(
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_sense_returns_structured_snapshot():
+async def test_engine_gate_and_sense_returns_structured_snapshot():
     sleep_ctx = SimpleNamespace(
         sleep_modifier=0.5,
         state="sleeping",
@@ -319,7 +344,17 @@ async def test_engine_stage_sense_returns_structured_snapshot():
         data_lag_min=5,
     )
     engine = ProactiveEngine.__new__(ProactiveEngine)
-    engine._cfg = SimpleNamespace(score_recent_scale=10)
+    engine._cfg = SimpleNamespace(
+        dedupe_seen_ttl_hours=24,
+        delivery_dedupe_hours=24,
+        semantic_dedupe_window_hours=24,
+        anyaction_enabled=False,
+        score_recent_scale=10,
+        score_weight_energy=1.0,
+        score_weight_recent=1.0,
+        score_pre_threshold=0.0,
+    )
+    engine._state = SimpleNamespace(cleanup=MagicMock())
     engine._sense = SimpleNamespace(
         refresh_sleep_context=lambda: True,
         sleep_context=lambda: sleep_ctx,
@@ -344,7 +379,7 @@ async def test_engine_stage_sense_returns_structured_snapshot():
     }]
     import unittest.mock as mock
     with mock.patch("proactive.mcp_sources.fetch_alert_events", return_value=fake_mcp_payload):
-        result = engine._stage_sense(ctx)
+        result = await engine._gate_and_sense(ctx)
 
     assert result.sleep_state == "sleeping"
     assert result.sleep_available is True
@@ -356,7 +391,7 @@ async def test_engine_stage_sense_returns_structured_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_score_no_candidates_falls_through_to_draw_threshold():
+async def test_engine_evaluate_no_candidates_falls_through_to_draw_threshold():
     # 无候选内容时不再硬退出，继续走 draw_score 门槛判断。
     # de=0.2 dr=0.1 D_content=0 → base_score 远低于 0.6 阈值，应走 draw_score_below_threshold。
     engine = ProactiveEngine.__new__(ProactiveEngine)
@@ -368,7 +403,10 @@ async def test_engine_stage_score_no_candidates_falls_through_to_draw_threshold(
         score_llm_threshold=0.6,
     )
     engine._rng = None
-    engine._sense = SimpleNamespace(target_session_key=lambda: "")
+    engine._sense = SimpleNamespace(
+        target_session_key=lambda: "",
+        has_global_memory=lambda: False,
+    )
     engine._presence = None
     engine._state = SimpleNamespace()
     engine._try_skill_action = AsyncMock()
@@ -386,7 +424,9 @@ async def test_engine_stage_score_no_candidates_falls_through_to_draw_threshold(
     sense.energy = 0.3
     fetch.has_memory = False
 
-    result = await engine._stage_score(ctx)
+    engine._load_content_snapshot = AsyncMock(return_value=([], [], []))
+
+    result = await engine._evaluate(ctx)
 
     assert result.proceed is False
     assert result.reason_code == "draw_score_below_threshold"
@@ -396,7 +436,7 @@ async def test_engine_stage_score_no_candidates_falls_through_to_draw_threshold(
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
+async def test_engine_evaluate_draw_threshold_still_triggers_skill_action():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         score_content_halfsat=3.0,
@@ -406,7 +446,10 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
         score_llm_threshold=0.95,
     )
     engine._rng = None
-    engine._sense = SimpleNamespace(target_session_key=lambda: "")
+    engine._sense = SimpleNamespace(
+        target_session_key=lambda: "",
+        has_global_memory=lambda: False,
+    )
     engine._presence = None
     engine._state = SimpleNamespace()
     engine._try_skill_action = AsyncMock()
@@ -435,7 +478,11 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
     sense.energy = 0.3
     fetch.has_memory = False
 
-    result = await engine._stage_score(ctx)
+    engine._load_content_snapshot = AsyncMock(
+        return_value=(list(fetch.new_items), [("rss:test", "test-a")], [])
+    )
+
+    result = await engine._evaluate(ctx)
 
     assert result.proceed is False
     assert result.reason_code == "draw_score_below_threshold"
@@ -443,7 +490,7 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_fetch_filter_returns_structured_snapshot():
+async def test_engine_evaluate_returns_structured_snapshot():
     payloads = [
         {
             "event_id": "evt-1",
@@ -461,13 +508,29 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     engine._cfg = SimpleNamespace(
         interest_filter=SimpleNamespace(enabled=False),
         items_per_source=3,
+        score_content_halfsat=3.0,
+        score_weight_energy=1.0,
+        score_weight_content=1.0,
+        score_weight_recent=1.0,
+        score_llm_threshold=0.6,
     )
     engine._sense = SimpleNamespace(
         has_global_memory=lambda: True,
+        target_session_key=lambda: "",
     )
+    engine._presence = None
+    engine._rng = None
+    engine._state = SimpleNamespace()
+    engine._try_skill_action = AsyncMock()
+    ctx = DecisionContext()
+    sense = ctx.ensure_sense()
+    sense.de = 0.2
+    sense.dr = 0.1
+    sense.interrupt_factor = 1.0
+    sense.interruptibility = 1.0
+    sense.health_events = []
     with mock.patch("proactive.mcp_sources.fetch_content_events", return_value=payloads):
-        ctx = DecisionContext()
-        result = await engine._stage_fetch_filter(ctx)
+        result = await engine._evaluate(ctx)
 
     assert result.total_items == 1
     assert result.discovered_count == 1
@@ -484,7 +547,7 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_engine_stage_fetch_filter_skips_rejection_cooled_events(tmp_path):
+async def test_engine_evaluate_skips_rejection_cooled_events(tmp_path):
     from proactive.state import ProactiveStateStore
 
     payloads = [
@@ -503,21 +566,36 @@ async def test_engine_stage_fetch_filter_skips_rejection_cooled_events(tmp_path)
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         llm_reject_cooldown_hours=12,
+        score_content_halfsat=3.0,
+        score_weight_energy=1.0,
+        score_weight_content=1.0,
+        score_weight_recent=1.0,
+        score_llm_threshold=0.6,
     )
     state = ProactiveStateStore(tmp_path / "state.json")
     engine._state = state
     engine._sense = SimpleNamespace(
         has_global_memory=lambda: False,
+        target_session_key=lambda: "",
     )
+    engine._presence = None
+    engine._rng = None
+    engine._try_skill_action = AsyncMock()
     engine._decide = SimpleNamespace()
     ctx = DecisionContext()
     ctx.state.now_utc = datetime.now(timezone.utc)
+    sense = ctx.ensure_sense()
+    sense.de = 0.2
+    sense.dr = 0.1
+    sense.interrupt_factor = 1.0
+    sense.interruptibility = 1.0
+    sense.health_events = []
 
     item_id = compute_item_id(GenericContentEvent.from_mcp_payload(payloads[0]))
     state.mark_rejection_cooldown([("mcp:feed:evt-1", item_id)], hours=12)
 
     with mock.patch("proactive.mcp_sources.fetch_content_events", return_value=payloads):
-        result = await engine._stage_fetch_filter(ctx)
+        result = await engine._evaluate(ctx)
 
     assert result.total_items == 0
     assert result.selected_count == 0
@@ -579,37 +657,90 @@ def test_populate_decision_signals_keeps_health_subset_by_source_type():
     assert len(act.high_events) == 2
 
 
-def test_engine_stage_trace_writer_emits_strategy_envelope():
+def test_engine_trace_writer_emits_strategy_envelope():
     emitted: list[dict] = []
     engine = ProactiveEngine.__new__(ProactiveEngine)
-    engine._stage_trace_writer = emitted.append
+    engine._trace_writer = emitted.append
 
-    engine._trace_stage_result(
+    engine._trace(
         DecisionContext(),
-        stage="gate",
-        result=GateResult(proceed=True, stop_result=None, reason_code="pass"),
+        stage="gate_and_sense",
+        result=GateSenseResult(
+            proceed=True,
+            return_score=None,
+            reason_code="continue",
+            sleep_state="awake",
+            sleep_available=True,
+            health_event_count=0,
+            energy=0.5,
+            recent_count=1,
+            interruptibility=0.8,
+            interrupt_factor=0.92,
+            sleep_mod=1.0,
+        ),
     )
 
     assert emitted[0]["trace_type"] == "proactive_stage"
     assert emitted[0]["subject"]["kind"] == "global"
-    assert emitted[0]["payload"]["stage"] == "gate"
-    assert emitted[0]["payload"]["result"]["reason_code"] == "pass"
+    assert emitted[0]["payload"]["stage"] == "gate_and_sense"
+    assert emitted[0]["payload"]["result"]["reason_code"] == "continue"
 
 
-def test_engine_stage_trace_writer_serializes_stop_none_sentinel():
+def test_engine_trace_writer_serializes_none_return_score():
     emitted: list[dict] = []
     engine = ProactiveEngine.__new__(ProactiveEngine)
-    engine._stage_trace_writer = emitted.append
+    engine._trace_writer = emitted.append
 
-    engine._trace_stage_result(
+    engine._trace(
         DecisionContext(),
-        stage="gate",
-        result=GateResult(
-            proceed=False, stop_result=_STOP_NONE, reason_code="scheduler_reject"
+        stage="evaluate",
+        result=EvaluateResult(
+            proceed=False,
+            return_score=None,
+            reason_code="draw_score_force_reflect",
+            base_score=0.2,
+            draw_score=0.1,
+            force_reflect=True,
+            total_items=0,
+            discovered_count=0,
+            selected_count=0,
+            semantic_duplicate_count=0,
+            has_memory=False,
         ),
     )
 
-    assert isinstance(emitted[0]["payload"]["result"]["stop_result"], str)
+    assert emitted[0]["payload"]["result"]["return_score"] is None
+
+
+def test_emit_observe_decision_includes_sent_message_for_send_stage():
+    emitted = []
+
+    class _Writer:
+        def emit(self, trace):
+            emitted.append(trace)
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._observe_writer = _Writer()
+    engine._cfg = SimpleNamespace(threshold=0.7)
+    ctx = DecisionContext()
+    ctx.state.tick_id = "tick-1"
+    ctx.state.session_key = "telegram:1"
+    decide = ctx.ensure_decide()
+    decide.decision_message = "实际发出的正文"
+    decide.should_send = True
+
+    engine._emit_observe_decision(
+        ctx,
+        stage="send",
+        reason_code="sent",
+        should_send=True,
+        action="chat",
+        delivery_attempted=True,
+        delivery_result="sent",
+    )
+
+    assert emitted[0].stage == "send"
+    assert emitted[0].sent_message == "实际发出的正文"
 
 
 @pytest.mark.asyncio
@@ -1520,12 +1651,14 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
     from proactive.tick import ProactiveEngine, DecisionContext
-    from proactive.components import ProactiveJudgeResult
+    from proactive.judge import ProactiveJudgeResult
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         compose_no_content_token="<no_content/>",
         llm_reject_cooldown_hours=12,
+        score_llm_threshold=0.0,
+        threshold=0.7,
     )
     engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
     async def _compose_for_judge(**kw):
@@ -1555,6 +1688,12 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     score = ctx.ensure_score()
     ctx.state.now_utc = datetime.now(timezone.utc)
     sense.recent = []
+    sense.interruptibility = 1.0
+    sense.interrupt_detail = {
+        "f_reply": 1.0,
+        "f_activity": 1.0,
+        "f_fatigue": 1.0,
+    }
     score.sent_24h = 0
     fetch.new_items = [
         _build_event(event_id="n1", source_name="HLTV", title="Niko semifinal")
@@ -1564,9 +1703,10 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     # 1. 先走 compose，再走 judge，验证现行主链路会写 cooldown。
     compose = await engine._compose(ctx)
     assert compose.proceed is True
-    guard = await engine._judge_and_guard(ctx)
-    assert guard.should_send is False
-    assert guard.reason_code == "judge_reject"
+    result = await engine._judge_and_send(ctx)
+    assert result == score.base_score
+    assert ctx.ensure_decide().should_send is False
+    assert ctx.ensure_decide().judge_vetoed_by == "llm_dim"
 
     # 2. LLM 拒绝应写入本轮真正进入 compose 的条目，而不是原始候选首条。
     engine._state.mark_rejection_cooldown.assert_called_once_with(
@@ -1591,6 +1731,8 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
     engine._cfg = SimpleNamespace(
         compose_no_content_token="<no_content/>",
         llm_reject_cooldown_hours=12,
+        score_llm_threshold=0.0,
+        threshold=0.7,
     )
     engine._state = SimpleNamespace(mark_rejection_cooldown=lambda *a, **kw: None)
     engine._decide = SimpleNamespace(
@@ -1609,6 +1751,12 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
         {"role": "user", "content": "我最近有点累"},
         {"role": "assistant", "content": "再一条旧资讯"},
     ]
+    sense.interruptibility = 1.0
+    sense.interrupt_detail = {
+        "f_reply": 1.0,
+        "f_activity": 1.0,
+        "f_fatigue": 1.0,
+    }
     score.sent_24h = 0
 
     compose = await engine._compose(ctx)

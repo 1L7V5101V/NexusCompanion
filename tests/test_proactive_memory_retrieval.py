@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 
 from proactive.config import ProactiveConfig
-from proactive.components import build_proactive_preference_hyde_prompt
+from proactive.composer import build_proactive_preference_hyde_prompt
 from proactive.event import GenericContentEvent
 from proactive.tick import ProactiveEngine
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
-from proactive.components import build_proactive_memory_query
+from proactive.composer import build_proactive_memory_query
 
 
 def _item() -> GenericContentEvent:

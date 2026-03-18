@@ -184,16 +184,31 @@ def _write_rag(conn, e: RagTrace, ts: str) -> None:
 
 
 def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
-    stage_json_map = {
-        "gate": ("gate_result_json", e.stage_result_json),
-        "sense": ("sense_result_json", e.stage_result_json),
-        "pre_score": ("pre_score_result_json", e.stage_result_json),
-        "fetch_filter": ("fetch_filter_result_json", e.stage_result_json),
-        "score": ("score_result_json", e.stage_result_json),
-        "decide": ("decide_result_json", e.stage_result_json),
-        "act": ("act_result_json", e.stage_result_json),
+    # 1. 保留 stage 列里的新阶段名，同时把 stage_result_json 回填到旧列，兼容历史读侧。
+    stage_json_columns_map = {
+        "gate": {"gate_result_json"},
+        "sense": {"sense_result_json"},
+        "pre_score": {"pre_score_result_json"},
+        "fetch_filter": {"fetch_filter_result_json"},
+        "score": {"score_result_json"},
+        "decide": {"decide_result_json"},
+        "act": {"act_result_json"},
+        "gate_and_sense": {
+            "gate_result_json",
+            "sense_result_json",
+            "pre_score_result_json",
+        },
+        "evaluate": {
+            "fetch_filter_result_json",
+            "score_result_json",
+        },
+        "judge_and_send": {
+            "decide_result_json",
+            "act_result_json",
+        },
     }
-    stage_col, stage_json = stage_json_map.get(e.stage, ("act_result_json", None))
+    stage_json_columns = stage_json_columns_map.get(e.stage, set())
+    stage_json = e.stage_result_json if stage_json_columns else None
     payload = {
         "tick_id": e.tick_id,
         "ts": ts,
@@ -261,17 +276,27 @@ def _write_proactive_decision(conn, e: ProactiveDecisionTrace, ts: str) -> None:
         ),
         "sent_message": e.sent_message,
         "candidates_json": e.candidates_json,
-        "gate_result_json": stage_json if stage_col == "gate_result_json" else None,
-        "sense_result_json": stage_json if stage_col == "sense_result_json" else None,
+        "gate_result_json": (
+            stage_json if "gate_result_json" in stage_json_columns else None
+        ),
+        "sense_result_json": (
+            stage_json if "sense_result_json" in stage_json_columns else None
+        ),
         "pre_score_result_json": (
-            stage_json if stage_col == "pre_score_result_json" else None
+            stage_json if "pre_score_result_json" in stage_json_columns else None
         ),
         "fetch_filter_result_json": (
-            stage_json if stage_col == "fetch_filter_result_json" else None
+            stage_json if "fetch_filter_result_json" in stage_json_columns else None
         ),
-        "score_result_json": stage_json if stage_col == "score_result_json" else None,
-        "decide_result_json": stage_json if stage_col == "decide_result_json" else None,
-        "act_result_json": stage_json if stage_col == "act_result_json" else None,
+        "score_result_json": (
+            stage_json if "score_result_json" in stage_json_columns else None
+        ),
+        "decide_result_json": (
+            stage_json if "decide_result_json" in stage_json_columns else None
+        ),
+        "act_result_json": (
+            stage_json if "act_result_json" in stage_json_columns else None
+        ),
         "decision_signals_json": e.decision_signals_json,
         "error": e.error,
     }

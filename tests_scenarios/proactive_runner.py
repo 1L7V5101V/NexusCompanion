@@ -36,8 +36,6 @@ from proactive.config import ProactiveConfig
 from proactive.decide import DefaultDecidePort
 from proactive.tick import (
     DecisionContext,
-    FetchFilterResult,
-    FetchSnapshot,
     ProactiveEngine,
 )
 from proactive.event import AlertEvent, GenericAlertEvent
@@ -198,10 +196,10 @@ class TestMemoryRetrievalPort:
 
 class TestProactiveEngine(ProactiveEngine):
     """
-    继承自 ProactiveEngine，override _stage_fetch_filter 以注入测试数据。
+    继承自 ProactiveEngine，override _load_content_snapshot 以注入测试数据。
 
     引擎的其余所有阶段（gate、sense、score、decide、act）完全复用真实逻辑。
-    这是唯一需要 override 的地方：真实引擎的 fetch_filter 直接调 MCP 模块，
+    这是唯一需要 override 的地方：真实引擎的 evaluate 会直接调 MCP 模块，
     无法通过 port 接口注入，只能在子类中替换。
     """
 
@@ -231,32 +229,21 @@ class TestProactiveEngine(ProactiveEngine):
                 pass
         return results
 
-    async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
+    async def _load_content_snapshot(
+        self,
+        ctx: DecisionContext,
+    ) -> tuple[list[GenericContentEvent], list[tuple[str, str]], list[dict]]:
         """使用 spec 注入的 feed_items，不调用真实 MCP。"""
-        fetch = ctx.ensure_fetch()
         content_events = list(self._test_spec.feed_items)
-        fetch.items = content_events
-        fetch.new_items = content_events
-        fetch.new_entries = [
+        entries = [
             (f"test:{event.event_id}", event.event_id)
             for event in content_events
         ]
-        fetch.semantic_duplicate_entries = []
 
         # background_context 从 spec.extra_signals 读，不从 MCP 读
         bg = self._test_spec.extra_signals.get("background_context", {})
-        fetch.background_context = bg.get("sources", []) if isinstance(bg, dict) else []
-
-        fetch.has_memory = bool(self._test_spec.memory_text.strip())
-
-        return FetchFilterResult(
-            total_items=len(content_events),
-            discovered_count=len(content_events),
-            selected_count=len(content_events),
-            semantic_duplicate_count=0,
-            pending_enabled=False,
-            has_memory=fetch.has_memory,
-        )
+        background_context = bg.get("sources", []) if isinstance(bg, dict) else []
+        return content_events, entries, background_context
 
 
 # ──────────────────────────────────────────────────────────────────────────────

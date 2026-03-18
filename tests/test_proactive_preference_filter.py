@@ -9,7 +9,7 @@ from core.memory.port import DefaultMemoryPort
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
-from proactive.components import build_proactive_preference_query
+from proactive.composer import build_proactive_preference_query
 from proactive.config import ProactiveConfig
 from proactive.event import GenericContentEvent
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory

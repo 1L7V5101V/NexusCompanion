@@ -1,0 +1,93 @@
+import sqlite3
+
+from core.observe.db import open_db
+from core.observe.events import ProactiveDecisionTrace
+from core.observe.writer import _write_proactive_decision
+
+
+def test_write_proactive_decision_backfills_legacy_columns_for_gate_and_sense(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        # 1. 使用新阶段名写入一条 proactive trace。
+        _write_proactive_decision(
+            conn,
+            ProactiveDecisionTrace(
+                tick_id="tick-1",
+                session_key="telegram:1",
+                stage="gate_and_sense",
+                stage_result_json='{"sleep_state":"awake","pre_score":0.4}',
+            ),
+            "2026-03-18T00:00:00+00:00",
+        )
+
+        # 2. 校验旧读侧依赖的列仍能拿到同一份 JSON。
+        row = conn.execute(
+            """
+            select stage, gate_result_json, sense_result_json, pre_score_result_json
+            from proactive_decisions
+            where tick_id = ?
+            """,
+            ("tick-1",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row[0] == "gate_and_sense"
+    assert row[1] == '{"sleep_state":"awake","pre_score":0.4}'
+    assert row[2] == '{"sleep_state":"awake","pre_score":0.4}'
+    assert row[3] == '{"sleep_state":"awake","pre_score":0.4}'
+
+
+def test_write_proactive_decision_backfills_legacy_columns_for_evaluate_and_judge(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        # 1. evaluate 兼容旧 fetch_filter/score 列。
+        _write_proactive_decision(
+            conn,
+            ProactiveDecisionTrace(
+                tick_id="tick-2",
+                session_key="telegram:1",
+                stage="evaluate",
+                stage_result_json='{"base_score":0.7,"draw_score":0.6}',
+            ),
+            "2026-03-18T00:00:01+00:00",
+        )
+        evaluate_row = conn.execute(
+            """
+            select stage, fetch_filter_result_json, score_result_json
+            from proactive_decisions
+            where tick_id = ?
+            """,
+            ("tick-2",),
+        ).fetchone()
+
+        # 2. judge_and_send 兼容旧 decide/act 列。
+        _write_proactive_decision(
+            conn,
+            ProactiveDecisionTrace(
+                tick_id="tick-3",
+                session_key="telegram:1",
+                stage="judge_and_send",
+                stage_result_json='{"reason_code":"sent_ready"}',
+            ),
+            "2026-03-18T00:00:02+00:00",
+        )
+        judge_row = conn.execute(
+            """
+            select stage, decide_result_json, act_result_json
+            from proactive_decisions
+            where tick_id = ?
+            """,
+            ("tick-3",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert evaluate_row[0] == "evaluate"
+    assert evaluate_row[1] == '{"base_score":0.7,"draw_score":0.6}'
+    assert evaluate_row[2] == '{"base_score":0.7,"draw_score":0.6}'
+    assert judge_row[0] == "judge_and_send"
+    assert judge_row[1] == '{"reason_code":"sent_ready"}'
+    assert judge_row[2] == '{"reason_code":"sent_ready"}'

@@ -236,14 +236,18 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
         engine._state = ProactiveStateStore(tmp_path / "state.json")
         engine._prefetch_fetcher = None
         engine._sense = SimpleNamespace(collect_recent_proactive=lambda n=5: [])
+        async def _send(*args, **kwargs):
+            return False
+        engine._act = SimpleNamespace(send=_send)
 
         ctx = _build_ctx(trace_row)
-        memory_result = await engine._retrieve_memory(ctx)
         compose_result = await engine._compose(ctx)
         if compose_result.proceed:
-            guard_result = await engine._judge_and_guard(ctx)
-            reason_code = guard_result.reason_code
-            should_send = guard_result.should_send
+            should_send = bool(ctx.ensure_decide().should_send)
+            await engine._judge_and_send(ctx)
+            decide = ctx.ensure_decide()
+            should_send = decide.should_send
+            reason_code = "sent_ready" if should_send else "judge_reject"
         else:
             reason_code = compose_result.reason_code
             should_send = False
@@ -254,7 +258,8 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
             "tick_id": _TRACE_TICK_ID,
             "artifact_path": str(tmp_path / "real_trace_replay_result.json"),
             "db_path": str(db_path),
-            "feed_titles": [e.title for e in act.compose_items] or [it.title for it in engine._feed_items(ctx.ensure_fetch().new_items)],
+            "feed_titles": [e.title for e in act.compose_items]
+            or [it.title for it in ctx.ensure_fetch().new_items],
             "memory_query": decide.memory_query,
             "preference_block": decide.preference_block,
             "selected_titles": [item.title for item in act.compose_items],
@@ -263,7 +268,7 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
             "should_send": should_send,
             "reason_code": reason_code,
             "decision_mode": "compose_judge",
-            "memory_fallback_reason": memory_result.fallback_reason,
+            "memory_fallback_reason": decide.memory_fallback_reason,
             "judge_final_score": decide.judge_final_score,
             "judge_vetoed_by": decide.judge_vetoed_by,
         }

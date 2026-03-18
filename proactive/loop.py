@@ -208,6 +208,8 @@ class ProactiveLoop:
             rng=self._rng,
             sensor=self._sense,
             decide=self._decide,
+            composer=self._composer,
+            judge=self._judge,
             sender=self._sender,
             memory_retriever=self._memory_retrieval,
             anyaction=self._anyaction,

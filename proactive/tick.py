@@ -51,10 +51,6 @@ _TOPIC_STOPWORDS = frozenset(
         "review",
     }
 )
-# Sentinel returned by stage methods to signal "stop tick, return None to caller"
-_STOP_NONE: object = object()
-
-
 class _PseudoDecision:
     def __init__(self, message: str) -> None:
         self.message = message
@@ -81,8 +77,6 @@ class ProactiveRetrievedMemory:
 
 
 def _json_safe(value: Any) -> Any:
-    if value is _STOP_NONE:
-        return "STOP_NONE"
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, dict):
@@ -274,14 +268,16 @@ class DecisionContext:
 
 
 @dataclass(frozen=True)
-class GateResult:
+class GateSenseResult:
     proceed: bool
-    stop_result: float | object | None
-    reason_code: Literal["pass", "quota_exhausted", "scheduler_reject"]
-
-
-@dataclass(frozen=True)
-class SenseResult:
+    return_score: float | None
+    reason_code: Literal[
+        "continue",
+        "quota_exhausted",
+        "scheduler_reject",
+        "health_fast_path",
+        "below_threshold",
+    ]
     sleep_state: str
     sleep_available: bool
     health_event_count: int
@@ -293,14 +289,7 @@ class SenseResult:
 
 
 @dataclass(frozen=True)
-class PreScoreResult:
-    proceed: bool
-    return_score: float | None
-    reason_code: Literal["continue", "health_fast_path", "below_threshold"]
-
-
-@dataclass(frozen=True)
-class ScoreResult:
+class EvaluateResult:
     proceed: bool
     return_score: float | None
     reason_code: Literal[
@@ -311,10 +300,6 @@ class ScoreResult:
     base_score: float
     draw_score: float
     force_reflect: bool
-
-
-@dataclass(frozen=True)
-class FetchFilterResult:
     total_items: int
     discovered_count: int
     selected_count: int
@@ -323,11 +308,17 @@ class FetchFilterResult:
 
 
 @dataclass(frozen=True)
-class MemoryResult:
-    memory_query: str
-    history_gate_reason: str
-    history_scope_mode: str
-    fallback_reason: str
+class _ScoreDecision:
+    proceed: bool
+    return_score: float | None
+    reason_code: Literal[
+        "continue",
+        "draw_score_below_threshold",
+        "draw_score_force_reflect",
+    ]
+    base_score: float
+    draw_score: float
+    force_reflect: bool
 
 
 @dataclass(frozen=True)
@@ -371,6 +362,8 @@ class ProactiveTick:
         rng: Any,
         sensor: Any | None = None,
         decide: Any | None = None,
+        composer: Any | None = None,
+        judge: Any | None = None,
         sender: Any | None = None,
         memory_retriever: Any | None = None,
         sense: Any | None = None,
@@ -391,6 +384,8 @@ class ProactiveTick:
         self._rng = rng
         self._sense = sensor or sense
         self._decide = decide
+        self._composer = composer or getattr(decide, "_composer", None)
+        self._judge = judge or getattr(decide, "_judge", None)
         self._act = sender or act
         self._memory_retrieval = memory_retriever or memory_retrieval
         self._anyaction = anyaction
@@ -400,7 +395,7 @@ class ProactiveTick:
         self._light_model = light_model
         # 可选：AgentLoop 注入的被动处理信号，用于跳过与被动回复并发的主动发送
         self._passive_busy_fn = passive_busy_fn
-        self._stage_trace_writer = stage_trace_writer
+        self._trace_writer = stage_trace_writer
         self._observe_writer = observe_writer
 
     async def tick(self) -> float | None:
@@ -408,121 +403,22 @@ class ProactiveTick:
         ctx = DecisionContext()
         ctx.state.tick_id = uuid4().hex
 
-        gate_result = await self._gate(ctx)
-        self._trace_stage_result(ctx, stage="gate", result=gate_result)
+        gate_result = await self._gate_and_sense(ctx)
+        self._trace(ctx, stage="gate_and_sense", result=gate_result)
         if not gate_result.proceed:
-            if gate_result.stop_result is _STOP_NONE:
-                return None
-            return gate_result.stop_result  # type: ignore[return-value]
+            return gate_result.return_score
 
-        sense_result = self._sense_stage(ctx)
-        self._trace_stage_result(ctx, stage="sense", result=sense_result)
-
-        pre_result = await self._pre_score(ctx)
-        self._trace_stage_result(ctx, stage="pre_score", result=pre_result)
-        if not pre_result.proceed:
-            return pre_result.return_score
-
-        fetch_result = await self._fetch(ctx)
-        self._trace_stage_result(ctx, stage="fetch", result=fetch_result)
-
-        score_result = await self._score(ctx)
-        self._trace_stage_result(ctx, stage="score", result=score_result)
-        if not score_result.proceed:
-            return score_result.return_score
-
-        memory_result = await self._retrieve_memory(ctx)
-        self._trace_stage_result(ctx, stage="memory", result=memory_result)
+        evaluate_result = await self._evaluate(ctx)
+        self._trace(ctx, stage="evaluate", result=evaluate_result)
+        if not evaluate_result.proceed:
+            return evaluate_result.return_score
 
         compose_result = await self._compose(ctx)
-        self._trace_stage_result(ctx, stage="compose", result=compose_result)
+        self._trace(ctx, stage="compose", result=compose_result)
         if not compose_result.proceed:
             return compose_result.return_score
 
-        guard_result = await self._judge_and_guard(ctx)
-        self._trace_stage_result(ctx, stage="judge", result=guard_result)
-        if not guard_result.should_send:
-            return guard_result.return_score
-
-        await self._send_and_finalize(ctx, guard_result)
-        return ctx.ensure_score().base_score
-
-    # ------------------------------------------------------------------
-    # Stage 1 — gate: state cleanup + anyaction gate
-    # ------------------------------------------------------------------
-
-    async def _gate(self, ctx: DecisionContext) -> GateResult:
-        """清理过期状态；若 anyaction gate 拒绝则提前返回退出码。
-
-        返回值：
-          proceed=True               — gate 通过，继续后续阶段
-          stop_result=0.0            — quota_exhausted，tick 应返回 0.0
-          stop_result=_STOP_NONE     — min_interval/probability 拒绝，tick 应返回 None
-        """
-        # 1. 先清理 state store 里的过期痕迹，避免本轮判断用到脏状态。
-        self._state.cleanup(
-            seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
-            delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
-            semantic_ttl_hours=max(
-                self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours
-            ),
-            rejection_cooldown_ttl_hours=getattr(
-                self._cfg, "llm_reject_cooldown_hours", 0
-            ),
-        )
-
-        # 2. 先探测 alert；只要本轮存在 alert，就绕过 anyaction gate 直接继续。
-        sense = ctx.ensure_sense()
-        sense.health_events = self._load_alert_events()
-        if sense.health_events:
-            logger.info(
-                "[proactive] gate_result=pass reason=alert_bypass alert_count=%d",
-                len(sense.health_events),
-            )
-            return GateResult(proceed=True, stop_result=None, reason_code="pass")
-
-        # 3. 再跑 anyaction gate，决定今天额度/最小间隔/概率是否允许继续。
-        if not (self._cfg.anyaction_enabled and self._anyaction):
-            return GateResult(proceed=True, stop_result=None, reason_code="pass")
-
-        should_act, meta = self._anyaction.should_act(
-            now_utc=ctx.state.now_utc,
-            last_user_at=self._sense.last_user_at(),
-        )
-        if not should_act:
-            logger.info(
-                "[proactive] gate_result=reject selected_action=null meta=%s", meta
-            )
-            reason = meta.get("reason", "")
-            if reason == "quota_exhausted":
-                return GateResult(
-                    proceed=False,
-                    stop_result=0.0,
-                    reason_code="quota_exhausted",
-                )
-            return GateResult(
-                proceed=False,
-                stop_result=_STOP_NONE,
-                reason_code="scheduler_reject",
-            )
-
-        logger.debug("[proactive] gate_result=pass meta=%s", meta)
-        return GateResult(proceed=True, stop_result=None, reason_code="pass")
-
-    async def _stage_gate(self, ctx: DecisionContext) -> GateResult:
-        return await self._gate(ctx)
-
-    def _sense_stage(self, ctx: DecisionContext) -> SenseResult:
-        return self._stage_sense(ctx)
-
-    async def _pre_score(self, ctx: DecisionContext) -> PreScoreResult:
-        return await self._stage_pre_score(ctx)
-
-    async def _fetch(self, ctx: DecisionContext) -> FetchFilterResult:
-        return await self._stage_fetch_filter(ctx)
-
-    async def _score(self, ctx: DecisionContext) -> ScoreResult:
-        return await self._stage_score(ctx)
+        return await self._judge_and_send(ctx)
 
     def _load_alert_events(self) -> list[AlertEvent]:
         """从 MCP 配置的告警源拉取 alert 事件。"""
@@ -537,25 +433,65 @@ class ProactiveTick:
             logger.warning("[proactive] MCP alert 拉取失败: %s", _mcp_err)
             return []
 
-    # ------------------------------------------------------------------
-    # Stage 2 — sense: collect environment signals
-    # ------------------------------------------------------------------
-
-    def _stage_sense(self, ctx: DecisionContext) -> SenseResult:
-        """采集睡眠上下文、能量、打扰度等环境信号，填充 ctx。"""
+    async def _gate_and_sense(self, ctx: DecisionContext) -> GateSenseResult:
+        """本地计算阶段：gate + sense + pre_score。"""
         state = ctx.state
         sense = ctx.ensure_sense()
-        # 1. 先刷新睡眠上下文，确保 Fitbit 相关信号是本轮最新值。
+        score = ctx.ensure_score()
+        # 1. 先清理 state store 里的过期痕迹，避免本轮判断用到脏状态。
+        self._state.cleanup(
+            seen_ttl_hours=self._cfg.dedupe_seen_ttl_hours,
+            delivery_ttl_hours=self._cfg.delivery_dedupe_hours,
+            semantic_ttl_hours=max(
+                self._cfg.dedupe_seen_ttl_hours, self._cfg.semantic_dedupe_window_hours
+            ),
+            rejection_cooldown_ttl_hours=getattr(
+                self._cfg, "llm_reject_cooldown_hours", 0
+            ),
+        )
+
+        # 2. 先探测 alert；无 alert 时才需要走 anyaction gate。
+        sense.health_events = self._load_alert_events()
+        if not sense.health_events and self._cfg.anyaction_enabled and self._anyaction:
+            should_act, meta = self._anyaction.should_act(
+                now_utc=ctx.state.now_utc,
+                last_user_at=self._sense.last_user_at(),
+            )
+            if not should_act:
+                logger.info(
+                    "[proactive] gate_result=reject selected_action=null meta=%s", meta
+                )
+                reason = meta.get("reason", "")
+                return GateSenseResult(
+                    proceed=False,
+                    return_score=0.0 if reason == "quota_exhausted" else None,
+                    reason_code=(
+                        "quota_exhausted"
+                        if reason == "quota_exhausted"
+                        else "scheduler_reject"
+                    ),
+                    sleep_state="unavailable",
+                    sleep_available=False,
+                    health_event_count=0,
+                    energy=0.0,
+                    recent_count=0,
+                    interruptibility=1.0,
+                    interrupt_factor=1.0,
+                    sleep_mod=1.0,
+                )
+        elif sense.health_events:
+            logger.info(
+                "[proactive] gate_result=pass reason=alert_bypass alert_count=%d",
+                len(sense.health_events),
+            )
+
+        # 3. 再刷新睡眠上下文，确保 Fitbit 相关信号是本轮最新值。
         refreshed = bool(getattr(self._sense, "refresh_sleep_context", lambda: False)())
         if refreshed:
             logger.debug("[proactive] fitbit 上下文已在本轮决策前主动刷新")
         sense.sleep_ctx = getattr(self._sense, "sleep_context", lambda: None)()
 
-        # 2. 从 MCP 配置的告警源拉取 alert 事件。
-        if not sense.health_events:
-            sense.health_events = self._load_alert_events()
-
-        # 3. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
+        # 4. 采集能量、近期消息和 interruptibility，形成 score 的基础输入。
         sense.energy = self._sense.compute_energy()
         sense.now_hour = datetime.now().hour
         sense.recent = self._sense.collect_recent()
@@ -570,7 +506,7 @@ class ProactiveTick:
         )
         sense.interrupt_factor = 0.6 + 0.4 * sense.interruptibility
 
-        # 4. 用睡眠修正项微调 interrupt_factor，避免深睡时仍然太激进。
+        # 5. 用睡眠修正项微调 interrupt_factor，避免深睡时仍然太激进。
         sense.sleep_mod = (
             sense.sleep_ctx.sleep_modifier if sense.sleep_ctx is not None else 1.0
         )
@@ -596,28 +532,7 @@ class ProactiveTick:
                 (sense.sleep_ctx.prob if sense.sleep_ctx is not None else None),
             ),
         )
-        result = SenseResult(
-            sleep_state=sleep_state,
-            sleep_available=sleep_available,
-            health_event_count=len(sense.health_events),
-            energy=sense.energy,
-            recent_count=len(sense.recent),
-            interruptibility=sense.interruptibility,
-            interrupt_factor=sense.interrupt_factor,
-            sleep_mod=sense.sleep_mod,
-        )
-        return result
-
-    # ------------------------------------------------------------------
-    # Stage 3 — pre-score: quick score before fetching items
-    # ------------------------------------------------------------------
-
-    async def _stage_pre_score(self, ctx: DecisionContext) -> PreScoreResult:
-        """计算 pre_score；过低时尝试 skill action 后提前返回。"""
-        state = ctx.state
-        sense = ctx.ensure_sense()
-        score = ctx.ensure_score()
-        # 1. 用 energy/recent 两个轻量信号先算 pre_score，尽量早决定要不要继续。
+        # 6. 最后只用本地信号计算 pre_score，尽量在访问 MCP/LLM 之前早退。
         w_sum = self._cfg.score_weight_energy + self._cfg.score_weight_recent
         score.pre_score = (
             (
@@ -656,13 +571,21 @@ class ProactiveTick:
                     score.pre_score,
                     len(high_events),
                 )
-                return PreScoreResult(
+                return GateSenseResult(
                     proceed=True,
                     return_score=None,
                     reason_code="health_fast_path",
+                    sleep_state=sleep_state,
+                    sleep_available=sleep_available,
+                    health_event_count=len(sense.health_events),
+                    energy=sense.energy,
+                    recent_count=len(sense.recent),
+                    interruptibility=sense.interruptibility,
+                    interrupt_factor=sense.interrupt_factor,
+                    sleep_mod=sense.sleep_mod,
                 )
 
-        # 2. 如果 pre_score 太低，就不再进入 LLM 路径，直接尝试 skill action 兜底。
+        # 7. pre_score 太低时不再进入 MCP / LLM 主链路，直接尝试 skill action。
         if score.pre_score < self._cfg.score_pre_threshold:
             logger.info(
                 "[proactive] pre_score 过低（%.3f < %.2f），跳过 chat，尝试 skill action",
@@ -670,58 +593,89 @@ class ProactiveTick:
                 self._cfg.score_pre_threshold,
             )
             await self._try_skill_action(now_utc=state.now_utc)
-            return PreScoreResult(
+            return GateSenseResult(
                 proceed=False,
                 return_score=score.pre_score,
                 reason_code="below_threshold",
+                sleep_state=sleep_state,
+                sleep_available=sleep_available,
+                health_event_count=len(sense.health_events),
+                energy=sense.energy,
+                recent_count=len(sense.recent),
+                interruptibility=sense.interruptibility,
+                interrupt_factor=sense.interrupt_factor,
+                sleep_mod=sense.sleep_mod,
             )
 
-        return PreScoreResult(
+        return GateSenseResult(
             proceed=True,
             return_score=None,
             reason_code="continue",
+            sleep_state=sleep_state,
+            sleep_available=sleep_available,
+            health_event_count=len(sense.health_events),
+            energy=sense.energy,
+            recent_count=len(sense.recent),
+            interruptibility=sense.interruptibility,
+            interrupt_factor=sense.interrupt_factor,
+            sleep_mod=sense.sleep_mod,
         )
 
-    # ------------------------------------------------------------------
-    # Stage 4 — fetch & filter: pull items, deduplicate
-    # ------------------------------------------------------------------
-
-    async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
-        """拉取 MCP content 事件，填充 ctx.new_items 等。"""
-        fetch = ctx.ensure_fetch()
-        fetch.items = []
-        fetch.new_items = []
-        fetch.new_entries = []
-        fetch.semantic_duplicate_entries = []
-
-        # 1. 只从 MCP content 源拉候选，内容侧的 pending/ack 状态在各自 MCP 内维护。
+    async def _load_content_snapshot(
+        self,
+        ctx: DecisionContext,
+    ) -> tuple[list[ContentEvent], list[tuple[str, str]], list[dict]]:
+        """拉取候选内容与背景上下文，供 evaluate 阶段统一消费。"""
+        # 1. 先导入 MCP 模块；导入失败时直接退化为空快照。
         try:
             from proactive import mcp_sources as _mcp_sources
         except Exception as _import_err:
             logger.warning("[proactive] mcp_sources 导入失败: %s", _import_err)
-            _mcp_sources = None  # type: ignore[assignment]
+            return [], [], []
 
+        # 2. 再读取 content 源，并显式带上 ack_server 作为 source_key 前缀。
         try:
-            mcp_content_events = [
+            items = [
                 GenericContentEvent.from_mcp_payload(p)
-                for p in (_mcp_sources.fetch_content_events() if _mcp_sources else [])
+                for p in _mcp_sources.fetch_content_events()
             ]
         except Exception as _mcp_err:
             logger.warning("[proactive] MCP content 拉取失败: %s", _mcp_err)
-            mcp_content_events = []
-
-        feed_entries = [
+            items = []
+        entries = [
             (
                 f"mcp:{getattr(event, '_ack_server', None) or event.source_name}:{event.event_id}",
                 self._item_id_for(event),
             )
-            for event in mcp_content_events
+            for event in items
         ]
+        try:
+            background_context = _mcp_sources.fetch_context_data()
+        except Exception as _ctx_err:
+            logger.warning("[proactive] MCP context 拉取失败: %s", _ctx_err)
+            background_context = []
+        return items, entries, background_context
+
+    async def _evaluate(self, ctx: DecisionContext) -> EvaluateResult:
+        """MCP I/O + score 阶段：拉候选、做 cooldown 过滤、计算分数。"""
+        state = ctx.state
+        fetch = ctx.ensure_fetch()
+        # 1. 先拉取 MCP 候选和背景上下文，统一写入 fetch snapshot。
+        fetch.items = []
+        fetch.new_items = []
+        fetch.new_entries = []
+        fetch.semantic_duplicate_entries = []
+        fetch.items, fetch.new_entries, fetch.background_context = (
+            await self._load_content_snapshot(ctx)
+        )
+        fetch.new_items = list(fetch.items)
+
+        # 2. 再做 rejection cooldown 过滤，避免刚被拒过的内容立刻重试。
         cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
         if cooldown_hours > 0:
             filtered_events: list[ContentEvent] = []
             filtered_entries: list[tuple[str, str]] = []
-            for event, (source_key, item_id) in zip(mcp_content_events, feed_entries):
+            for event, (source_key, item_id) in zip(fetch.new_items, fetch.new_entries):
                 if self._state.is_rejection_cooled(
                     source_key=source_key,
                     item_id=item_id,
@@ -729,7 +683,7 @@ class ProactiveTick:
                     now=ctx.state.now_utc,
                 ):
                     logger.debug(
-                        "[proactive] stage_fetch_filter rejection_cooldown 跳过 source=%s item_id=%s ttl_hours=%d",
+                        "[proactive] evaluate rejection_cooldown 跳过 source=%s item_id=%s ttl_hours=%d",
                         source_key,
                         item_id[:16],
                         cooldown_hours,
@@ -737,67 +691,32 @@ class ProactiveTick:
                     continue
                 filtered_events.append(event)
                 filtered_entries.append((source_key, item_id))
-            mcp_content_events = filtered_events
-            feed_entries = filtered_entries
-
-        fetch.items = list(mcp_content_events)
+            fetch.items = filtered_events
+            fetch.new_items = filtered_events
+            fetch.new_entries = filtered_entries
         logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
 
-        # 2. 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
-        fetch.new_items = list(mcp_content_events)
-        fetch.new_entries = feed_entries
-
-        # 3. 拉取 context 类源（持久背景感知，如 Steam），不涉及 ack。
-        try:
-            fetch.background_context = _mcp_sources.fetch_context_data() if _mcp_sources else []
-        except Exception as _ctx_err:
-            logger.warning("[proactive] MCP context 拉取失败: %s", _ctx_err)
-            fetch.background_context = []
-
-        # 4. 最后补充全局记忆命中状态，供后面的 force_reflect 判断使用。
+        # 3. 最后计算 base_score / draw_score，并决定是否进入 LLM 路径。
         fetch.has_memory = self._sense.has_global_memory()
-        result = FetchFilterResult(
+        w_random = self._compute_score_snapshot(ctx)
+        self._refresh_presence_state(ctx)
+        result = self._build_score_result(ctx, w_random=w_random)
+        if result.reason_code == "draw_score_below_threshold":
+            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
+            logger.info("[proactive] selected_action=idle reason=draw_score")
+            await self._try_skill_action(now_utc=state.now_utc)
+        return EvaluateResult(
+            proceed=result.proceed,
+            return_score=result.return_score,
+            reason_code=result.reason_code,
+            base_score=result.base_score,
+            draw_score=result.draw_score,
+            force_reflect=result.force_reflect,
             total_items=len(fetch.items),
             discovered_count=len(fetch.new_items),
             selected_count=len(fetch.new_items),
             semantic_duplicate_count=len(fetch.semantic_duplicate_entries),
             has_memory=fetch.has_memory,
-        )
-        return result
-
-    # ------------------------------------------------------------------
-    # Stage 5 — score: compute base_score / draw_score
-    # ------------------------------------------------------------------
-
-    async def _stage_score(self, ctx: DecisionContext) -> ScoreResult:
-        """计算 base_score / draw_score；未过门槛时提前返回。"""
-        state = ctx.state
-        # 1. 先把 score snapshot 算完整，保证 base/draw_score 都落在 ctx.score。
-        w_random = self._compute_score_snapshot(ctx)
-        # 2. 再刷新 presence 相关状态，把 target 会话和近 24h 统计补齐。
-        self._refresh_presence_state(ctx)
-        # 3. 基于完整 snapshot 生成 ScoreResult，决定本轮是否继续。
-        result = self._build_score_result(ctx, w_random=w_random)
-        # 4. draw_score 不够但又值得跑 skill action 时，在这里统一做兜底。
-        if result.reason_code == "draw_score_below_threshold":
-            logger.info("[proactive] draw_score 未过门槛，跳过本轮反思")
-            logger.info("[proactive] selected_action=idle reason=draw_score")
-            await self._try_skill_action(now_utc=state.now_utc)
-        return result
-
-    # ------------------------------------------------------------------
-    # Stage 6 — memory / compose / judge / send
-    # ------------------------------------------------------------------
-
-    async def _retrieve_memory(self, ctx: DecisionContext) -> MemoryResult:
-        self._populate_decision_signals(ctx)
-        await self._retrieve_decision_memory(ctx)
-        decide = ctx.ensure_decide()
-        return MemoryResult(
-            memory_query=decide.memory_query,
-            history_gate_reason=decide.history_gate_reason,
-            history_scope_mode=decide.history_scope_mode,
-            fallback_reason=decide.memory_fallback_reason,
         )
 
     async def _compose(self, ctx: DecisionContext) -> ComposeResult:
@@ -806,12 +725,17 @@ class ProactiveTick:
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+        # 1. 先补 decision signals 和 retrieval memory，后续 compose/judge 都只读 ctx。
+        self._populate_decision_signals(ctx)
+        await self._retrieve_decision_memory(ctx)
+        # 2. 再准备 compose 候选，并做 pre-veto 判定。
         self._prepare_feature_compose_candidates(ctx)
         compose_entries = act.compose_entries or self._primary_candidate_entries(
             fetch.new_entries
         )
         age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
-        pre_veto = getattr(self._decide, "pre_compose_veto", lambda **_: None)(
+        judge_port = self._judge_port()
+        pre_veto = getattr(judge_port, "pre_compose_veto", lambda **_: None)(
             age_hours=age_hours,
             sent_24h=score.sent_24h,
             interrupt_factor=sense.interrupt_factor,
@@ -842,7 +766,8 @@ class ProactiveTick:
             recent=sense.recent,
             has_compose_candidates=bool(act.compose_items),
         )
-        decide.decision_message = await self._decide.compose_for_judge(
+        compose_port = self._compose_port()
+        decide.decision_message = await compose_port.compose_for_judge(
             items=act.compose_items,
             recent=compose_recent,
             preference_block=decide.preference_block,
@@ -874,13 +799,14 @@ class ProactiveTick:
             history_scope_mode=decide.history_scope_mode,
         )
 
-    async def _judge_and_guard(self, ctx: DecisionContext) -> GuardResult:
+    async def _judge_and_send(self, ctx: DecisionContext) -> float | None:
         state = ctx.state
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
+        # 1. 先调用 judge，并把判定结果和证据集落进 ctx。
         evidence = self._build_evidence_bundle(ctx)
         act.source_refs = evidence.source_refs
         act.evidence_item_ids = evidence.evidence_item_ids
@@ -890,14 +816,19 @@ class ProactiveTick:
 
         age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
         recent_proactive_text = self._recent_proactive_text()
-        judge_result = await self._decide.judge_message(
-            message=decide.decision_message,
-            recent=sense.recent,
-            recent_proactive_text=recent_proactive_text,
-            preference_block=decide.preference_block,
-            age_hours=age_hours,
-            sent_24h=score.sent_24h,
-            interrupt_factor=sense.interrupt_factor,
+        judge_port = self._judge_port()
+        judge_result = (
+            await judge_port.judge_message(
+                message=decide.decision_message,
+                recent=sense.recent,
+                recent_proactive_text=recent_proactive_text,
+                preference_block=decide.preference_block,
+                age_hours=age_hours,
+                sent_24h=score.sent_24h,
+                interrupt_factor=sense.interrupt_factor,
+            )
+            if judge_port is not None and hasattr(judge_port, "judge_message")
+            else None
         )
         if judge_result is None:
             decide.should_send = True
@@ -917,29 +848,44 @@ class ProactiveTick:
             )
             decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
             decide.should_send = bool(getattr(judge_result, "should_send", False))
+        guard = GuardResult(
+            should_send=decide.should_send,
+            return_score=None if decide.should_send else score.base_score,
+            reason_code="sent_ready" if decide.should_send else "judge_reject",
+            delivery_key=None,
+            judge_dims=decide.judge_dims,
+            judge_final_score=decide.judge_final_score,
+            judge_vetoed_by=decide.judge_vetoed_by,
+        )
+
+        # 2. judge 不通过时直接返回 base_score，并保留 rejection cooldown 行为。
         if not decide.should_send:
             if decide.judge_vetoed_by != "balance":
                 self._state.mark_rejection_cooldown(
                     compose_entries,
                     hours=self._judge_rejection_cooldown_hours(decide.judge_vetoed_by),
                 )
-            return GuardResult(
-                should_send=False,
-                return_score=score.base_score,
-                reason_code="judge_reject",
-                delivery_key=None,
-                judge_dims=decide.judge_dims,
-                judge_final_score=decide.judge_final_score,
-                judge_vetoed_by=decide.judge_vetoed_by,
-            )
+            self._trace(ctx, stage="judge_and_send", result=guard)
+            return score.base_score
+
+        # 3. 再做 dedupe / passive_busy 守卫；只要任一失败就中止发送。
         delivery_key = self._prepare_delivery_attempt(ctx, evidence)
+        guard = GuardResult(
+            should_send=True,
+            return_score=None,
+            reason_code="sent_ready",
+            delivery_key=delivery_key,
+            judge_dims=decide.judge_dims,
+            judge_final_score=decide.judge_final_score,
+            judge_vetoed_by=decide.judge_vetoed_by,
+        )
         if state.session_key and self._state.is_delivery_duplicate(
             session_key=state.session_key,
             delivery_key=delivery_key,
             window_hours=self._cfg.delivery_dedupe_hours,
         ):
             self._consume_evidence_entries(evidence)
-            return GuardResult(
+            guard = GuardResult(
                 should_send=False,
                 return_score=score.base_score,
                 reason_code="delivery_dedupe",
@@ -948,6 +894,8 @@ class ProactiveTick:
                 judge_final_score=decide.judge_final_score,
                 judge_vetoed_by=decide.judge_vetoed_by,
             )
+            self._trace(ctx, stage="judge_and_send", result=guard)
+            return score.base_score
         sense_port = getattr(self, "_sense", None)
         if sense_port is not None:
             recent_proactive = sense_port.collect_recent_proactive(
@@ -960,7 +908,7 @@ class ProactiveTick:
             evidence,
             recent_proactive,
         ):
-            return GuardResult(
+            guard = GuardResult(
                 should_send=False,
                 return_score=score.base_score,
                 reason_code="state_summary_repeat",
@@ -969,8 +917,10 @@ class ProactiveTick:
                 judge_final_score=decide.judge_final_score,
                 judge_vetoed_by=decide.judge_vetoed_by,
             )
+            self._trace(ctx, stage="judge_and_send", result=guard)
+            return score.base_score
         if not await self._passes_message_deduper(ctx, evidence, recent_proactive):
-            return GuardResult(
+            guard = GuardResult(
                 should_send=False,
                 return_score=score.base_score,
                 reason_code="message_dedupe",
@@ -979,12 +929,14 @@ class ProactiveTick:
                 judge_final_score=decide.judge_final_score,
                 judge_vetoed_by=decide.judge_vetoed_by,
             )
+            self._trace(ctx, stage="judge_and_send", result=guard)
+            return score.base_score
         if (
             state.session_key
-            and self._passive_busy_fn
+            and getattr(self, "_passive_busy_fn", None)
             and self._passive_busy_fn(state.session_key)
         ):
-            return GuardResult(
+            guard = GuardResult(
                 should_send=False,
                 return_score=score.base_score,
                 reason_code="passive_busy",
@@ -993,20 +945,13 @@ class ProactiveTick:
                 judge_final_score=decide.judge_final_score,
                 judge_vetoed_by=decide.judge_vetoed_by,
             )
-        return GuardResult(
-            should_send=True,
-            return_score=None,
-            reason_code="sent_ready",
-            delivery_key=delivery_key,
-            judge_dims=decide.judge_dims,
-            judge_final_score=decide.judge_final_score,
-            judge_vetoed_by=decide.judge_vetoed_by,
-        )
+            self._trace(ctx, stage="judge_and_send", result=guard)
+            return score.base_score
 
-    async def _send_and_finalize(self, ctx: DecisionContext, guard: GuardResult) -> None:
+        # 4. 所有守卫通过后实际发送，并在成功时落地状态。
+        self._trace(ctx, stage="judge_and_send", result=guard)
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
-        evidence = self._build_evidence_bundle(ctx)
         sent = await self._act.send(
             decide.decision_message,
             ProactiveSendMeta(
@@ -1027,7 +972,7 @@ class ProactiveTick:
                 delivery_attempted=True,
                 delivery_result="sent",
             )
-            return
+            return score.base_score
         self._emit_observe_decision(
             ctx,
             stage="send",
@@ -1038,6 +983,7 @@ class ProactiveTick:
             delivery_attempted=True,
             delivery_result="send_failed",
         )
+        return score.base_score
 
     def _judge_rejection_cooldown_hours(self, vetoed_by: str | None) -> int:
         if vetoed_by == "llm_dim":
@@ -1112,8 +1058,8 @@ class ProactiveTick:
 
     def _build_score_result(
         self, ctx: DecisionContext, *, w_random: float
-    ) -> ScoreResult:
-        """把 score 阶段的分支判断统一映射成 ScoreResult。"""
+    ) -> _ScoreDecision:
+        """把 evaluate 阶段的分支判断统一映射成内部 score 决策。"""
         sense = ctx.ensure_sense()
         fetch = ctx.ensure_fetch()
         score = ctx.ensure_score()
@@ -1138,7 +1084,7 @@ class ProactiveTick:
         )
         # 3. draw_score 低于阈值时，区分普通早退和 force_reflect 两条路径。
         if score.draw_score < self._cfg.score_llm_threshold and not score.force_reflect:
-            return ScoreResult(
+            return _ScoreDecision(
                 proceed=False,
                 return_score=score.base_score,
                 reason_code="draw_score_below_threshold",
@@ -1148,7 +1094,7 @@ class ProactiveTick:
             )
         if score.draw_score < self._cfg.score_llm_threshold and score.force_reflect:
             logger.info("[proactive] draw_score 未过门槛，但命中兜底条件，继续反思")
-            return ScoreResult(
+            return _ScoreDecision(
                 proceed=True,
                 return_score=None,
                 reason_code="draw_score_force_reflect",
@@ -1156,7 +1102,7 @@ class ProactiveTick:
                 draw_score=score.draw_score,
                 force_reflect=score.force_reflect,
             )
-        return ScoreResult(
+        return _ScoreDecision(
             proceed=True,
             return_score=None,
             reason_code="continue",
@@ -1291,8 +1237,9 @@ class ProactiveTick:
         if state.session_key and ":" in state.session_key:
             channel, chat_id = state.session_key.split(":", 1)
         # 2. 然后跑 retrieval port，把 block 和 route 元信息一次性带回。
-        if self._memory_retrieval is not None:
-            retrieved = await self._memory_retrieval.retrieve_proactive_context(
+        memory_retrieval = getattr(self, "_memory_retrieval", None)
+        if memory_retrieval is not None:
+            retrieved = await memory_retrieval.retrieve_proactive_context(
                 session_key=state.session_key,
                 channel=channel,
                 chat_id=chat_id,
@@ -1430,6 +1377,31 @@ class ProactiveTick:
             decide.decision_message,
         )
 
+    def _compose_port(self) -> Any:
+        port = getattr(self, "_composer", None)
+        if port is not None and hasattr(port, "compose_for_judge"):
+            return port
+        port = getattr(self, "_decide", None)
+        if port is not None and hasattr(port, "compose_for_judge"):
+            return port
+        port = getattr(self, "_judge", None)
+        if port is not None and hasattr(port, "compose_for_judge"):
+            return port
+        raise AttributeError("compose_for_judge port is not configured")
+
+    def _judge_port(self) -> Any | None:
+        port = getattr(self, "_judge", None)
+        if port is not None and (
+            hasattr(port, "judge_message") or hasattr(port, "pre_compose_veto")
+        ):
+            return port
+        port = getattr(self, "_decide", None)
+        if port is not None and (
+            hasattr(port, "judge_message") or hasattr(port, "pre_compose_veto")
+        ):
+            return port
+        return None
+
     async def _rewrite_or_reject_repeated_state_summary(
         self,
         ctx: DecisionContext,
@@ -1532,7 +1504,7 @@ class ProactiveTick:
     ) -> None:
         state = ctx.state
         sense = ctx.ensure_sense()
-        if self._cfg.anyaction_enabled and self._anyaction:
+        if self._cfg.anyaction_enabled and getattr(self, "_anyaction", None):
             self._anyaction.record_action(now_utc=state.now_utc)
         self._consume_evidence_entries(evidence)
         # 若本次发送无 feed 证据（纯 background_context 驱动），更新主 topic 冷却时间。
@@ -1559,7 +1531,7 @@ class ProactiveTick:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _trace_stage_result(
+    def _trace(
         self,
         ctx: DecisionContext,
         *,
@@ -1572,9 +1544,10 @@ class ProactiveTick:
             "result": _json_safe(asdict(result)) if is_dataclass(result) else {},
             "session_key": state.session_key,
         }
-        if self._stage_trace_writer is not None:
+        trace_writer = getattr(self, "_trace_writer", None)
+        if trace_writer is not None:
             try:
-                self._stage_trace_writer(
+                trace_writer(
                     build_strategy_trace_envelope(
                         trace_type="proactive_stage",
                         source="proactive.engine",
@@ -1669,9 +1642,13 @@ class ProactiveTick:
                 })
             if _candidates:
                 candidates_json = json.dumps(_candidates, ensure_ascii=False)
-        # 实际发送的消息正文（仅 act 阶段且 decision_message 已设时写入）
+        # 实际发送的消息正文：拒发类 act 打点和成功发送的 send 打点都应保留正文。
         sent_message: str | None = None
-        if stage == "act" and decide is not None and decide.decision_message:
+        if (
+            stage in {"act", "send"}
+            and decide is not None
+            and decide.decision_message
+        ):
             sent_message = decide.decision_message
         trace = ProactiveDecisionTrace(
             tick_id=state.tick_id,
