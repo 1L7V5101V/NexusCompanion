@@ -112,25 +112,17 @@ def load_config(path: str | Path = "config.json") -> Config:
             enabled=p.get("enabled", False),
             interval_seconds=p.get("interval_seconds", 1800),
             threshold=p.get("threshold", 0.70),
-            items_per_source=p.get("items_per_source", 3),
             recent_chat_messages=p.get("recent_chat_messages", 20),
             model=p.get("model", ""),
             default_channel=p.get("default_channel", "telegram"),
             default_chat_id=str(p.get("default_chat_id", "")),
             dedupe_seen_ttl_hours=int(p.get("dedupe_seen_ttl_hours", 24 * 14)),
             delivery_dedupe_hours=int(p.get("delivery_dedupe_hours", 24)),
-            semantic_dedupe_enabled=bool(p.get("semantic_dedupe_enabled", True)),
-            semantic_dedupe_threshold=float(p.get("semantic_dedupe_threshold", 0.90)),
             semantic_dedupe_window_hours=int(p.get("semantic_dedupe_window_hours", 72)),
-            semantic_dedupe_max_candidates=int(
-                p.get("semantic_dedupe_max_candidates", 200)
-            ),
-            semantic_dedupe_ngram=int(p.get("semantic_dedupe_ngram", 3)),
             semantic_dedupe_text_max_chars=int(
                 p.get("semantic_dedupe_text_max_chars", 240)
             ),
             use_global_memory=bool(p.get("use_global_memory", True)),
-            global_memory_max_chars=int(p.get("global_memory_max_chars", 3000)),
             score_weight_energy=float(p.get("score_weight_energy", 0.40)),
             score_weight_content=float(p.get("score_weight_content", 0.40)),
             score_weight_recent=float(p.get("score_weight_recent", 0.20)),
@@ -201,11 +193,6 @@ def load_config(path: str | Path = "config.json") -> Config:
             llm_reject_cooldown_hours=max(
                 0, int(p.get("llm_reject_cooldown_hours", 12))
             ),
-            pending_queue_enabled=bool(p.get("pending_queue_enabled", True)),
-            pending_item_ttl_hours=max(1, int(p.get("pending_item_ttl_hours", 24))),
-            pending_candidate_limit=max(1, int(p.get("pending_candidate_limit", 3))),
-            pending_max_per_source=max(1, int(p.get("pending_max_per_source", 20))),
-            pending_max_total=max(1, int(p.get("pending_max_total", 200))),
             skill_actions_enabled=bool(p.get("skill_actions_enabled", False)),
             skill_actions_path=str(p.get("skill_actions_path", "")),
             fitbit_enabled=bool(p.get("fitbit_enabled", False)),
@@ -213,21 +200,9 @@ def load_config(path: str | Path = "config.json") -> Config:
             fitbit_poll_seconds=max(1, int(p.get("fitbit_poll_seconds", 300))),
             sleep_modifier_sleeping=float(p.get("sleep_modifier_sleeping", 0.15)),
             fitbit_monitor_path=str(p.get("fitbit_monitor_path", "")),
-            source_scorer_enabled=bool(p.get("source_scorer_enabled", False)),
-            source_scorer_total_budget=max(
-                1, int(p.get("source_scorer_total_budget", 60))
-            ),
-            source_scorer_min_per_source=max(
-                0, int(p.get("source_scorer_min_per_source", 2))
-            ),
-            source_scorer_max_per_source=max(
-                1, int(p.get("source_scorer_max_per_source", 20))
-            ),
-            source_scorer_cache_path=str(p.get("source_scorer_cache_path", "")),
             preference_retrieval_enabled=bool(
                 p.get("preference_retrieval_enabled", True)
             ),
-            preference_top_k=max(1, int(p.get("preference_top_k", 4))),
             preference_per_source_top_k=max(
                 1, int(p.get("preference_per_source_top_k", 2))
             ),
@@ -251,7 +226,6 @@ def load_config(path: str | Path = "config.json") -> Config:
             ),
             judge_balance_daily_max=max(1, int(p.get("judge_balance_daily_max", 8))),
             judge_veto_balance_min=float(p.get("judge_veto_balance_min", 0.1)),
-            judge_veto_urgency_min=float(p.get("judge_veto_urgency_min", 0.05)),
             judge_veto_llm_dim_min=max(1, int(p.get("judge_veto_llm_dim_min", 2))),
             judge_send_threshold=float(p.get("judge_send_threshold", 0.60)),
             bg_context_main_topic_min_interval_hours=max(

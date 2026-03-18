@@ -268,7 +268,6 @@ def test_config_loader_parses_preference_fields(tmp_path):
                     "default_chat_id": "123",
                     "compose_judge_enabled": False,
                     "preference_retrieval_enabled": False,
-                    "preference_top_k": 8,
                     "preference_hyde_enabled": True,
                     "preference_hyde_timeout_ms": 3200,
                 },
@@ -283,7 +282,6 @@ def test_config_loader_parses_preference_fields(tmp_path):
 
     assert not hasattr(p, "compose_judge_enabled")
     assert p.preference_retrieval_enabled is False
-    assert p.preference_top_k == 8
     assert p.preference_hyde_enabled is True
     assert p.preference_hyde_timeout_ms == 3200
 
@@ -348,7 +346,7 @@ async def test_real_vector_retrieval_hits_hltv_major_race_preference(tmp_path):
         source_ref="pref-skins",
     )
     retrieval = DefaultMemoryRetrievalPort(
-        cfg=ProactiveConfig(preference_retrieval_enabled=True, preference_top_k=4),
+        cfg=ProactiveConfig(preference_retrieval_enabled=True),
         memory=port,
         item_id_fn=lambda _: "item1",
     )

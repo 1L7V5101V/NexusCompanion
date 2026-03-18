@@ -428,12 +428,8 @@ class ProactiveScenarioRunner:
         if spec.overrides.bypass_score:
             # 把 LLM 判断门槛降到 0，draw_score 不管多低都会进入 decide
             p_cfg.score_llm_threshold = 0.0
-        # 关闭 pending queue，避免测试引入跨场景状态
-        p_cfg.pending_queue_enabled = False
         # 关闭 message 语义去重，保证每次测试都能正常走到发送
         p_cfg.message_dedupe_enabled = False
-        # 关闭 semantic dedup
-        p_cfg.semantic_dedupe_enabled = False
         return p_cfg
 
     def _build_decide_port(

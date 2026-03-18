@@ -8,21 +8,15 @@ class ProactiveConfig:
     enabled: bool = False
     interval_seconds: int = 1800
     threshold: float = 0.70
-    items_per_source: int = 3
     recent_chat_messages: int = 20
     model: str = ""
     default_channel: str = "telegram"
     default_chat_id: str = ""
     dedupe_seen_ttl_hours: int = 24 * 14
     delivery_dedupe_hours: int = 24
-    semantic_dedupe_enabled: bool = True
-    semantic_dedupe_threshold: float = 0.90
     semantic_dedupe_window_hours: int = 72
-    semantic_dedupe_max_candidates: int = 200
-    semantic_dedupe_ngram: int = 3
     semantic_dedupe_text_max_chars: int = 240
     use_global_memory: bool = True
-    global_memory_max_chars: int = 3000
     score_weight_energy: float = 0.40
     score_weight_content: float = 0.40
     score_weight_recent: float = 0.20
@@ -66,11 +60,6 @@ class ProactiveConfig:
     message_dedupe_enabled: bool = True
     message_dedupe_recent_n: int = 5
     llm_reject_cooldown_hours: int = 12
-    pending_queue_enabled: bool = True
-    pending_item_ttl_hours: int = 12
-    pending_candidate_limit: int = 3
-    pending_max_per_source: int = 20
-    pending_max_total: int = 200
     skill_actions_enabled: bool = False
     skill_actions_path: str = ""
     fitbit_enabled: bool = False
@@ -78,14 +67,8 @@ class ProactiveConfig:
     fitbit_poll_seconds: int = 300
     sleep_modifier_sleeping: float = 0.15
     fitbit_monitor_path: str = ""
-    source_scorer_enabled: bool = False
-    source_scorer_total_budget: int = 60
-    source_scorer_min_per_source: int = 2
-    source_scorer_max_per_source: int = 20
-    source_scorer_cache_path: str = ""
     # 偏好专项 RAG
     preference_retrieval_enabled: bool = True
-    preference_top_k: int = 4
     preference_per_source_top_k: int = 2
     preference_max_sources: int = 5
     preference_hyde_enabled: bool = False
@@ -99,7 +82,6 @@ class ProactiveConfig:
     judge_urgency_horizon_hours: float = 12.0
     judge_balance_daily_max: int = 8
     judge_veto_balance_min: float = 0.1
-    judge_veto_urgency_min: float = 0.05
     judge_veto_llm_dim_min: int = 2
     judge_send_threshold: float = 0.60
     bg_context_main_topic_min_interval_hours: int = 6

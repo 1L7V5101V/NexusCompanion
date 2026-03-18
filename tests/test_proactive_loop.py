@@ -507,7 +507,6 @@ async def test_engine_evaluate_returns_structured_snapshot():
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._cfg = SimpleNamespace(
         interest_filter=SimpleNamespace(enabled=False),
-        items_per_source=3,
         score_content_halfsat=3.0,
         score_weight_energy=1.0,
         score_weight_content=1.0,
