@@ -215,7 +215,7 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
             observe_writer=None,
         )
 
-        # 2. 手工拼一个最小 engine，只跑 stage_decide，不进入真实发送。
+        # 2. 手工拼一个最小 engine，只跑 memory/compose/judge，不进入真实发送。
         engine = ProactiveEngine.__new__(ProactiveEngine)
         engine._cfg = copy.deepcopy(cfg.proactive)
         engine._decide = _build_decide_port(cfg, provider)
@@ -231,7 +231,15 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
         engine._sense = SimpleNamespace(collect_recent_proactive=lambda n=5: [])
 
         ctx = _build_ctx(trace_row)
-        result = await engine._stage_decide(ctx)
+        memory_result = await engine._retrieve_memory(ctx)
+        compose_result = await engine._compose(ctx)
+        if compose_result.proceed:
+            guard_result = await engine._judge_and_guard(ctx)
+            reason_code = guard_result.reason_code
+            should_send = guard_result.should_send
+        else:
+            reason_code = compose_result.reason_code
+            should_send = False
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
 
@@ -245,9 +253,10 @@ async def test_real_memory_retrieval_with_trace_replay_writes_diagnostic_artifac
             "selected_titles": [item.title for item in act.compose_items],
             "compose_entries": act.compose_entries,
             "final_message": decide.decision_message,
-            "should_send": decide.should_send,
-            "reason_code": result.reason_code,
-            "decision_mode": result.decision_mode,
+            "should_send": should_send,
+            "reason_code": reason_code,
+            "decision_mode": "compose_judge",
+            "memory_fallback_reason": memory_result.fallback_reason,
             "judge_final_score": decide.judge_final_score,
             "judge_vetoed_by": decide.judge_vetoed_by,
         }

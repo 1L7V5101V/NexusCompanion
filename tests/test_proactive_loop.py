@@ -1553,6 +1553,7 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
         pre_compose_veto=lambda **kw: None,
         compose_for_judge=_compose_for_judge,
         judge_message=_judge_message,
+        resolve_evidence_item_ids=lambda decision, items: [item.title for item in items],
     )
 
     ctx = DecisionContext()
@@ -1567,8 +1568,12 @@ async def test_compose_judge_reject_marks_rejection_cooldown():
     ]
     fetch.new_entries = [("rss:hltv", "Niko semifinal")]
 
-    # 1. 执行 compose+judge 决策。
-    await engine._run_compose_judge_decision(ctx)
+    # 1. 先走 compose，再走 judge，验证现行主链路会写 cooldown。
+    compose = await engine._compose(ctx)
+    assert compose.proceed is True
+    guard = await engine._judge_and_guard(ctx)
+    assert guard.should_send is False
+    assert guard.reason_code == "judge_reject"
 
     # 2. LLM 拒绝应写入本轮真正进入 compose 的条目，而不是原始候选首条。
     engine._state.mark_rejection_cooldown.assert_called_once_with(
@@ -1613,7 +1618,10 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
     ]
     score.sent_24h = 0
 
-    await engine._run_compose_judge_decision(ctx)
+    compose = await engine._compose(ctx)
+
+    assert compose.proceed is False
+    assert compose.reason_code == "compose_no_content"
 
     assert len(compose_calls) == 1
     assert compose_calls[0]["items"] == []

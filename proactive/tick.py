@@ -360,26 +360,6 @@ class GuardResult:
     judge_vetoed_by: str | None
 
 
-@dataclass(frozen=True)
-class DecideResult:
-    proceed: bool
-    return_score: float | None
-    reason_code: Literal["continue", "compose_no_content", "judge_reject"]
-    should_send: bool
-    decision_message: str
-    decision_mode: Literal["compose_judge"]
-    feature_final_score: float | None
-    judge_dims: dict[str, object]
-    judge_final_score: float | None
-    judge_vetoed_by: str | None
-    compose_no_content: bool
-    history_gate_reason: str
-    history_scope_mode: str
-
-
-# ---------------------------------------------------------------------------
-
-
 class ProactiveTick:
     """主动循环引擎：编排一次完整 tick，不直接依赖 ProactiveLoop。"""
 
@@ -1061,48 +1041,6 @@ class ProactiveTick:
             delivery_result="send_failed",
         )
 
-    async def _stage_decide(self, ctx: DecisionContext) -> DecideResult:
-        await self._retrieve_memory(ctx)
-        compose = await self._compose(ctx)
-        if not compose.proceed:
-            return DecideResult(
-                proceed=False,
-                return_score=compose.return_score,
-                reason_code=compose.reason_code,
-                should_send=False,
-                decision_message=compose.decision_message,
-                decision_mode="compose_judge",
-                feature_final_score=None,
-                judge_dims=decide.judge_dims,
-                judge_final_score=decide.judge_final_score,
-                judge_vetoed_by=decide.judge_vetoed_by or "compose_no_content",
-                compose_no_content=compose.compose_no_content,
-                history_gate_reason=compose.history_gate_reason,
-                history_scope_mode=compose.history_scope_mode,
-            )
-        guard = await self._judge_and_guard(ctx)
-        decide = ctx.ensure_decide()
-        return DecideResult(
-            proceed=guard.should_send,
-            return_score=guard.return_score,
-            reason_code="continue" if guard.should_send else "judge_reject",
-            should_send=guard.should_send,
-            decision_message=decide.decision_message,
-            decision_mode="compose_judge",
-            feature_final_score=decide.feature_final_score,
-            judge_dims=guard.judge_dims,
-            judge_final_score=guard.judge_final_score,
-            judge_vetoed_by=guard.judge_vetoed_by,
-            compose_no_content=decide.compose_no_content,
-            history_gate_reason=decide.history_gate_reason,
-            history_scope_mode=decide.history_scope_mode,
-        )
-
-    async def _stage_act(self, ctx: DecisionContext) -> None:
-        guard = await self._judge_and_guard(ctx)
-        if guard.should_send:
-            await self._send_and_finalize(ctx, guard)
-
     def _judge_rejection_cooldown_hours(self, vetoed_by: str | None) -> int:
         if vetoed_by == "llm_dim":
             return 12
@@ -1391,152 +1329,6 @@ class ProactiveTick:
             fetch.new_entries,
         )
 
-    async def _run_compose_judge_decision(self, ctx: DecisionContext) -> DecideResult:
-        """compose + post-judge 模式：先生成消息，再做多维评分。"""
-        # 1. 先挑出 compose 候选并执行 compose-only。
-        sense = ctx.ensure_sense()
-        fetch = ctx.ensure_fetch()
-        score = ctx.ensure_score()
-        decide = ctx.ensure_decide()
-        act = ctx.ensure_act()
-        self._prepare_feature_compose_candidates(ctx)
-        compose_entries = act.compose_entries or self._primary_candidate_entries(
-            fetch.new_entries
-        )
-        logger.info(
-            "[compose_judge] 进入 compose+judge 决策 "
-            "feed_items=%d compose_candidates=%d pref_block=%d字符",
-            len(fetch.new_items),
-            len(act.compose_items),
-            len(decide.preference_block or ""),
-        )
-        decide.compose_no_content = False
-        decide.judge_dims = {}
-        decide.judge_final_score = None
-        decide.judge_vetoed_by = None
-        # compose 전 결정적 거부 검사 — LLM 호출 낭비 방지
-        age_hours = self._candidate_age_hours(fetch.new_items, now_utc=ctx.state.now_utc)
-        pre_veto = getattr(self._decide, "pre_compose_veto", lambda **_: None)(
-            age_hours=age_hours,
-            sent_24h=score.sent_24h,
-            interrupt_factor=sense.interrupt_factor,
-        )
-        if pre_veto:
-            decide.should_send = False
-            decide.judge_vetoed_by = pre_veto
-            if pre_veto != "balance":
-                self._state.mark_rejection_cooldown(
-                    compose_entries,
-                    hours=getattr(self._cfg, "llm_reject_cooldown_hours", 0),
-                )
-            return DecideResult(
-                proceed=False,
-                return_score=score.base_score,
-                reason_code="judge_reject",
-                should_send=False,
-                decision_message="",
-                decision_mode="compose_judge",
-                feature_final_score=None,
-                judge_dims={},
-                judge_final_score=0.0,
-                judge_vetoed_by=pre_veto,
-                compose_no_content=False,
-                history_gate_reason=decide.history_gate_reason,
-                history_scope_mode=decide.history_scope_mode,
-            )
-        no_content_token = str(getattr(self._cfg, "compose_no_content_token", "<no_content/>"))
-        compose_recent = self._compose_recent_messages(
-            recent=sense.recent,
-            has_compose_candidates=bool(act.compose_items),
-        )
-        decide.decision_message = await self._decide.compose_for_judge(
-            items=act.compose_items,
-            recent=compose_recent,
-            preference_block=decide.preference_block,
-            no_content_token=no_content_token,
-        )
-        msg = (decide.decision_message or "").strip()
-        if not msg or msg == no_content_token:
-            decide.compose_no_content = True
-            decide.should_send = False
-            decide.decision_message = ""
-            self._state.mark_rejection_cooldown(
-                compose_entries,
-                hours=8,
-            )
-            return DecideResult(
-                proceed=False,
-                return_score=score.base_score,
-                reason_code="compose_no_content",
-                should_send=False,
-                decision_message="",
-                decision_mode="compose_judge",
-                feature_final_score=None,
-                judge_dims={},
-                judge_final_score=None,
-                judge_vetoed_by="compose_no_content",
-                compose_no_content=True,
-                history_gate_reason=decide.history_gate_reason,
-                history_scope_mode=decide.history_scope_mode,
-            )
-        # 2. 调用 judge（age_hours 已在 pre_compose_veto 中计算）。
-        recent_proactive_text = self._recent_proactive_text()
-        judge_result = await self._decide.judge_message(
-            message=msg,
-            recent=sense.recent,
-            recent_proactive_text=recent_proactive_text,
-            preference_block=decide.preference_block,
-            age_hours=age_hours,
-            sent_24h=score.sent_24h,
-            interrupt_factor=sense.interrupt_factor,
-        )
-        if judge_result is None:
-            decide.should_send = True
-            decide.judge_final_score = 1.0
-            decide.judge_vetoed_by = None
-            decide.judge_dims = {}
-            return self._build_continue_decide_result(ctx, decision_mode="compose_judge")
-        # 3. 落 trace 字段并根据 judge 结论决定是否发送。
-        decide.judge_dims = {
-            "deterministic": dict(getattr(judge_result, "dims_deterministic", {}) or {}),
-            "llm": dict(getattr(judge_result, "dims_llm", {}) or {}),
-            "llm_raw": dict(getattr(judge_result, "dims_llm_raw", {}) or {}),
-        }
-        decide.judge_final_score = float(getattr(judge_result, "final_score", 0.0) or 0.0)
-        decide.judge_vetoed_by = getattr(judge_result, "vetoed_by", None)
-        decide.should_send = bool(getattr(judge_result, "should_send", False))
-        if not decide.should_send:
-            vetoed_by = decide.judge_vetoed_by or ""
-            if vetoed_by != "balance":
-                if not vetoed_by:
-                    cooldown_hours = 8
-                elif vetoed_by == "llm_dim":
-                    cooldown_hours = 12
-                elif vetoed_by == "compose_no_content":
-                    cooldown_hours = 8
-                else:
-                    cooldown_hours = 8
-                self._state.mark_rejection_cooldown(
-                    compose_entries,
-                    hours=cooldown_hours,
-                )
-            return DecideResult(
-                proceed=False,
-                return_score=score.base_score,
-                reason_code="judge_reject",
-                should_send=False,
-                decision_message=decide.decision_message,
-                decision_mode="compose_judge",
-                feature_final_score=None,
-                judge_dims=decide.judge_dims,
-                judge_final_score=decide.judge_final_score,
-                judge_vetoed_by=decide.judge_vetoed_by,
-                compose_no_content=False,
-                history_gate_reason=decide.history_gate_reason,
-                history_scope_mode=decide.history_scope_mode,
-            )
-        return self._build_continue_decide_result(ctx, decision_mode="compose_judge")
-
     def _compose_recent_messages(
         self,
         *,
@@ -1575,29 +1367,6 @@ class ProactiveTick:
         lines = [str(getattr(row, "content", "") or "").strip() for row in rows]
         lines = [line for line in lines if line]
         return "\n---\n".join(lines)
-
-    def _build_continue_decide_result(
-        self,
-        ctx: DecisionContext,
-        *,
-        decision_mode: Literal["compose_judge"],
-    ) -> DecideResult:
-        decide = ctx.ensure_decide()
-        return DecideResult(
-            proceed=True,
-            return_score=None,
-            reason_code="continue",
-            should_send=decide.should_send,
-            decision_message=decide.decision_message,
-            decision_mode=decision_mode,
-            feature_final_score=decide.feature_final_score,
-            judge_dims=decide.judge_dims,
-            judge_final_score=decide.judge_final_score,
-            judge_vetoed_by=decide.judge_vetoed_by,
-            compose_no_content=decide.compose_no_content,
-            history_gate_reason=decide.history_gate_reason,
-            history_scope_mode=decide.history_scope_mode,
-        )
 
     def _build_evidence_bundle(self, ctx: DecisionContext) -> EvidenceBundle:
         """统一构建 act 阶段要消费的证据视图，避免 source/evidence 概念混用。"""
