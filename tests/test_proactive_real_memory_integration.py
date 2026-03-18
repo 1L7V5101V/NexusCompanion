@@ -20,7 +20,6 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from feeds.base import FeedItem
 from proactive.composer import Composer
 from proactive.config import ProactiveConfig
 from proactive.decide import DefaultDecidePort
@@ -101,9 +100,8 @@ def _to_events(candidates: list[dict]) -> tuple[list[GenericContentEvent], list[
     entries: list[tuple[str, str]] = []
     for payload in candidates:
         event = GenericContentEvent.from_mcp_payload(payload)
-        item = event.to_feed_item()
         events.append(event)
-        entries.append((compute_source_key(item), compute_item_id(item)))
+        entries.append((compute_source_key(event), compute_item_id(event)))
     return events, entries
 
 
@@ -116,7 +114,7 @@ def _build_provider(cfg: object, *, use_light: bool) -> LLMProvider:
     )
 
 
-def _format_items(items: list[FeedItem]) -> str:
+def _format_items(items: list[GenericContentEvent]) -> str:
     lines: list[str] = []
     for item in items[:4]:
         lines.append(f"- {item.title or '(无标题)'}（{item.source_name or 'unknown'}）")

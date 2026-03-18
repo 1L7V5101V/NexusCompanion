@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from feeds.base import FeedItem
+from proactive.event import GenericContentEvent
 from tests_scenarios.fixtures import ScenarioJudgeSpec
 
 
@@ -29,15 +29,18 @@ def _item(
     url: str = "https://example.com/item",
     minutes_ago: int = 30,
     author: str | None = None,
-) -> FeedItem:
-    return FeedItem(
-        source_name=source_name,
-        source_type=source_type,
-        title=title,
-        content=content,
-        url=url,
-        author=author,
-        published_at=_now() - timedelta(minutes=minutes_ago),
+) -> GenericContentEvent:
+    _ = author
+    return GenericContentEvent.from_mcp_payload(
+        {
+            "kind": "content",
+            "source_name": source_name,
+            "source_type": source_type,
+            "title": title,
+            "content": content,
+            "url": url,
+            "published_at": (_now() - timedelta(minutes=minutes_ago)).isoformat(),
+        }
     )
 
 
@@ -75,7 +78,7 @@ class ProactiveScenarioSpec:
     description: str
 
     # ── 内容输入 ──────────────────────────────────────────────────
-    feed_items: list[FeedItem] = field(default_factory=list)
+    feed_items: list[GenericContentEvent] = field(default_factory=list)
     recent_messages: list[dict] = field(default_factory=list)
     memory_text: str = ""          # 长期记忆文本（直接注入 collect_global_memory）
 

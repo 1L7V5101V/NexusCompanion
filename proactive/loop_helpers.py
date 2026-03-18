@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from feeds.base import FeedItem
+from proactive.event import ContentEvent
 from proactive.item_id import compute_item_id, compute_source_key, normalize_url
 
 logger = logging.getLogger("proactive.loop")
@@ -49,28 +49,34 @@ def _decision_with_randomized_score(
     )
 
 
-def _format_items(items: list[FeedItem]) -> str:
+def _format_items(items: list[ContentEvent]) -> str:
     out = []
     for i, item in enumerate(items, 1):
-        if item.display_text:
+        display_text = str(getattr(item, "display_text", "") or "").strip()
+        if display_text:
             # MCP 侧已提供预格式化文本，直接使用；URL 兜底追加保证溯源链不断
-            text = item.display_text
-            if item.url and item.url not in text:
-                text += f"\n原文链接: {item.url}"
+            text = display_text
+            url = getattr(item, "url", None)
+            if url and url not in text:
+                text += f"\n原文链接: {url}"
         else:
-            title = item.title or "（无标题）"
-            content = (item.content or "").strip().replace("\n", " ")
+            title = getattr(item, "title", None) or "（无标题）"
+            content = str(getattr(item, "content", "") or "").strip().replace("\n", " ")
             if len(content) > 300:
                 content = content[:300] + "..."
             meta = []
-            if item.source_name:
-                meta.append(item.source_name)
-            if item.author:
-                meta.append(item.author)
-            if item.published_at:
-                meta.append(str(item.published_at))
+            source_name = getattr(item, "source_name", None)
+            author = getattr(item, "author", None)
+            published_at = getattr(item, "published_at", None)
+            if source_name:
+                meta.append(str(source_name))
+            if author:
+                meta.append(str(author))
+            if published_at:
+                meta.append(str(published_at))
             meta_str = f" [{' / '.join(meta)}]" if meta else ""
-            url_line = f"\n原文链接: {item.url}" if item.url else ""
+            url = getattr(item, "url", None)
+            url_line = f"\n原文链接: {url}" if url else ""
             text = f"{title}{meta_str}\n{content}{url_line}"
         out.append(f"{i}. {text}")
     return "\n\n".join(out)
@@ -128,11 +134,11 @@ def _strict_bool(value: object) -> bool:
     return False
 
 
-def _source_key(item: FeedItem) -> str:
+def _source_key(item: ContentEvent) -> str:
     return compute_source_key(item)
 
 
-def _item_id(item: FeedItem) -> str:
+def _item_id(item: ContentEvent) -> str:
     return compute_item_id(item)
 
 
@@ -140,7 +146,7 @@ def _normalize_url(url: str | None) -> str:
     return normalize_url(url)
 
 
-def _resolve_evidence_item_ids(decision: _Decision, items: list[FeedItem]) -> list[str]:
+def _resolve_evidence_item_ids(decision: _Decision, items: list[ContentEvent]) -> list[str]:
     if decision.evidence_item_ids:
         return decision.evidence_item_ids[:1]
     if not items:
@@ -153,14 +159,14 @@ def _build_delivery_key(item_ids: list[str], message: str) -> str:
     return f"{ids}|{message.strip()}"
 
 
-def _semantic_text(item: FeedItem, max_chars: int) -> str:
-    title = (item.title or "").strip()
-    content = re.sub(r"\s+", " ", (item.content or "").strip())
+def _semantic_text(item: ContentEvent, max_chars: int) -> str:
+    title = str(getattr(item, "title", "") or "").strip()
+    content = re.sub(r"\s+", " ", str(getattr(item, "content", "") or "").strip())
     text = f"{title}\n{content}".strip()
     return text[:max_chars]
 
 
-def _semantic_entries(items: list[FeedItem], max_chars: int) -> list[dict[str, str]]:
+def _semantic_entries(items: list[ContentEvent], max_chars: int) -> list[dict[str, str]]:
     return [
         {
             "item_id": _item_id(item),

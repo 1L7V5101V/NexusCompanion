@@ -12,7 +12,6 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from feeds.base import FeedItem
 from proactive.event import GenericContentEvent
 from proactive.config import ProactiveConfig
 from proactive.tick import (
@@ -421,13 +420,13 @@ async def test_engine_stage_score_draw_threshold_still_triggers_skill_action():
     sense.interrupt_factor = 1.0
     sense.interruptibility = 1.0
     fetch.new_items = [
-        FeedItem(
+        GenericContentEvent(
+            event_id="test-a",
             source_name="Test",
             source_type="rss",
             title="A",
             content="body",
             url="https://example.com/a",
-            author=None,
             published_at=None,
         )
     ]
@@ -480,7 +479,7 @@ async def test_engine_stage_fetch_filter_returns_structured_snapshot():
     assert isinstance(feed_events[0], GenericContentEvent)
     assert feed_events[0].event_id == "evt-1"
     assert ctx.ensure_fetch().new_entries == [
-        ("mcp:feed:evt-1", compute_item_id(feed_events[0].to_feed_item()))
+        ("mcp:feed:evt-1", compute_item_id(feed_events[0]))
     ]
 
 
@@ -514,9 +513,7 @@ async def test_engine_stage_fetch_filter_skips_rejection_cooled_events(tmp_path)
     ctx = DecisionContext()
     ctx.state.now_utc = datetime.now(timezone.utc)
 
-    item_id = compute_item_id(
-        GenericContentEvent.from_mcp_payload(payloads[0]).to_feed_item()
-    )
+    item_id = compute_item_id(GenericContentEvent.from_mcp_payload(payloads[0]))
     state.mark_rejection_cooldown([("mcp:feed:evt-1", item_id)], hours=12)
 
     with mock.patch("proactive.mcp_sources.fetch_content_events", return_value=payloads):
@@ -1236,13 +1233,13 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
     from proactive.state import ProactiveStateStore
     from proactive.item_id import compute_item_id, compute_source_key
 
-    item = FeedItem(
+    item = GenericContentEvent(
+        event_id="rejected",
         source_name="test",
         source_type="rss",
         title="被拒绝的内容",
         content="",
         url="https://example.com/rejected",
-        author=None,
         published_at=None,
     )
     source_key = compute_source_key(item)
@@ -1322,29 +1319,28 @@ def test_prepare_compose_candidates_prefers_interest_ranked_items():
 def test_select_compose_items_sorts_group_by_published_at_asc():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
-    from feeds.base import FeedItem
     from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
 
     now = datetime.now(timezone.utc)
-    newer = FeedItem(
+    newer = GenericContentEvent(
+        event_id="niko-final",
         source_name="HLTV",
         source_type="rss",
         title="Niko final",
         content="",
         url="https://example.com/f",
-        author=None,
         published_at=now,
     )
-    older = FeedItem(
+    older = GenericContentEvent(
+        event_id="niko-semifinal",
         source_name="HLTV",
         source_type="rss",
         title="Niko semifinal",
         content="",
         url="https://example.com/s",
-        author=None,
         published_at=now - timedelta(hours=3),
     )
 
@@ -1361,37 +1357,36 @@ def test_select_compose_items_sorts_group_by_published_at_asc():
 
 def test_select_compose_items_keeps_top_interest_single_item_over_larger_lower_interest_group():
     from datetime import datetime, timezone, timedelta
-    from feeds.base import FeedItem
     from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
 
     now = datetime.now(timezone.utc)
-    niko = FeedItem(
+    niko = GenericContentEvent(
+        event_id="niko",
         source_name="NiKo Twitter",
         source_type="rss",
         title="NiKo Twitter clip",
         content="",
         url="https://example.com/niko",
-        author=None,
         published_at=now,
     )
-    hooxi = FeedItem(
+    hooxi = GenericContentEvent(
+        event_id="hooxi",
         source_name="HLTV News",
         source_type="rss",
         title="HooXi on G2 changes",
         content="",
         url="https://example.com/hooxi",
-        author=None,
         published_at=now - timedelta(minutes=10),
     )
-    navi = FeedItem(
+    navi = GenericContentEvent(
+        event_id="navi",
         source_name="HLTV News",
         source_type="rss",
         title="NAVI win EPL playoffs",
         content="",
         url="https://example.com/navi",
-        author=None,
         published_at=now - timedelta(minutes=5),
     )
 
@@ -1414,16 +1409,15 @@ def test_select_compose_items_keeps_top_interest_single_item_over_larger_lower_i
 def test_select_compose_items_aggregates_same_source_short_news():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
-    from feeds.base import FeedItem
     from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
     now = datetime.now(timezone.utc)
     items = [
-        FeedItem("HLTV News", "rss", "Short news: Week 10", "", "https://e/10", None, now - timedelta(hours=2)),
-        FeedItem("HLTV News", "rss", "Roster tracker: March 2026", "", "https://e/11", None, now - timedelta(hours=1)),
-        FeedItem("HLTV News", "rss", "Inner Circle sign headtr1ck", "", "https://e/12", None, now),
+        GenericContentEvent("week-10", "rss", "HLTV News", "", "Short news: Week 10", "https://e/10", now - timedelta(hours=2)),
+        GenericContentEvent("roster-tracker", "rss", "HLTV News", "", "Roster tracker: March 2026", "https://e/11", now - timedelta(hours=1)),
+        GenericContentEvent("headtr1ck", "rss", "HLTV News", "", "Inner Circle sign headtr1ck", "https://e/12", now),
     ]
     entries = [
         ("rss:hltv", "Short news: Week 10"),
@@ -1447,15 +1441,14 @@ def test_select_compose_items_aggregates_same_source_short_news():
 def test_select_compose_items_aggregates_same_topic_across_sources():
     from types import SimpleNamespace
     from datetime import datetime, timezone, timedelta
-    from feeds.base import FeedItem
     from proactive.tick import ProactiveEngine
 
     engine = ProactiveEngine.__new__(ProactiveEngine)
     engine._decide = SimpleNamespace(item_id_for=lambda item: item.title)
     now = datetime.now(timezone.utc)
     items = [
-        FeedItem("NiKo Twitter", "rss", "NiKo talks about pressure in playoffs", "", "https://e/niko", None, now),
-        FeedItem("HLTV News", "rss", "HooXi reflects on NiKo leadership in G2", "", "https://e/hooxi", None, now - timedelta(minutes=20)),
+        GenericContentEvent("niko-pressure", "rss", "NiKo Twitter", "", "NiKo talks about pressure in playoffs", "https://e/niko", now),
+        GenericContentEvent("hooxi-niko", "rss", "HLTV News", "", "HooXi reflects on NiKo leadership in G2", "https://e/hooxi", now - timedelta(minutes=20)),
     ]
     entries = [
         ("rss:niko", "NiKo talks about pressure in playoffs"),

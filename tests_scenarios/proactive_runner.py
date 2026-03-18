@@ -30,7 +30,6 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from feeds.base import FeedItem
 from proactive.anyaction import AnyActionGate, QuotaStore
 from proactive.composer import Composer
 from proactive.config import ProactiveConfig
@@ -122,12 +121,12 @@ class TestSensePort:
         # 在测试中直接返回中等可打扰度，不走复杂计算
         return 0.7, {"f_reply": 0.7, "f_activity": 0.7, "f_fatigue": 0.7, "random_delta": 0.0}
 
-    async def fetch_items(self, limit_per_source: int) -> list[FeedItem]:
+    async def fetch_items(self, limit_per_source: int) -> list[GenericContentEvent]:
         return list(self._spec.feed_items)
 
     def filter_new_items(
-        self, items: list[FeedItem]
-    ) -> tuple[list[FeedItem], list[tuple[str, str]], list[tuple[str, str]]]:
+        self, items: list[GenericContentEvent]
+    ) -> tuple[list[GenericContentEvent], list[tuple[str, str]], list[tuple[str, str]]]:
         # 测试中所有 item 都是"新的"，跳过 seen/semantic 去重
         return list(items), [], []
 
@@ -210,20 +209,6 @@ class TestProactiveEngine(ProactiveEngine):
         super().__init__(**kwargs)
         self._test_spec = spec
 
-    def _feed_item_to_content_event(self, item: "FeedItem") -> GenericContentEvent:
-        from proactive.item_id import compute_item_id
-
-        event_id = compute_item_id(item)
-        return GenericContentEvent(
-            event_id=event_id,
-            source_type=item.source_type,
-            source_name=item.source_name,
-            content=item.content,
-            title=item.title,
-            url=item.url,
-            published_at=item.published_at,
-        )
-
     def _load_alert_events(self) -> list[AlertEvent]:
         """把 spec.extra_signals["alert_events"] 转成 GenericAlertEvent 对象注入引擎。"""
         raw_alerts = self._test_spec.extra_signals.get("alert_events") or []
@@ -249,10 +234,8 @@ class TestProactiveEngine(ProactiveEngine):
     async def _stage_fetch_filter(self, ctx: DecisionContext) -> FetchFilterResult:
         """使用 spec 注入的 feed_items，不调用真实 MCP。"""
         fetch = ctx.ensure_fetch()
-        feed_items = list(self._test_spec.feed_items)
-        content_events = [self._feed_item_to_content_event(item) for item in feed_items]
-
-        fetch.items = feed_items
+        content_events = list(self._test_spec.feed_items)
+        fetch.items = content_events
         fetch.new_items = content_events
         fetch.new_entries = [
             (f"test:{event.event_id}", event.event_id)
@@ -267,9 +250,9 @@ class TestProactiveEngine(ProactiveEngine):
         fetch.has_memory = bool(self._test_spec.memory_text.strip())
 
         return FetchFilterResult(
-            total_items=len(feed_items),
-            discovered_count=len(feed_items),
-            selected_count=len(feed_items),
+            total_items=len(content_events),
+            discovered_count=len(content_events),
+            selected_count=len(content_events),
             semantic_duplicate_count=0,
             pending_enabled=False,
             has_memory=fetch.has_memory,

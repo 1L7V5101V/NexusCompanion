@@ -7,13 +7,13 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Callable
 
-from feeds.base import FeedItem
 from memory2.hyde_enhancer import HyDEEnhancer
 from memory2.injection_planner import retrieve_history_items, retrieve_procedure_items
 from proactive.composer import (
     build_proactive_memory_query,
     build_proactive_preference_hyde_prompt,
 )
+from proactive.event import ContentEvent
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
@@ -31,7 +31,7 @@ class MemoryRetrievalService:
         *,
         cfg: Any,
         memory: "MemoryPort | None",
-        item_id_fn: Callable[[FeedItem], str],
+        item_id_fn: Callable[[ContentEvent], str],
         trace_writer: Callable[[dict[str, Any]], None] | None = None,
         observe_writer: Any | None = None,
         light_provider: "LLMProvider | None" = None,
@@ -53,7 +53,7 @@ class MemoryRetrievalService:
         session_key: str,
         channel: str,
         chat_id: str,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         recent: list[dict],
         decision_signals: dict[str, object],
         is_crisis: bool,
@@ -148,7 +148,7 @@ class MemoryRetrievalService:
         *,
         channel: str,
         chat_id: str,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         query: str,
         history_open: bool,
     ) -> tuple[list[dict], list[dict], str, list[dict], list[str]]:
@@ -253,7 +253,7 @@ class MemoryRetrievalService:
     def _decide_history_gate(
         self,
         *,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         recent: list[dict],
         decision_signals: dict[str, object],
         is_crisis: bool,
@@ -281,7 +281,7 @@ class MemoryRetrievalService:
     async def _retrieve_preference_by_sources(
         self,
         *,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         top_k_per_source: int,
     ) -> tuple[list[dict], list[str]]:
         unique_items = self._unique_items_by_topic(items)
@@ -329,41 +329,53 @@ class MemoryRetrievalService:
 
     async def _retrieve_preference_hits_for_item(
         self,
-        item: FeedItem,
+        item: ContentEvent,
         top_k_per_source: int,
     ) -> tuple[list[dict], list[str]]:
-        query = self._build_preference_query_for_item(item)
-        if self._preference_hyde is None:
-            hits = await self._memory.retrieve_related(
-                query,
-                memory_types=["preference", "profile"],
+        queries = self._build_preference_queries_for_item(item)
+        merged_hits: list[dict] = []
+        used_queries: list[str] = []
+        context = self._build_preference_hyde_context(item)
+        for query in queries:
+            if self._preference_hyde is None:
+                hits = await self._memory.retrieve_related(
+                    query,
+                    memory_types=["preference", "profile"],
+                    top_k=top_k_per_source,
+                )
+                merged_hits.extend(hits or [])
+                used_queries.append(query)
+                continue
+            result = await self._preference_hyde.augment(
+                raw_query=query,
+                context=context,
+                retrieve_fn=self._memory.retrieve_related,
                 top_k=top_k_per_source,
+                memory_types=["preference", "profile"],
             )
-            return hits or [], [query]
-        result = await self._preference_hyde.augment(
-            raw_query=query,
-            context=self._build_preference_hyde_context(item),
-            retrieve_fn=self._memory.retrieve_related,
-            top_k=top_k_per_source,
-            memory_types=["preference", "profile"],
-        )
-        queries = [query]
-        if result.hypothesis:
-            queries.append(result.hypothesis)
-        return result.items, queries
+            merged_hits.extend(result.items or [])
+            used_queries.append(query)
+            if result.hypothesis:
+                used_queries.append(result.hypothesis)
+        return _merge_memory_items(merged_hits), used_queries
 
     @staticmethod
-    def _build_preference_query_for_item(item: FeedItem) -> str:
-        source = item.source_name or item.source_type or "该来源"
-        title = re.sub(r"\s+", " ", (item.title or "").strip())[:80]
-        return f"用户对 {source} 的偏好和态度；相关话题：{title}"
+    def _build_preference_queries_for_item(item: ContentEvent) -> list[str]:
+        source = getattr(item, "source_name", None) or getattr(item, "source_type", None) or "该来源"
+        title = re.sub(r"\s+", " ", str(getattr(item, "title", "") or "").strip())[:80]
+        return [
+            f"用户对 {source} 的偏好和态度；相关话题：{title}",
+            f"用户对 {source} 的负向偏好、禁推规则和过滤要求；相关话题：{title}",
+        ]
 
     @staticmethod
-    def _build_preference_hyde_context(item: FeedItem) -> str:
+    def _build_preference_hyde_context(item: ContentEvent) -> str:
         lines: list[str] = []
-        title = re.sub(r"\s+", " ", (item.title or "").strip())
-        source = (item.source_name or item.source_type or "").strip()
-        content = re.sub(r"\s+", " ", (item.content or "").strip())[:160]
+        title = re.sub(r"\s+", " ", str(getattr(item, "title", "") or "").strip())
+        source = str(
+            getattr(item, "source_name", None) or getattr(item, "source_type", "") or ""
+        ).strip()
+        content = re.sub(r"\s+", " ", str(getattr(item, "content", "") or "").strip())[:160]
         if title:
             lines.append(f"候选内容：{title}")
         if source:
@@ -373,21 +385,21 @@ class MemoryRetrievalService:
         return "\n".join(lines)
 
     @staticmethod
-    def _unique_items_by_topic(items: list[FeedItem]) -> list[FeedItem]:
+    def _unique_items_by_topic(items: list[ContentEvent]) -> list[ContentEvent]:
         seen: set[str] = set()
-        unique: list[FeedItem] = []
+        unique: list[ContentEvent] = []
         for item in items:
-            title = re.sub(r"\s+", " ", (item.title or "").strip()).lower()
-            url = (item.url or "").strip().lower()
+            title = re.sub(r"\s+", " ", str(getattr(item, "title", "") or "").strip()).lower()
+            url = str(getattr(item, "url", "") or "").strip().lower()
             if title or url:
                 key = f"{title}|{url}"
             else:
-                source = (item.source_name or "").strip().lower()
-                source_type = (item.source_type or "").strip().lower()
+                source = str(getattr(item, "source_name", "") or "").strip().lower()
+                source_type = str(getattr(item, "source_type", "") or "").strip().lower()
                 if source or source_type:
                     key = f"{source_type}:{source}"
                 else:
-                    fallback = f"{(item.content or '').strip()[:80]}"
+                    fallback = f"{str(getattr(item, 'content', '') or '').strip()[:80]}"
                     key = "fallback:" + hashlib.sha1(
                         fallback.encode("utf-8")
                     ).hexdigest()[:12]
@@ -404,7 +416,7 @@ class MemoryRetrievalService:
         channel: str,
         chat_id: str,
         result: Any,
-        candidate_items: list[FeedItem],
+        candidate_items: list[ContentEvent],
         preference_query: str = "",
         preference_hit_count: int = 0,
         p_items_raw: list[dict] | None = None,
@@ -534,4 +546,3 @@ def _build_injection_block(
     if callable(getattr(memory, "build_injection_block", None)):
         return memory.build_injection_block(items)
     return memory.format_injection_with_ids(items)
-

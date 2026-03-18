@@ -17,6 +17,7 @@ from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
+from proactive.event import GenericContentEvent
 from proactive.loop_helpers import (
     _Decision,
     _build_delivery_key,
@@ -29,7 +30,6 @@ from proactive.loop_helpers import (
     _resolve_evidence_item_ids,
     _semantic_entries,
 )
-from feeds.base import FeedItem
 
 
 class _SafetyHarness(AgentLoopSafetyRetryMixin):
@@ -203,13 +203,13 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
 
 
 def test_loop_helpers_cover_formatting_parsing_and_similarity():
-    item = FeedItem(
+    item = GenericContentEvent(
+        event_id="loop-helper-item",
         source_name="Source",
         source_type="rss",
         title="Title",
         content="Long content " * 40,
         url="https://x",
-        author="Author",
         published_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
     )
     assert "原文链接" in _format_items([item])

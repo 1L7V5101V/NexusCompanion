@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
-from feeds.base import FeedItem
+from proactive.event import ContentEvent
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+.#-]{1,}|[\u4e00-\u9fff]{2,}")
 
@@ -104,26 +104,26 @@ def _build_keyword_weights(
     return {k: 1.0 + math.log1p(v) for k, v in ranked}
 
 
-def _item_text(item: FeedItem) -> str:
+def _item_text(item: ContentEvent) -> str:
     parts = [
-        item.title or "",
-        item.content or "",
-        item.url or "",
-        item.author or "",
-        item.source_name or "",
+        str(getattr(item, "title", "") or ""),
+        str(getattr(item, "content", "") or ""),
+        str(getattr(item, "url", "") or ""),
+        str(getattr(item, "author", "") or ""),
+        str(getattr(item, "source_name", "") or ""),
     ]
     return "\n".join(parts)
 
 
 def score_items_by_memory(
-    items: Iterable[FeedItem],
+    items: Iterable[ContentEvent],
     memory_text: str,
     cfg: InterestFilterConfig,
-) -> list[tuple[FeedItem, float]]:
+) -> list[tuple[ContentEvent, float]]:
     weights = _build_keyword_weights(memory_text or "", cfg)
     if not weights:
         return [(item, 0.0) for item in items]
-    results: list[tuple[FeedItem, float]] = []
+    results: list[tuple[ContentEvent, float]] = []
     for item in items:
         tokens = set(_tokenize(_item_text(item), min_len=cfg.min_token_len))
         if not tokens:
@@ -137,10 +137,10 @@ def score_items_by_memory(
 
 
 def select_interesting_items(
-    items: list[FeedItem],
+    items: list[ContentEvent],
     memory_text: str,
     cfg: InterestFilterConfig,
-) -> tuple[list[FeedItem], list[tuple[FeedItem, float]]]:
+) -> tuple[list[ContentEvent], list[tuple[ContentEvent, float]]]:
     """返回筛选后的条目及完整打分列表（按分数降序）。"""
     scored = score_items_by_memory(items, memory_text, cfg)
     ranked = sorted(scored, key=lambda x: x[1], reverse=True)

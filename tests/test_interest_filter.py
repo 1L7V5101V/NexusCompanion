@@ -1,15 +1,15 @@
-from feeds.base import FeedItem
+from proactive.event import GenericContentEvent
 from proactive.interest import InterestFilterConfig, select_interesting_items
 
 
-def _item(title: str, content: str) -> FeedItem:
-    return FeedItem(
+def _item(title: str, content: str) -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id=title,
         source_name="rss",
         source_type="rss",
         title=title,
         content=content,
         url=None,
-        author=None,
         published_at=None,
     )
 

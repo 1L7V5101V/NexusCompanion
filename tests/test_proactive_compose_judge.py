@@ -4,17 +4,18 @@ from datetime import datetime, timezone
 
 import pytest
 
-from feeds.base import FeedItem
 from proactive.composer import Composer
 from proactive.config import ProactiveConfig
+from proactive.event import GenericContentEvent
 from proactive.judge import Judge, ProactiveJudgeResult
 from proactive.tick import ProactiveEngine
 from proactive.ports import ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 
 
-def _item() -> FeedItem:
-    return FeedItem(
+def _item() -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id="teamatlas",
         source_name="HLTV",
         source_type="rss",
         title="TeamAtlas win ESL Pro League",
@@ -24,20 +25,20 @@ def _item() -> FeedItem:
     )
 
 
-def _portal_item() -> FeedItem:
+def _portal_item() -> GenericContentEvent:
     content = (
         "PlayStation Portal 即将上线 1080p 高画质模式，通过更高码率流传输，让远程游戏体验更清晰流畅。"
         " 这次更新强调画面清晰度与串流质量提升，文章核心就是 1080p 模式、高码率，以及对远程游玩体验的改善。"
         " 作为测试数据，这里额外重复一次相同信息，避免 compose 阶段触发补抓正文。"
         " PlayStation Portal 即将上线 1080p 高画质模式，通过更高码率流传输，让远程游戏体验更清晰流畅。"
     )
-    return FeedItem(
+    return GenericContentEvent(
+        event_id="portal-1080p",
         source_name="VGC News",
         source_type="rss",
         title="PlayStation Portal is getting a new 1080p High Quality mode this week",
         content=content,
         url="https://www.videogameschronicle.com/news/playstation-portal-is-getting-a-new-1080p-high-quality-mode-this-week/",
-        author=None,
         published_at=datetime.now(timezone.utc),
     )
 
@@ -276,13 +277,13 @@ async def test_compose_enrich_items_parses_fetch_json(monkeypatch):
         format_items=lambda _: "",
         format_recent=lambda _: "",
     )
-    item = FeedItem(
+    item = GenericContentEvent(
+        event_id="short",
         source_name="Test",
         source_type="rss",
         title="short",
         content="tiny",
         url="https://example.com/a",
-        author=None,
         published_at=datetime.now(timezone.utc),
     )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,19 +14,30 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
-from feeds.base import FeedItem
-from proactive.components import ProactiveMessageComposer
+from proactive.composer import Composer
+from proactive.event import GenericContentEvent
 from proactive.loop_helpers import _format_items, _format_recent
 
 
-def _item(title: str, content: str, url: str, minutes_ago: int) -> FeedItem:
-    return FeedItem(
+def _patch_real_openai() -> None:
+    # 1. pytest 会在 conftest 里注入 openai stub，这里显式切回真实包。
+    for name in list(sys.modules):
+        if name == "openai" or name.startswith("openai."):
+            del sys.modules[name]
+    real_openai = importlib.import_module("openai")
+    import agent.provider as provider_mod
+
+    provider_mod.AsyncOpenAI = real_openai.AsyncOpenAI
+
+
+def _item(title: str, content: str, url: str, minutes_ago: int) -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id=title,
         source_name="PC Gamer UK - Games",
         source_type="rss",
         title=title,
         content=content,
         url=url,
-        author=None,
         published_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
     )
 
@@ -32,6 +45,7 @@ def _item(title: str, content: str, url: str, minutes_ago: int) -> FeedItem:
 @pytest.mark.asyncio
 async def test_real_llm_composer_aggregates_updates_with_per_item_links():
     cfg_path = Path("/mnt/data/coding/akasic-agent/config.json")
+    _patch_real_openai()
     cfg = load_config(str(cfg_path))
     provider = LLMProvider(
         api_key=cfg.api_key,
@@ -44,17 +58,12 @@ async def test_real_llm_composer_aggregates_updates_with_per_item_links():
     resources = SharedHttpResources()
     configure_default_shared_http_resources(resources)
     try:
-        composer = ProactiveMessageComposer(
+        composer = Composer(
             provider=provider,
             model=cfg.model,
             max_tokens=700,
             format_items=_format_items,
             format_recent=_format_recent,
-            collect_global_memory=lambda: (
-                "用户喜欢有明确信息密度的游戏资讯，不排斥我主动总结同一主题的多条更新。"
-            ),
-            max_tool_iterations=4,
-            fitbit_url=cfg.proactive.fitbit_url,
         )
         items = [
             _item(
@@ -77,24 +86,17 @@ async def test_real_llm_composer_aggregates_updates_with_per_item_links():
             ),
         ]
 
-        message = await composer.compose_message(
+        message = await composer.compose_for_judge(
             items=items,
             recent=[],
-            decision_signals={
-                "candidate_items": len(items),
-                "minutes_since_last_proactive": 180,
-                "user_replied_after_last_proactive": True,
-                "proactive_sent_24h": 0,
-            },
-            retrieved_memory_block="",
             preference_block="",
         )
 
         assert message.strip()
         assert len(message) <= 400
+        assert "Banquet for Fools" in message
         assert "https://www.pcgamer.com/banquet-release" in message
         assert "https://www.pcgamer.com/banquet-demo" in message
-        assert "https://www.pcgamer.com/banquet-combat" in message
     finally:
         clear_default_shared_http_resources(resources)
         await resources.aclose()

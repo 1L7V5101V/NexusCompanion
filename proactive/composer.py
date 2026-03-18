@@ -11,8 +11,8 @@ from urllib.parse import urlsplit
 from agent.provider import LLMProvider
 from agent.tools.web_fetch import WebFetchTool
 from core.net.http import get_default_http_requester
-from feeds.base import FeedItem
 from prompts.proactive import build_compose_prompt_messages
+from proactive.event import ContentEvent
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def classify_content_quality(item: object) -> str:
 
 def build_proactive_preference_query(
     *,
-    items: list[FeedItem],
+    items: list[ContentEvent],
     max_items: int = 3,
 ) -> str:
     lines: list[str] = ["用户偏好 兴趣 关注"]
@@ -70,7 +70,7 @@ def build_proactive_preference_hyde_prompt(query: str, context: str = "") -> str
 
 def build_proactive_memory_query(
     *,
-    items: list[FeedItem],
+    items: list[ContentEvent],
     recent: list[dict],
     decision_signals: dict[str, object],
     is_crisis: bool,
@@ -104,16 +104,16 @@ def build_proactive_memory_query(
     return "\n".join(lines)
 
 
-def _memory_query_item_lines(item: FeedItem) -> list[str]:
-    title = (item.title or "").strip() or "(无标题)"
-    snippet = re.sub(r"\s+", " ", (item.content or "").strip())[:120]
-    source = (item.source_name or "").strip()
-    source_type = (item.source_type or "").strip().lower()
+def _memory_query_item_lines(item: ContentEvent) -> list[str]:
+    title = str(getattr(item, "title", "") or "").strip() or "(无标题)"
+    snippet = re.sub(r"\s+", " ", str(getattr(item, "content", "") or "").strip())[:120]
+    source = str(getattr(item, "source_name", "") or "").strip()
+    source_type = str(getattr(item, "source_type", "") or "").strip().lower()
     source_key = f"{source_type}:{source.lower()}" if source_type or source else ""
     lines = [f"- {title}" + (f"（{source}）" if source else "")]
     if source_key:
         lines.append(f"  来源标签: {source_key}")
-    domain = _source_domain(item.url)
+    domain = _source_domain(getattr(item, "url", None))
     if domain:
         lines.append(f"  来源域名: {domain}")
     if snippet:
@@ -161,9 +161,9 @@ class ProactivePromptContext:
 
 def _build_proactive_prompt_context(
     *,
-    items: list[FeedItem],
+    items: list[ContentEvent],
     recent: list[dict],
-    format_items: Callable[[list[FeedItem]], str],
+    format_items: Callable[[list[ContentEvent]], str],
     format_recent: Callable[[list[dict]], str],
 ) -> ProactivePromptContext:
     now = datetime.now().astimezone()
@@ -183,7 +183,7 @@ class Composer:
         provider: LLMProvider,
         model: str,
         max_tokens: int,
-        format_items: Callable[[list[FeedItem]], str],
+        format_items: Callable[[list[ContentEvent]], str],
         format_recent: Callable[[list[dict]], str],
     ) -> None:
         self._provider = provider
@@ -196,7 +196,7 @@ class Composer:
     async def compose_for_judge(
         self,
         *,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         recent: list[dict],
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
@@ -240,7 +240,7 @@ class Composer:
         )
         return text
 
-    async def _enrich_items(self, items: list[FeedItem]) -> list[FeedItem]:
+    async def _enrich_items(self, items: list[ContentEvent]) -> list[ContentEvent]:
         candidates = [
             item
             for item in items[:2]
@@ -270,7 +270,7 @@ class Composer:
     async def _enrich_one_item(
         self,
         fetcher: WebFetchTool,
-        item: FeedItem,
+        item: ContentEvent,
     ) -> None:
         try:
             raw = await fetcher.execute(url=item.url, format="text", timeout=8)

@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from feeds.base import FeedItem
+from proactive.event import ContentEvent
 
 
 class Decider:
@@ -13,9 +13,9 @@ class Decider:
         self,
         *,
         randomize_fn: Callable[[Any], tuple[Any, float]],
-        source_key_fn: Callable[[FeedItem], str],
-        item_id_fn: Callable[[FeedItem], str],
-        semantic_text_fn: Callable[[FeedItem, int], str],
+        source_key_fn: Callable[[ContentEvent], str],
+        item_id_fn: Callable[[ContentEvent], str],
+        semantic_text_fn: Callable[[ContentEvent, int], str],
         semantic_text_max_chars: int,
         composer: Any | None = None,
         judge: Any | None = None,
@@ -31,7 +31,7 @@ class Decider:
     async def compose_for_judge(
         self,
         *,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         recent: list[dict],
         preference_block: str = "",
         no_content_token: str = "<no_content/>",
@@ -93,11 +93,11 @@ class Decider:
     def randomize_decision(self, decision: Any) -> tuple[Any, float]:
         return self._randomize_fn(decision)
 
-    def item_id_for(self, item: FeedItem) -> str:
+    def item_id_for(self, item: ContentEvent) -> str:
         return self._item_id(item)
 
     def resolve_evidence_item_ids(
-        self, decision: Any, items: list[FeedItem]
+        self, decision: Any, items: list[ContentEvent]
     ) -> list[str]:
         valid_order = [self._item_id(item) for item in items]
         valid = set(valid_order)
@@ -125,7 +125,7 @@ class Decider:
         # 3. 最后统一收口成稳定 key。
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
-    def semantic_entries(self, items: list[FeedItem]) -> list[dict[str, str]]:
+    def semantic_entries(self, items: list[ContentEvent]) -> list[dict[str, str]]:
         entries: list[dict[str, str]] = []
         for item in items:
             entries.append(
@@ -139,4 +139,3 @@ class Decider:
 
 
 DefaultDecidePort = Decider
-

@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 from uuid import uuid4
 
-from feeds.base import FeedItem
 from proactive.event import AlertEvent, ContentEvent, GenericAlertEvent, GenericContentEvent
 from proactive.item_id import compute_item_id, compute_source_key
 from proactive.energy import (
@@ -172,7 +171,7 @@ class SenseSnapshot:
 
 @dataclass
 class FetchSnapshot:
-    items: list[FeedItem] = field(default_factory=list)
+    items: list[ContentEvent] = field(default_factory=list)
     new_items: list[ContentEvent] = field(default_factory=list)
     new_entries: list[tuple[str, str]] = field(default_factory=list)
     semantic_duplicate_entries: list[tuple[str, str]] = field(default_factory=list)
@@ -216,7 +215,7 @@ class DecideSnapshot:
 
 @dataclass
 class ActSnapshot:
-    compose_items: list[FeedItem] = field(default_factory=list)
+    compose_items: list[ContentEvent] = field(default_factory=list)
     compose_entries: list[tuple[str, str]] = field(default_factory=list)
     state_summary_tag: str = "none"
     source_refs: list[ProactiveSourceRef] = field(default_factory=list)
@@ -226,9 +225,9 @@ class ActSnapshot:
 
 @dataclass(frozen=True)
 class EvidenceBundle:
-    source_items: list[FeedItem]
+    source_items: list[ContentEvent]
     source_entries: list[tuple[str, str]]
-    evidence_items: list[FeedItem]
+    evidence_items: list[ContentEvent]
     evidence_entries: list[tuple[str, str]]
     evidence_item_ids: list[str]
     source_refs: list[ProactiveSourceRef]
@@ -711,19 +710,18 @@ class ProactiveTick:
             logger.warning("[proactive] MCP content 拉取失败: %s", _mcp_err)
             mcp_content_events = []
 
-        feed_views = [(event, event.to_feed_item()) for event in mcp_content_events]
         feed_entries = [
             (
                 f"mcp:{getattr(event, '_ack_server', None) or event.source_name}:{event.event_id}",
-                self._item_id_for(item),
+                self._item_id_for(event),
             )
-            for event, item in feed_views
+            for event in mcp_content_events
         ]
         cooldown_hours = getattr(self._cfg, "llm_reject_cooldown_hours", 0)
         if cooldown_hours > 0:
-            filtered_views: list[tuple[ContentEvent, FeedItem]] = []
+            filtered_events: list[ContentEvent] = []
             filtered_entries: list[tuple[str, str]] = []
-            for (event, item), (source_key, item_id) in zip(feed_views, feed_entries):
+            for event, (source_key, item_id) in zip(mcp_content_events, feed_entries):
                 if self._state.is_rejection_cooled(
                     source_key=source_key,
                     item_id=item_id,
@@ -737,16 +735,16 @@ class ProactiveTick:
                         cooldown_hours,
                     )
                     continue
-                filtered_views.append((event, item))
+                filtered_events.append(event)
                 filtered_entries.append((source_key, item_id))
-            feed_views = filtered_views
+            mcp_content_events = filtered_events
             feed_entries = filtered_entries
 
-        fetch.items = [item for _, item in feed_views]
+        fetch.items = list(mcp_content_events)
         logger.debug("[proactive] 从 MCP 拉取到 %d 条内容", len(fetch.items))
 
         # 2. 当前内容源全部来自 MCP，直接保留事件对象，并在 source_key 里显式带上 ack_id。
-        fetch.new_items = [event for event, _ in feed_views]
+        fetch.new_items = list(mcp_content_events)
         fetch.new_entries = feed_entries
 
         # 3. 拉取 context 类源（持久背景感知，如 Steam），不涉及 ack。
@@ -1298,7 +1296,7 @@ class ProactiveTick:
                 session_key=state.session_key,
                 channel=channel,
                 chat_id=chat_id,
-                items=self._feed_items(fetch.new_items),
+                items=fetch.new_items,
                 recent=sense.recent,
                 decision_signals=decide.decision_signals,
                 is_crisis=score.is_crisis,
@@ -1321,7 +1319,7 @@ class ProactiveTick:
         act = ctx.ensure_act()
         decide = ctx.ensure_decide()
         ranked_items = self._rank_items_by_interest(
-            self._feed_items(fetch.new_items),
+            fetch.new_items,
             decide.preference_block,
         )
         act.compose_items, act.compose_entries = self._select_compose_items(
@@ -1350,7 +1348,7 @@ class ProactiveTick:
         now_utc: datetime,
     ) -> float:
         ages: list[float] = []
-        for item in self._feed_items(items):
+        for item in items:
             published = getattr(item, "published_at", None)
             if published is None:
                 continue
@@ -1374,7 +1372,7 @@ class ProactiveTick:
         decide = ctx.ensure_decide()
         act = ctx.ensure_act()
         # 1. 先确定 source_items/source_entries，它们代表本轮发送候选来源。
-        source_items = act.compose_items or self._feed_items(fetch.new_items) or fetch.items
+        source_items = act.compose_items or fetch.new_items or fetch.items
         source_entries = act.compose_entries or self._entries_for_items(
             source_items,
             fetch.new_entries,
@@ -1614,7 +1612,7 @@ class ProactiveTick:
         decide = ctx.decide
         sense = ctx.sense
         candidate_item_ids = (
-            [self._item_id_for(item) for item in self._feed_items(fetch.new_items[:5])]
+            [self._item_id_for(item) for item in fetch.new_items[:5]]
             if fetch is not None
             else []
         )
@@ -1640,7 +1638,7 @@ class ProactiveTick:
         candidates_json: str | None = None
         if fetch is not None or sense is not None:
             _candidates = []
-            for item in (self._feed_items((fetch.new_items if fetch else [])) or []):
+            for item in ((fetch.new_items if fetch else []) or []):
                 _candidates.append({
                     "kind": getattr(item, "kind", "content"),
                     "source_type": getattr(item, "source_type", ""),
@@ -1852,7 +1850,7 @@ class ProactiveTick:
                 "[proactive] skill_reaction: 发送失败 id=%s error=%s", action_id, e
             )
 
-    def _build_source_refs(self, items: list[FeedItem]) -> list[ProactiveSourceRef]:
+    def _build_source_refs(self, items: list[ContentEvent]) -> list[ProactiveSourceRef]:
         refs: list[ProactiveSourceRef] = []
         for item in items[:3]:
             published_at = None
@@ -1875,9 +1873,9 @@ class ProactiveTick:
 
     def _select_compose_items(
         self,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         entries: list[tuple[str, str]],
-    ) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+    ) -> tuple[list[ContentEvent], list[tuple[str, str]]]:
         if not items:
             return [], []
         max_items = min(3, len(items))
@@ -1894,11 +1892,11 @@ class ProactiveTick:
         group = self._sort_items_by_published_at(group)
         return group, self._entries_for_items(group, entries)
 
-    def _sort_items_by_published_at(self, items: list[FeedItem]) -> list[FeedItem]:
+    def _sort_items_by_published_at(self, items: list[ContentEvent]) -> list[ContentEvent]:
         if len(items) <= 1:
             return items
 
-        def _ts(item: FeedItem) -> tuple[int, datetime]:
+        def _ts(item: ContentEvent) -> tuple[int, datetime]:
             ts = getattr(item, "published_at", None)
             if isinstance(ts, datetime):
                 if ts.tzinfo is None:
@@ -1909,9 +1907,9 @@ class ProactiveTick:
 
     def _rank_items_by_interest(
         self,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         preference_block: str,
-    ) -> list[FeedItem]:
+    ) -> list[ContentEvent]:
         # 1. 兜底检查：无候选 / 未开启 / 无偏好文本时保持原顺序。
         if not items:
             return []
@@ -1942,12 +1940,12 @@ class ProactiveTick:
         ranked.sort(key=lambda pair: pair[1], reverse=True)
         return [item for item, _ in ranked]
 
-    def _should_aggregate(self, left: FeedItem, right: FeedItem) -> bool:
+    def _should_aggregate(self, left: ContentEvent, right: ContentEvent) -> bool:
         if self._is_same_source_window(left, right):
             return True
         return self._shares_topic(left, right)
 
-    def _is_same_source_window(self, left: FeedItem, right: FeedItem) -> bool:
+    def _is_same_source_window(self, left: ContentEvent, right: ContentEvent) -> bool:
         if (left.source_name or "").strip().lower() != (
             right.source_name or ""
         ).strip().lower():
@@ -1962,7 +1960,7 @@ class ProactiveTick:
             right_ts = right_ts.replace(tzinfo=timezone.utc)
         return abs((left_ts - right_ts).total_seconds()) <= 12 * 3600
 
-    def _shares_topic(self, left: FeedItem, right: FeedItem) -> bool:
+    def _shares_topic(self, left: ContentEvent, right: ContentEvent) -> bool:
         left_title = self._topic_text(left)
         right_title = self._topic_text(right)
         if not left_title or not right_title:
@@ -1976,7 +1974,7 @@ class ProactiveTick:
         )
 
     @staticmethod
-    def _topic_text(item: FeedItem) -> str:
+    def _topic_text(item: ContentEvent) -> str:
         title = (item.title or "").strip()
         if title:
             return title.lower()
@@ -2109,15 +2107,15 @@ class ProactiveTick:
 
     def _resolve_evidence_entries(
         self,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         entries: list[tuple[str, str]],
         evidence_ids: list[str],
-    ) -> tuple[list[FeedItem], list[tuple[str, str]]]:
+    ) -> tuple[list[ContentEvent], list[tuple[str, str]]]:
         if not evidence_ids:
             return [], []
         entry_by_id = {item_id: source_key for source_key, item_id in entries}
         wanted = set(evidence_ids)
-        selected_items: list[FeedItem] = []
+        selected_items: list[ContentEvent] = []
         selected_entries: list[tuple[str, str]] = []
         seen: set[str] = set()
         for item in items:
@@ -2133,7 +2131,7 @@ class ProactiveTick:
 
     def _entries_for_items(
         self,
-        items: list[FeedItem],
+        items: list[ContentEvent],
         entries: list[tuple[str, str]],
     ) -> list[tuple[str, str]]:
         entry_by_id: dict[str, str] = {}
@@ -2152,20 +2150,7 @@ class ProactiveTick:
     ) -> list[tuple[str, str]]:
         return entries[:1]
 
-    @staticmethod
-    def _feed_items(events: list[ContentEvent]) -> list[FeedItem]:
-        """从 ContentEvent 列表中提取 FeedItem 视图，供仍接受 FeedItem 的 port 接口使用。
-        每个事件通过 to_feed_item() 提供视图，不会静默丢弃任何 ContentEvent 子类。"""
-        items: list[FeedItem] = []
-        for event in events:
-            item = event.to_feed_item()
-            status = getattr(event, "content_status", "")
-            if status:
-                setattr(item, "content_status", status)
-            items.append(item)
-        return items
-
-    def _item_id_for(self, item: FeedItem) -> str:
+    def _item_id_for(self, item: ContentEvent) -> str:
         try:
             item_id = self._decide.item_id_for(item)
             if isinstance(item_id, str) and item_id.strip():

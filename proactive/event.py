@@ -22,10 +22,7 @@ import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from feeds.base import FeedItem
+from typing import Any
 
 
 @dataclass
@@ -184,21 +181,13 @@ class ContentEvent(ProactiveEvent, ABC):
     def is_urgent(self) -> bool:
         return False
 
-    def to_feed_item(self) -> "FeedItem":
-        """返回供下游 port 接口使用的 FeedItem 视图。
+    @property
+    def author(self) -> str | None:
+        return None
 
-        默认从自身字段构建，确保任何 ContentEvent 子类都不会被静默丢弃。
-        """
-        from feeds.base import FeedItem  # 延迟 import，避免循环依赖
-        return FeedItem(
-            source_name=self.source_name,
-            source_type=self.source_type,
-            title=self.title,
-            content=self.content,
-            url=self.url,
-            author=None,
-            published_at=self.published_at,
-        )
+    @property
+    def display_text(self) -> str:
+        return ""
 
 @dataclass
 class GenericContentEvent(ContentEvent):
@@ -212,18 +201,9 @@ class GenericContentEvent(ContentEvent):
     def kind(self) -> str:
         return self._kind
 
-    def to_feed_item(self) -> "FeedItem":
-        from feeds.base import FeedItem
-        return FeedItem(
-            source_name=self.source_name,
-            source_type=self.source_type,
-            title=self.title,
-            content=self.content,
-            url=self.url,
-            author=None,
-            published_at=self.published_at,
-            display_text=self._display_text,
-        )
+    @property
+    def display_text(self) -> str:
+        return self._display_text
 
     @classmethod
     def from_mcp_payload(cls, payload: dict) -> "GenericContentEvent":

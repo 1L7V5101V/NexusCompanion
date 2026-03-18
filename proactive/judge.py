@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent.provider import LLMProvider
-from feeds.base import FeedItem
 from prompts.proactive import build_post_judge_prompt_messages
 from proactive.json_utils import extract_json_object
 

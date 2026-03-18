@@ -6,41 +6,42 @@ import pytest
 
 from agent.memory import MemoryStore
 from core.memory.port import DefaultMemoryPort
-from feeds.base import FeedItem
 from memory2.memorizer import Memorizer
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
 from proactive.components import build_proactive_preference_query
 from proactive.config import ProactiveConfig
+from proactive.event import GenericContentEvent
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 
 
-def _orbit_item() -> FeedItem:
-    return FeedItem(
+def _orbit_item() -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id="teamorbit",
         source_name="HLTV",
         source_type="rss",
         title="TeamOrbit beat TeamForge to march to EPL playoffs",
         content="TeamOrbit defeated TeamForge in a convincing match.",
         url="https://www.hltv.org/news/44042/teamorbit-beat-teamforge",
-        author=None,
         published_at=None,
     )
 
 
-def _atlas_item() -> FeedItem:
-    return FeedItem(
+def _atlas_item() -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id="teamatlas",
         source_name="HLTV",
         source_type="rss",
         title="TeamAtlas win ESL Pro League",
         content="TeamAtlas secured the trophy with PlayerNova at the helm.",
         url="https://www.hltv.org/news/00001/teamatlas-win-epl",
-        author=None,
         published_at=None,
     )
 
 
-def _hltv_major_race_item() -> FeedItem:
-    return FeedItem(
+def _hltv_major_race_item() -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id="major-race",
         source_name="HLTV",
         source_type="rss",
         title="科隆 Major 名额冲刺分析：TeamComet 势头很猛，TeamDelta 基本稳了",
@@ -52,7 +53,6 @@ def _hltv_major_race_item() -> FeedItem:
             "https://www.hltv.org/news/44056/"
             "cologne-major-race-update-teamcomet-surge-teamdelta-all-but-confirm-spot-after-epl-run"
         ),
-        author=None,
         published_at=None,
     )
 
@@ -137,13 +137,13 @@ async def test_memory_port_preference_query_includes_title_and_fallback_source()
         def format_injection_with_ids(self, items):
             return "", []
 
-    item = FeedItem(
+    item = GenericContentEvent(
+        event_id="untitled-preference",
         source_name="",
         source_type="",
         title="这是一条没有来源标记但有标题的话题偏好测试",
         content="",
         url=None,
-        author=None,
         published_at=None,
     )
     port = DefaultMemoryRetrievalPort(

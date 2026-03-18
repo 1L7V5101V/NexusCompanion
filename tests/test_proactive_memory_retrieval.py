@@ -2,35 +2,35 @@ from __future__ import annotations
 
 import pytest
 
-from feeds.base import FeedItem
 from proactive.config import ProactiveConfig
 from proactive.components import build_proactive_preference_hyde_prompt
+from proactive.event import GenericContentEvent
 from proactive.tick import ProactiveEngine
 from proactive.ports import DefaultMemoryRetrievalPort, ProactiveRetrievedMemory
 from proactive.state import ProactiveStateStore
 from proactive.components import build_proactive_memory_query
 
 
-def _item() -> FeedItem:
-    return FeedItem(
+def _item() -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id="item-elden-ring-dlc",
         source_name="TestFeed",
         source_type="rss",
         title="Elden Ring DLC",
         content="Trailer and release window update.",
         url="https://example.com/post",
-        author=None,
         published_at=None,
     )
 
 
-def _item_with(*, source_name: str, title: str, url: str) -> FeedItem:
-    return FeedItem(
+def _item_with(*, source_name: str, title: str, url: str) -> GenericContentEvent:
+    return GenericContentEvent(
+        event_id=title,
         source_name=source_name,
         source_type="rss",
         title=title,
         content=title,
         url=url,
-        author=None,
         published_at=None,
     )
 
@@ -56,6 +56,16 @@ def test_build_proactive_preference_hyde_prompt_matches_preference_style():
     assert "长期偏好" in prompt
     assert "不要总结新闻事实本身" in prompt
     assert "负向偏好" in prompt or "反感" in prompt
+
+
+def test_preference_queries_include_positive_and_negative_paths():
+    queries = DefaultMemoryRetrievalPort._build_preference_queries_for_item(_item())
+
+    assert len(queries) == 2
+    assert "偏好和态度" in queries[0]
+    assert "负向偏好、禁推规则和过滤要求" in queries[1]
+    assert "Elden Ring DLC" in queries[0]
+    assert "Elden Ring DLC" in queries[1]
 
 
 @pytest.mark.asyncio
@@ -97,6 +107,55 @@ async def test_default_memory_retrieval_port_uses_event_only_history_channel():
     history_calls = [c for c in calls if c.get("memory_types") == ["event"]]
     assert history_calls, "H 通道应检索 event"
     assert not any(c.get("memory_types") == ["profile"] for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_preference_retrieval_queries_positive_and_negative_paths():
+    calls: list[dict] = []
+
+    class _Memory:
+        async def retrieve_related(self, query, **kwargs):
+            calls.append({"query": query, **kwargs})
+            if kwargs.get("memory_types") == ["preference", "profile"]:
+                if "负向偏好" in query:
+                    return [
+                        {"id": "neg1", "memory_type": "preference", "summary": "禁止推送主机系统更新"}
+                    ]
+                return [
+                    {"id": "pos1", "memory_type": "preference", "summary": "喜欢高信息密度更新"}
+                ]
+            if kwargs.get("memory_types") == ["event"]:
+                return []
+            return []
+
+        def select_for_injection(self, items):
+            return items
+
+        def format_injection_with_ids(self, items):
+            return "## block", [str(i.get("id")) for i in items if i.get("id")]
+
+    cfg = ProactiveConfig()
+    port = DefaultMemoryRetrievalPort(
+        cfg=cfg,
+        memory=_Memory(),
+        item_id_fn=lambda _: "item1",
+    )
+
+    result = await port.retrieve_proactive_context(
+        session_key="telegram:123",
+        channel="telegram",
+        chat_id="123",
+        items=[_item()],
+        recent=[],
+        decision_signals={},
+        is_crisis=False,
+    )
+
+    pref_calls = [c for c in calls if c.get("memory_types") == ["preference", "profile"]]
+    assert len(pref_calls) == 2
+    assert any("偏好和态度" in c["query"] for c in pref_calls)
+    assert any("负向偏好、禁推规则和过滤要求" in c["query"] for c in pref_calls)
+    assert result.preference_block == "## block"
 
 
 @pytest.mark.asyncio
@@ -308,9 +367,16 @@ async def test_preference_retrieval_queries_same_source_items_separately():
     )
 
     pref_calls = [c for c in calls if c.get("memory_types") == ["preference", "profile"]]
-    assert len(pref_calls) == 2
-    assert "w0nderful shines as NAVI beat Aurora to lift EPL" in pref_calls[0]["query"]
-    assert 'HooXi on people writing him off after G2: "It feels good"' in pref_calls[1]["query"]
+    assert len(pref_calls) == 4
+    assert sum(
+        "w0nderful shines as NAVI beat Aurora to lift EPL" in c["query"]
+        for c in pref_calls
+    ) == 2
+    assert sum(
+        'HooXi on people writing him off after G2: "It feels good"' in c["query"]
+        for c in pref_calls
+    ) == 2
+    assert sum("负向偏好" in c["query"] for c in pref_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -375,9 +441,10 @@ async def test_preference_retrieval_uses_hyde_query_when_enabled():
         is_crisis=False,
     )
 
-    assert len(calls) == 2
-    assert "相关话题" in calls[0]
-    assert "用户明确关注 HooXi 与 NiKo、G2 旧阵容相关的人物动态。" == calls[1]
+    assert len(calls) == 4
+    assert sum("相关话题" in q for q in calls) == 2
+    assert calls.count("用户明确关注 HooXi 与 NiKo、G2 旧阵容相关的人物动态。") == 2
+    assert sum("负向偏好" in q for q in calls) == 1
     assert prompts and "不要总结新闻事实本身" in prompts[0]
     assert "用户明确关注 HooXi" in result.preference_block
 
@@ -431,6 +498,7 @@ async def test_preference_retrieval_hyde_falls_back_to_raw_on_failure():
         is_crisis=False,
     )
 
-    assert len(calls) == 1
-    assert "Elden Ring DLC" in calls[0]
+    assert len(calls) == 2
+    assert all("Elden Ring DLC" in q for q in calls)
+    assert any("负向偏好" in q for q in calls)
     assert "Elden Ring DLC" in result.preference_block
