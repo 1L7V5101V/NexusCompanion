@@ -1829,6 +1829,8 @@ class ProactiveTick:
             return True
         logger.info("[proactive] 消息语义去重命中，跳过发送 reason=%r", dup_reason)
         logger.info("[proactive] selected_action=idle reason=message_dedupe")
+        # 命中消息去重时，也应消费本轮证据条目，避免同内容反复进入候选。
+        self._consume_evidence_entries(evidence)
         self._emit_observe_decision(
             ctx,
             stage="act",
