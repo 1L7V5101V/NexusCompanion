@@ -18,14 +18,15 @@ Akasic Benchmark on LongMemEval Dataset
 
 选项：
   --config PATH           config.json 路径（默认: ../config.json）
-  --db-path PATH          benchmark 专用 DB 路径（默认: /tmp/akasic_benchmark/lme.db）
+  --workspace PATH        benchmark 专用 workspace（默认: /tmp/akasic_benchmark/lme_parity/workspace）
+  --db-path PATH          benchmark 专用 DB 路径（默认: /tmp/akasic_benchmark/lme_parity/lme_parity.db）
   --data PATH             longmemeval JSON 路径（默认: data/longmemeval/longmemeval_s.json）
   --max-samples N         最多处理 N 个 question（默认: 全部）
   --question-type TYPE    只测指定 question_type（逗号分隔，默认: 全部）
   --max-workers N         并发线程数（默认: 2）
   --skip-ingest           跳过 ingest（使用已有 DB）
   --use-flash             response/evaluate 走 light model（更快）
-  --output PATH           结果 JSON 路径（默认: result_lme.json）
+  --output PATH           结果 JSON 路径（默认: /tmp/akasic_benchmark/lme_parity/result_lme.json）
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import argparse
 import asyncio
 import json
 import logging
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -54,6 +56,7 @@ if str(_HERE) not in sys.path:
 from config_loader import BenchmarkComponents, load_benchmark_components
 from evaluate_agent import EvaluateAgent
 from lme_ingestor import LMEProductionIngestor, IngestFact
+from agent.config import load_config
 from memory2.hyde_enhancer import _union_dedup
 from memory2.store import MemoryStore2
 from memu.utils import setup_logging
@@ -61,7 +64,11 @@ from memu.utils import setup_logging
 logger = setup_logging(__name__, enable_flush=True)
 
 LME_SCOPE_CHANNEL = "lme_benchmark"
-DEFAULT_LME_DB = Path("/tmp/akasic_benchmark/lme.db")
+BENCHMARK_BASE_DIR = Path("/tmp/akasic_benchmark")
+DEFAULT_LME_RUN_DIR = BENCHMARK_BASE_DIR / "lme_parity"
+DEFAULT_LME_WORKSPACE = DEFAULT_LME_RUN_DIR / "workspace"
+DEFAULT_LME_DB = DEFAULT_LME_RUN_DIR / "lme_parity.db"
+DEFAULT_LME_OUTPUT = DEFAULT_LME_RUN_DIR / "result_lme.json"
 
 QUESTION_TYPE_NAMES = {
     "single-session-user": "SS-User",
@@ -72,6 +79,58 @@ QUESTION_TYPE_NAMES = {
     "temporal-reasoning": "Temporal",
     "abstention": "Abstain",
 }
+
+
+def _resolve_production_db(config_path: str) -> Path:
+    """解析主 Agent 的生产 memory2 DB 路径。"""
+    config = load_config(config_path)
+    if config.memory_v2.db_path:
+        return Path(config.memory_v2.db_path).expanduser().resolve()
+    return (Path.home() / ".akasic" / "workspace" / "memory" / "memory2.db").resolve()
+
+
+def _prepare_phase0_guardrails(
+    config_path: str,
+    db_path: str,
+    workspace: str,
+    *,
+    skip_ingest: bool,
+) -> tuple[Path, Path]:
+    benchmark_root = BENCHMARK_BASE_DIR.resolve()
+    db = Path(db_path).expanduser().resolve()
+    ws = Path(workspace).expanduser().resolve()
+    prod_db = _resolve_production_db(config_path)
+
+    # 1. 启动硬校验：禁止命中生产 DB。
+    if db == prod_db:
+        raise SystemExit(f"拒绝启动：benchmark db_path 指向生产库：{db}")
+
+    # 2. 启动硬校验：专用目录必须位于 /tmp/akasic_benchmark 下，避免误删。
+    if benchmark_root not in db.parents or benchmark_root not in ws.parents:
+        raise SystemExit("拒绝启动：db_path 与 workspace 必须位于 /tmp/akasic_benchmark 下")
+
+    run_root = ws.parent
+    if run_root == benchmark_root or run_root != db.parent:
+        raise SystemExit("拒绝启动：workspace 与 db_path 需位于同一专用子目录，且不能是 /tmp/akasic_benchmark 根目录")
+
+    # 3. 按运行模式处理目录。
+    # 3.1 skip-ingest=false：清理 run_root，保证本次运行全新隔离。
+    # 3.2 skip-ingest=true：保留 run_root，复用已有 DB。
+    if not skip_ingest:
+        shutil.rmtree(run_root, ignore_errors=True)
+    ws.mkdir(parents=True, exist_ok=True)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    if skip_ingest and not db.exists():
+        raise SystemExit(f"拒绝启动：--skip-ingest 需要已有 DB，但未找到：{db}")
+    return db, ws
+
+
+def _assert_output_in_run_root(output_path: str, run_root: Path) -> Path:
+    out = Path(output_path).expanduser().resolve()
+    if run_root not in out.parents:
+        raise SystemExit(f"拒绝启动：output 必须位于本次 run 目录下：{run_root}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 # ─── Ingest ───────────────────────────────────────────────────────────
@@ -278,15 +337,17 @@ class AkasicLMETester:
     def __init__(
         self,
         config_path: str,
-        db_path: str | None = None,
+        db_path: str,
+        workspace: str,
         max_workers: int = 2,
         question_type_filter: list[str] | None = None,
         use_flash: bool = False,
         use_hyde: bool = False,
     ) -> None:
+        self.workspace = Path(workspace).expanduser().resolve()
         self.components = load_benchmark_components(
             config_path=config_path,
-            db_path=db_path or DEFAULT_LME_DB,
+            db_path=db_path,
         )
 
         if use_flash:
@@ -312,7 +373,7 @@ class AkasicLMETester:
         self.processing_time = 0.0
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.error_log_file = f"lme_error_log_{ts}.txt"
+        self.error_log_file = str(self.workspace.parent / f"lme_error_log_{ts}.txt")
         with open(self.error_log_file, "w", encoding="utf-8") as f:
             f.write(f"Akasic LongMemEval Benchmark Error Log - {datetime.now()}\n{'='*80}\n")
 
@@ -478,6 +539,7 @@ class AkasicLMETester:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Akasic LongMemEval Benchmark")
     p.add_argument("--config", default=str(_PROJECT_ROOT / "config.json"))
+    p.add_argument("--workspace", default=str(DEFAULT_LME_WORKSPACE))
     p.add_argument("--db-path", default=str(DEFAULT_LME_DB))
     p.add_argument("--data", default=str(_HERE / "data" / "longmemeval" / "longmemeval_s"))
     p.add_argument("--max-samples", type=int, default=None)
@@ -486,12 +548,19 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--use-flash", action="store_true", help="response/evaluate 走 light model")
     p.add_argument("--use-hyde", action="store_true", help="检索时启用 HyDE 增强")
     p.add_argument("--question-ids", default=None, help="只测指定 question_id（逗号分隔）")
-    p.add_argument("--output", default="result_lme.json")
+    p.add_argument("--output", default=str(DEFAULT_LME_OUTPUT))
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    resolved_db, resolved_workspace = _prepare_phase0_guardrails(
+        config_path=args.config,
+        db_path=args.db_path,
+        workspace=args.workspace,
+        skip_ingest=args.skip_ingest,
+    )
+    resolved_output = _assert_output_in_run_root(args.output, resolved_workspace.parent)
     question_type_filter = (
         [qt.strip() for qt in args.question_type.split(",")]
         if args.question_type
@@ -520,16 +589,16 @@ def main() -> None:
 
     tester = AkasicLMETester(
         config_path=args.config,
-        db_path=args.db_path,
+        db_path=str(resolved_db),
+        workspace=str(resolved_workspace),
         question_type_filter=question_type_filter,
         use_flash=args.use_flash,
         use_hyde=args.use_hyde,
     )
     results = tester.run(data, skip_ingest=args.skip_ingest)
 
-    out_path = Path(args.output)
-    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info(f"Results saved to {out_path}")
+    resolved_output.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"Results saved to {resolved_output}")
 
 
 if __name__ == "__main__":
