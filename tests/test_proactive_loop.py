@@ -602,6 +602,17 @@ async def test_engine_evaluate_skips_rejection_cooled_events(tmp_path):
     assert ctx.ensure_fetch().new_entries == []
 
 
+def test_state_seen_items_ignore_mcp_event_id(tmp_path):
+    from proactive.state import ProactiveStateStore
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+    item_id = "u_same_article"
+
+    state.mark_items_seen([("mcp:feed:evt-1", item_id)])
+
+    assert state.is_item_seen("mcp:feed:evt-2", item_id, ttl_hours=12) is True
+
+
 def test_populate_decision_signals_keeps_health_subset_by_source_type():
     from proactive.event import GenericAlertEvent
 
@@ -1378,6 +1389,17 @@ def test_rejection_cooldown_filters_in_next_tick(tmp_path):
     state = ProactiveStateStore(tmp_path / "state.json")
     state.mark_rejection_cooldown([(source_key, item_id)], hours=12)
     assert state.is_rejection_cooled(source_key, item_id, ttl_hours=12) is True
+
+
+def test_rejection_cooldown_ignore_mcp_event_id(tmp_path):
+    from proactive.state import ProactiveStateStore
+
+    state = ProactiveStateStore(tmp_path / "state.json")
+    item_id = "u_same_article"
+
+    state.mark_rejection_cooldown([("mcp:feed:evt-1", item_id)], hours=12)
+
+    assert state.is_rejection_cooled("mcp:feed:evt-2", item_id, ttl_hours=12) is True
 
 
 def _build_event(*, event_id: str, source_name: str, title: str, published_at=None):

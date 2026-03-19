@@ -22,6 +22,21 @@ from infra.persistence.json_store import load_json, save_json
 logger = logging.getLogger(__name__)
 
 
+def _dedupe_source_key(source_key: str) -> str:
+    """归一化用于状态去重的 source_key。
+
+    MCP 内容流会把 ack 用的 event_id 编进 source_key（mcp:<server>:<event_id>）。
+    去重状态只应按稳定来源维度记账，否则同一内容换一个 event_id 会绕过去重。
+    """
+    raw = str(source_key or "").strip()
+    if not raw.startswith("mcp:"):
+        return raw
+    parts = raw.split(":", 2)
+    if len(parts) < 2:
+        return raw
+    return ":".join(parts[:2])
+
+
 class ProactiveStateStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -44,14 +59,15 @@ class ProactiveStateStore:
         now: datetime | None = None,
     ) -> bool:
         now = now or _utcnow()
-        source_map = self._state["seen_items"].get(source_key, {})
+        dedupe_key = _dedupe_source_key(source_key)
+        source_map = self._state["seen_items"].get(dedupe_key, {})
         ts = _parse_iso(source_map.get(item_id))
         if ts is None:
             return False
         if ts < now - timedelta(hours=max(ttl_hours, 1)):
             logger.info(
                 "[proactive.state] item 过期，视为未见 source=%s item_id=%s ts=%s ttl_hours=%d",
-                source_key,
+                dedupe_key,
                 item_id[:16],
                 source_map.get(item_id),
                 ttl_hours,
@@ -70,7 +86,8 @@ class ProactiveStateStore:
         ts = now.isoformat()
         added = 0
         for source_key, item_id in entries:
-            source_map = self._state["seen_items"].setdefault(source_key, {})
+            dedupe_key = _dedupe_source_key(source_key)
+            source_map = self._state["seen_items"].setdefault(dedupe_key, {})
             if item_id not in source_map:
                 added += 1
             source_map[item_id] = ts
@@ -208,7 +225,8 @@ class ProactiveStateStore:
         if ttl_hours <= 0:
             return False
         now = now or _utcnow()
-        source_map = self._state["rejection_cooldown"].get(source_key, {})
+        dedupe_key = _dedupe_source_key(source_key)
+        source_map = self._state["rejection_cooldown"].get(dedupe_key, {})
         ts = _parse_iso(source_map.get(item_id))
         if ts is None:
             return False
@@ -226,7 +244,8 @@ class ProactiveStateStore:
         ts = now.isoformat()
         added = 0
         for source_key, item_id in entries:
-            source_map = self._state["rejection_cooldown"].setdefault(source_key, {})
+            dedupe_key = _dedupe_source_key(source_key)
+            source_map = self._state["rejection_cooldown"].setdefault(dedupe_key, {})
             if item_id not in source_map:
                 added += 1
             source_map[item_id] = ts
