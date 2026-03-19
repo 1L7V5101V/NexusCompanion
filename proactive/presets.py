@@ -122,7 +122,7 @@ PRESETS: dict[str, PresetConfig] = {
         "safety": {
             "delivery_dedupe_hours": 1,
             "llm_reject_cooldown_hours": 0,  # 不冷却
-            "message_dedupe_recent_n": 2,
+            "message_dedupe_recent_n": 5,
         },
         "context": {
             "context_only_enabled": True,

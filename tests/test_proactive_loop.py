@@ -1807,3 +1807,62 @@ async def test_compose_judge_without_candidates_uses_user_recent_only():
     assert compose_calls[0]["recent"] == [
         {"role": "user", "content": "我最近有点累"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_judge_and_send_blocks_bg_context_only_when_quota_unavailable():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from proactive.tick import ProactiveEngine, DecisionContext
+    from proactive.judge import ProactiveJudgeResult
+
+    async def _judge_message(**kw):
+        return ProactiveJudgeResult(
+            final_score=0.9,
+            should_send=True,
+            vetoed_by=None,
+            dims_deterministic={"urgency": 0.4, "balance": 1.0, "dynamics": 1.0},
+            dims_llm={"information_gap": 0.8, "relevance": 0.9, "expected_impact": 0.9},
+            dims_llm_raw={"information_gap": 4, "relevance": 5, "expected_impact": 5},
+        )
+
+    engine = ProactiveEngine.__new__(ProactiveEngine)
+    engine._cfg = SimpleNamespace(
+        llm_reject_cooldown_hours=12,
+        score_llm_threshold=0.0,
+        threshold=0.7,
+    )
+    engine._state = SimpleNamespace(mark_rejection_cooldown=MagicMock())
+    engine._decide = SimpleNamespace(
+        item_id_for=lambda item: item.title,
+        judge_message=_judge_message,
+        resolve_evidence_item_ids=lambda decision, items: [],
+    )
+    engine._judge = None
+    engine._act = SimpleNamespace(send=AsyncMock(return_value=True))
+
+    ctx = DecisionContext()
+    fetch = ctx.ensure_fetch()
+    sense = ctx.ensure_sense()
+    score = ctx.ensure_score()
+    decide = ctx.ensure_decide()
+    ctx.state.now_utc = datetime.now(timezone.utc)
+    score.base_score = 0.42
+    score.sent_24h = 0
+    sense.recent = []
+    sense.interrupt_factor = 1.0
+    sense.health_events = []
+    decide.decision_message = "最近玩得挺投入啊。"
+    decide.decision_signals = {
+        "bg_context_quota": {"available": False, "cooldown_remaining_min": 359}
+    }
+    fetch.new_items = []
+    fetch.new_entries = []
+    fetch.background_context = [{"_source": "steam", "recent_games": ["x"]}]
+
+    result = await engine._judge_and_send(ctx)
+
+    assert result == 0.42
+    assert ctx.ensure_decide().should_send is False
+    assert ctx.ensure_decide().judge_vetoed_by == "bg_context_quota"
+    engine._state.mark_rejection_cooldown.assert_called_once()

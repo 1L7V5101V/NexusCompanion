@@ -1232,6 +1232,27 @@ class ProactiveTick:
                 decide.should_send = False
                 decide.judge_vetoed_by = "context_only_threshold"
 
+        # 2.5 无 feed 候选时，background_context 主话题冷却必须硬生效。
+        bg_quota = decide.decision_signals.get("bg_context_quota", {})
+        bg_context_only_send = (
+            len(fetch.new_items) == 0
+            and len(sense.health_events) == 0
+            and bool(fetch.background_context)
+        )
+        if (
+            decide.should_send
+            and bg_context_only_send
+            and isinstance(bg_quota, dict)
+            and not bool(bg_quota.get("available", True))
+        ):
+            cooldown_remaining = int(bg_quota.get("cooldown_remaining_min", 0) or 0)
+            logger.info(
+                "[proactive] bg_context 主话题冷却未到，硬拦截发送 cooldown_remaining_min=%d",
+                cooldown_remaining,
+            )
+            decide.should_send = False
+            decide.judge_vetoed_by = "bg_context_quota"
+
         guard = GuardResult(
             should_send=decide.should_send,
             return_score=None if decide.should_send else score.base_score,
