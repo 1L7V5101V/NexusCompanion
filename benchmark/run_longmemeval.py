@@ -38,6 +38,7 @@ import logging
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -56,9 +57,13 @@ if str(_HERE) not in sys.path:
 from config_loader import BenchmarkComponents, load_benchmark_components
 from evaluate_agent import EvaluateAgent
 from lme_ingestor import LMEProductionIngestor
+from agent.policies.history_route import HistoryRoutePolicy
+from memory2.hyde_enhancer import HyDEEnhancer
+from memory2.injection_planner import retrieve_episodic, retrieve_procedure_items
 from agent.config import load_config
-from memory2.hyde_enhancer import _union_dedup
+from memory2.query_rewriter import QueryRewriter
 from memory2.store import MemoryStore2
+from memory2.sufficiency_checker import SufficiencyChecker
 from memu.utils import setup_logging
 
 logger = setup_logging(__name__, enable_flush=True)
@@ -79,6 +84,83 @@ QUESTION_TYPE_NAMES = {
     "temporal-reasoning": "Temporal",
     "abstention": "Abstain",
 }
+
+
+@dataclass
+class _ChatResponse:
+    content: str
+
+
+class _LightProviderAdapter:
+    """将 openai 客户端包装成 QueryRewriter/HyDE/Sufficiency 可用的 chat 接口。"""
+
+    def __init__(self, client, default_model: str) -> None:
+        self._client = client
+        self._model = default_model
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list | None = None,
+        model: str | None = None,
+        max_tokens: int | None = None,
+        **_kwargs,
+    ) -> _ChatResponse:
+        resp = await asyncio.to_thread(
+            self._client.chat.completions.create,
+            model=model or self._model,
+            messages=messages,
+            max_tokens=max_tokens or 256,
+            temperature=0.1,
+        )
+        return _ChatResponse(content=resp.choices[0].message.content or "")
+
+
+class _MemoryPlannerAdapter:
+    """把 Retriever 适配为 injection_planner 所需的最小 MemoryPort 接口。"""
+
+    def __init__(
+        self,
+        retriever,
+        *,
+        scope_channel: str = "",
+        scope_chat_id: str = "",
+        force_scope: bool = False,
+    ) -> None:
+        self._retriever = retriever
+        self._scope_channel = scope_channel
+        self._scope_chat_id = scope_chat_id
+        self._force_scope = force_scope
+
+    async def retrieve_related(
+        self,
+        query: str,
+        *,
+        memory_types: list[str] | None = None,
+        top_k: int | None = None,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+    ) -> list[dict]:
+        effective_scope_channel = scope_channel or self._scope_channel
+        effective_scope_chat_id = scope_chat_id or self._scope_chat_id
+        effective_require_scope = require_scope_match or (
+            self._force_scope and bool(effective_scope_channel and effective_scope_chat_id)
+        )
+        return await self._retriever.retrieve(
+            query=query,
+            memory_types=memory_types,
+            top_k=top_k,
+            scope_channel=effective_scope_channel or None,
+            scope_chat_id=effective_scope_chat_id or None,
+            require_scope_match=effective_require_scope,
+        )
+
+    def select_for_injection(self, items: list[dict]) -> list[dict]:
+        return self._retriever.select_for_injection(items)
+
+    def build_injection_block(self, items: list[dict]) -> tuple[str, list[str]]:
+        return self._retriever.build_injection_block(items)
 
 
 def _resolve_production_db(config_path: str) -> Path:
@@ -197,20 +279,70 @@ class LMEMemAgent:
 class LMEResponseAgent:
     """从记忆库检索后，生成对 LongMemEval 问题的回答。"""
 
-    def __init__(self, components: BenchmarkComponents, use_hyde: bool = False) -> None:
+    def __init__(self, components: BenchmarkComponents, runtime_cfg, use_hyde: bool = False) -> None:
         self._retriever = components.retriever
         self._llm = components.llm_client
         self._model = components.model
-        # HyDE：直接持有 light 客户端做同步调用，避免 asyncio.to_thread 在线程池中嵌套导致的死锁
-        self._hyde_llm = components.light_llm_client if use_hyde else None
-        self._hyde_model = components.light_model if use_hyde else None
+        self._top_k_procedure = runtime_cfg.memory_v2.top_k_procedure
+        self._top_k_history = runtime_cfg.memory_v2.top_k_history
+        self._light_provider = _LightProviderAdapter(
+            components.light_llm_client,
+            components.light_model,
+        )
+        self._query_rewriter = (
+            QueryRewriter(
+                llm_client=self._light_provider,
+                model=components.light_model,
+                max_tokens=runtime_cfg.memory_v2.gate_max_tokens,
+                timeout_ms=runtime_cfg.memory_v2.gate_llm_timeout_ms,
+            )
+            if runtime_cfg.memory_v2.route_intention_enabled
+            else None
+        )
+        self._history_route = HistoryRoutePolicy(
+            light_provider=self._light_provider,
+            light_model=components.light_model,
+            enabled=runtime_cfg.memory_v2.route_intention_enabled,
+            llm_timeout_ms=runtime_cfg.memory_v2.gate_llm_timeout_ms,
+            max_tokens=runtime_cfg.memory_v2.gate_max_tokens,
+        )
+        self._sufficiency_checker = (
+            SufficiencyChecker(
+                llm_client=self._light_provider,
+                model=components.light_model,
+            )
+            if runtime_cfg.memory_v2.sufficiency_check_enabled
+            else None
+        )
+        self._hyde_enhancer = (
+            HyDEEnhancer(
+                light_provider=self._light_provider,
+                light_model=components.light_model,
+                timeout_s=max(0.5, runtime_cfg.memory_v2.hyde_timeout_ms / 1000.0),
+            )
+            if use_hyde
+            else None
+        )
 
-    def answer_question(self, question: str, question_id: str) -> dict:
+    def answer_question(
+        self,
+        question: str,
+        question_id: str,
+        haystack_sessions: list[list[dict]],
+    ) -> dict:
         try:
             logger.info("  retrieving for: %s", question[:80])
-            items = asyncio.run(self._retrieve(question, question_id))
-            logger.info("  retrieved %d items (pre-filter)", len(items))
-            context_text, _ = self._retriever.build_injection_block(items)
+            recent_history = self._format_gate_history(haystack_sessions, max_turns=3)
+            runtime_metadata = self._build_runtime_metadata()
+            items, context_text = asyncio.run(
+                self._retrieve(
+                    question=question,
+                    question_id=question_id,
+                    recent_history=recent_history,
+                    runtime_metadata=runtime_metadata,
+                )
+            )
+            logger.info("  retrieved %d items (selected)", len(items))
             if not context_text:
                 context_text = "\n".join(item.get("summary", "") for item in items)
             logger.info("  context_text len=%d", len(context_text))
@@ -226,50 +358,176 @@ class LMEResponseAgent:
             logger.error("answer_question failed qid=%s: %s", question_id, exc)
             return {"answer": "", "retrieved_content": "", "retrieved_count": 0}
 
-    async def _retrieve(self, question: str, question_id: str) -> list[dict]:
-        async def _retrieve_fn(query: str, top_k: int | None = None) -> list[dict]:
-            return await self._retriever.retrieve(
-                query=query,
-                memory_types=["event", "profile", "preference"],
-                scope_channel=LME_SCOPE_CHANNEL,
-                scope_chat_id=question_id,
-                require_scope_match=True,
-                top_k=top_k,
-            )
-
-        raw_items = await _retrieve_fn(question)
-
-        if self._hyde_llm is not None:
-            hypothesis = self._generate_hyde_hypothesis(question)
-            if hypothesis:
-                logger.debug("hyde hypothesis: %r", hypothesis[:80])
-                hyde_items = await _retrieve_fn(hypothesis)
-                raw_items = _union_dedup(raw_items, hyde_items)
-
-        return raw_items
-
-    def _generate_hyde_hypothesis(self, query: str) -> str | None:
-        """同步生成假想记忆条目（不使用 asyncio.to_thread，避免线程池死锁）。"""
-        prompt = (
-            "你是个人助手的记忆系统。根据用户提问，生成一条"
-            "**如果该信息存在于记忆数据库中会长什么样**的假想条目。\n"
-            "规则：\n"
-            "- 第三人称（\"用户...\"），与数据库条目语体一致（简洁的事实陈述）\n"
-            "- 只输出那一条文本，不要解释\n\n"
-            f"用户提问：{query}\n"
-            "假想记忆条目："
+    async def _retrieve(
+        self,
+        *,
+        question: str,
+        question_id: str,
+        recent_history: str,
+        runtime_metadata: dict[str, object],
+    ) -> tuple[list[dict], str]:
+        # 1. 先做 gate 决策，并始终并发检索 procedure/preference 规则记忆。
+        gate = await self._decide_gate(
+            question=question,
+            recent_history=recent_history,
+            runtime_metadata=runtime_metadata,
         )
-        try:
-            resp = self._hyde_llm.chat.completions.create(
-                model=self._hyde_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=80,
-                temperature=0.1,
+        procedure_memory = _MemoryPlannerAdapter(self._retriever)
+        episodic_memory = _MemoryPlannerAdapter(
+            self._retriever,
+            scope_channel=LME_SCOPE_CHANNEL,
+            scope_chat_id=question_id,
+            force_scope=True,
+        )
+        p_items = await retrieve_procedure_items(
+            procedure_memory,
+            query=question,
+            top_k=self._top_k_procedure,
+        )
+        # 2. 再按 gate 判定检索 event/profile，并和规则记忆合并注入。
+        h_items: list[dict] = []
+        hyde_context = self._build_hyde_context(recent_history)
+        if gate["route_decision"] == "RETRIEVE":
+            h_items, _scope_mode, _hypothesis = await retrieve_episodic(
+                episodic_memory,
+                gate["episodic_query"],
+                memory_types=["event", "profile"],
+                top_k=self._top_k_history,
+                context=hyde_context,
+                hyde_enhancer=self._hyde_enhancer,
             )
-            return (resp.choices[0].message.content or "").strip() or None
-        except Exception as exc:
-            logger.debug("hyde hypothesis failed: %s", exc)
-            return None
+        selected, block = self._build_injection_payload(procedure_memory, p_items, h_items)
+        # 3. 最后仅在空召回场景触发 sufficiency retry（与主链路一致）。
+        if gate["route_decision"] == "RETRIEVE" and self._sufficiency_checker and not block:
+            refined = await self._retry_with_sufficiency(
+                gate_query=gate["episodic_query"],
+                selected_items=selected,
+                recent_history=recent_history,
+            )
+            if refined:
+                extra_h_items, _scope_mode, _hypothesis = await retrieve_episodic(
+                    episodic_memory,
+                    refined,
+                    memory_types=["event", "profile"],
+                    top_k=self._top_k_history,
+                    context=hyde_context,
+                    hyde_enhancer=self._hyde_enhancer,
+                )
+                selected, block = self._build_injection_payload(
+                    procedure_memory,
+                    p_items,
+                    h_items + extra_h_items,
+                )
+        return selected, block
+
+    async def _decide_gate(
+        self,
+        *,
+        question: str,
+        recent_history: str,
+        runtime_metadata: dict[str, object],
+    ) -> dict[str, str]:
+        if self._query_rewriter is not None:
+            decision = await self._query_rewriter.decide(
+                user_msg=question,
+                recent_history=recent_history,
+            )
+            return {
+                "gate_type": "query_rewriter",
+                "route_decision": "RETRIEVE" if decision.needs_episodic else "NO_RETRIEVE",
+                "episodic_query": decision.episodic_query or question,
+            }
+        route = await self._history_route.decide(
+            user_msg=question,
+            metadata=runtime_metadata,
+            recent_history=recent_history,
+        )
+        return {
+            "gate_type": "history_route",
+            "route_decision": "RETRIEVE" if route.needs_history else "NO_RETRIEVE",
+            "episodic_query": route.rewritten_query or question,
+        }
+
+    def _build_injection_payload(
+        self,
+        memory: _MemoryPlannerAdapter,
+        procedure_items: list[dict],
+        history_items: list[dict],
+    ) -> tuple[list[dict], str]:
+        merged = self._merge_memory_items(procedure_items + history_items)
+        selected = memory.select_for_injection(merged)
+        block, _ids = memory.build_injection_block(merged)
+        return selected, block
+
+    async def _retry_with_sufficiency(
+        self,
+        *,
+        gate_query: str,
+        selected_items: list[dict],
+        recent_history: str,
+    ) -> str:
+        result = await self._sufficiency_checker.check(
+            query=gate_query,
+            items=selected_items,
+            context=recent_history,
+        )
+        if result.is_sufficient:
+            return ""
+        return result.refined_query or ""
+
+    @staticmethod
+    def _merge_memory_items(items: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        merged: list[dict] = []
+        for item in items:
+            item_id = str(item.get("id", "") or "")
+            if item_id and item_id in seen:
+                continue
+            if item_id:
+                seen.add(item_id)
+            merged.append(item)
+        return merged
+
+    @staticmethod
+    def _build_runtime_metadata() -> dict[str, object]:
+        # benchmark 无真实工具调用运行态，这里给出与主链路结构兼容的最小 metadata。
+        return {
+            "last_turn_had_task_tool": False,
+            "recent_task_tools": [],
+            "last_turn_tool_calls_count": 0,
+        }
+
+    @staticmethod
+    def _format_gate_history(
+        haystack_sessions: list[list[dict]],
+        max_turns: int = 3,
+        max_content_len: int | None = 100,
+    ) -> str:
+        flat_msgs: list[dict] = []
+        for sess in haystack_sessions:
+            for turn in sess:
+                role = str(turn.get("role", "")).strip().lower()
+                content = str(turn.get("content", "")).strip()
+                if role in {"user", "assistant"} and content:
+                    flat_msgs.append({"role": role, "content": content})
+        turns: list[str] = []
+        for msg in reversed(flat_msgs):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if max_content_len is not None:
+                content = content[:max_content_len]
+            turns.append(f"[{role}] {content}")
+            if len(turns) >= max_turns * 2:
+                break
+        return "\n".join(reversed(turns))
+
+    @staticmethod
+    def _build_hyde_context(recent_history: str) -> str:
+        now = datetime.now()
+        date_str = now.strftime("%Y-%m-%d %H:%M")
+        if recent_history.strip():
+            return f"当前时间：{date_str}\n{recent_history.strip()}"
+        return f"当前时间：{date_str}"
 
     def _generate_answer(self, question: str, context: str) -> str:
         prompt = (
@@ -334,7 +592,11 @@ class AkasicLMETester:
             workspace=self.workspace,
             memory_window=runtime_cfg.memory_window,
         )
-        self.response_agent = LMEResponseAgent(components=qa_components, use_hyde=use_hyde)
+        self.response_agent = LMEResponseAgent(
+            components=qa_components,
+            runtime_cfg=runtime_cfg,
+            use_hyde=use_hyde,
+        )
         self.evaluate_agent = EvaluateAgent(
             chat_deployment=qa_components.model,
             api_key=str(qa_components.llm_client.api_key),
@@ -384,7 +646,11 @@ class AkasicLMETester:
 
         # Answer
         logger.info(f"[{idx+1}/{total}] {qid} answering...")
-        resp = self.response_agent.answer_question(question, qid)
+        resp = self.response_agent.answer_question(
+            question,
+            qid,
+            haystack_sessions,
+        )
         generated_answer = resp.get("answer", "")
         retrieved_content = resp.get("retrieved_content", "")
 
