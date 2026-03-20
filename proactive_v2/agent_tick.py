@@ -15,6 +15,7 @@ import random as _random_module
 from datetime import datetime, timezone
 from hashlib import sha1
 from typing import Any, Callable
+from urllib.parse import urlsplit, urlunsplit
 
 from proactive.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
@@ -33,9 +34,77 @@ _DISCARDED_ACK_TTL = 720   # mark_not_interesting → 720h
 
 # ── 模块级 delivery key + ACK 函数 ───────────────────────────────────────
 
+def _log_content_candidates(gw: GatewayResult) -> None:
+    if not gw.content_meta:
+        logger.info("[proactive_v2] content candidates: 0")
+        return
+
+    lines: list[str] = []
+    for index, item in enumerate(gw.content_meta, 1):
+        title = str(item.get("title") or "").strip() or "(no title)"
+        source = str(item.get("source") or "").strip()
+        line = f"[{index}] {title}"
+        if source:
+            line += f" | source={source}"
+        lines.append(line)
+
+    logger.info(
+        "[proactive_v2] content candidates: %d\n%s",
+        len(gw.content_meta),
+        "\n".join(lines),
+    )
+
+def _normalize_delivery_url(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    parts = urlsplit(text)
+    path = parts.path.rstrip("/") or parts.path
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+
+def _build_delivery_refs(ctx: AgentTickContext) -> list[str]:
+    if not ctx.cited_item_ids:
+        return []
+
+    content_map = {
+        f"{e.get('ack_server', '')}:{e.get('event_id') or e.get('id', '')}": e
+        for e in ctx.fetched_contents
+        if e.get("ack_server") and (e.get("event_id") or e.get("id"))
+    }
+    refs: list[str] = []
+
+    for key in sorted(set(ctx.cited_item_ids)):
+        meta = content_map.get(key)
+        if meta is None:
+            refs.append(f"id:{key}")
+            continue
+
+        # 1. 优先按稳定 URL 去重，挡住同一篇内容换 event_id 的重复发送。
+        url = _normalize_delivery_url(str(meta.get("url") or ""))
+        if url:
+            refs.append(f"url:{url}")
+            continue
+
+        # 2. 没有 URL 时退化到来源+标题，仍比纯 event_id 稳定。
+        source = str(meta.get("source") or meta.get("source_name") or "").strip().lower()
+        title = str(meta.get("title") or "").strip().lower()
+        if title:
+            refs.append(f"title:{source}|{title}")
+            continue
+
+        # 3. 最后再退回原始 cited key，保持兼容。
+        refs.append(f"id:{key}")
+
+    return sorted(set(refs))
+
+
 def build_delivery_key(ctx: AgentTickContext) -> str:
-    """cited_item_ids 排序后 hash 为主键；为空时退化为消息文本 hash（context-fallback）。"""
-    if ctx.cited_item_ids:
+    """优先按 cited 内容的稳定来源标识去重；为空时退化为消息文本 hash。"""
+    refs = _build_delivery_refs(ctx)
+    if refs and any(not ref.startswith("id:") for ref in refs):
+        key_src = json.dumps(refs)
+    elif ctx.cited_item_ids:
         key_src = json.dumps(sorted(ctx.cited_item_ids))
     else:
         key_src = ctx.final_message[:500]
@@ -112,6 +181,7 @@ class AgentTick:
         sender: Any,
         deduper: Any,
         tool_deps: ToolDeps,
+        workspace_context_fn: Callable[[], str] | None = None,
         llm_fn: Any | None = None,
         rng: Any | None = None,
         recent_proactive_fn: Callable[[], list] | None = None,
@@ -125,6 +195,7 @@ class AgentTick:
         self._sender = sender
         self._deduper = deduper
         self._tool_deps = tool_deps
+        self._workspace_context_fn = workspace_context_fn
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
@@ -219,6 +290,19 @@ class AgentTick:
                 + "\n\n"
             )
 
+        workspace_context_block = ""
+        if self._workspace_context_fn is not None:
+            try:
+                raw = (self._workspace_context_fn() or "").strip()
+                if raw:
+                    workspace_context_block = (
+                        "【Workspace 主动上下文（主/被动 loop 共享规则面板，不是内容源）】\n"
+                        + raw[:3000]
+                        + "\n\n"
+                    )
+            except Exception:
+                pass
+
         content_block = ""
         if gw.content_meta:
             lines = []
@@ -242,10 +326,25 @@ class AgentTick:
             f"{alert_block}"
             f"{content_block}"
             f"{context_block}"
+            f"{workspace_context_block}"
             f"{memory_block}\n"
             f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
+            "【信息源规则】\n"
+            "1. 主信息源只有本轮已提供的 Alerts / Content / Context。只有这些来源里的事实才能进入最终发送内容。\n"
+            "2. 用户长期记忆、Workspace 主动上下文、recent_chat 只用于过滤、排序、同步规则、判断是否打扰；它们不是新的事实来源，也不是新的候选主题列表。\n"
+            "3. Workspace 主动上下文的作用是同步主动 loop 与被动回复 loop 的运行规则，例如白名单、黑名单、关注范围、过滤条件、优先级；它不提供本轮新闻事实。\n"
+            "4. 即使 Workspace 主动上下文里出现了队伍名、选手名、游戏名、技术主题，也不能把这些名字直接当作本轮候选内容去展开、补全或脑补。\n"
+            "5. 严禁根据长期记忆或 Workspace 主动上下文自行脑补具体新闻、比赛结果、转会、更新或其他外部事件。\n"
+            "6. web_search 不是主信息源，只能用于辅助核实当前候选条目的细节、时效性、发布时间或原始链接；不能引入本轮候选集之外的新主题、新事件、新结论。\n"
+            "7. 如果某条信息只能从 web_search 得到，而本轮 Alerts / Content / Context 没有对应候选，就不要发送这条信息。\n"
+            "8. 当本轮 alert 和 content 都为空时，不允许自己枚举题材再去 recall_memory；只有在 Context-fallback 允许时，才能基于本轮给出的 context 决策，否则直接 skip(no_content)。\n\n"
             "【决策流程】\n\n"
             "Alert（若有）→ 直接 send_message\n\n"
+            "Content 评估必须逐条进行，不能把不同主题的多条内容打包成一次统一判断。\n"
+            "你只能对本轮 Content 列表里真实存在的条目做 recall_memory / get_content / mark_*；不要对列表外的假想标题、假想比赛、假想转会或假想更新调用 recall_memory。\n"
+            "只有当某一条内容本身与你已知的用户兴趣明显匹配时，才能把这一条标记为 interesting。\n"
+            "如果一批条目里只有部分相关，必须只标记相关的那几条，其他条目继续判断或标记为 not_interesting。\n"
+            "严禁因为其中 1-2 条命中兴趣，就把整批 item_ids 一次性 mark_interesting。\n\n"
             "Content如果recall不能回答用户对该内容的偏好：\n"
             "  1. recall_memory × 2（负向雷点假设 + 正向兴趣假设）\n"
             "     - 负向 query：「用户对《标题》完全不感兴趣甚至厌恶」\n"
@@ -253,9 +352,13 @@ class AgentTick:
             "     - 正向 query：「用户对《标题》很感兴趣」\n"
             "       有信号 → 继续读正文\n"
             "     - 无命中 ≠ 不感兴趣，结合标题和来源常识判断\n"
-            "  2. 对感兴趣条目批量 get_content([id,...]) 读正文\n"
+            "  2. 只对你已经初步判定可能相关的条目调用 get_content([id,...]) 读正文\n"
             "     正文为空（预取失败）→ 可用 web_fetch 降级，或凭标题判断\n"
-            "  3. 读完正文后最终分类：mark_interesting / mark_not_interesting\n"
+            "     如果现有信息不足以确认细节、需要补时效信息或需要更直接的原始来源链接，可调用 web_search\n"
+            "     但 web_search 只能辅助核实当前条目，不能把搜索结果扩展成新的候选条目\n"
+            "  3. 读完正文后逐条最终分类：mark_interesting / mark_not_interesting\n"
+            "     - mark_interesting 只用于你能明确说出“为什么这条内容用户会在意”的条目\n"
+            "     - 泛泛相关、弱相关、只是同属游戏/技术大类，不足以标记 interesting\n"
             "  4. 所有条目分类完毕：\n"
             "     有 interesting → get_recent_chat 判断是否打扰 → send_message\n"
             "     全部不感兴趣 → skip(no_content)\n"
@@ -264,6 +367,10 @@ class AgentTick:
             "  context 数据已在上方，有亮点 → send_message，否则 skip\n\n"
             "【发送要求】\n"
             "- 语气自然，像朋友分享，不是推送通知\n"
+            "- 当某段内容基于外部来源且该来源有可靠链接时，在这段内容结束后自然附上对应原始链接，方便用户立即溯源\n"
+            "- 链接要紧跟相关内容，不要把所有链接集中堆到整条消息末尾，也不要做成生硬的参考文献区\n"
+            "- 如果一段内容对应多个来源，可以在该段后连续附上多个链接；没有可靠链接时不要强行补链接\n"
+            "- 链接直接使用原始 url，不要杜撰、不要改写、不要省略协议头\n"
             "- cited_ids 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
             "- 没有实质内容时 skip 是正确选择\n\n"
             "【skip reason】no_content | user_busy | already_sent_similar | other"
@@ -285,11 +392,20 @@ class AgentTick:
             content_limit=self._cfg.agent_tick_content_limit,
         )
         gw_result = await gw.run()
+        _log_content_candidates(gw_result)
 
         # 填充 ctx（供 ACK 路径使用）
         ctx.fetched_alerts = gw_result.alerts
         ctx.fetched_contents = [
-            {"ack_server": m["id"].split(":", 1)[0], "event_id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"]}
+            {
+                "id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
+                "event_id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
+                "ack_server": m["id"].split(":", 1)[0],
+                "title": m.get("title") or "",
+                "source": m.get("source") or "",
+                "url": m.get("url") or "",
+                "published_at": m.get("published_at") or "",
+            }
             for m in gw_result.content_meta
         ]
         ctx.fetched_context = gw_result.context

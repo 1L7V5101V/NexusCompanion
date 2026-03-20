@@ -26,6 +26,7 @@ _VALID_SKIP_REASONS = frozenset(["no_content", "user_busy", "already_sent_simila
 @dataclass
 class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
+    web_search_tool: Any = None         # WebSearchTool（补充检索/找链接）
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
     memory: Any = None                  # MemoryPort instance
     recent_chat_fn: Any = None          # async (n) -> list[dict]
@@ -79,6 +80,31 @@ TOOL_SCHEMAS: list[dict] = [
                 "url": {"type": "string", "description": "要抓取的完整 URL"},
             }, "required": ["url"]}),
 
+    _schema("web_search",
+            (
+                "搜索互联网以补充事实、寻找更直接的原始来源链接或验证时效性信息。"
+                "适合在标题和正文不足以支撑判断、或需要更可靠溯源链接时使用。"
+            ),
+            {"type": "object", "properties": {
+                "query": {"type": "string", "description": "搜索关键词"},
+                "num_results": {
+                    "type": "integer",
+                    "description": "返回结果数，默认 5，最大 10",
+                    "minimum": 1,
+                    "maximum": 10,
+                },
+                "livecrawl": {
+                    "type": "string",
+                    "enum": ["fallback", "preferred"],
+                    "description": "实时抓取模式，默认 fallback",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["auto", "fast", "deep"],
+                    "description": "搜索类型，默认 auto",
+                },
+            }, "required": ["query"]}),
+
     _schema("get_recent_chat",
             "获取最近 n 条聊天记录，用于判断用户当前是否在忙。",
             {"type": "object", "properties": {
@@ -87,7 +113,9 @@ TOOL_SCHEMAS: list[dict] = [
 
     _schema("mark_interesting",
             (
-                "将指定 item 明确标记为「感兴趣」。被标记但未被 send_message 引用的条目将得到 24h ACK。"
+                "将指定 item 明确标记为「感兴趣」。只用于你已单独评估且明确相关的条目，"
+                "不能因为其中一条相关就把整批不同主题内容一起标记。"
+                "被标记但未被 send_message 引用的条目将得到 24h ACK。"
             ),
             {"type": "object", "properties": {
                 "item_ids": {
@@ -174,6 +202,12 @@ async def _web_fetch(ctx: AgentTickContext, args: dict, *, web_fetch_tool, max_c
     return json.dumps(result, ensure_ascii=False)
 
 
+async def _web_search(ctx: AgentTickContext, args: dict, *, web_search_tool) -> str:
+    if web_search_tool is None:
+        return json.dumps({"error": "web_search tool not configured"}, ensure_ascii=False)
+    return await web_search_tool.execute(**args)
+
+
 async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn) -> str:
     n = args.get("n", 20)
     messages = await recent_chat_fn(n=n) if recent_chat_fn else []
@@ -229,6 +263,9 @@ async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolD
 
     if tool_name == "web_fetch":
         return await _web_fetch(ctx, args, web_fetch_tool=deps.web_fetch_tool, max_chars=deps.max_chars)
+
+    if tool_name == "web_search":
+        return await _web_search(ctx, args, web_search_tool=deps.web_search_tool)
 
     if tool_name == "get_recent_chat":
         return await _get_recent_chat(ctx, args, recent_chat_fn=deps.recent_chat_fn)

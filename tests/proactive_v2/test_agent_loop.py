@@ -256,7 +256,15 @@ async def test_content_stored_in_ctx_fetched_contents():
         ),
     )
     await tick.tick()
-    assert tick.last_ctx.fetched_contents == [event]
+    assert tick.last_ctx.fetched_contents == [{
+        "id": "c1",
+        "event_id": "c1",
+        "ack_server": "feed-mcp",
+        "url": "https://x.com",
+        "title": "T",
+        "source": "S",
+        "published_at": "2026-01-01T00:00:00Z",
+    }]
 
 
 @pytest.mark.asyncio

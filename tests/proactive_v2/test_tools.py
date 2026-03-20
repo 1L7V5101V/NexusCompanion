@@ -26,6 +26,7 @@ from proactive_v2.tools import (
     ToolDeps,
     execute,
     _web_fetch,
+    _web_search,
     _recall_memory,
     _send_message,
     _skip,
@@ -55,6 +56,7 @@ def test_all_tools_present():
         "get_content_events",
         "get_context_data",
         "web_fetch",
+        "web_search",
         "recall_memory",
         "get_recent_chat",
         "mark_interesting",
@@ -104,6 +106,10 @@ def test_mark_interesting_schema_item_ids_is_array():
 
 def test_web_fetch_schema_url_required():
     assert "url" in _fn("web_fetch")["parameters"]["required"]
+
+
+def test_web_search_schema_query_required():
+    assert "query" in _fn("web_search")["parameters"]["required"]
 
 
 def test_recall_memory_schema_query_required():
@@ -210,6 +216,29 @@ async def test_web_fetch_calls_execute_with_text_format():
         max_chars=8_000,
     )
     fake_tool.execute.assert_called_once_with(url="https://example.com", format="text")
+
+
+@pytest.mark.asyncio
+async def test_web_search_passthrough():
+    fake_tool = AsyncMock()
+    fake_tool.execute.return_value = json.dumps({"query": "furia cs2", "result": "..."})
+    result = json.loads(await _web_search(
+        ctx=AgentTickContext(),
+        args={"query": "furia cs2", "num_results": 3},
+        web_search_tool=fake_tool,
+    ))
+    assert result["query"] == "furia cs2"
+    fake_tool.execute.assert_called_once_with(query="furia cs2", num_results=3)
+
+
+@pytest.mark.asyncio
+async def test_web_search_without_tool_returns_error():
+    result = json.loads(await _web_search(
+        ctx=AgentTickContext(),
+        args={"query": "hf speed-bench"},
+        web_search_tool=None,
+    ))
+    assert "error" in result
 
 
 # ── _recall_memory ────────────────────────────────────────────────────────
@@ -588,6 +617,18 @@ async def test_execute_web_fetch_uses_max_chars_from_deps():
     raw = await execute("web_fetch", {"url": "https://x.com"}, ctx, deps)
     result = json.loads(raw)
     assert len(result["text"]) == 2_000
+
+
+@pytest.mark.asyncio
+async def test_execute_web_search_uses_tool_from_deps():
+    fake_tool = AsyncMock()
+    fake_tool.execute.return_value = json.dumps({"query": "aurora furia", "result": "..."})
+    ctx = AgentTickContext()
+    deps = ToolDeps(web_search_tool=fake_tool)
+    raw = await execute("web_search", {"query": "aurora furia", "type": "fast"}, ctx, deps)
+    result = json.loads(raw)
+    assert result["query"] == "aurora furia"
+    fake_tool.execute.assert_called_once_with(query="aurora furia", type="fast")
 
 
 @pytest.mark.asyncio

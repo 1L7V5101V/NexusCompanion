@@ -57,6 +57,16 @@ logger = logging.getLogger(__name__)
 
 
 class ProactiveLoop:
+    _PROACTIVE_CONTEXT_FILE = "PROACTIVE_CONTEXT.md"
+    _PROACTIVE_CONTEXT_TEMPLATE = """# Proactive Context
+
+在这里写当前对主动推送生效的补充上下文。
+
+- 主 agent 负责维护这份文件。
+- proactive agent 每轮都会读取它作为额外上下文。
+- 写结论即可，不要写冗长过程。
+"""
+
     def __init__(
         self,
         session_manager: SessionManager,
@@ -91,6 +101,8 @@ class ProactiveLoop:
         self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
         self._tool_registry = tool_registry
+        self._workspace_context_mtime_ns: int | None = None
+        self._workspace_context_text: str = ""
         self._init_runtime_state(config)
         self._init_runtime_components()
 
@@ -202,6 +214,7 @@ class ProactiveLoop:
         from proactive_v2.agent_tick import AgentTick
         from proactive_v2.tools import ToolDeps
         from proactive import mcp_sources
+        from agent.tools.web_search import WebSearchTool
         from agent.tools.web_fetch import WebFetchTool
 
         try:
@@ -291,6 +304,7 @@ class ProactiveLoop:
             )
 
         tool_deps = ToolDeps(
+            web_search_tool=WebSearchTool(),
             web_fetch_tool=WebFetchTool(),
             memory=self._memory,
             alert_fn=_alert_fn,
@@ -319,6 +333,7 @@ class ProactiveLoop:
             sender=self._sender,
             deduper=self._message_deduper,
             tool_deps=tool_deps,
+            workspace_context_fn=self._read_workspace_proactive_context,
             llm_fn=_llm_fn,
             rng=self._rng,
             recent_proactive_fn=recent_proactive_fn,
@@ -363,6 +378,8 @@ class ProactiveLoop:
         )
 
     def _init_runtime_components(self) -> None:
+        self._ensure_workspace_proactive_context_file()
+        self._read_workspace_proactive_context()
         self._sender = self._build_sender()
         self._composer = self._build_composer()
         self._judge = self._build_judge()
@@ -374,6 +391,37 @@ class ProactiveLoop:
         self._engine = self._build_tick()
         self._agent_tick = self._build_agent_tick()
         self._trace_proactive_config_snapshot()
+
+    def _workspace_proactive_context_path(self) -> Path | None:
+        workspace = getattr(self._sessions, "workspace", None)
+        if workspace is None:
+            return None
+        return Path(workspace) / self._PROACTIVE_CONTEXT_FILE
+
+    def _ensure_workspace_proactive_context_file(self) -> None:
+        path = self._workspace_proactive_context_path()
+        if path is None or path.exists():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self._PROACTIVE_CONTEXT_TEMPLATE, encoding="utf-8")
+
+    def _read_workspace_proactive_context(self) -> str:
+        path = self._workspace_proactive_context_path()
+        if path is None:
+            return ""
+        self._ensure_workspace_proactive_context_file()
+        try:
+            stat = path.stat()
+            mtime_ns = int(stat.st_mtime_ns)
+            if self._workspace_context_mtime_ns == mtime_ns:
+                return self._workspace_context_text
+            text = path.read_text(encoding="utf-8").strip()
+            self._workspace_context_mtime_ns = mtime_ns
+            self._workspace_context_text = text
+            return text
+        except Exception as e:
+            logger.warning("[proactive] 读取 workspace proactive context 失败: %s", e)
+            return self._workspace_context_text
 
     def _build_skill_action_runner(self):
         if not self._cfg.skill_actions_enabled:

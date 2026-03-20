@@ -81,6 +81,30 @@ def test_delivery_key_is_16_chars():
     assert len(build_delivery_key(_make_ctx(cited=["feed-mcp:1"]))) == 16
 
 
+def test_delivery_key_prefers_content_url_over_event_id():
+    ctx1 = _make_ctx(cited=["feed-mcp:1"])
+    ctx1.fetched_contents = [
+        {"id": "1", "event_id": "1", "ack_server": "feed-mcp", "url": "https://example.com/a", "title": "A"}
+    ]
+    ctx2 = _make_ctx(cited=["feed-mcp:2"])
+    ctx2.fetched_contents = [
+        {"id": "2", "event_id": "2", "ack_server": "feed-mcp", "url": "https://example.com/a", "title": "A"}
+    ]
+    assert build_delivery_key(ctx1) == build_delivery_key(ctx2)
+
+
+def test_delivery_key_falls_back_to_source_and_title_when_url_missing():
+    ctx1 = _make_ctx(cited=["feed-mcp:1"])
+    ctx1.fetched_contents = [
+        {"id": "1", "event_id": "1", "ack_server": "feed-mcp", "source": "HLTV", "title": "Same title"}
+    ]
+    ctx2 = _make_ctx(cited=["feed-mcp:2"])
+    ctx2.fetched_contents = [
+        {"id": "2", "event_id": "2", "ack_server": "feed-mcp", "source": "HLTV", "title": "Same title"}
+    ]
+    assert build_delivery_key(ctx1) == build_delivery_key(ctx2)
+
+
 # ── ack_discarded ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

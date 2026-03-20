@@ -99,7 +99,7 @@ class DataGateway:
         content_store: dict[str, str] = {}
 
         for event, result in zip(events, fetch_results):
-            item_id = event.get("event_id", "")
+            item_id = event.get("event_id") or event.get("id") or ""
             ack_server = event.get("ack_server", "")
             compound_key = f"{ack_server}:{item_id}"
 
