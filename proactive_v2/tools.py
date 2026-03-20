@@ -4,7 +4,7 @@ proactive_v2/tools.py — Tool schemas + execute dispatcher
 数据层已由 DataGateway 预取，agent 只需：
   recall_memory  — 检索偏好记忆（HyDE 正/负假设）
   get_content    — 按需取预 fetch 正文（批量，失败时可降级 web_fetch）
-  web_fetch      — 降级/兜底（content_store 为空时使用）
+  web_fetch      — 补正文/核实来源页面
   get_recent_chat / mark_interesting / mark_not_interesting / send_message / skip
 """
 from __future__ import annotations
@@ -26,7 +26,6 @@ _VALID_SKIP_REASONS = frozenset(["no_content", "user_busy", "already_sent_simila
 @dataclass
 class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
-    web_search_tool: Any = None         # WebSearchTool（补充检索/找链接）
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
     memory: Any = None                  # MemoryPort instance
     recent_chat_fn: Any = None          # async (n) -> list[dict]
@@ -75,35 +74,14 @@ TOOL_SCHEMAS: list[dict] = [
             }, "required": ["item_ids"]}),
 
     _schema("web_fetch",
-            "【降级工具】抓取指定 URL 的正文（get_content 返回空时使用）。失败时返回 error 字段。",
+            (
+                "【优先工具】抓取指定 URL 的正文或直接来源页面。"
+                "当当前候选条目已经有明确 URL，且你需要补正文、核实细节、核实规则时，优先使用它。"
+                "失败时返回 error 字段。"
+            ),
             {"type": "object", "properties": {
                 "url": {"type": "string", "description": "要抓取的完整 URL"},
             }, "required": ["url"]}),
-
-    _schema("web_search",
-            (
-                "搜索互联网以补充事实、寻找更直接的原始来源链接或验证时效性信息。"
-                "适合在标题和正文不足以支撑判断、或需要更可靠溯源链接时使用。"
-            ),
-            {"type": "object", "properties": {
-                "query": {"type": "string", "description": "搜索关键词"},
-                "num_results": {
-                    "type": "integer",
-                    "description": "返回结果数，默认 5，最大 10",
-                    "minimum": 1,
-                    "maximum": 10,
-                },
-                "livecrawl": {
-                    "type": "string",
-                    "enum": ["fallback", "preferred"],
-                    "description": "实时抓取模式，默认 fallback",
-                },
-                "type": {
-                    "type": "string",
-                    "enum": ["auto", "fast", "deep"],
-                    "description": "搜索类型，默认 auto",
-                },
-            }, "required": ["query"]}),
 
     _schema("get_recent_chat",
             "获取最近 n 条聊天记录，用于判断用户当前是否在忙。",
@@ -116,6 +94,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "将指定 item 明确标记为「感兴趣」。只用于你已单独评估且明确相关的条目，"
                 "不能因为其中一条相关就把整批不同主题内容一起标记。"
                 "被标记但未被 send_message 引用的条目将得到 24h ACK。"
+                "可选传 reason，简短说明为什么 interesting。"
             ),
             {"type": "object", "properties": {
                 "item_ids": {
@@ -123,18 +102,27 @@ TOOL_SCHEMAS: list[dict] = [
                     "items": {"type": "string"},
                     "description": "复合键列表，格式 \"{ack_server}:{event_id}\"",
                 },
+                "reason": {
+                    "type": "string",
+                    "description": "可选，简短说明原因，例如“命中用户关注的 G2/FaZe 动态”",
+                },
             }, "required": ["item_ids"]}),
 
     _schema("mark_not_interesting",
             (
                 "将指定 item 标记为「本质上不感兴趣」（720h ACK，30天内不再出现）。\n"
                 "仅用于内容本身无价值；时机问题、抓取失败不得调用。"
+                "可选传 reason，简短说明为什么 not_interesting。"
             ),
             {"type": "object", "properties": {
                 "item_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "复合键列表，格式 \"{ack_server}:{event_id}\"",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "可选，简短说明原因，例如“未命中用户关注白名单”",
                 },
             }, "required": ["item_ids"]}),
 
@@ -216,16 +204,28 @@ async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn)
 
 def _mark_interesting(ctx: AgentTickContext, args: dict) -> str:
     item_ids: list[str] = args.get("item_ids", [])
+    reason = str(args.get("reason", "") or "").strip()
     for key in item_ids:
         if key not in ctx.discarded_item_ids:
             ctx.interesting_item_ids.add(key)
+    logger.info(
+        "[proactive_v2] classified interesting ids=%s reason=%s",
+        item_ids,
+        reason or "(none)",
+    )
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 
 def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
     item_ids: list[str] = args.get("item_ids", [])
+    reason = str(args.get("reason", "") or "").strip()
     ctx.discarded_item_ids.update(item_ids)
     ctx.interesting_item_ids -= set(item_ids)
+    logger.info(
+        "[proactive_v2] classified not_interesting ids=%s reason=%s",
+        item_ids,
+        reason or "(none)",
+    )
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 

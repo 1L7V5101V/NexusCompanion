@@ -97,10 +97,10 @@ PRESETS: dict[str, PresetConfig] = {
     "dev_verify": {
         # 改完代码后 2-5 分钟内可见效果
         "trigger": {
-            "tick_interval_s0": 90,   # 1.5分钟
-            "tick_interval_s1": 60,   # 1分钟
-            "tick_interval_s2": 30,   # 30秒
-            "tick_interval_s3": 15,   # 15秒
+            "tick_interval_s0": 60,   # 1分钟
+            "tick_interval_s1": 30,   # 30秒
+            "tick_interval_s2": 15,   # 15秒
+            "tick_interval_s3": 10,   # 10秒
             "tick_jitter": 0.0,       # 无抖动，精确触发
         },
         "gate": {

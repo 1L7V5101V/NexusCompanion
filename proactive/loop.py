@@ -60,10 +60,12 @@ class ProactiveLoop:
     _PROACTIVE_CONTEXT_FILE = "PROACTIVE_CONTEXT.md"
     _PROACTIVE_CONTEXT_TEMPLATE = """# Proactive Context
 
-在这里写当前对主动推送生效的补充上下文。
+在这里写用户当前对主动推送的明确要求和规则。
 
 - 主 agent 负责维护这份文件。
-- proactive agent 每轮都会读取它作为额外上下文。
+- proactive agent 每轮都会读取它，并把它视为需要遵守的规则，不是普通参考建议。
+- 这里适合写白名单、黑名单、过滤条件、优先级、必须先验证的步骤。
+- 这里不提供新闻事实，不提供候选内容，只定义规则。
 - 写结论即可，不要写冗长过程。
 """
 
@@ -106,7 +108,7 @@ class ProactiveLoop:
         self._init_runtime_state(config)
         self._init_runtime_components()
 
-    _FEED_POLL_INTERVAL_S: int = 1800  # 固定 30min，不读远程配置
+    _FEED_POLL_INTERVAL_S: int = 300  # 固定 5min，不读远程配置
 
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
         self._running = False
@@ -214,7 +216,6 @@ class ProactiveLoop:
         from proactive_v2.agent_tick import AgentTick
         from proactive_v2.tools import ToolDeps
         from proactive import mcp_sources
-        from agent.tools.web_search import WebSearchTool
         from agent.tools.web_fetch import WebFetchTool
 
         try:
@@ -304,7 +305,6 @@ class ProactiveLoop:
             )
 
         tool_deps = ToolDeps(
-            web_search_tool=WebSearchTool(),
             web_fetch_tool=WebFetchTool(),
             memory=self._memory,
             alert_fn=_alert_fn,
