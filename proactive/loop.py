@@ -233,13 +233,13 @@ class ProactiveLoop:
         agent_model = self._cfg.agent_tick_model or self._model
         provider = self._provider
 
-        async def _llm_fn(messages: list[dict], schemas: list[dict]) -> dict | None:
+        async def _llm_fn(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto") -> dict | None:
             resp = await provider.chat(
                 messages=messages,
                 tools=schemas,
                 model=agent_model,
                 max_tokens=self._max_tokens,
-                tool_choice="auto",
+                tool_choice=tool_choice,
             )
             if not resp.tool_calls:
                 return None

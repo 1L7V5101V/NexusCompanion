@@ -580,7 +580,7 @@ class AgentTick:
             for _ in range(3):
                 if ctx.terminal_action is not None or ctx.steps_taken >= self._cfg.agent_tick_max_steps:
                     break
-                tool_call = await self._llm_fn(messages, TOOL_SCHEMAS)
+                tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, "required")
                 if tool_call is None:
                     break
                 tool_name = tool_call.get("name", "")
