@@ -1,46 +1,26 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re
-from datetime import datetime
 from typing import TYPE_CHECKING
 
-_WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-
-from agent.looping.memory_gate import (
-    _decide_history_route,
-    _format_gate_history,
-    _trace_memory_retrieve,
-    _trace_route_reason,
-    _update_session_runtime_metadata,
-)
+from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.ports import (
     AgentLoopRunner,
     ConversationTurnDeps,
-    LLMConfig,
-    LLMServices,
-    MemoryConfig,
-    MemoryServices,
-    ObservabilityServices,
     SessionLike,
     SessionServices,
-    TurnRunner,
-    TurnScheduler,
 )
+from agent.looping.turn_types import HistoryMessage, RetrievalTrace, ToolCall, ToolCallGroup
+from agent.postturn.protocol import PostTurnEvent
+from agent.retrieval.protocol import RetrievalRequest
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
-from memory2.injection_planner import (
-    retrieve_episodic,
-    retrieve_procedure_items,
-)
-from memory2.query_rewriter import GateDecision
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.tools.registry import ToolRegistry
-    from core.observe.events import RagItemTrace, RagTrace, TurnTrace
+    from core.observe.events import TurnTrace
 
 logger = logging.getLogger("agent.loop_handlers")
 
@@ -56,54 +36,64 @@ class ConversationTurnHandler:
         self._llm = deps.llm
         self._llm_config = deps.llm_config
         self._turn_runner = deps.turn_runner
-        self._memory = deps.memory
-        self._memory_config = deps.memory_config
+        self._retrieval = deps.retrieval
+        self._post_turn = deps.post_turn
         self._session = deps.session
-        self._scheduler = deps.scheduler
         self._trace = deps.trace
         self._tools = deps.tools
         self._context = deps.context
-        # Resolved light_model: fall back to primary model when not configured
-        self._light_model = self._llm_config.light_model or self._llm_config.model
 
     async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
         """处理一次普通用户消息，把"检索 -> 执行 -> 持久化 -> 回包"串成主路径。"""
         session = self._session.session_manager.get_or_create(key)
-        # 1. 先解析 skill 提及和主会话历史，准备这轮上下文。
-        skill_mentions = self._collect_skill_mentions(msg)
-        main_history = session.get_history(max_messages=self._memory_config.window)
-        # 2. 再独立跑 memory 注入，尽量让主执行链只拿最终 block。
-        retrieved_block, rag_trace = await self._retrieve_memory_block(
-            msg=msg,
-            key=key,
-            session=session,
-            main_history=main_history,
+        retrieval_history = session.get_history()
+        history_messages = _to_history_messages(retrieval_history)
+        retrieval_result = await self._retrieval.retrieve(
+            RetrievalRequest(
+                message=msg.content,
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                history=history_messages,
+                session_metadata=(
+                    session.metadata if isinstance(session.metadata, dict) else {}
+                ),
+                timestamp=msg.timestamp,
+            )
         )
-        # 3. 用会话历史、skill 和 memory block 执行真正的 conversation turn。
+        skill_mentions = self._collect_skill_mentions(msg)
         final_content, tools_used, tool_chain, thinking = await self._run_conversation_turn(
             msg=msg,
             session=session,
             skill_mentions=skill_mentions,
-            main_history=main_history,
-            retrieved_block=retrieved_block,
+            retrieved_block=retrieval_result.block,
         )
-        # 4. 最后统一做 session append / memory worker / outbound 组装。
-        await self._persist_turn(
+        await self._persist_session(
             msg=msg,
-            key=key,
             session=session,
             final_content=final_content,
             tools_used=tools_used,
             tool_chain=tool_chain,
-            thinking=thinking,
         )
-        # 5. 写入 observe trace（非阻塞）。
+        self._post_turn.schedule(
+            PostTurnEvent(
+                session_key=key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                user_message=msg.content,
+                assistant_response=final_content,
+                tools_used=tools_used,
+                tool_chain=_to_tool_call_groups(tool_chain),
+                session=session,
+                timestamp=msg.timestamp,
+            )
+        )
         self._emit_observe_traces(
             key=key,
             msg=msg,
             final_content=final_content,
             tool_chain=tool_chain,
-            rag_trace=rag_trace,
+            retrieval_trace=retrieval_result.trace,
         )
         return self._build_outbound_message(
             msg=msg,
@@ -130,427 +120,12 @@ class ConversationTurnHandler:
             logger.info(f"检测到 $skill 提及，直接注入完整内容: {result}")
         return result
 
-    async def _retrieve_memory_block(
-        self,
-        *,
-        msg: InboundMessage,
-        key: str,
-        session: SessionLike,
-        main_history: list[dict],
-    ) -> tuple[str, RagTrace | None]:
-        """为主对话路径准备 memory block，并把 route / injection 细节写入 trace。"""
-        retrieved_block = ""
-        rag_trace: RagTrace | None = None
-        gate_type = "history_route"
-        sufficiency_trace: dict[str, object] = self._empty_sufficiency_state()
-        try:
-            # 1. 先整理 gate 和 HyDE 需要的最近上下文，作为"要不要检索历史"的输入。
-            recent_turns = _format_gate_history(main_history, max_turns=3)
-            hyde_context = self._build_hyde_context(main_history)
-
-            # 2. 再做 memory gate：
-            #    - 一路取 procedure/preference 规则类记忆
-            #    - 一路判断这轮是否需要检索 event/profile 历史类记忆
-            gate_result, p_items = await self._resolve_memory_gate(
-                msg=msg,
-                session=session,
-                recent_turns=recent_turns,
-            )
-            gate_type = str(gate_result["gate_type"])
-            rewritten_query = str(gate_result["episodic_query"])
-            route_decision = str(gate_result["route_decision"])
-            route_ms = int(gate_result["route_latency_ms"])
-            fallback_reason = str(gate_result["fallback_reason"])
-            history_memory_types = list(gate_result["history_memory_types"])
-            gate_latency_ms = {"route": route_ms}
-
-            # 3. 若 gate 判定需要历史检索，就按改写后的 query 去取 episodic items；
-            #    然后把规则类记忆和历史类记忆合并，生成最终注入主模型的 memory block。
-            h_items, h_scope_mode, hyde_hypothesis = await self._retrieve_episodic_items(
-                route_decision=route_decision,
-                rewritten_query=rewritten_query,
-                history_memory_types=history_memory_types,
-                hyde_context=hyde_context,
-            )
-            selected_items, retrieved_block, injected_item_ids = self._build_injection_payload(
-                procedure_items=p_items,
-                history_items=h_items,
-            )
-
-            # 4. 若第一次历史召回结果不够支撑回答，再做一次 sufficiency retry；
-            #    最后把 route / hits / injected ids 等细节写入 trace，返回 memory block 给主链路。
-            h_items, h_scope_mode, selected_items, retrieved_block, injected_item_ids = (
-                await self._retry_empty_episodic_block(
-                    msg=msg,
-                    recent_turns=recent_turns,
-                    route_decision=route_decision,
-                    rewritten_query=rewritten_query,
-                    history_memory_types=history_memory_types,
-                    procedure_items=p_items,
-                    history_items=h_items,
-                    history_scope_mode=h_scope_mode,
-                    selected_items=selected_items,
-                    retrieved_block=retrieved_block,
-                    injected_item_ids=injected_item_ids,
-                    sufficiency_trace=sufficiency_trace,
-                )
-            )
-            rag_trace = self._finalize_memory_retrieval(
-                key=key,
-                msg=msg,
-                gate_type=gate_type,
-                route_decision=route_decision,
-                rewritten_query=rewritten_query,
-                route_ms=route_ms,
-                fallback_reason=fallback_reason,
-                gate_latency_ms=gate_latency_ms,
-                p_items=p_items,
-                h_items=h_items,
-                h_scope_mode=h_scope_mode,
-                hyde_hypothesis=hyde_hypothesis,
-                selected_items=selected_items,
-                retrieved_block=retrieved_block,
-                injected_item_ids=injected_item_ids,
-                sufficiency_trace=sufficiency_trace,
-            )
-        except Exception as e:
-            logger.warning(f"memory2 retrieve 失败，跳过: {e}")
-            _trace_memory_retrieve(
-                self._trace.workspace,
-                session_key=key,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                user_msg=msg.content,
-                items=[],
-                injected_block="",
-                gate_type=gate_type,
-                fallback_reason="retrieve_exception",
-                sufficiency_check=sufficiency_trace,
-                error=str(e),
-            )
-            rag_trace = _build_agent_rag_trace(
-                session_key=key,
-                user_msg=msg.content,
-                rewritten_query=msg.content,
-                gate_type=gate_type,
-                route_decision=None,
-                route_latency_ms=None,
-                h_scope_mode=None,
-                p_items=[],
-                h_items=[],
-                hyde_hypothesis=None,
-                injected_id_set=set(),
-                injected_block="",
-                sufficiency_check=sufficiency_trace,
-                fallback_reason="retrieve_exception",
-                error=str(e),
-            )
-        return retrieved_block, rag_trace
-
-    def _empty_sufficiency_state(self) -> dict[str, object]:
-        return {
-            "triggered": False,
-            "result": "",
-            "refined_query": "",
-            "retry_count": 0,
-        }
-
-    def _build_hyde_context(self, main_history: list[dict]) -> str:
-        now = datetime.now()
-        date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
-        hyde_turns = _format_gate_history(
-            main_history,
-            max_turns=3,
-            max_content_len=None,
-        )
-        return f"当前时间：{date_str}\n{hyde_turns}" if hyde_turns else f"当前时间：{date_str}"
-
-    async def _resolve_memory_gate(
-        self,
-        *,
-        msg: InboundMessage,
-        session: SessionLike,
-        recent_turns: str,
-    ) -> tuple[dict[str, object], list[dict]]:
-        if self._memory.query_rewriter is not None:
-            decision: GateDecision = await self._memory.query_rewriter.decide(
-                user_msg=msg.content,
-                recent_history=recent_turns,
-            )
-            p_items = await retrieve_procedure_items(
-                self._memory.port,
-                query=msg.content,
-                top_k=self._memory_config.top_k_procedure,
-            )
-            return {
-                "gate_type": "query_rewriter",
-                "episodic_query": decision.episodic_query,
-                "route_decision": "RETRIEVE" if decision.needs_episodic else "NO_RETRIEVE",
-                "route_latency_ms": decision.latency_ms,
-                "fallback_reason": "",
-                "history_memory_types": ["event", "profile"],
-            }, p_items
-        return await self._resolve_fallback_memory_gate(
-            msg=msg,
-            session=session,
-            recent_turns=recent_turns,
-        )
-
-    async def _resolve_fallback_memory_gate(
-        self,
-        *,
-        msg: InboundMessage,
-        session: SessionLike,
-        recent_turns: str,
-    ) -> tuple[dict[str, object], list[dict]]:
-        runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
-        p_task = asyncio.create_task(
-            retrieve_procedure_items(
-                self._memory.port,
-                query=msg.content,
-                top_k=self._memory_config.top_k_procedure,
-            )
-        )
-        route_task = asyncio.create_task(
-            _decide_history_route(
-                user_msg=msg.content,
-                metadata=runtime_md,
-                recent_history=recent_turns,
-                light_provider=self._llm.light_provider,
-                light_model=self._light_model,
-                route_intention_enabled=self._memory_config.route_intention_enabled,
-                gate_llm_timeout_ms=self._memory_config.gate_llm_timeout_ms,
-                gate_max_tokens=self._memory_config.gate_max_tokens,
-            )
-        )
-        p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
-        route_reason = _trace_route_reason(route_decision_obj)
-        return {
-            "gate_type": "history_route",
-            "episodic_query": route_decision_obj.rewritten_query,
-            "route_decision": "RETRIEVE" if route_decision_obj.needs_history else "NO_RETRIEVE",
-            "route_latency_ms": route_decision_obj.latency_ms,
-            "fallback_reason": "" if route_reason == "ok" else route_reason,
-            "history_memory_types": ["event", "profile"],
-        }, p_items
-
-    async def _retrieve_episodic_items(
-        self,
-        *,
-        route_decision: str,
-        rewritten_query: str,
-        history_memory_types: list[str],
-        hyde_context: str,
-    ) -> tuple[list[dict], str, str | None]:
-        if route_decision != "RETRIEVE" or not history_memory_types:
-            return [], "disabled", None
-        return await retrieve_episodic(
-            self._memory.port,
-            rewritten_query,
-            memory_types=history_memory_types,
-            top_k=self._memory_config.top_k_history,
-            context=hyde_context,
-            hyde_enhancer=self._memory.hyde_enhancer,
-        )
-
-    def _build_injection_payload(
-        self,
-        *,
-        procedure_items: list[dict],
-        history_items: list[dict],
-    ) -> tuple[list[dict], str, list[str]]:
-        memory = self._memory.port
-        merged = self._merge_memory_items(procedure_items + history_items)
-        selected_items = memory.select_for_injection(merged)
-        block, item_ids = memory.build_injection_block(merged)
-        return selected_items, block, item_ids
-
-    async def _retry_empty_episodic_block(
-        self,
-        *,
-        msg: InboundMessage,
-        recent_turns: str,
-        route_decision: str,
-        rewritten_query: str,
-        history_memory_types: list[str],
-        procedure_items: list[dict],
-        history_items: list[dict],
-        history_scope_mode: str,
-        selected_items: list[dict],
-        retrieved_block: str,
-        injected_item_ids: list[str],
-        sufficiency_trace: dict[str, object],
-    ) -> tuple[list[dict], str, list[dict], str, list[str]]:
-        checker = self._memory.sufficiency_checker
-        if route_decision != "RETRIEVE" or checker is None or retrieved_block:
-            return (
-                history_items,
-                history_scope_mode,
-                selected_items,
-                retrieved_block,
-                injected_item_ids,
-            )
-        sufficiency_trace["triggered"] = True
-        result = await checker.check(
-            query=rewritten_query or msg.content,
-            items=selected_items,
-            context=recent_turns,
-        )
-        sufficiency_trace["result"] = result.reason
-        sufficiency_trace["refined_query"] = result.refined_query or ""
-        if result.is_sufficient or not result.refined_query or not history_memory_types:
-            if not history_memory_types and not result.is_sufficient and result.refined_query:
-                logger.debug("sufficiency check: no history_memory_types, skip retry")
-            return (
-                history_items,
-                history_scope_mode,
-                selected_items,
-                retrieved_block,
-                injected_item_ids,
-            )
-        extra_h_items, extra_scope_mode, _retry_hypothesis = await retrieve_episodic(
-            self._memory.port,
-            result.refined_query,
-            memory_types=history_memory_types,
-            top_k=self._memory_config.top_k_history,
-            context=recent_turns,
-            hyde_enhancer=self._memory.hyde_enhancer,
-        )
-        sufficiency_trace["retry_count"] = 1
-        history_items = history_items + extra_h_items
-        history_scope_mode = extra_scope_mode or history_scope_mode
-        selected_items, retrieved_block, injected_item_ids = self._build_injection_payload(
-            procedure_items=procedure_items,
-            history_items=history_items,
-        )
-        return history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids
-
-    def _merge_memory_items(self, items: list[dict]) -> list[dict]:
-        seen: set[str] = set()
-        merged: list[dict] = []
-        for item in items:
-            item_id = str(item.get("id", "") or "")
-            if item_id and item_id in seen:
-                continue
-            if item_id:
-                seen.add(item_id)
-            merged.append(item)
-        return merged
-
-    def _finalize_memory_retrieval(
-        self,
-        *,
-        key: str,
-        msg: InboundMessage,
-        gate_type: str,
-        route_decision: str,
-        rewritten_query: str,
-        route_ms: int,
-        fallback_reason: str,
-        gate_latency_ms: dict[str, int],
-        p_items: list[dict],
-        h_items: list[dict],
-        h_scope_mode: str,
-        hyde_hypothesis: str | None,
-        selected_items: list[dict],
-        retrieved_block: str,
-        injected_item_ids: list[str],
-        sufficiency_trace: dict[str, object],
-    ) -> RagTrace:
-        # 1. 先打本轮命中日志，便于排查注入结果。
-        logger.info(
-            "memory2 retrieve: route=%s scope=%s query=%r p=%d h=%d 命中，选出 %d 条，注入 %d 条%s",
-            route_decision,
-            h_scope_mode,
-            rewritten_query[:50],
-            len(p_items),
-            len(h_items),
-            len(selected_items),
-            len(injected_item_ids),
-            "" if retrieved_block else "（无内容注入）",
-        )
-        self._log_memory_injection(selected_items)
-        # 2. 再把检索细节写入 jsonl trace。
-        sop_guard_applied = self._has_sop_guard_hit(p_items, injected_item_ids)
-        _trace_memory_retrieve(
-            self._trace.workspace,
-            session_key=key,
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            user_msg=msg.content,
-            items=selected_items,
-            injected_block=retrieved_block,
-            gate_type=gate_type,
-            route_decision=route_decision,
-            rewritten_query=rewritten_query,
-            fallback_reason=fallback_reason,
-            sop_guard_applied=sop_guard_applied,
-            procedure_hits=len(p_items),
-            history_hits=len(h_items),
-            injected_item_ids=injected_item_ids,
-            gate_latency_ms=gate_latency_ms,
-            sufficiency_check=sufficiency_trace,
-        )
-        # 3. 最后构造 observe 用的 RagTrace。
-        return _build_agent_rag_trace(
-            session_key=key,
-            user_msg=msg.content,
-            rewritten_query=rewritten_query,
-            gate_type=gate_type,
-            route_decision=route_decision,
-            route_latency_ms=route_ms,
-            h_scope_mode=h_scope_mode,
-            p_items=p_items,
-            h_items=h_items,
-            hyde_hypothesis=hyde_hypothesis,
-            injected_id_set=set(injected_item_ids),
-            injected_block=retrieved_block,
-            sufficiency_check=sufficiency_trace,
-            fallback_reason=fallback_reason,
-        )
-
-    def _log_memory_injection(self, selected_items: list[dict]) -> None:
-        if selected_items:
-            injected_preview = " | ".join(
-                f"{str(item.get('memory_type', ''))}:{str(item.get('summary', ''))[:40]}"
-                for item in selected_items[:4]
-                if isinstance(item, dict)
-            )
-            logger.info("memory2 injected_summary: %s", injected_preview)
-        for item in selected_items:
-            logger.debug(
-                "memory2 injected: id=%s score=%.3f type=%s summary=%s",
-                item.get("id", ""),
-                float(item.get("score", 0.0)),
-                item.get("memory_type", ""),
-                str(item.get("summary", ""))[:60],
-            )
-
-    def _has_sop_guard_hit(
-        self,
-        procedure_items: list[dict],
-        injected_item_ids: list[str],
-    ) -> bool:
-        protected_ids = {
-            str(item.get("id", ""))
-            for item in procedure_items
-            if isinstance(item, dict)
-            and item.get("memory_type") == "procedure"
-            and (item.get("extra_json") or {}).get("tool_requirement")
-            and item.get("id")
-        }
-        return bool(
-            self._memory_config.sop_guard_enabled
-            and any(item_id in protected_ids for item_id in injected_item_ids)
-        )
-
     async def _run_conversation_turn(
         self,
         *,
         msg: InboundMessage,
         session: SessionLike,
         skill_mentions: list[str],
-        main_history: list[dict],
         retrieved_block: str,
     ) -> tuple[str, list[str], list[dict], str | None]:
         """真正执行一轮 agent 对话，并返回内容、工具使用、tool_chain 和 thinking。"""
@@ -561,7 +136,7 @@ class ConversationTurnHandler:
             msg,
             session,
             skill_names=skill_mentions or None,
-            base_history=main_history,
+            base_history=None,
             retrieved_memory_block=retrieved_block,
         )
 
@@ -570,16 +145,14 @@ class ConversationTurnHandler:
             final_content = "I've completed processing but have no response to give."
         return final_content, tools_used, tool_chain, thinking
 
-    async def _persist_turn(
+    async def _persist_session(
         self,
         *,
         msg: InboundMessage,
-        key: str,
         session: SessionLike,
         final_content: str,
         tools_used: list[str],
         tool_chain: list[dict],
-        thinking: str | None = None,
     ) -> None:
         """把本轮结果统一写回 session、presence 和 post-response worker。"""
         preview = (
@@ -589,7 +162,7 @@ class ConversationTurnHandler:
 
         # 1. 先把 user/assistant 两条消息落到 session 内存对象中。
         if self._session.presence:
-            self._session.presence.record_user_message(key)
+            self._session.presence.record_user_message(session.key)
         session.add_message("user", msg.content, media=msg.media if msg.media else None)
         session.add_message(
             "assistant",
@@ -603,15 +176,8 @@ class ConversationTurnHandler:
             tools_used=tools_used,
             tool_chain=tool_chain,
         )
-        # 3. 最后做持久化 append，并异步调度 consolidation / post-response memory。
+        # 3. 最后做持久化 append。
         await self._session.session_manager.append_messages(session, session.messages[-2:])
-        self._scheduler.schedule_consolidation(session, key)
-        self._scheduler.schedule_post_response_memory(
-            msg=msg,
-            key=key,
-            final_content=final_content,
-            tool_chain=tool_chain,
-        )
 
     @staticmethod
     def _build_outbound_message(
@@ -641,7 +207,7 @@ class ConversationTurnHandler:
         msg: InboundMessage,
         final_content: str,
         tool_chain: list[dict],
-        rag_trace: RagTrace | None,
+        retrieval_trace: RetrievalTrace | None,
     ) -> None:
         writer = self._trace.observe_writer
         if writer is None:
@@ -686,72 +252,48 @@ class ConversationTurnHandler:
                 tool_chain_json=tool_chain_json,
             )
         )
-        if rag_trace is not None:
-            writer.emit(rag_trace)
+        if retrieval_trace is not None and retrieval_trace.raw is not None:
+            writer.emit(retrieval_trace.raw)
 
 
-def _build_agent_rag_trace(
-    *,
-    session_key: str,
-    user_msg: str,
-    rewritten_query: str,
-    gate_type: str | None,
-    route_decision: str | None,
-    route_latency_ms: int | None,
-    h_scope_mode: str | None,
-    p_items: list[dict],
-    h_items: list[dict],
-    hyde_hypothesis: str | None,
-    injected_id_set: set[str],
-    injected_block: str,
-    sufficiency_check: dict[str, object],
-    fallback_reason: str = "",
-    error: str | None = None,
-) -> RagTrace:
-    """把本次 agent memory 检索的原始数据组装成 RagTrace。"""
-    from core.observe.events import RagItemTrace, RagTrace
-    import json as _json
-
-    def _item_to_trace(item: dict, path: str) -> RagItemTrace:
-        raw_extra = item.get("extra_json")
-        extra_str = _json.dumps(raw_extra, ensure_ascii=False) if raw_extra else None
-        return RagItemTrace(
-            item_id=str(item.get("id", "")),
-            memory_type=str(item.get("memory_type", "")),
-            score=float(item.get("score", 0.0)),
-            summary=str(item.get("summary", "")),
-            happened_at=item.get("happened_at"),
-            extra_json=extra_str,
-            retrieval_path=path,
-            injected=str(item.get("id", "")) in injected_id_set,
+def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
+    out: list[HistoryMessage] = []
+    for msg in messages:
+        role = str(msg.get("role", "") or "")
+        content = str(msg.get("content", "") or "")
+        tools_used = [
+            str(tool_name)
+            for tool_name in (msg.get("tools_used") or [])
+            if isinstance(tool_name, str)
+        ]
+        out.append(
+            HistoryMessage(
+                role=role,
+                content=content,
+                tools_used=tools_used,
+                tool_chain=_to_tool_call_groups(msg.get("tool_chain") or []),
+            )
         )
+    return out
 
-    trace_items: list[RagItemTrace] = []
 
-    for item in p_items:
-        trace_items.append(_item_to_trace(item, "procedure"))
-
-    for item in h_items:
-        path = str(item.get("_retrieval_path", "history_raw") or "history_raw")
-        trace_items.append(_item_to_trace(item, path))
-
-    return RagTrace(
-        source="agent",
-        session_key=session_key,
-        original_query=user_msg,
-        query=rewritten_query,
-        gate_type=gate_type,
-        route_decision=route_decision,
-        route_latency_ms=route_latency_ms,
-        hyde_hypothesis=hyde_hypothesis,
-        history_scope_mode=h_scope_mode,
-        history_gate_reason=None,
-        items=trace_items,
-        injected_block=injected_block,
-        sufficiency_check_json=json.dumps(sufficiency_check, ensure_ascii=False),
-        fallback_reason=fallback_reason,
-        error=error,
-    )
+def _to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
+    groups: list[ToolCallGroup] = []
+    for group in raw_chain:
+        text = str(group.get("text", "") or "")
+        calls: list[ToolCall] = []
+        for call in (group.get("calls") or []):
+            args = call.get("arguments")
+            calls.append(
+                ToolCall(
+                    call_id=str(call.get("call_id", "") or ""),
+                    name=str(call.get("name", "") or ""),
+                    arguments=args if isinstance(args, dict) else {},
+                    result=str(call.get("result", "") or ""),
+                )
+            )
+        groups.append(ToolCallGroup(text=text, calls=calls))
+    return groups
 
 
 class InternalEventHandler:

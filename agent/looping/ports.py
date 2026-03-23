@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
+    from agent.postturn.protocol import PostTurnPipeline
     from agent.provider import LLMProvider
+    from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
     from bus.events import InboundMessage
     from core.memory.port import MemoryPort
@@ -117,10 +119,9 @@ class ConversationTurnDeps:
     llm: LLMServices
     llm_config: LLMConfig
     turn_runner: TurnRunner
-    memory: MemoryServices
-    memory_config: MemoryConfig
+    retrieval: MemoryRetrievalPipeline
+    post_turn: PostTurnPipeline
     session: SessionServices
-    scheduler: TurnScheduler
     trace: ObservabilityServices
     tools: ToolRegistry
     context: ContextBuilder
@@ -149,7 +150,6 @@ class TurnScheduler:
         self._consolidation_runner = consolidation_runner
         self._memory_window = memory_window
         self._consolidating: set[str] = set()
-        self._post_mem_failures: int = 0
 
     def is_consolidating(self, key: str) -> bool:
         return key in self._consolidating
@@ -223,20 +223,12 @@ class TurnScheduler:
             logger.info("post_response_memorize task cancelled: %s", key)
             return
         except Exception as e:
-            self._post_mem_failures += 1
             logger.warning(
-                "post_response_memorize task inspection failed session=%s failures=%d err=%s",
-                key,
-                self._post_mem_failures,
-                e,
+                "post_response_memorize task inspection failed session=%s err=%s", key, e,
             )
             return
 
         if exc is not None:
-            self._post_mem_failures += 1
             logger.warning(
-                "post_response_memorize task failed session=%s failures=%d err=%s",
-                key,
-                self._post_mem_failures,
-                exc,
+                "post_response_memorize task failed session=%s err=%s", key, exc,
             )

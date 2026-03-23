@@ -13,6 +13,7 @@ from agent.looping.consolidation import (
     _select_consolidation_window,
 )
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
+
 from agent.looping.ports import (
     ConversationTurnDeps,
     LLMConfig,
@@ -23,6 +24,10 @@ from agent.looping.ports import (
     SessionServices,
     TurnScheduler,
 )
+from agent.postturn.default_pipeline import DefaultPostTurnPipeline
+from agent.postturn.protocol import PostTurnPipeline
+from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
+from agent.retrieval.protocol import MemoryRetrievalPipeline
 
 # Re-export for backward-compat: existing callers import these from core.py
 __all__ = [
@@ -76,6 +81,8 @@ class AgentLoopDeps:
     query_rewriter: QueryRewriter | None = None
     sufficiency_checker: SufficiencyChecker | None = None
     profile_extractor: ProfileFactExtractor | None = None
+    retrieval_pipeline: MemoryRetrievalPipeline | None = None
+    post_turn_pipeline: PostTurnPipeline | None = None
 
 
 @dataclass
@@ -121,6 +128,7 @@ class AgentLoop:
             post_mem_worker = deps.memory_runtime.post_response_worker
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
+        self._post_mem_worker = post_mem_worker
 
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
 
@@ -212,15 +220,26 @@ class AgentLoop:
             memory_window=config.memory.window,
         )
 
+        retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
+            memory=memory_svc,
+            memory_config=handler_memory_config,
+            llm=llm_svc,
+            workspace=deps.workspace,
+            light_model=self.light_model,
+        )
+        post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
+            scheduler=self._scheduler,
+            post_mem_worker=post_mem_worker,
+        )
+
         self._conversation_handler = ConversationTurnHandler(
             ConversationTurnDeps(
                 llm=llm_svc,
                 llm_config=config.llm,
                 turn_runner=self._safety_retry,
-                memory=memory_svc,
-                memory_config=handler_memory_config,
+                retrieval=retrieval_pipeline,
+                post_turn=post_turn_pipeline,
                 session=session_svc,
-                scheduler=self._scheduler,
                 trace=trace_svc,
                 tools=deps.tools,
                 context=self.context,

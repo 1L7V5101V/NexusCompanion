@@ -206,7 +206,6 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
             raise RuntimeError("inspect failed")
 
     harness._scheduler._on_post_mem_done(_BrokenTask(), "s2")
-    assert harness._scheduler._post_mem_failures == 1
 
 
 @pytest.mark.asyncio
