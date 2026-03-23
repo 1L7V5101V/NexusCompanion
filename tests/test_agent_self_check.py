@@ -108,12 +108,12 @@ async def test_trigger_memory_consolidation_waits_for_inflight_task(tmp_path: Pa
     loop.session_manager.get_or_create = MagicMock(return_value=session)
     loop.session_manager.save_async = AsyncMock()
     loop._consolidate_memory = AsyncMock()
-    loop._consolidating.add("cli:test")
+    loop._scheduler.mark_manual_start("cli:test")
 
     async def finish_existing_consolidation() -> None:
         await asyncio.sleep(0.01)
         session.last_consolidated = 30
-        loop._consolidating.discard("cli:test")
+        loop._scheduler.mark_manual_end("cli:test")
 
     waiter = asyncio.create_task(finish_existing_consolidation())
     try:

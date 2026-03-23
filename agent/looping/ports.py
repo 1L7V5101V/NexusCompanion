@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -50,16 +50,9 @@ class MemoryConfig:
 
 @dataclass
 class LLMServices:
-    """LLM provider services.
-
-    run_turn_fn: Phase 2 → Phase 4 transition callable.  Wraps AgentLoop._run_with_safety_retry
-    until TurnExecutor is properly extracted in Phase 4.
-    """
-
+    """LLM provider services."""
     provider: LLMProvider
     light_provider: LLMProvider
-    # Temporary: Phase 4 replaces this with an injected TurnExecutor
-    run_turn_fn: Any = field(default=None)
 
 
 @dataclass

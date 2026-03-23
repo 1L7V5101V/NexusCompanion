@@ -44,7 +44,7 @@ logger = logging.getLogger("agent.loop_handlers")
 class ConversationTurnHandler:
     """Phase 2 过渡形态：持有显式 ports，不再持有 AgentLoop 引用。
 
-    9 个参数超过 ≤3 规则的硬性限制，属于设计文档明确说明的过渡例外；
+    10 个参数超过 ≤3 规则的硬性限制，属于设计文档明确说明的过渡例外；
     Phase 4 完成后子组件各自满足该规则，本类也随之收敛。
     """
 
@@ -52,6 +52,7 @@ class ConversationTurnHandler:
         self,
         llm: LLMServices,
         llm_config: LLMConfig,
+        turn_runner: Any,
         memory: MemoryServices,
         memory_config: MemoryConfig,
         session: SessionServices,
@@ -62,6 +63,7 @@ class ConversationTurnHandler:
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
+        self._turn_runner = turn_runner
         self._memory = memory
         self._memory_config = memory_config
         self._session = session
@@ -563,7 +565,7 @@ class ConversationTurnHandler:
         # 1. 先把 channel/chat_id 写进 tool context，保证工具知道当前会话来源。
         self._tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
         # 2. 再统一走 safety retry 包装，避免模型输出异常直接打断主流程。
-        final_content, tools_used, tool_chain, thinking = await self._llm.run_turn_fn(
+        final_content, tools_used, tool_chain, thinking = await self._turn_runner.run(
             msg,
             session,
             skill_names=skill_mentions or None,

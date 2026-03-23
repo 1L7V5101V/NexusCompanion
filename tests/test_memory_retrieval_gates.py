@@ -264,7 +264,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
     session = _DummySession("cli:1")
     loop.session_manager.get_or_create.return_value = session
     loop.session_manager.append_messages = AsyncMock(return_value=None)
-    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], [], None))
+    loop._safety_retry.run = AsyncMock(return_value=("ok", [], [], None))
 
     async def _slow_retrieve(*args, **kwargs):
         await asyncio.sleep(0.12)
@@ -387,7 +387,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
     session = _DummySession("cli:1")
     session.messages = [{"role": "user", "content": "x"} for _ in range(41)]
     loop.session_manager.get_or_create.return_value = session
-    loop._run_with_safety_retry = AsyncMock(return_value=("ok", [], [], None))
+    loop._safety_retry.run = AsyncMock(return_value=("ok", [], [], None))
 
     append_done = False
 
@@ -644,14 +644,16 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
 
 def test_consolidate_memory_calls_profile_extractor_when_set():
     loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
-    loop._memory_port = MagicMock()
-    loop._memory_port.read_long_term = MagicMock(return_value="MEMORY")
-    loop._memory_port.append_history_once = MagicMock(return_value=True)
-    loop._memory_port.append_pending_once = MagicMock(return_value=True)
-    loop._memory_port.save_from_consolidation = AsyncMock()
-    loop._memory_port.save_item = AsyncMock(return_value="new:profile-1")
-    loop._profile_extractor = MagicMock()
-    loop._profile_extractor.extract = AsyncMock(return_value=[])
+    memory_port = MagicMock()
+    memory_port.read_long_term = MagicMock(return_value="MEMORY")
+    memory_port.append_history_once = MagicMock(return_value=True)
+    memory_port.append_pending_once = MagicMock(return_value=True)
+    memory_port.save_from_consolidation = AsyncMock()
+    memory_port.save_item = AsyncMock(return_value="new:profile-1")
+    profile_extractor = MagicMock()
+    profile_extractor.extract = AsyncMock(return_value=[])
+    loop._consolidation._memory_port = memory_port
+    loop._consolidation._profile_extractor = profile_extractor
     session = _DummySession("cli:1")
     session.messages = [
         {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},
@@ -662,8 +664,8 @@ def test_consolidate_memory_calls_profile_extractor_when_set():
 
     asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))
 
-    loop._profile_extractor.extract.assert_awaited_once()
-    extract_call = loop._profile_extractor.extract.await_args
+    profile_extractor.extract.assert_awaited_once()
+    extract_call = profile_extractor.extract.await_args
     conversation_arg = (
         extract_call.args[0]
         if extract_call.args
@@ -674,13 +676,14 @@ def test_consolidate_memory_calls_profile_extractor_when_set():
 
 def test_consolidate_memory_works_without_profile_extractor():
     loop = _make_loop(_Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']))
-    loop._memory_port = MagicMock()
-    loop._memory_port.read_long_term = MagicMock(return_value="MEMORY")
-    loop._memory_port.append_history_once = MagicMock(return_value=True)
-    loop._memory_port.append_pending_once = MagicMock(return_value=True)
-    loop._memory_port.save_from_consolidation = AsyncMock()
-    loop._memory_port.save_item = AsyncMock(return_value="new:profile-1")
-    loop._profile_extractor = None
+    memory_port = MagicMock()
+    memory_port.read_long_term = MagicMock(return_value="MEMORY")
+    memory_port.append_history_once = MagicMock(return_value=True)
+    memory_port.append_pending_once = MagicMock(return_value=True)
+    memory_port.save_from_consolidation = AsyncMock()
+    memory_port.save_item = AsyncMock(return_value="new:profile-1")
+    loop._consolidation._memory_port = memory_port
+    loop._consolidation._profile_extractor = None
     session = _DummySession("cli:1")
     session.messages = [
         {"role": "user", "content": "我买了 Zigbee 网关和加湿器", "timestamp": "2026-03-15T10:00:00"},

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import re
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
 from agent.looping.consolidation import (
-    AgentLoopConsolidationMixin,
+    ConsolidationService,
     _select_consolidation_window,
 )
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
@@ -32,8 +31,11 @@ __all__ = [
     "LLMConfig",
     "MemoryConfig",
 ]
-from agent.looping.safety_retry import AgentLoopSafetyRetryMixin
-from agent.looping.tool_execution import AgentLoopToolExecutionMixin
+from agent.looping.safety_retry import SafetyRetryService
+from agent.looping.tool_execution import (
+    ToolDiscoveryState,
+    TurnExecutor,
+)
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import is_spawn_completion_message
 from bus.processing import ProcessingState
@@ -81,11 +83,7 @@ class AgentLoopConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
-class AgentLoop(
-    AgentLoopSafetyRetryMixin,
-    AgentLoopToolExecutionMixin,
-    AgentLoopConsolidationMixin,
-):
+class AgentLoop:
     """
     主循环：从 MessageBus 消费 InboundMessage，
     驱动 LLM + 工具调用，将结果发回 MessageBus。
@@ -125,9 +123,6 @@ class AgentLoop(
 
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
 
-        # Processes-internal LRU: session_key → recently-used non-core tools (cap 5)
-        # Used by AgentLoopSafetyRetryMixin; cleared on restart.
-        self._unlocked_tools: dict[str, OrderedDict[str, None]] = {}
         self._memory_port = memory_port
         self.context = ContextBuilder(self.workspace, memory=self._memory_port)
         self._profile_extractor = deps.profile_extractor
@@ -154,7 +149,6 @@ class AgentLoop(
         llm_svc = LLMServices(
             provider=deps.provider,
             light_provider=self.light_provider,
-            run_turn_fn=self._run_with_safety_retry,
         )
         memory_svc = MemoryServices(
             port=memory_port,
@@ -169,6 +163,31 @@ class AgentLoop(
         trace_svc = ObservabilityServices(
             workspace=deps.workspace,
             observe_writer=deps.observe_writer,
+        )
+        self._tool_discovery = ToolDiscoveryState()
+        self._turn_executor = TurnExecutor(
+            llm=llm_svc,
+            llm_config=config.llm,
+            tools=deps.tools,
+            discovery=self._tool_discovery,
+            memory_port=self._memory_port,
+            tool_search_enabled=self._tool_search_enabled,
+        )
+        self._safety_retry = SafetyRetryService(
+            executor=self._turn_executor,
+            context=self.context,
+            session_manager=self.session_manager,
+            tools=self.tools,
+            discovery=self._tool_discovery,
+            tool_search_enabled=self._tool_search_enabled,
+            memory_window=self.memory_window,
+        )
+        self._consolidation = ConsolidationService(
+            memory_port=self._memory_port,
+            provider=self.provider,
+            model=self.model,
+            memory_window=self.memory_window,
+            profile_extractor=self._profile_extractor,
         )
 
         # Resolved MemoryConfig with clamped values for the handler
@@ -195,6 +214,7 @@ class AgentLoop(
         self._conversation_handler = ConversationTurnHandler(
             llm=llm_svc,
             llm_config=config.llm,
+            turn_runner=self._safety_retry,
             memory=memory_svc,
             memory_config=handler_memory_config,
             session=session_svc,
@@ -310,6 +330,50 @@ class AgentLoop(
         )
         response = await self._process(msg, session_key=session_key)
         return response.content if response else ""
+
+    async def _run_agent_loop(
+        self,
+        initial_messages: list[dict],
+        request_time: datetime | None = None,
+        preloaded_tools: set[str] | None = None,
+    ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+        return await self._turn_executor.execute(
+            initial_messages,
+            request_time=request_time,
+            preloaded_tools=preloaded_tools,
+        )
+
+    async def _run_with_safety_retry(
+        self,
+        msg,
+        session,
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        return await self._safety_retry.run(
+            msg,
+            session,
+            skill_names=skill_names,
+            base_history=base_history,
+            retrieved_memory_block=retrieved_memory_block,
+        )
+
+    async def _consolidate_memory(
+        self,
+        session,
+        archive_all: bool = False,
+        await_vector_store: bool = False,
+    ) -> None:
+        await self._consolidation.consolidate(
+            session,
+            archive_all=archive_all,
+            await_vector_store=await_vector_store,
+        )
+
+    @staticmethod
+    def _format_request_time_anchor(ts: datetime | None) -> str:
+        return TurnExecutor._format_request_time_anchor(ts)
 
     async def trigger_memory_consolidation(
         self,

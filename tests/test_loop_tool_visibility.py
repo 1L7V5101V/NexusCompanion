@@ -247,9 +247,9 @@ class TestLRUCache:
     def test_lru_capacity_5(self, tmp_path):
         """写入 6 个工具后，LRU 只保留最新 5 个。"""
         loop = self._make_loop_for_lru(tmp_path)
-        loop._update_lru("s1", [f"tool_{i}" for i in range(6)])
+        loop._tool_discovery.update("s1", [f"tool_{i}" for i in range(6)], loop.tools.get_always_on_names())
 
-        lru = loop._unlocked_tools["s1"]
+        lru = loop._tool_discovery._unlocked["s1"]
         assert len(lru) == 5
         # tool_0 是最早写入的，应被淘汰
         assert "tool_0" not in lru
@@ -259,11 +259,11 @@ class TestLRUCache:
         """容量满后，最久未使用的工具先被淘汰。"""
         loop = self._make_loop_for_lru(tmp_path)
         # 写入 5 个（满）
-        loop._update_lru("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"])
+        loop._tool_discovery.update("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"], loop.tools.get_always_on_names())
         # 再加 1 个 → tool_0 应被淘汰
-        loop._update_lru("s1", ["tool_5"])
+        loop._tool_discovery.update("s1", ["tool_5"], loop.tools.get_always_on_names())
 
-        lru = loop._unlocked_tools["s1"]
+        lru = loop._tool_discovery._unlocked["s1"]
         assert "tool_0" not in lru
         assert "tool_5" in lru
 
@@ -271,13 +271,13 @@ class TestLRUCache:
         """重复使用某工具会刷新其在 LRU 中的位置，不被淘汰。"""
         loop = self._make_loop_for_lru(tmp_path)
         # 写入 5 个（满）
-        loop._update_lru("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"])
+        loop._tool_discovery.update("s1", ["tool_0", "tool_1", "tool_2", "tool_3", "tool_4"], loop.tools.get_always_on_names())
         # 重新使用 tool_0（刷到末尾）
-        loop._update_lru("s1", ["tool_0"])
+        loop._tool_discovery.update("s1", ["tool_0"], loop.tools.get_always_on_names())
         # 再加 1 个 → tool_1（最久未用）应被淘汰，而非 tool_0
-        loop._update_lru("s1", ["tool_5"])
+        loop._tool_discovery.update("s1", ["tool_5"], loop.tools.get_always_on_names())
 
-        lru = loop._unlocked_tools["s1"]
+        lru = loop._tool_discovery._unlocked["s1"]
         assert "tool_0" in lru  # 刚被刷新，安全
         assert "tool_1" not in lru  # 最久未用，被淘汰
         assert "tool_5" in lru
@@ -289,9 +289,9 @@ class TestLRUCache:
         reg.register(_DummyTool("normal_tool"))
         loop = _make_loop(tmp_path, cast(Any, _FakeProvider([])), reg)
 
-        loop._update_lru("s1", ["always_tool", "tool_search", "normal_tool"])
+        loop._tool_discovery.update("s1", ["always_tool", "tool_search", "normal_tool"], loop.tools.get_always_on_names())
 
-        lru = loop._unlocked_tools.get("s1", {})
+        lru = loop._tool_discovery._unlocked.get("s1", {})
         assert "always_tool" not in lru
         assert "tool_search" not in lru
         assert "normal_tool" in lru
@@ -320,20 +320,20 @@ class TestLRUCache:
             )
         )
         # 手动模拟 _run_with_safety_retry 的 LRU 写入
-        loop._update_lru("session1", ["remembered_tool"])
+        loop._tool_discovery.update("session1", ["remembered_tool"], loop.tools.get_always_on_names())
 
         # 验证 LRU 已记录
-        assert "remembered_tool" in loop._unlocked_tools.get("session1", {})
+        assert "remembered_tool" in loop._tool_discovery._unlocked.get("session1", {})
 
         # 第二请求：preloaded 应包含该工具
-        preloaded = set(loop._unlocked_tools["session1"].keys())
+        preloaded = set(loop._tool_discovery._unlocked["session1"].keys())
         assert "remembered_tool" in preloaded
 
     def test_lru_independent_per_session(self, tmp_path):
         """不同 session_key 的 LRU 互相独立。"""
         loop = self._make_loop_for_lru(tmp_path)
-        loop._update_lru("session_a", ["tool_0", "tool_1"])
-        loop._update_lru("session_b", ["tool_2", "tool_3"])
+        loop._tool_discovery.update("session_a", ["tool_0", "tool_1"], loop.tools.get_always_on_names())
+        loop._tool_discovery.update("session_b", ["tool_2", "tool_3"], loop.tools.get_always_on_names())
 
-        assert set(loop._unlocked_tools["session_a"].keys()) == {"tool_0", "tool_1"}
-        assert set(loop._unlocked_tools["session_b"].keys()) == {"tool_2", "tool_3"}
+        assert set(loop._tool_discovery._unlocked["session_a"].keys()) == {"tool_0", "tool_1"}
+        assert set(loop._tool_discovery._unlocked["session_b"].keys()) == {"tool_2", "tool_3"}
