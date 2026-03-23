@@ -344,7 +344,7 @@ class AgentTick:
                 has_content = bool(gw.content_store.get(m["id"]))
                 status = "✓" if has_content else "✗(预取失败)"
                 url_part = f"\n       url={m['url']}" if m.get("url") else ""
-            lines.append(
+                lines.append(
                     f"  [{i+1}] id={m['id']}\n"
                     f"       title={m['title']}\n"
                     f"       source={m['source']}  正文:{status}"
@@ -383,6 +383,8 @@ class AgentTick:
             "【工具职责】\n"
             "1. Workspace 主动上下文：这是用户当前明确提出并要求你遵守的规则集合。它定义你该怎么筛、哪些要先验证、哪些必须过滤；它不提供新闻事实。\n"
             "2. recall_memory：仅用于 Content 评估——判断单条内容是否可能是用户雷点，或是否可能让用户感兴趣。Alert 不需要调用此工具。\n"
+            "   ⚠️ 当内容标题稀疏（如 'RT @xxx'、'Image'、转推无正文）时，必须把 source（来源/作者名）作为关键词纳入 query，不要只靠标题查询。\n"
+            "   例：source=terasumc (Artist) 时，query 应包含 'terasumc' 而非只用推文标题。\n"
             "3. get_content：给当前候选条目补正文。\n"
             "4. web_fetch：优先用于抓取当前候选条目的直接来源页面或正文；当条目已经有明确 URL，且你需要补正文、核实细节、核实规则时，先用它。\n"
             "5. get_recent_chat：只用于最后判断现在是否适合打扰用户。\n"
@@ -432,6 +434,7 @@ class AgentTick:
             "  2. 用 recall_memory 判断这条内容是否可能是用户雷点，或是否可能让用户感兴趣。\n"
             "  3. 只有当条目看起来可能相关、或需要更多细节时，再调用 get_content。\n"
             "  4. web_fetch 只在必要时使用：当前候选已有直接 URL 时，先抓直接来源页面或正文；规则确认、细节核实都优先走它。\n"
+            "     ⚠️ web_fetch 失败（404/超时/二进制图片）不能直接 mark_not_interesting；应退回 recall_memory 以 source/作者名为关键词判断用户兴趣。\n"
             "  5. 最终把每条内容分类为 mark_interesting 或 mark_not_interesting。\n"
             "  6. 所有条目分类完毕后：有 interesting → get_recent_chat 判断是否打扰 → send_message；全部不感兴趣 → skip(no_content)\n"
             "  ⚠️ mark_* 不是终止动作，之后必须调 send_message 或 skip\n\n"
