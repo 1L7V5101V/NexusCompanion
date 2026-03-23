@@ -4,6 +4,9 @@ from pathlib import Path
 
 from agent.background.subagent_manager import SubagentManager
 from agent.config_models import Config
+from agent.peer_agent.process_manager import PeerProcessConfig, PeerProcessManager
+from agent.peer_agent.poller import PeerAgentPoller
+from agent.peer_agent.registry import PeerAgentRegistry
 from agent.policies.delegation import DelegationPolicy
 from agent.looping.core import AgentLoop
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
@@ -224,7 +227,7 @@ def build_registered_tools(
     session_store=None,
     tools: ToolRegistry | None = None,
     observe_writer=None,
-) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime]:
+) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime, PeerProcessManager | None, PeerAgentPoller | None]:
     from session.store import SessionStore
     tools = tools or ToolRegistry()
     readonly_tools = _build_readonly_tools(http_resources)
@@ -259,7 +262,38 @@ def build_registered_tools(
     scheduler = _build_scheduler(workspace, push_tool)
     _register_scheduler_tools(tools, scheduler)
     mcp_registry = _register_mcp_tools(tools, workspace)
-    return tools, push_tool, scheduler, mcp_registry, memory_runtime
+
+    # Peer agent 工具（异步注册，需在 event loop 中运行）
+    peer_process_manager, peer_poller = _build_peer_agent_resources(
+        config, bus, http_resources
+    )
+    return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
+
+
+def _build_peer_agent_resources(
+    config: Config,
+    bus: MessageBus,
+    http_resources: SharedHttpResources,
+) -> tuple[PeerProcessManager | None, PeerAgentPoller | None]:
+    """构建 PeerProcessManager 和 PeerAgentPoller（同步部分），工具发现在异步启动时完成。"""
+    if not config.peer_agents:
+        return None, None
+
+    proc_configs = [
+        PeerProcessConfig(
+            name=pa.name,
+            base_url=pa.base_url,
+            launcher=pa.launcher,
+            cwd=pa.cwd,
+            health_path=pa.health_path,
+            startup_timeout_s=pa.startup_timeout_s,
+            shutdown_timeout_s=pa.shutdown_timeout_s,
+        )
+        for pa in config.peer_agents
+    ]
+    pm = PeerProcessManager(configs=proc_configs, requester=http_resources.local_service)
+    poller = PeerAgentPoller(bus=bus, process_manager=pm, requester=http_resources.local_service)
+    return pm, poller
 
 
 def build_core_runtime(
@@ -271,7 +305,7 @@ def build_core_runtime(
     bus = MessageBus()
     provider, light_provider = build_providers(config)
     session_manager = SessionManager(workspace)
-    tools, push_tool, scheduler, mcp_registry, memory_runtime = build_registered_tools(
+    tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = build_registered_tools(
         config,
         workspace,
         http_resources,
@@ -350,4 +384,6 @@ def build_core_runtime(
         mcp_registry,
         memory_runtime,
         presence,
+        peer_pm,
+        peer_poller,
     )

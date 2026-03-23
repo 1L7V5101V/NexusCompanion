@@ -73,6 +73,8 @@ class AppRuntime:
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
+        self.peer_process_manager = None
+        self.peer_poller = None
         self.observe_writer: TraceWriter | None = None
         self.observe_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
@@ -106,6 +108,8 @@ class AppRuntime:
                 self.mcp_registry,
                 self.memory_runtime,
                 self.presence,
+                self.peer_process_manager,
+                self.peer_poller,
             ) = build_core_runtime(
                 self.config,
                 self.workspace,
@@ -113,6 +117,25 @@ class AppRuntime:
                 **build_core_kwargs,
             )
             await self.mcp_registry.load_and_connect_all()
+
+            # 异步发现并注册 peer agent 工具
+            if self.peer_poller is not None and self.config.peer_agents:
+                from agent.peer_agent.registry import PeerAgentRegistry
+                peer_registry = PeerAgentRegistry(
+                    process_manager=self.peer_process_manager,
+                    poller=self.peer_poller,
+                    requester=self.http_resources.local_service,
+                )
+                peer_tools = await peer_registry.discover_all(self.config.peer_agents)
+                for t in peer_tools:
+                    self.tools.register(
+                        t,
+                        always_on=False,
+                        tags=["peer", "research"],
+                        risk="external-side-effect",
+                        search_keywords=["深度调研", "调研报告", "综合分析", "对比研究", "系统性调研"],
+                    )
+                self.peer_poller.start()
 
             self.ipc, self.tg_channel, self.qq_channel = await start_channels(
                 self.config,
@@ -179,6 +202,14 @@ class AppRuntime:
                 except asyncio.CancelledError:
                     pass
             await _run_cleanup_steps(
+                (
+                    "peer_poller.stop",
+                    self.peer_poller.stop if self.peer_poller else _noop_async,
+                ),
+                (
+                    "peer_process_manager.shutdown_all",
+                    self.peer_process_manager.shutdown_all if self.peer_process_manager else _noop_async,
+                ),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
                     "telegram.stop",

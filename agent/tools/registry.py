@@ -293,7 +293,10 @@ class ToolRegistry:
         if tool is None:
             return f"工具 '{name}' 不存在"
         try:
-            return await tool.execute(**arguments)
+            # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
+            # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。
+            merged = {**self._context, **arguments}
+            return await tool.execute(**merged)
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             return f"工具执行出错: {e}"

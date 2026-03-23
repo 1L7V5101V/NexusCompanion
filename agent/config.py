@@ -17,6 +17,7 @@ from agent.config_models import (
     ChannelsConfig,
     Config,
     MemoryV2Config,
+    PeerAgentConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -171,6 +172,19 @@ def load_config(path: str | Path = "config.json") -> Config:
         memory_v2=memory_v2,
         tool_search_enabled=bool(data.get("tool_search_enabled", False)),
         spawn_enabled=bool(data.get("spawn_enabled", True)),
+        peer_agents=[
+            PeerAgentConfig(
+                name=pa["name"],
+                base_url=pa["base_url"],
+                launcher=pa["launcher"],
+                cwd=pa.get("cwd"),
+                description=pa.get("description", ""),
+                health_path=pa.get("health_path", "/health"),
+                startup_timeout_s=int(pa.get("startup_timeout_s", 30)),
+                shutdown_timeout_s=int(pa.get("shutdown_timeout_s", 10)),
+            )
+            for pa in data.get("peer_agents", [])
+        ],
     )
 
 

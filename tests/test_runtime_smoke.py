@@ -63,6 +63,8 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
             _mcp_registry,
             _memory_runtime,
             _presence,
+            _peer_pm,
+            _peer_poller,
         ) = runtime
 
         async def _agent_loop_run():

@@ -63,6 +63,18 @@ class MemoryV2Config:
 
 
 @dataclass
+class PeerAgentConfig:
+    name: str
+    base_url: str
+    launcher: list[str]          # 拉起命令，如 ["uv", "run", "python", "-m", "app.a2a_server"]
+    cwd: str | None = None       # 子进程工作目录，None 表示继承父进程
+    description: str = ""        # 工具描述，用于 LLM 路由；服务器在线时会被 AgentCard 覆盖
+    health_path: str = "/health"
+    startup_timeout_s: int = 30
+    shutdown_timeout_s: int = 10
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -83,12 +95,14 @@ class Config:
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
+    peer_agents: list[PeerAgentConfig] = field(default_factory=list)
 
 
 __all__ = [
     "ChannelsConfig",
     "Config",
     "MemoryV2Config",
+    "PeerAgentConfig",
     "QQChannelConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
