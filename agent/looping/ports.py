@@ -4,10 +4,12 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
+    from agent.context import ContextBuilder
     from agent.provider import LLMProvider
+    from agent.tools.registry import ToolRegistry
     from bus.events import InboundMessage
     from core.memory.port import MemoryPort
     from memory2.hyde_enhancer import HyDEEnhancer
@@ -18,6 +20,41 @@ if TYPE_CHECKING:
     from session.manager import SessionManager
 
 logger = logging.getLogger("agent.loop")
+
+
+class SessionLike(Protocol):
+    key: str
+    messages: list[dict]
+    metadata: dict[str, object]
+    last_consolidated: int
+
+    def get_history(self, max_messages: int = 500) -> list[dict]: ...
+    def add_message(self, role: str, content: str, media=None, **kwargs) -> None: ...
+
+
+ConsolidationRunner = Callable[[SessionLike], Awaitable[None]]
+
+
+class TurnRunner(Protocol):
+    async def run(
+        self,
+        msg: InboundMessage,
+        session: SessionLike,
+        skill_names: list[str] | None = None,
+        base_history: list[dict] | None = None,
+        retrieved_memory_block: str = "",
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        ...
+
+
+class AgentLoopRunner(Protocol):
+    async def __call__(
+        self,
+        initial_messages: list[dict],
+        request_time: object | None = None,
+        preloaded_tools: set[str] | None = None,
+    ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
+        ...
 
 
 # ── Config dataclasses（参数，不含服务对象）───────────────────────────────────
@@ -75,6 +112,20 @@ class ObservabilityServices:
     observe_writer: object | None = None
 
 
+@dataclass
+class ConversationTurnDeps:
+    llm: LLMServices
+    llm_config: LLMConfig
+    turn_runner: TurnRunner
+    memory: MemoryServices
+    memory_config: MemoryConfig
+    session: SessionServices
+    scheduler: TurnScheduler
+    trace: ObservabilityServices
+    tools: ToolRegistry
+    context: ContextBuilder
+
+
 # ── TurnScheduler：封装调度行为 ────────────────────────────────────────────────
 
 
@@ -91,7 +142,7 @@ class TurnScheduler:
     def __init__(
         self,
         post_mem_worker: PostResponseMemoryWorker | None,
-        consolidation_runner: Any,  # Callable[[session], Coroutine[None]]
+        consolidation_runner: ConsolidationRunner,
         memory_window: int,
     ) -> None:
         self._post_mem_worker = post_mem_worker
@@ -112,7 +163,7 @@ class TurnScheduler:
     def mark_manual_end(self, key: str) -> None:
         self._consolidating.discard(key)
 
-    def schedule_consolidation(self, session: Any, key: str) -> None:
+    def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
         if len(session.messages) > self._memory_window and key not in self._consolidating:
             self._consolidating.add(key)
@@ -122,7 +173,7 @@ class TurnScheduler:
             )
             task.add_done_callback(lambda t: self._on_consolidation_done(t, key))
 
-    async def _run_consolidation_bg(self, session: Any, key: str) -> None:
+    async def _run_consolidation_bg(self, session: SessionLike, key: str) -> None:
         try:
             await self._consolidation_runner(session)
         finally:

@@ -14,6 +14,7 @@ from agent.looping.consolidation import (
 )
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
 from agent.looping.ports import (
+    ConversationTurnDeps,
     LLMConfig,
     LLMServices,
     MemoryConfig,
@@ -212,16 +213,18 @@ class AgentLoop:
         )
 
         self._conversation_handler = ConversationTurnHandler(
-            llm=llm_svc,
-            llm_config=config.llm,
-            turn_runner=self._safety_retry,
-            memory=memory_svc,
-            memory_config=handler_memory_config,
-            session=session_svc,
-            scheduler=self._scheduler,
-            trace=trace_svc,
-            tools=deps.tools,
-            context=self.context,
+            ConversationTurnDeps(
+                llm=llm_svc,
+                llm_config=config.llm,
+                turn_runner=self._safety_retry,
+                memory=memory_svc,
+                memory_config=handler_memory_config,
+                session=session_svc,
+                scheduler=self._scheduler,
+                trace=trace_svc,
+                tools=deps.tools,
+                context=self.context,
+            )
         )
         self._internal_event_handler = InternalEventHandler(
             session_svc=session_svc,

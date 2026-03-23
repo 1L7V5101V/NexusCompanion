@@ -9,6 +9,7 @@ proactive_v2/tools.py — Tool schemas + execute dispatcher
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ _VALID_SKIP_REASONS = frozenset(["no_content", "user_busy", "already_sent_simila
 class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
+    web_search_tool: Any = None         # WebSearchTool（可选）
     memory: Any = None                  # MemoryPort instance
     recent_chat_fn: Any = None          # async (n) -> list[dict]
     ack_fn: Any = None                  # async (compound_key: str, ttl_hours: int) -> None
@@ -45,6 +47,18 @@ def _schema(name: str, description: str, parameters: dict) -> dict:
 
 
 TOOL_SCHEMAS: list[dict] = [
+    _schema("get_alert_events",
+            "获取告警事件列表（本 tick 内缓存）。",
+            {"type": "object", "properties": {}, "required": []}),
+
+    _schema("get_content_events",
+            "获取内容事件列表（本 tick 内缓存）。",
+            {"type": "object", "properties": {}, "required": []}),
+
+    _schema("get_context_data",
+            "获取上下文数据列表（本 tick 内最多调用一次）。",
+            {"type": "object", "properties": {}, "required": []}),
+
     _schema("recall_memory",
             (
                 "从向量库检索用户偏好/profile 记忆。用于判断某条内容是否触碰雷点或符合兴趣。\n"
@@ -82,6 +96,13 @@ TOOL_SCHEMAS: list[dict] = [
             {"type": "object", "properties": {
                 "url": {"type": "string", "description": "要抓取的完整 URL"},
             }, "required": ["url"]}),
+
+    _schema("web_search",
+            "搜索网页结果。用于需要额外外部信息时的补充搜索。",
+            {"type": "object", "properties": {
+                "query": {"type": "string", "description": "搜索查询词"},
+                "type": {"type": "string", "description": "可选搜索模式"},
+            }, "required": ["query"]}),
 
     _schema("get_recent_chat",
             "获取最近 n 条聊天记录，用于判断用户当前是否在忙。",
@@ -159,11 +180,14 @@ TOOL_SCHEMAS: list[dict] = [
 
 async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
     query = args["query"]
-    hits: list[dict] = await memory.retrieve_related(
+    retrieved = memory.retrieve_related(
         query,
         memory_types=["preference", "profile"],
         top_k=2,
-    ) or []
+    )
+    if asyncio.iscoroutine(retrieved):
+        retrieved = await retrieved
+    hits: list[dict] = retrieved or []
     if not hits:
         return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
     texts = [h.get("text", "") for h in hits if h.get("text")]
@@ -216,6 +240,41 @@ async def _web_search(ctx: AgentTickContext, args: dict, *, web_search_tool) -> 
     return await web_search_tool.execute(**args)
 
 
+async def _get_alert_events(ctx: AgentTickContext, args: dict, *, alert_fn) -> str:
+    if not getattr(ctx, "_alerts_fetched", False):
+        if ctx.fetched_alerts:
+            ctx._alerts_fetched = True
+            return json.dumps(ctx.fetched_alerts, ensure_ascii=False)
+        events = await alert_fn() if alert_fn is not None else []
+        ctx.fetched_alerts = events or []
+        ctx._alerts_fetched = True
+    return json.dumps(ctx.fetched_alerts, ensure_ascii=False)
+
+
+async def _get_content_events(
+    ctx: AgentTickContext, args: dict, *, feed_fn, limit: int
+) -> str:
+    if not getattr(ctx, "_contents_fetched", False):
+        if ctx.fetched_contents:
+            ctx._contents_fetched = True
+            return json.dumps(ctx.fetched_contents, ensure_ascii=False)
+        events = await feed_fn(limit=limit) if feed_fn is not None else []
+        ctx.fetched_contents = events or []
+        ctx._contents_fetched = True
+    return json.dumps(ctx.fetched_contents, ensure_ascii=False)
+
+
+async def _get_context_data(ctx: AgentTickContext, args: dict, *, context_fn) -> str:
+    if not getattr(ctx, "_context_fetched", False):
+        if ctx.fetched_context:
+            ctx._context_fetched = True
+            return json.dumps(ctx.fetched_context, ensure_ascii=False)
+        rows = await context_fn() if context_fn is not None else []
+        ctx.fetched_context = rows or []
+        ctx._context_fetched = True
+    return json.dumps(ctx.fetched_context, ensure_ascii=False)
+
+
 async def _get_recent_chat(ctx: AgentTickContext, args: dict, *, recent_chat_fn) -> str:
     n = args.get("n", 20)
     messages = await recent_chat_fn(n=n) if recent_chat_fn else []
@@ -236,7 +295,7 @@ def _mark_interesting(ctx: AgentTickContext, args: dict) -> str:
     reason = str(args.get("reason", "") or "").strip()
     valid = _valid_content_ids(ctx)
     unknown = [i for i in item_ids if i not in valid]
-    if unknown:
+    if unknown and valid:
         logger.warning("[proactive_v2] mark_interesting: unknown item_ids=%s", unknown)
         return json.dumps(
             {"error": f"以下 id 不在本轮候选列表中，无法标记：{unknown}。本轮有效 id：{sorted(valid)}"},
@@ -258,7 +317,7 @@ def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
     reason = str(args.get("reason", "") or "").strip()
     valid = _valid_content_ids(ctx)
     unknown = [i for i in item_ids if i not in valid]
-    if unknown:
+    if unknown and valid:
         logger.warning("[proactive_v2] mark_not_interesting: unknown item_ids=%s", unknown)
         return json.dumps(
             {"error": f"以下 id 不在本轮候选列表中，无法标记：{unknown}。本轮有效 id：{sorted(valid)}"},
@@ -299,6 +358,20 @@ def _skip(ctx: AgentTickContext, args: dict) -> str:
 
 async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
     ctx.steps_taken += 1
+
+    if tool_name == "get_alert_events":
+        return await _get_alert_events(ctx, args, alert_fn=deps.alert_fn)
+
+    if tool_name == "get_content_events":
+        return await _get_content_events(
+            ctx,
+            args,
+            feed_fn=deps.feed_fn,
+            limit=int(args.get("limit", 5)),
+        )
+
+    if tool_name == "get_context_data":
+        return await _get_context_data(ctx, args, context_fn=deps.context_fn)
 
     if tool_name == "recall_memory":
         return await _recall_memory(ctx, args, memory=deps.memory)

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING
 
 _WEEKDAY_CN = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
@@ -17,12 +17,16 @@ from agent.looping.memory_gate import (
     _update_session_runtime_metadata,
 )
 from agent.looping.ports import (
+    AgentLoopRunner,
+    ConversationTurnDeps,
     LLMConfig,
     LLMServices,
     MemoryConfig,
     MemoryServices,
     ObservabilityServices,
+    SessionLike,
     SessionServices,
+    TurnRunner,
     TurnScheduler,
 )
 from bus.events import InboundMessage, OutboundMessage
@@ -41,18 +45,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("agent.loop_handlers")
 
 
-class TurnRunner(Protocol):
-    async def run(
-        self,
-        msg: InboundMessage,
-        session: Any,
-        skill_names: list[str] | None = None,
-        base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
-    ) -> tuple[str, list[str], list[dict], str | None]:
-        ...
-
-
 class ConversationTurnHandler:
     """Phase 2 过渡形态：持有显式 ports，不再持有 AgentLoop 引用。
 
@@ -60,31 +52,19 @@ class ConversationTurnHandler:
     Phase 4 完成后子组件各自满足该规则，本类也随之收敛。
     """
 
-    def __init__(
-        self,
-        llm: LLMServices,
-        llm_config: LLMConfig,
-        turn_runner: TurnRunner,
-        memory: MemoryServices,
-        memory_config: MemoryConfig,
-        session: SessionServices,
-        scheduler: TurnScheduler,
-        trace: ObservabilityServices,
-        tools: ToolRegistry,
-        context: ContextBuilder,
-    ) -> None:
-        self._llm = llm
-        self._llm_config = llm_config
-        self._turn_runner = turn_runner
-        self._memory = memory
-        self._memory_config = memory_config
-        self._session = session
-        self._scheduler = scheduler
-        self._trace = trace
-        self._tools = tools
-        self._context = context
+    def __init__(self, deps: ConversationTurnDeps) -> None:
+        self._llm = deps.llm
+        self._llm_config = deps.llm_config
+        self._turn_runner = deps.turn_runner
+        self._memory = deps.memory
+        self._memory_config = deps.memory_config
+        self._session = deps.session
+        self._scheduler = deps.scheduler
+        self._trace = deps.trace
+        self._tools = deps.tools
+        self._context = deps.context
         # Resolved light_model: fall back to primary model when not configured
-        self._light_model = llm_config.light_model or llm_config.model
+        self._light_model = self._llm_config.light_model or self._llm_config.model
 
     async def process(self, msg: InboundMessage, key: str) -> OutboundMessage:
         """处理一次普通用户消息，把"检索 -> 执行 -> 持久化 -> 回包"串成主路径。"""
@@ -155,7 +135,7 @@ class ConversationTurnHandler:
         *,
         msg: InboundMessage,
         key: str,
-        session: Any,
+        session: SessionLike,
         main_history: list[dict],
     ) -> tuple[str, RagTrace | None]:
         """为主对话路径准备 memory block，并把 route / injection 细节写入 trace。"""
@@ -289,7 +269,7 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session: Any,
+        session: SessionLike,
         recent_turns: str,
     ) -> tuple[dict[str, object], list[dict]]:
         if self._memory.query_rewriter is not None:
@@ -320,7 +300,7 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session: Any,
+        session: SessionLike,
         recent_turns: str,
     ) -> tuple[dict[str, object], list[dict]]:
         runtime_md = session.metadata if isinstance(session.metadata, dict) else {}
@@ -568,7 +548,7 @@ class ConversationTurnHandler:
         self,
         *,
         msg: InboundMessage,
-        session: Any,
+        session: SessionLike,
         skill_mentions: list[str],
         main_history: list[dict],
         retrieved_block: str,
@@ -595,7 +575,7 @@ class ConversationTurnHandler:
         *,
         msg: InboundMessage,
         key: str,
-        session: Any,
+        session: SessionLike,
         final_content: str,
         tools_used: list[str],
         tool_chain: list[dict],
@@ -781,7 +761,7 @@ class InternalEventHandler:
         context: ContextBuilder,
         tools: ToolRegistry,
         memory_window: int,
-        run_agent_loop_fn: Any,
+        run_agent_loop_fn: AgentLoopRunner,
     ) -> None:
         self._session = session_svc
         self._context = context

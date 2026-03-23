@@ -17,6 +17,9 @@ class AgentTickContext:
     fetched_alerts: list[dict] = field(default_factory=list)    # 含 ack_server 字段
     fetched_contents: list[dict] = field(default_factory=list)  # 含 ack_server 字段（从 content_meta 还原）
     fetched_context: list[dict] = field(default_factory=list)
+    _alerts_fetched: bool = False
+    _contents_fetched: bool = False
+    _context_fetched: bool = False
     # compound_key → 正文（fetch 失败时为 ""）；tick 结束后由 agent_tick 清空
     content_store: dict[str, str] = field(default_factory=dict)
 

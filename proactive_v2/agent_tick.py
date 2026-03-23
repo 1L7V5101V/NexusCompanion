@@ -473,6 +473,7 @@ class AgentTick:
 
         # 填充 ctx（供 ACK 路径使用）
         ctx.fetched_alerts = gw_result.alerts
+        ctx._alerts_fetched = True
         ctx.fetched_contents = [
             {
                 "id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
@@ -485,7 +486,9 @@ class AgentTick:
             }
             for m in gw_result.content_meta
         ]
+        ctx._contents_fetched = True
         ctx.fetched_context = gw_result.context
+        ctx._context_fetched = True
         ctx.content_store = gw_result.content_store
 
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
@@ -632,42 +635,10 @@ class AgentTick:
 
         # skip 或无 terminal → 只 ACK discarded
         if ctx.terminal_action != "send":
-            # 兜底：fetched 但未分类的条目自动 discard（720h），避免下次 tick 重复评估。
-            # 仅在 agent 实际跑过（steps>0）时才 discard——说明 agent 主动忽略了这些条目。
-            # steps=0 说明 LLM 连工具都没调，条目根本没被评估，不应 discard，下次 tick 重新分类。
-            all_fetched_keys = {
-                f"{e.get('ack_server', '')}:{e.get('event_id', '')}"
-                for e in ctx.fetched_contents
-                if e.get("ack_server") and e.get("event_id")
-            }
-            unclassified = all_fetched_keys - ctx.interesting_item_ids - ctx.discarded_item_ids
-            if unclassified:
-                if ctx.steps_taken > 0:
-                    ctx.discarded_item_ids.update(unclassified)
-                    logger.info("[proactive_v2] post-loop: auto-discarded %d unclassified items (steps=%d)",
-                                len(unclassified), ctx.steps_taken)
-                else:
-                    logger.info("[proactive_v2] post-loop: skipping auto-discard for %d items (steps=0, will retry next tick)",
-                                len(unclassified))
             logger.info("[proactive_v2] post-loop: action=%s steps=%d discarded=%d interesting=%d skip_reason=%s note=%s",
                         ctx.terminal_action or "none", ctx.steps_taken, len(ctx.discarded_item_ids),
                         len(ctx.interesting_item_ids),
                         getattr(ctx, "skip_reason", ""), getattr(ctx, "skip_note", ""))
-            await ack_discarded(ctx, ack_fn)
-            return 0.0
-
-        # ── Hallucination guard ───────────────────────────────────────────
-        # 本轮 content=0 且 alerts=0，但 agent 引用了 cited_ids → 幻觉引用，直接降级 skip
-        if ctx.cited_item_ids and not ctx.fetched_contents and not ctx.fetched_alerts:
-            logger.warning(
-                "[proactive_v2] hallucination-guard: content=0 alerts=0 but cited_ids=%s → force skip",
-                ctx.cited_item_ids,
-            )
-            ctx.terminal_action = "skip"
-            ctx.skip_reason = "other"
-            ctx.skip_note = "hallucinated_citation"
-            ctx.final_message = ""
-            ctx.cited_item_ids = []
             await ack_discarded(ctx, ack_fn)
             return 0.0
 
