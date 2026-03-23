@@ -119,18 +119,34 @@ async def ack_discarded(ctx: AgentTickContext, ack_fn) -> None:
         await ack_fn(key, _DISCARDED_ACK_TTL)
 
 
-async def ack_post_guard_fail(ctx: AgentTickContext, ack_fn) -> None:
+async def ack_post_guard_fail(ctx: AgentTickContext, ack_fn, *, alert_ack_fn=None) -> None:
     """delivery_dedupe / message_dedupe 命中：
-    content cited → 24h；alert cited → 不 ACK（§20）；
+    content cited → 24h；alert cited → alert_ack_fn（独立通道，无 TTL）；
+    alert_ack_fn=None 时回退到普通 ack_fn（24h）；
+    uncited alert（本轮其余 fetched alerts）→ 同上通道，一次性清空本批 alert；
     uncited interesting（content）→ 24h；discarded → 720h。
     """
     if ack_fn is None:
         return
     fetched_alert_keys = {f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}" for e in ctx.fetched_alerts}
     cited_set = set(ctx.cited_item_ids)
-    content_cited = cited_set - fetched_alert_keys
-    for key in content_cited:
+
+    async def _ack_alert(key: str) -> None:
+        if alert_ack_fn is not None:
+            await alert_ack_fn(key)
+        else:
+            await ack_fn(key, _POST_GUARD_ACK_TTL)
+
+    # cited content → 24h
+    for key in cited_set - fetched_alert_keys:
         await ack_fn(key, _POST_GUARD_ACK_TTL)
+    # cited alert → alert_ack_fn（独立通道）；无时回退到 ack_fn 24h
+    for key in cited_set & fetched_alert_keys:
+        await _ack_alert(key)
+    # uncited fetched alerts → 同一通道，一次性清空，防止逐条 tick 循环
+    for key in fetched_alert_keys - cited_set:
+        await _ack_alert(key)
+    # uncited interesting（content，alert 排除）→ 24h
     for key in (ctx.interesting_item_ids - cited_set) - fetched_alert_keys:
         await ack_fn(key, _POST_GUARD_ACK_TTL)
     for key in ctx.discarded_item_ids:
@@ -355,12 +371,12 @@ class AgentTick:
             f"{memory_block}\n"
             f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
             "【你的任务】\n"
-            "⚡ 如果本轮有 Alert：立即 send_message，不需要任何其他步骤。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
+            "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 send_message，cited_ids 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
             "1. 对本轮 Content 逐条判断：这条内容是否可能让用户不感兴趣，是否可能不符合规则，是否值得进入 interesting。\n"
             "2. 你的主工作是分类，不是主动研究新题材，不是主动扩展候选池。\n"
             "3. 你要基于规则和用户偏好，把本轮 Content 分成 interesting 和 not_interesting。\n\n"
             "【你的输出】\n"
-            "1. 有 Alert → 直接 send_message（跳过一切分类步骤）。\n"
+            "1. 有 Alert → 把本轮所有 Alert 整合成一条消息，cited_ids 填写全部 Alert id，直接 send_message（跳过一切分类步骤）。\n"
             "2. 无 Alert：对每条 Content 给出最终分类：mark_interesting 或 mark_not_interesting。\n"
             "3. 如果最终没有 interesting，调用 skip(no_content)。\n"
             "4. 如果最终有 interesting，生成一条最终消息并 send_message。\n\n"
@@ -398,7 +414,8 @@ class AgentTick:
             "【决策流程】\n\n"
             "【Alert 快速路径】本轮如有 Alert：\n"
             "  → get_recent_chat 确认用户不在忙\n"
-            "  → 直接 send_message，cited_ids 填 alert 的 id\n"
+            "  → 把本轮所有 Alert 的内容整合成一条消息，cited_ids 必须填写本轮全部 Alert 的 id\n"
+            "  → send_message 发送\n"
             "  → 结束，可以不调用 recall_memory / mark_* / get_content / web_fetch\n\n"
             "【Content 路径】本轮无 Alert 时，Content 的主要任务不是做研究，而是把本轮候选逐条分成 interesting 或 not_interesting。\n"
             "Content 评估必须逐条进行，不能把不同主题的多条内容打包成一次统一判断。\n"
@@ -472,7 +489,7 @@ class AgentTick:
         messages: list[dict] = [system_msg]
 
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
-            tool_call = await self._llm_fn(messages, TOOL_SCHEMAS)
+            tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, "required")
             if tool_call is None:
                 logger.warning("[proactive_v2] loop: llm_fn returned None at step %d, stopping", ctx.steps_taken)
                 break
@@ -660,7 +677,7 @@ class AgentTick:
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
         ):
             logger.info("[proactive_v2] delivery_dedupe hit")
-            await ack_post_guard_fail(ctx, ack_fn)
+            await ack_post_guard_fail(ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn)
             return 0.0
 
         # message_dedupe
@@ -677,7 +694,7 @@ class AgentTick:
             )
             if is_dup:
                 logger.info("[proactive_v2] message_dedupe hit: %s", reason)
-                await ack_post_guard_fail(ctx, ack_fn)
+                await ack_post_guard_fail(ctx, ack_fn, alert_ack_fn=self._tool_deps.alert_ack_fn)
                 return 0.0
 
         # ── Send ──────────────────────────────────────────────────────────

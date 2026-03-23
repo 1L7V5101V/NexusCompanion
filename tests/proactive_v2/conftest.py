@@ -121,10 +121,17 @@ class FakeLLM:
     def __init__(self, sequence: list[tuple[str, dict]]):
         self._sequence = list(sequence)
         self._index = 0
-        self.calls: list[list[dict]] = []   # 每次 llm 调用收到的 messages
+        self.calls: list[list[dict]] = []         # 每次 llm 调用收到的 messages
+        self.tool_choices: list[str | dict] = []  # 每次调用传入的 tool_choice
 
-    async def __call__(self, messages: list[dict], schemas: list[dict]) -> dict | None:
+    async def __call__(
+        self,
+        messages: list[dict],
+        schemas: list[dict],
+        tool_choice: str | dict = "auto",
+    ) -> dict | None:
         self.calls.append(list(messages))
+        self.tool_choices.append(tool_choice)
         if self._index >= len(self._sequence):
             return None
         name, args = self._sequence[self._index]

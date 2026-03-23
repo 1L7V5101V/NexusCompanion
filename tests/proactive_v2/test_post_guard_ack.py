@@ -621,41 +621,63 @@ async def test_cited_wins_over_discarded_gets_168h_not_720h():
 # ── alert ACK 语义（§20：post-guard 失败时 alert 不 ACK）────────────────────
 
 @pytest.mark.asyncio
-async def test_ack_post_guard_fail_alert_cited_not_acked():
-    """post-guard 失败时，alert cited key 不 ACK（§20 alert 列为空）"""
+async def test_ack_post_guard_fail_alert_cited_uses_alert_ack_fn():
+    """post-guard 失败时，alert cited key → alert_ack_fn（独立通道，无 TTL），不走普通 ack_fn。"""
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.cited_item_ids = ["alert-mcp:a1"]
     ctx.interesting_item_ids = {"alert-mcp:a1"}
     sink = FakeAckSink()
-    await ack_post_guard_fail(ctx, sink)
-    assert sink.not_acked("alert-mcp:a1")
+    alert_sink = FakeAlertAckSink()
+    await ack_post_guard_fail(ctx, sink, alert_ack_fn=alert_sink)
+    assert alert_sink.called_with("alert-mcp:a1")  # alert 走独立通道
+    assert sink.not_acked("alert-mcp:a1")           # 不走普通 ack_fn
 
 
 @pytest.mark.asyncio
-async def test_ack_post_guard_fail_content_cited_acked_alert_not_acked():
-    """post-guard 失败：content cited → 24h；alert cited → 不 ACK"""
+async def test_ack_post_guard_fail_alert_cited_fallback_to_ack_fn_when_no_alert_ack_fn():
+    """post-guard 失败，无 alert_ack_fn 时，alert cited → ack_fn 24h（回退）。"""
+    ctx = AgentTickContext()
+    ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
+    ctx.cited_item_ids = ["alert-mcp:a1"]
+    ctx.interesting_item_ids = {"alert-mcp:a1"}
+    sink = FakeAckSink()
+    await ack_post_guard_fail(ctx, sink)  # alert_ack_fn=None
+    assert sink.acked("alert-mcp:a1", 24)
+
+
+@pytest.mark.asyncio
+async def test_ack_post_guard_fail_content_cited_and_alert_cited_separate_channels():
+    """post-guard 失败：content cited → ack_fn 24h；alert cited → alert_ack_fn。"""
     ctx = AgentTickContext()
     ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
     ctx.fetched_contents = [{"id": "c1", "ack_server": "feed-mcp"}]
     ctx.cited_item_ids = ["alert-mcp:a1", "feed-mcp:c1"]
     ctx.interesting_item_ids = {"alert-mcp:a1", "feed-mcp:c1"}
     sink = FakeAckSink()
-    await ack_post_guard_fail(ctx, sink)
-    assert sink.acked("feed-mcp:c1", 24)   # content → 24h
-    assert sink.not_acked("alert-mcp:a1")  # alert → 不 ACK
+    alert_sink = FakeAlertAckSink()
+    await ack_post_guard_fail(ctx, sink, alert_ack_fn=alert_sink)
+    assert sink.acked("feed-mcp:c1", 24)           # content → 24h
+    assert alert_sink.called_with("alert-mcp:a1")  # alert → 独立通道
+    assert sink.not_acked("alert-mcp:a1")           # alert 不重复走 ack_fn
 
 
 @pytest.mark.asyncio
-async def test_ack_post_guard_fail_alert_in_interesting_not_acked():
-    """post-guard 失败：uncited interesting 中 alert key 也不 ACK"""
+async def test_ack_post_guard_fail_uncited_fetched_alert_also_acked():
+    """post-guard 失败：uncited fetched alert 也应被 ACK，一次性清空本批 alert，
+    防止逐条 tick 循环（每 tick 换一条 alert 反复被 dedupe 拦截）。"""
     ctx = AgentTickContext()
-    ctx.fetched_alerts = [{"id": "a1", "ack_server": "alert-mcp"}]
-    ctx.cited_item_ids = []
-    ctx.interesting_item_ids = {"alert-mcp:a1"}  # 感兴趣但未引用
+    ctx.fetched_alerts = [
+        {"id": "a1", "ack_server": "alert-mcp"},
+        {"id": "a2", "ack_server": "alert-mcp"},
+    ]
+    ctx.cited_item_ids = ["alert-mcp:a1"]  # 只 cite 了 a1
+    ctx.interesting_item_ids = {"alert-mcp:a1"}
     sink = FakeAckSink()
-    await ack_post_guard_fail(ctx, sink)
-    assert sink.not_acked("alert-mcp:a1")
+    alert_sink = FakeAlertAckSink()
+    await ack_post_guard_fail(ctx, sink, alert_ack_fn=alert_sink)
+    assert alert_sink.called_with("alert-mcp:a1")  # cited alert → ack
+    assert alert_sink.called_with("alert-mcp:a2")  # uncited alert → 也 ack，不留给下一 tick
 
 
 # ── message_dedupe 传真实 recent_proactive（§17）──────────────────────────

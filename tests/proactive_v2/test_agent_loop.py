@@ -11,6 +11,7 @@ TDD — Phase 5: proactive_v2/agent_tick.py — Agent Loop
   - mark_not_interesting 在 loop 内写 discarded_set
   - skip(user_busy) 路径
   - LLM 消息历史：工具结果追加到 messages
+  - tool_choice="required"：主 loop 必须强制 LLM 调用工具，不允许纯文本响应
 """
 
 from __future__ import annotations
@@ -463,3 +464,73 @@ async def test_steps_taken_counts_all_tool_calls():
     )
     await tick.tick()
     assert tick.last_ctx.steps_taken == 4
+
+
+# ── tool_choice="required" ────────────────────────────────────────────────
+# 背景：主 loop 若用 tool_choice="auto"，LLM 可以返回纯文本而绕过所有工具。
+# 实际观测到的场景：alerts=7，LLM 直接返回了一段健康提醒文本而非调用
+# send_message，导致 steps=0、消息未发出、alert 未 ACK。
+# 修复：主 loop 改为 tool_choice="required"，强制 LLM 必须调用工具。
+
+@pytest.mark.asyncio
+async def test_main_loop_uses_required_tool_choice():
+    """主 loop 每一步都必须以 tool_choice='required' 调用 llm_fn。"""
+    llm = FakeLLM([
+        ("get_recent_chat", {}),
+        ("skip", {"reason": "no_content"}),
+    ])
+    tick = make_agent_tick(
+        llm_fn=llm,
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+    )
+    await tick.tick()
+
+    # 主 loop 的每回调用都必须是 "required"
+    assert all(tc == "required" for tc in llm.tool_choices), (
+        f"expected all tool_choices to be 'required', got {llm.tool_choices}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_alert_present_llm_called_with_required_tool_choice():
+    """有 Alert 时主 loop 也必须用 tool_choice='required'，不允许 LLM 绕过工具直接返回文本。
+
+    复现场景：alerts=7，LLM 本应调用 send_message，但 tool_choice='auto' 时
+    LLM 可以直接返回纯文本，导致 steps=0 且消息未发出。
+    """
+    alert = {
+        "ack_server": "health",
+        "event_id": "recovery_001",
+        "title": "恢复指标下降",
+        "content": "连续三天 HRV 持续下降，建议早睡。",
+    }
+    llm = FakeLLM([
+        ("get_recent_chat", {}),
+        ("send_message", {
+            "text": "最近恢复指标有点下滑，今天早点睡？",
+            "cited_ids": ["health:recovery_001"],
+        }),
+    ])
+    sender = AsyncMock()
+    sender.send.return_value = True
+
+    tick = make_agent_tick(
+        llm_fn=llm,
+        sender=sender,
+        tool_deps=ToolDeps(
+            alert_fn=AsyncMock(return_value=[alert]),
+            feed_fn=AsyncMock(return_value=[]),
+            context_fn=AsyncMock(return_value=[]),
+            recent_chat_fn=AsyncMock(return_value=[]),
+        ),
+    )
+    await tick.tick()
+
+    # 消息被正常发出
+    assert tick.last_ctx.terminal_action == "send"
+    assert tick.last_ctx.steps_taken > 0
+
+    # 所有主 loop 调用都必须用 "required"——这正是防止 LLM 返回纯文本的关键
+    assert all(tc == "required" for tc in llm.tool_choices), (
+        f"expected all tool_choices to be 'required', got {llm.tool_choices}"
+    )
