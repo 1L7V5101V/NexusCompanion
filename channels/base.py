@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable
@@ -16,14 +17,40 @@ class AttachmentStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _DEFAULT_UPLOAD_DIR
 
+    def _resolve_root(self) -> Path:
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if os.access(self.root, os.W_OK):
+                return self.root
+        except Exception:
+            pass
+        fallback = Path("/tmp/akasic_uploads")
+        fallback.mkdir(parents=True, exist_ok=True)
+        if os.access(fallback, os.W_OK):
+            return fallback
+        try:
+            test = fallback / ".write_test"
+            test.write_text("", encoding="utf-8")
+            test.unlink(missing_ok=True)
+            return fallback
+        except Exception:
+            return self.root
+
     def create_path(self, prefix: str, suffix: str) -> Path:
-        self.root.mkdir(parents=True, exist_ok=True)
-        return self.root / f"{prefix}{uuid4().hex}{suffix}"
+        root = self._resolve_root()
+        return root / f"{prefix}{uuid4().hex}{suffix}"
 
     def write_bytes(self, data: bytes, *, prefix: str, suffix: str) -> Path:
         path = self.create_path(prefix, suffix)
-        path.write_bytes(data)
-        return path
+        try:
+            path.write_bytes(data)
+            return path
+        except Exception:
+            fallback = Path("/tmp/akasic_uploads")
+            fallback.mkdir(parents=True, exist_ok=True)
+            alt = fallback / f"{prefix}{uuid4().hex}{suffix}"
+            alt.write_bytes(data)
+            return alt
 
 
 class SessionIdentityIndex:

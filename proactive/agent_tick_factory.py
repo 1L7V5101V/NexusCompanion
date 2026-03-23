@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
 from proactive import mcp_sources
+from proactive.mcp_sources import McpClientPool
 from proactive_v2.agent_tick import AgentTick
 from proactive_v2.tools import ToolDeps
 
@@ -40,6 +41,7 @@ class AgentTickDeps:
     rng: Any
     workspace_context_fn: Callable[[], str]
     observe_writer: Any | None
+    pool: McpClientPool | None = None
 
 
 class AgentTickFactory:
@@ -111,7 +113,11 @@ class AgentTickFactory:
         return llm_fn
 
     def _build_alert_fn(self) -> AlertFn:
+        pool = self._deps.pool
+
         async def alert_fn() -> list[dict]:
+            if pool is not None:
+                return await mcp_sources.fetch_alert_events_async(pool)
             return await asyncio.get_running_loop().run_in_executor(
                 None, mcp_sources.fetch_alert_events
             )
@@ -119,16 +125,25 @@ class AgentTickFactory:
         return alert_fn
 
     def _build_feed_fn(self) -> FeedFn:
+        pool = self._deps.pool
+
         async def feed_fn(limit: int = 5) -> list[dict]:
-            events = await asyncio.get_running_loop().run_in_executor(
-                None, mcp_sources.fetch_content_events
-            )
+            if pool is not None:
+                events = await mcp_sources.fetch_content_events_async(pool)
+            else:
+                events = await asyncio.get_running_loop().run_in_executor(
+                    None, mcp_sources.fetch_content_events
+                )
             return events[:limit]
 
         return feed_fn
 
     def _build_context_fn(self) -> ContextFn:
+        pool = self._deps.pool
+
         async def context_fn() -> list[dict]:
+            if pool is not None:
+                return await mcp_sources.fetch_context_data_async(pool)
             return await asyncio.get_running_loop().run_in_executor(
                 None, mcp_sources.fetch_context_data
             )
@@ -147,6 +162,8 @@ class AgentTickFactory:
         return recent_chat_fn
 
     def _build_ack_fn(self) -> AckFn:
+        pool = self._deps.pool
+
         async def ack_fn(compound_key: str, ttl_hours: int) -> None:
             """compound_key 格式："{ack_server}:{id}"，如 "feed-mcp:c1"."""
             parts = compound_key.split(":", 1)
@@ -154,16 +171,23 @@ class AgentTickFactory:
                 return
             ack_server, item_id = parts
             source_key = f"mcp:{ack_server}"
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: mcp_sources.acknowledge_content_entries(
-                    [(source_key, item_id)], ttl_hours=ttl_hours
-                ),
-            )
+            if pool is not None:
+                await mcp_sources.acknowledge_content_entries_async(
+                    pool, [(source_key, item_id)], ttl_hours=ttl_hours
+                )
+            else:
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: mcp_sources.acknowledge_content_entries(
+                        [(source_key, item_id)], ttl_hours=ttl_hours
+                    ),
+                )
 
         return ack_fn
 
     def _build_alert_ack_fn(self) -> AlertAckFn:
+        pool = self._deps.pool
+
         async def alert_ack_fn(compound_key: str) -> None:
             """Alert 专用通道，走 acknowledge_events（非 content entries）。"""
             import types as _types
@@ -172,16 +196,24 @@ class AgentTickFactory:
                 return
             ack_server, ack_id = parts
             event_proxy = _types.SimpleNamespace(_ack_server=ack_server, ack_id=ack_id)
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                lambda: mcp_sources.acknowledge_events([event_proxy]),
-            )
+            if pool is not None:
+                await mcp_sources.acknowledge_events_async(pool, [event_proxy])
+            else:
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: mcp_sources.acknowledge_events([event_proxy]),
+                )
 
         return alert_ack_fn
 
     def _build_tool_deps(self) -> ToolDeps:
+        web_fetch_tool = None
+        try:
+            web_fetch_tool = WebFetchTool()
+        except RuntimeError as e:
+            logger.warning("[proactive_v2] web_fetch 不可用，已降级禁用: %s", e)
         return ToolDeps(
-            web_fetch_tool=WebFetchTool(),
+            web_fetch_tool=web_fetch_tool,
             memory=self._deps.memory,
             alert_fn=self._build_alert_fn(),
             feed_fn=self._build_feed_fn(),

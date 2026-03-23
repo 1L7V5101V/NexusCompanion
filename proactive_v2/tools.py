@@ -223,6 +223,8 @@ def _get_content(ctx: AgentTickContext, args: dict) -> str:
 
 
 async def _web_fetch(ctx: AgentTickContext, args: dict, *, web_fetch_tool, max_chars: int) -> str:
+    if web_fetch_tool is None:
+        return json.dumps({"error": "web_fetch tool not configured"}, ensure_ascii=False)
     result_json = await web_fetch_tool.execute(url=args["url"], format="text")
     result = json.loads(result_json)
     if "error" in result:

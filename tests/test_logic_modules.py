@@ -234,6 +234,12 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))
     loop._engine = SimpleNamespace(tick=AsyncMock(return_value=0.2))
+    loop._feed_poll_lock = asyncio.Lock()
+    loop._mcp_pool = SimpleNamespace(
+        connect_all=AsyncMock(return_value=None),
+        disconnect_all=AsyncMock(return_value=None),
+    )
+    loop._poll_feeds_once = AsyncMock(return_value=None)
     assert loop._sample_random_memory(1)
     assert "Workspace 导航" in loop._build_context_block()
     assert await loop._send("hi") is True

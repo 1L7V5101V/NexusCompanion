@@ -158,6 +158,12 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
     class Bot:
         pass
 
+    class MessageEntity:
+        def __init__(self, *, type, offset, length):
+            self.type = type
+            self.offset = offset
+            self.length = length
+
     class TelegramError(Exception):
         pass
 
@@ -246,6 +252,7 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
             self.handlers.append(handler)
 
     telegram.Bot = Bot
+    telegram.MessageEntity = MessageEntity
     telegram.Update = Update
     telegram_constants.ChatAction = SimpleNamespace(TYPING="typing")
     telegram_error.Conflict = Conflict

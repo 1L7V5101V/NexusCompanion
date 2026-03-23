@@ -461,7 +461,6 @@ async def test_judge_does_not_veto_by_urgency():
         _StubProvider(),
         ProactiveConfig(
             judge_urgency_horizon_hours=12.0,
-            judge_veto_urgency_min=0.2,
             judge_send_threshold=0.0,
         ),
     )

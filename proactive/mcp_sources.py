@@ -113,7 +113,11 @@ def poll_content_feeds() -> None:
                 raise RuntimeError(f"poll_feeds 系统级失败: {result}")
             logger.info("[mcp_sources] poll_content_feeds: %s.%s 完成", server, poll_tool)
         except Exception as e:
-            logger.warning("[mcp_sources] poll_content_feeds: %s.%s 失败: %s", server, poll_tool, e)
+            logger.warning(
+                "[mcp_sources] poll_content_feeds: %s.%s 失败: %s",
+                server, poll_tool, e,
+                exc_info=True,
+            )
             failed_servers.append(server)
     if failed_servers:
         raise RuntimeError(f"poll_content_feeds 以下源失败: {failed_servers}")
@@ -321,3 +325,244 @@ def acknowledge_content_entries(entries: list[tuple[str, str]], ttl_hours: int |
             logger.warning("[mcp_sources] content ack 失败 %s.%s: %s", server, ack_tool, e)
 
 
+# ── Persistent connection pool ────────────────────────────────────────────────
+
+
+class McpClientPool:
+    """每个 MCP server 保持一个常驻连接，避免每次调用重启子进程。
+
+    用法:
+        pool = McpClientPool()
+        await pool.connect_all()      # agent 启动时
+        await pool.call(server, tool, args)
+        await pool.disconnect_all()   # agent 关闭时（finally 块）
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[str, Any] = {}               # server -> McpClient
+        self._configs: dict[str, tuple[list, dict]] = {}  # server -> (command, env)
+
+    async def connect_all(self) -> None:
+        """按当前配置连接所有 server，连接失败的 server 跳过。"""
+        seen: set[str] = set()
+        for src in _load_sources():
+            server = src.get("server", "")
+            if not server or server in seen:
+                continue
+            seen.add(server)
+            cfg = _get_server_cfg(server)
+            if not cfg:
+                continue
+            command = cfg.get("command", [])
+            env = cfg.get("env") or {}
+            if not command:
+                continue
+            self._configs[server] = (command, env)
+            await self._connect(server)
+
+    async def _connect(self, server: str) -> bool:
+        from agent.mcp.client import McpClient
+
+        command, env = self._configs.get(server, ([], {}))
+        if not command:
+            return False
+        try:
+            client = McpClient(name=server, command=command, env=env)
+            await client.connect()
+            self._clients[server] = client
+            logger.info("[mcp_pool] connected: %s", server)
+            return True
+        except Exception as e:
+            logger.warning("[mcp_pool] connect failed %s: %s", server, e, exc_info=True)
+            return False
+
+    async def call(self, server: str, tool_name: str, args: dict) -> Any:
+        """调用 tool，连接断开时自动重连一次。"""
+        if server not in self._clients:
+            if server not in self._configs:
+                raise RuntimeError(f"[mcp_pool] unknown server: {server}")
+            if not await self._connect(server):
+                raise RuntimeError(f"[mcp_pool] could not connect: {server}")
+        client = self._clients[server]
+        try:
+            raw = await client.call(tool_name, args)
+            return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+        except Exception as e:
+            logger.warning(
+                "[mcp_pool] call failed %s.%s, reconnecting: %s", server, tool_name, e
+            )
+            self._clients.pop(server, None)
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            if await self._connect(server):
+                raw = await self._clients[server].call(tool_name, args)
+                return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+            raise
+
+    async def disconnect_all(self) -> None:
+        """断开所有连接。agent 关闭时在 finally 块调用。"""
+        for server, client in list(self._clients.items()):
+            try:
+                await client.disconnect()
+                logger.info("[mcp_pool] disconnected: %s", server)
+            except Exception as e:
+                logger.warning("[mcp_pool] disconnect error %s: %s", server, e)
+        self._clients.clear()
+
+
+# ── Async pool-based variants ─────────────────────────────────────────────────
+
+
+async def fetch_alert_events_async(pool: McpClientPool) -> list[dict]:
+    sources = _load_sources()
+    result: list[dict] = []
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() in ("content", "context"):
+            continue
+        server = src.get("server", "")
+        get_tool = src.get("get_tool", "get_proactive_events")
+        try:
+            events = await pool.call(server, get_tool, {})
+            if isinstance(events, list):
+                for event in events:
+                    if not isinstance(event, dict) or event.get("kind") != "alert":
+                        continue
+                    enriched = dict(event)
+                    enriched.setdefault("ack_server", server)
+                    result.append(enriched)
+                logger.debug("[mcp_sources] %s 返回 %d 条 alert 事件", server, len(result))
+        except Exception as e:
+            logger.warning("[mcp_sources] fetch_alert %s.%s failed: %s", server, get_tool, e)
+    return result
+
+
+async def fetch_content_events_async(pool: McpClientPool) -> list[dict]:
+    sources = _load_sources()
+    result: list[dict] = []
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() in ("alert", "context"):
+            continue
+        server = src.get("server", "")
+        get_tool = src.get("get_tool", "get_proactive_events")
+        try:
+            events = await pool.call(server, get_tool, {})
+            if isinstance(events, list):
+                for event in events:
+                    if not isinstance(event, dict) or event.get("kind") != "content":
+                        continue
+                    enriched = dict(event)
+                    enriched.setdefault("ack_server", server)
+                    result.append(enriched)
+        except Exception as e:
+            logger.warning("[mcp_sources] fetch_content %s.%s failed: %s", server, get_tool, e)
+    return result
+
+
+async def fetch_context_data_async(pool: McpClientPool) -> list[dict]:
+    sources = _load_sources()
+    result: list[dict] = []
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() != "context":
+            continue
+        server = src.get("server", "")
+        get_tool = src.get("get_tool", "get_context")
+        try:
+            data = await pool.call(server, get_tool, {})
+            if isinstance(data, dict):
+                data = dict(data)
+                data.setdefault("_source", server)
+                result.append(data)
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        item = dict(item)
+                        item.setdefault("_source", server)
+                        result.append(item)
+            logger.debug("[mcp_sources] context 源 %s 返回 %d 条", server, len(result))
+        except Exception as e:
+            logger.warning("[mcp_sources] fetch_context %s.%s failed: %s", server, get_tool, e)
+    return result
+
+
+async def poll_content_feeds_async(pool: McpClientPool) -> None:
+    sources = _load_sources()
+    failed_servers: list[str] = []
+    for src in sources:
+        if str(src.get("channel", "")).strip().lower() != "content":
+            continue
+        poll_tool = src.get("poll_tool")
+        if not poll_tool:
+            continue
+        server = src.get("server", "")
+        try:
+            result = await pool.call(server, poll_tool, {})
+            if isinstance(result, str) and result.startswith("error:"):
+                raise RuntimeError(f"poll_feeds 系统级失败: {result}")
+            logger.info("[mcp_sources] poll_content_feeds: %s.%s 完成", server, poll_tool)
+        except Exception as e:
+            logger.warning(
+                "[mcp_sources] poll_content_feeds: %s.%s 失败: %s",
+                server, poll_tool, e, exc_info=True,
+            )
+            failed_servers.append(server)
+    if failed_servers:
+        raise RuntimeError(f"poll_content_feeds 以下源失败: {failed_servers}")
+
+
+async def acknowledge_events_async(pool: McpClientPool, events: list) -> None:
+    sources = _load_sources()
+    ack_map: dict[str, tuple[str, list[str]]] = {}
+    for src in sources:
+        ack_tool = src.get("ack_tool")
+        if ack_tool:
+            ack_map[src["server"]] = (ack_tool, [])
+    for e in events:
+        ack_server: str = getattr(e, "_ack_server", None) or ""
+        if not ack_server:
+            ack_server = getattr(e, "source_name", "") or ""
+        ack_id: str | None = getattr(e, "ack_id", None)
+        if ack_server in ack_map and ack_id:
+            ack_map[ack_server][1].append(ack_id)
+    for server, (ack_tool, ids) in ack_map.items():
+        if not ids:
+            continue
+        try:
+            await pool.call(server, ack_tool, {"event_ids": ids})
+            logger.info("[mcp_sources] acked %d 事件 via %s.%s ids=%s", len(ids), server, ack_tool, ids)
+        except Exception as e:
+            logger.warning("[mcp_sources] ack failed %s.%s: %s", server, ack_tool, e)
+
+
+async def acknowledge_content_entries_async(
+    pool: McpClientPool,
+    entries: list[tuple[str, str]],
+    ttl_hours: int | None = None,
+) -> None:
+    if not entries:
+        return
+    sources = _load_sources()
+    ack_map: dict[str, tuple[str, list[str]]] = {}
+    for src in sources:
+        ack_tool = src.get("ack_tool")
+        if ack_tool:
+            ack_map[src["server"]] = (ack_tool, [])
+    for source_key, item_id in entries:
+        if not source_key.startswith("mcp:"):
+            continue
+        parts = source_key.split(":", 2)
+        server = parts[1] if len(parts) >= 2 else ""
+        ack_id = parts[2] if len(parts) >= 3 else item_id
+        if server in ack_map and ack_id:
+            ack_map[server][1].append(ack_id)
+    for server, (ack_tool, ids) in ack_map.items():
+        if not ids:
+            continue
+        args: dict = {"event_ids": ids}
+        if ttl_hours is not None and ttl_hours > 0:
+            args["ttl_hours"] = ttl_hours
+        try:
+            await pool.call(server, ack_tool, args)
+        except Exception as e:
+            logger.warning("[mcp_sources] content ack failed %s.%s: %s", server, ack_tool, e)

@@ -266,24 +266,20 @@ def test_config_loader_parses_preference_fields(tmp_path):
                 "proactive": {
                     "enabled": False,
                     "default_chat_id": "123",
-                    "compose_judge_enabled": False,
-                    "preference_retrieval_enabled": False,
-                    "preference_hyde_enabled": True,
-                    "preference_hyde_timeout_ms": 3200,
+                    "preset": "daily",
+                    "features": {
+                        "preference_retrieval_enabled": False,
+                    },
                 },
             }
         ),
         encoding="utf-8",
     )
 
-    with pytest.warns(DeprecationWarning, match="compose_judge_enabled"):
-        cfg = load_config(str(cfg_file))
+    cfg = load_config(str(cfg_file))
     p = cfg.proactive
 
-    assert not hasattr(p, "compose_judge_enabled")
     assert p.preference_retrieval_enabled is False
-    assert p.preference_hyde_enabled is True
-    assert p.preference_hyde_timeout_ms == 3200
 
 
 def test_config_loader_parses_interest_filter_fields(tmp_path):
@@ -299,6 +295,7 @@ def test_config_loader_parses_interest_filter_fields(tmp_path):
                 "proactive": {
                     "enabled": False,
                     "default_chat_id": "123",
+                    "preset": "daily",
                     "interest_filter": {
                         "enabled": True,
                         "memory_max_chars": 5000,

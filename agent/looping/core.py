@@ -153,6 +153,7 @@ class AgentLoop:
                     light_model=self.light_model,
                     timeout_s=config.memory.hyde_timeout_ms / 1000.0,
                 )
+        self._hyde_enhancer = hyde_enhancer
 
         # ── Assemble ports ─────────────────────────────────────────────────────
         llm_svc = LLMServices(

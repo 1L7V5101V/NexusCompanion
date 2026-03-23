@@ -40,6 +40,12 @@ if "telegram" not in sys.modules:
     class Bot:
         pass
 
+    class MessageEntity:
+        def __init__(self, *, type, offset, length):
+            self.type = type
+            self.offset = offset
+            self.length = length
+
     class RetryAfter(Exception):
         def __init__(self, retry_after=1.0):
             super().__init__(f"retry after {retry_after}")
@@ -52,6 +58,7 @@ if "telegram" not in sys.modules:
         pass
 
     telegram_stub.Bot = Bot
+    telegram_stub.MessageEntity = MessageEntity
     telegram_error_stub.RetryAfter = RetryAfter
     telegram_error_stub.NetworkError = NetworkError
     telegram_error_stub.TimedOut = TimedOut

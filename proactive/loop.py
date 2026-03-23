@@ -111,10 +111,12 @@ class ProactiveLoop:
     _FEED_POLL_INTERVAL_S: int = 300  # 固定 5min，不读远程配置
 
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
+        from proactive.mcp_sources import McpClientPool
         self._running = False
         self._manual_trigger_event = asyncio.Event()
         self._manual_trigger_lock = asyncio.Lock()
         self._feed_poll_lock = asyncio.Lock()
+        self._mcp_pool = McpClientPool()
 
     def _build_state_store(
         self,
@@ -230,6 +232,7 @@ class ProactiveLoop:
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
                 observe_writer=self._observe_writer,
+                pool=self._mcp_pool,
             )
         ).build()
 
@@ -531,9 +534,7 @@ class ProactiveLoop:
         async with self._feed_poll_lock:
             try:
                 from proactive import mcp_sources
-                await asyncio.get_event_loop().run_in_executor(
-                    None, mcp_sources.poll_content_feeds
-                )
+                await mcp_sources.poll_content_feeds_async(self._mcp_pool)
                 logger.info("[proactive] feed poll 完成")
             except Exception as e:
                 logger.warning("[proactive] feed poll 系统级失败: %s", e)
@@ -552,6 +553,17 @@ class ProactiveLoop:
             f"ProactiveLoop 已启动  阈值={self._cfg.threshold}  "
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
+        if not hasattr(self, "_mcp_pool"):
+            from proactive.mcp_sources import McpClientPool
+            self._mcp_pool = McpClientPool()
+        await self._mcp_pool.connect_all()
+        try:
+            await self._run_loop()
+        finally:
+            await self._mcp_pool.disconnect_all()
+            logger.info("[proactive] mcp pool 已关闭")
+
+    async def _run_loop(self) -> None:
         # 启动时先同步完成首次 feed 轮询，保证首次 tick 能拿到新鲜数据
         await self._poll_feeds_once()
         # 后台周期轮询
@@ -657,7 +669,7 @@ class ProactiveLoop:
         返回 base_score 供调度器调整间隔；None 表示 gate 按能量自算（不强制最长间隔）。
         use_agent_tick=True 时走 v2 AgentTick，否则走 v1 ProactiveTick。
         """
-        if self._cfg.use_agent_tick:
+        if getattr(self._cfg, "use_agent_tick", False):
             return await self._agent_tick.tick()
         return await self._engine.tick()
 
