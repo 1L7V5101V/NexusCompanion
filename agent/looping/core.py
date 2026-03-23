@@ -3,7 +3,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,21 +58,31 @@ class AgentLoopDeps:
 
 
 @dataclass
-class AgentLoopConfig:
+class LLMConfig:
     model: str = "deepseek-chat"
     light_model: str = ""
     max_iterations: int = 10
     max_tokens: int = 8192
-    memory_window: int = 40
-    memory_top_k_procedure: int = 4
-    memory_top_k_history: int = 8
-    memory_route_intention_enabled: bool = False
-    memory_sop_guard_enabled: bool = True
-    memory_gate_llm_timeout_ms: int = 800
-    memory_gate_max_tokens: int = 96
     tool_search_enabled: bool = False
-    memory_hyde_enabled: bool = False
-    memory_hyde_timeout_ms: int = 2000
+
+
+@dataclass
+class MemoryConfig:
+    window: int = 40
+    top_k_procedure: int = 4
+    top_k_history: int = 8
+    route_intention_enabled: bool = False
+    sop_guard_enabled: bool = True
+    gate_llm_timeout_ms: int = 800
+    gate_max_tokens: int = 96
+    hyde_enabled: bool = False
+    hyde_timeout_ms: int = 2000
+
+
+@dataclass
+class AgentLoopConfig:
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 class AgentLoop(
@@ -100,29 +110,29 @@ class AgentLoop(
         self.tools = deps.tools
         self.session_manager = deps.session_manager
         self.workspace = deps.workspace
-        self.model = config.model
-        self.light_model = config.light_model or config.model
+        self.model = config.llm.model
+        self.light_model = config.llm.light_model or config.llm.model
         self.light_provider = deps.light_provider or deps.provider
-        self.max_iterations = config.max_iterations
-        self.max_tokens = config.max_tokens
-        self.memory_window = config.memory_window
+        self.max_iterations = config.llm.max_iterations
+        self.max_tokens = config.llm.max_tokens
+        self.memory_window = config.memory.window
         self._presence = deps.presence
         self._running = False
         self._consolidating: set[str] = set()
         self._processing_state = deps.processing_state
         self._memory_top_k_procedure = min(
             _MAX_PROCEDURE_RETRIEVE_K,
-            max(1, int(config.memory_top_k_procedure)),
+            max(1, int(config.memory.top_k_procedure)),
         )
-        self._memory_top_k_history = max(1, int(config.memory_top_k_history))
+        self._memory_top_k_history = max(1, int(config.memory.top_k_history))
         self._memory_route_intention_enabled = bool(
-            config.memory_route_intention_enabled
+            config.memory.route_intention_enabled
         )
-        self._memory_sop_guard_enabled = bool(config.memory_sop_guard_enabled)
+        self._memory_sop_guard_enabled = bool(config.memory.sop_guard_enabled)
         self._memory_gate_llm_timeout_ms = max(
-            100, int(config.memory_gate_llm_timeout_ms)
+            100, int(config.memory.gate_llm_timeout_ms)
         )
-        self._memory_gate_max_tokens = max(32, int(config.memory_gate_max_tokens))
+        self._memory_gate_max_tokens = max(32, int(config.memory.gate_max_tokens))
 
         memory_port = deps.memory_port
         post_mem_worker = deps.post_mem_worker
@@ -132,10 +142,10 @@ class AgentLoop(
         if memory_port is None:
             raise ValueError("AgentLoop requires memory_port or memory_runtime")
 
-        self._tool_search_enabled = bool(config.tool_search_enabled)
+        self._tool_search_enabled = bool(config.llm.tool_search_enabled)
 
-        if config.memory_hyde_enabled:
-            if not config.light_model:
+        if config.memory.hyde_enabled:
+            if not config.llm.light_model:
                 logger.warning(
                     "hyde_enabled=True 但未配置独立 light_model，"
                     "为避免主模型被额外调用，HyDE 已自动禁用。"
@@ -148,7 +158,7 @@ class AgentLoop(
                 self._hyde_enhancer = HyDEEnhancer(
                     light_provider=self.light_provider,
                     light_model=self.light_model,
-                    timeout_s=config.memory_hyde_timeout_ms / 1000.0,
+                    timeout_s=config.memory.hyde_timeout_ms / 1000.0,
                 )
         else:
             self._hyde_enhancer = None

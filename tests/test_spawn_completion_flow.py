@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
@@ -35,7 +35,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
             workspace=tmp_path,
             memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
         ),
-        AgentLoopConfig(max_iterations=3),
+        AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
     loop._post_mem_worker = MagicMock()
     loop._post_mem_worker.run = AsyncMock()

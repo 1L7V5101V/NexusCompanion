@@ -5,59 +5,6 @@ from agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
-# ── 同义词扩展表 ──────────────────────────────────────────────────────────────
-# 短语级：整个短语（或作为 token 的子串）命中后，追加对应搜索词
-_PHRASE_SYNONYMS: dict[str, list[str]] = {
-    "查看目录": ["list_dir", "ls", "目录"],
-    "列出文件": ["list_dir", "ls", "目录"],
-    "浏览目录": ["list_dir", "ls", "目录"],
-    "文件写入": ["write_file", "write", "写入"],
-    "写入文件": ["write_file", "write", "写入"],
-    "新建文件": ["write_file", "create", "写入"],
-    "创建文件": ["write_file", "create", "写入"],
-    "保存文件": ["write_file", "write", "保存"],
-    "编辑文件": ["edit_file", "edit", "patch"],
-    "修改文件": ["edit_file", "edit", "patch"],
-    "更新文件": ["edit_file", "edit", "patch"],
-    "读取文件": ["read_file", "read"],
-    "查看文件": ["read_file", "read"],
-    "定时任务": ["schedule", "cron", "timer"],
-    "设置提醒": ["schedule", "remind", "timer"],
-    "计划任务": ["schedule", "cron"],
-    "延时执行": ["schedule", "delay"],
-    "查看提醒": ["list_schedules", "schedule"],
-    "定时列表": ["list_schedules", "schedule"],
-    "取消定时": ["cancel_schedule", "cancel"],
-    "取消提醒": ["cancel_schedule", "cancel"],
-    "健康数据": ["fitbit", "health", "步数", "心率"],
-    "睡眠报告": ["fitbit", "sleep"],
-    "睡眠数据": ["fitbit", "sleep"],
-    "推送消息": ["message_push", "push", "通知"],
-    "发送消息": ["message_push", "push", "send"],
-    "通知用户": ["message_push", "push", "notify"],
-    "rss订阅": ["feed", "rss", "subscribe"],
-    "订阅管理": ["feed_manage", "subscribe", "rss"],
-    "订阅查询": ["feed_query", "feed", "rss"],
-    "技能列表": ["skill_action_list", "skill"],
-    "技能状态": ["skill_action_status", "skill", "task"],
-    "注册技能": ["skill_action_register", "skill"],
-    "添加技能": ["skill_action_register", "skill"],
-    "删除技能": ["skill_action_unregister", "skill"],
-    "记忆存储": ["memorize", "memory"],
-    "存储知识": ["memorize", "memory"],
-    "网络搜索": ["web_search", "search"],
-    "搜索网络": ["web_search", "search"],
-    "读取网页": ["web_fetch", "fetch"],
-    "抓取网页": ["web_fetch", "fetch"],
-    "消息回溯": ["fetch_messages", "message", "source_ref"],
-    "原始对话": ["search_messages", "message", "history"],
-    "历史消息": ["search_messages", "message", "history"],
-    "执行命令": ["shell", "bash", "command"],
-    "运行脚本": ["shell", "bash", "script"],
-    "更新记忆": ["update_now", "memory"],
-    "mcp服务器": ["mcp"],
-}
-
 # token 级：单个词命中后追加同义词
 _TOKEN_SYNONYMS: dict[str, list[str]] = {
     # 文件系统
@@ -112,22 +59,18 @@ _TOKEN_SYNONYMS: dict[str, list[str]] = {
 
 
 def _expand_query(query: str) -> set[str]:
-    """将查询字符串展开为搜索词集合（原词 + 两层同义词）。
+    """将查询字符串展开为搜索词集合（原词 + token 同义词）。
 
     处理顺序：
     1. 空格切分得到 tokens（含原始词）
-    2. 短语级：phrase_key 是 query 或任意 token 的子串 → 追加短语同义词
-    3. token 级：token 命中 _TOKEN_SYNONYMS → 追加对应词
+    2. token 级：token 命中 _TOKEN_SYNONYMS → 追加对应词
+    各工具领域同义词通过 search_keywords 注册时指定，不在此处硬编码。
     """
     query_lower = query.lower().strip()
     tokens = [t for t in query_lower.split() if t]
     expanded: set[str] = set(tokens)
 
     for token in tokens:
-        # 短语匹配：phrase key 是整个 query 的子串，或是单个 token 的子串
-        for phrase, synonyms in _PHRASE_SYNONYMS.items():
-            if phrase in query_lower or phrase in token:
-                expanded.update(synonyms)
         # token 级匹配：token 本身，或 token 中包含某个 token_key
         for tk, syns in _TOKEN_SYNONYMS.items():
             if tk == token or tk in token:

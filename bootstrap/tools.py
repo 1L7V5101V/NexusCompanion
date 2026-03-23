@@ -7,7 +7,7 @@ from agent.config_models import Config
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.mcp.registry import McpServerRegistry
 from agent.provider import LLMProvider
 from agent.scheduler import SchedulerService
@@ -94,20 +94,12 @@ def build_registered_tools(
     observe_writer=None,
 ) -> tuple[ToolRegistry, MessagePushTool, SchedulerService, McpServerRegistry, MemoryRuntime, PeerProcessManager | None, PeerAgentPoller | None]:
     from session.store import SessionStore
+
+    # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
     tools = tools or ToolRegistry()
     readonly_tools = build_readonly_tools(http_resources)
     store = session_store or SessionStore(workspace / "sessions.db")
-    push_tool = register_meta_and_common_tools(tools, readonly_tools, store)
-    register_skill_action_tools(tools, workspace)
-    register_fitbit_tools(tools, config, http_resources)
-    subagent_manager = register_spawn_tool(
-        tools,
-        config,
-        workspace,
-        bus,
-        provider,
-        http_resources,
-    )
+    push_tool = MessagePushTool()
     memory_runtime = build_memory_toolset(
         config,
         workspace,
@@ -117,15 +109,27 @@ def build_registered_tools(
         http_resources,
         observe_writer=observe_writer,
     )
-    subagent_manager.set_memory_port(memory_runtime.port)
     scheduler = build_scheduler(workspace, push_tool)
-    register_scheduler_tools(tools, scheduler)
-    mcp_registry = register_mcp_tools(tools, workspace)
-
-    # Peer agent 工具（异步注册，需在 event loop 中运行）
     peer_process_manager, peer_poller = build_peer_agent_resources(
         config, bus, http_resources
     )
+
+    # ── 第二阶段：注册工具（所有服务已就绪）──────────────────────────────────
+    register_meta_and_common_tools(tools, readonly_tools, store, push_tool=push_tool)
+    register_skill_action_tools(tools, workspace)
+    register_fitbit_tools(tools, config, http_resources)
+    register_spawn_tool(
+        tools,
+        config,
+        workspace,
+        bus,
+        provider,
+        http_resources,
+        memory_port=memory_runtime.port,
+    )
+    register_scheduler_tools(tools, scheduler)
+    mcp_registry = register_mcp_tools(tools, workspace)
+
     return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
 
 
@@ -190,20 +194,24 @@ def build_core_runtime(
             ),
         ),
         AgentLoopConfig(
-            model=config.model,
-            light_model=config.light_model,
-            max_iterations=config.max_iterations,
-            max_tokens=config.max_tokens,
-            memory_window=config.memory_window,
-            memory_top_k_procedure=config.memory_v2.top_k_procedure,
-            memory_top_k_history=config.memory_v2.top_k_history,
-            memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
-            memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
-            memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-            memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
-            tool_search_enabled=config.tool_search_enabled,
-            memory_hyde_enabled=config.memory_v2.hyde_enabled,
-            memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+            llm=LLMConfig(
+                model=config.model,
+                light_model=config.light_model,
+                max_iterations=config.max_iterations,
+                max_tokens=config.max_tokens,
+                tool_search_enabled=config.tool_search_enabled,
+            ),
+            memory=MemoryConfig(
+                window=config.memory_window,
+                top_k_procedure=config.memory_v2.top_k_procedure,
+                top_k_history=config.memory_v2.top_k_history,
+                route_intention_enabled=config.memory_v2.route_intention_enabled,
+                sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+                gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+                gate_max_tokens=config.memory_v2.gate_max_tokens,
+                hyde_enabled=config.memory_v2.hyde_enabled,
+                hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+            ),
         ),
     )
 

@@ -14,6 +14,7 @@ from agent.tools.shell import ShellTool
 from agent.tools.spawn import SpawnTool
 from agent.tools.tool_search import ToolSearchTool
 from bus.queue import MessageBus
+from core.memory.port import MemoryPort
 from core.net.http import SharedHttpResources
 
 
@@ -31,6 +32,7 @@ def register_meta_and_common_tools(
     tools: ToolRegistry,
     readonly_tools: dict[str, object],
     session_store,
+    push_tool: MessagePushTool | None = None,
 ) -> MessagePushTool:
     tools.register(ToolSearchTool(tools), always_on=True, tags=["meta"], risk="read-only")
     tools.register(ListToolsTool(tools), always_on=True, tags=["meta"], risk="read-only")
@@ -83,14 +85,14 @@ def register_meta_and_common_tools(
         risk="read-only",
         search_keywords=["搜索历史消息", "全文检索消息", "search messages", "原始对话", "你之前说", "聊过什么", "具体内容"],
     )
-    push_tool = MessagePushTool()
+    _push_tool = push_tool or MessagePushTool()
     tools.register(
-        push_tool,
+        _push_tool,
         tags=["message"],
         risk="external-side-effect",
         search_keywords=["推送消息", "发送消息", "通知用户", "给用户发消息", "push"],
     )
-    return push_tool
+    return _push_tool
 
 
 def register_spawn_tool(
@@ -100,6 +102,7 @@ def register_spawn_tool(
     bus: MessageBus,
     provider,
     http_resources: SharedHttpResources,
+    memory_port: MemoryPort | None = None,
 ) -> SubagentManager:
     subagent_manager = SubagentManager(
         provider=provider,
@@ -108,6 +111,7 @@ def register_spawn_tool(
         model=config.model,
         max_tokens=config.max_tokens,
         fetch_requester=http_resources.external_default,
+        memory=memory_port,
     )
     if config.spawn_enabled:
         # 暂时注释掉 spawn 工具注册，仅保留 subagent_manager 初始化，避免影响其他依赖链路。

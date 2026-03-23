@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
@@ -55,7 +55,13 @@ class _FakeProvider:
         return LLMResponse(content=self._response, tool_calls=[])
 
 
-def _make_loop(light_model: str = "qwen-flash", **kwargs: Any) -> AgentLoop:
+def _make_loop(
+    light_model: str = "qwen-flash",
+    *,
+    memory_hyde_enabled: bool = False,
+    memory_hyde_timeout_ms: int = 2000,
+    **_unused: Any,
+) -> AgentLoop:
     tools = ToolRegistry()
     tools.register(_NoopTool())
     workspace = Path(tempfile.mkdtemp(prefix="hyde-test-"))
@@ -71,7 +77,13 @@ def _make_loop(light_model: str = "qwen-flash", **kwargs: Any) -> AgentLoop:
             workspace=workspace,
             memory_port=DefaultMemoryPort(MemoryStore(workspace)),
         ),
-        AgentLoopConfig(light_model=light_model, **kwargs),
+        AgentLoopConfig(
+            llm=LLMConfig(light_model=light_model),
+            memory=MemoryConfig(
+                hyde_enabled=memory_hyde_enabled,
+                hyde_timeout_ms=memory_hyde_timeout_ms,
+            ),
+        ),
     )
 
 

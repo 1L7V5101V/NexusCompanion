@@ -65,14 +65,6 @@ class SubagentManager:
         task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir
 
-    def set_memory_port(self, memory: MemoryPort | None) -> None:
-        self._runtime = SubagentRuntime(
-            provider=self._runtime.provider,
-            model=self._runtime.model,
-            max_tokens=self._runtime.max_tokens,
-            memory=memory,
-        )
-
     async def spawn(
         self,
         *,

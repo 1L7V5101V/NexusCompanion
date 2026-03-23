@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.procedure_hint import extract_action_tokens
@@ -144,7 +144,7 @@ def _make_agent_loop(tmp_path: Path, provider: _FakeProvider, tool: Tool) -> Age
             workspace=tmp_path,
             memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
         ),
-        AgentLoopConfig(max_iterations=10),
+        AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
     )
 
 
@@ -412,7 +412,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
             workspace=tmp_path,
             memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
         ),
-        AgentLoopConfig(max_iterations=10),
+        AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
     )
 
     final, _, _, _vn, _ = asyncio.run(

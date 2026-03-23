@@ -13,7 +13,7 @@ from typing import Any
 
 from agent.config import load_config
 from agent.config_models import Config
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.provider import LLMProvider, LLMResponse
 from agent.tools.registry import ToolRegistry
 from bootstrap.providers import build_providers
@@ -274,19 +274,24 @@ class ScenarioRunner:
                 memory_runtime=memory_runtime,
             ),
             AgentLoopConfig(
-                model=config.model,
-                light_model=config.light_model or config.model,
-                max_iterations=config.max_iterations,
-                max_tokens=config.max_tokens,
-                memory_top_k_procedure=config.memory_v2.top_k_procedure,
-                memory_top_k_history=config.memory_v2.top_k_history,
-                memory_route_intention_enabled=config.memory_v2.route_intention_enabled,
-                memory_sop_guard_enabled=config.memory_v2.sop_guard_enabled,
-                memory_gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
-                memory_gate_max_tokens=config.memory_v2.gate_max_tokens,
-                tool_search_enabled=config.tool_search_enabled,
-                memory_hyde_enabled=config.memory_v2.hyde_enabled,
-                memory_hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+                llm=LLMConfig(
+                    model=config.model,
+                    light_model=config.light_model,
+                    max_iterations=config.max_iterations,
+                    max_tokens=config.max_tokens,
+                    tool_search_enabled=config.tool_search_enabled,
+                ),
+                memory=MemoryConfig(
+                    window=config.memory_window,
+                    top_k_procedure=config.memory_v2.top_k_procedure,
+                    top_k_history=config.memory_v2.top_k_history,
+                    route_intention_enabled=config.memory_v2.route_intention_enabled,
+                    sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+                    gate_llm_timeout_ms=config.memory_v2.gate_llm_timeout_ms,
+                    gate_max_tokens=config.memory_v2.gate_max_tokens,
+                    hyde_enabled=config.memory_v2.hyde_enabled,
+                    hyde_timeout_ms=config.memory_v2.hyde_timeout_ms,
+                ),
             ),
         )
         scheduler.agent_loop = loop

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
+from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse, ToolCall
 from agent.tools.base import Tool
@@ -77,7 +77,7 @@ def _make_loop(
                 memory or DefaultMemoryPort(MemoryStore(tmp_path)),
             ),
         ),
-        AgentLoopConfig(max_iterations=5),
+        AgentLoopConfig(llm=LLMConfig(max_iterations=5)),
     )
 
 
