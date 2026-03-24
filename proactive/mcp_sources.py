@@ -341,6 +341,7 @@ class McpClientPool:
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}               # server -> McpClient
         self._configs: dict[str, tuple[list, dict]] = {}  # server -> (command, env)
+        self._locks: dict[str, asyncio.Lock] = {}         # server -> per-server lock（MCP stdio 不支持并发调用）
 
     async def connect_all(self) -> None:
         """按当前配置连接所有 server，连接失败的 server 跳过。"""
@@ -377,29 +378,35 @@ class McpClientPool:
             return False
 
     async def call(self, server: str, tool_name: str, args: dict) -> Any:
-        """调用 tool，连接断开时自动重连一次。"""
-        if server not in self._clients:
-            if server not in self._configs:
-                raise RuntimeError(f"[mcp_pool] unknown server: {server}")
-            if not await self._connect(server):
-                raise RuntimeError(f"[mcp_pool] could not connect: {server}")
-        client = self._clients[server]
-        try:
-            raw = await client.call(tool_name, args)
-            return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
-        except Exception as e:
-            logger.warning(
-                "[mcp_pool] call failed %s.%s, reconnecting: %s", server, tool_name, e
-            )
-            self._clients.pop(server, None)
+        """调用 tool，连接断开时自动重连一次。
+
+        MCP stdio 传输不支持并发调用，per-server lock 保证串行。
+        """
+        if server not in self._locks:
+            self._locks[server] = asyncio.Lock()
+        async with self._locks[server]:
+            if server not in self._clients:
+                if server not in self._configs:
+                    raise RuntimeError(f"[mcp_pool] unknown server: {server}")
+                if not await self._connect(server):
+                    raise RuntimeError(f"[mcp_pool] could not connect: {server}")
+            client = self._clients[server]
             try:
-                await client.disconnect()
-            except Exception:
-                pass
-            if await self._connect(server):
-                raw = await self._clients[server].call(tool_name, args)
+                raw = await client.call(tool_name, args)
                 return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
-            raise
+            except Exception as e:
+                logger.warning(
+                    "[mcp_pool] call failed %s.%s, reconnecting: %s", server, tool_name, e
+                )
+                self._clients.pop(server, None)
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                if await self._connect(server):
+                    raw = await self._clients[server].call(tool_name, args)
+                    return json.loads(raw) if raw and raw.strip().startswith(("[", "{")) else raw
+                raise
 
     async def disconnect_all(self) -> None:
         """断开所有连接。agent 关闭时在 finally 块调用。"""
