@@ -64,6 +64,21 @@ class FitbitHealthSnapshotTool(Tool):
         except Exception as e:
             return f"[fitbit_health_snapshot] 无法连接 Fitbit monitor：{e}"
 
+        sleep_24h: dict[str, Any] = {}
+        try:
+            r_agent = await self._requester.get(
+                f"{self._url}/api/agent",
+                budget=RequestBudget(total_timeout_s=5.0),
+            )
+            r_agent.raise_for_status()
+            agent_data = r_agent.json()
+            if isinstance(agent_data, dict):
+                sleep_24h_obj = agent_data.get("sleep_24h")
+                if isinstance(sleep_24h_obj, dict):
+                    sleep_24h = sleep_24h_obj
+        except Exception:
+            sleep_24h = {}
+
         summary = data.get("summary", {})
         sleep = data.get("sleep", {})
         signals = data.get("signals", {}) or {}
@@ -113,6 +128,7 @@ class FitbitHealthSnapshotTool(Tool):
             "steps": steps,
             "sleep_state": state,
             "sleep_prob": prob,
+            "sleep_24h": sleep_24h,
         }
         summary_text = "\n".join(lines)
         return json.dumps(result, ensure_ascii=False) + "\n\n" + summary_text

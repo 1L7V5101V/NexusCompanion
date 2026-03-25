@@ -31,6 +31,7 @@ class SleepContext:
     available: bool  # False=服务不可达或数据过期
     sleeping_modifier: float = 0.15
     health_events: list[dict[str, Any]] = field(default_factory=list)
+    sleep_24h: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sleep_modifier(self) -> float:
@@ -71,6 +72,7 @@ _FALLBACK = SleepContext(
     data_lag_min=None,
     sleeping_modifier=0.15,
     health_events=[],
+    sleep_24h={},
     fetched_at=0.0,
     available=False,
 )
@@ -185,6 +187,9 @@ class FitbitSleepProvider:
 
         sleep = d.get("sleep", {}) or {}
         health_events = d.get("health_events") or []
+        sleep_24h = d.get("sleep_24h")
+        if not isinstance(sleep_24h, dict):
+            sleep_24h = {}
 
         ctx = SleepContext(
             state=sleep.get("state", "unknown"),
@@ -193,6 +198,7 @@ class FitbitSleepProvider:
             data_lag_min=sleep.get("data_lag_min"),
             sleeping_modifier=self._sleeping_modifier,
             health_events=health_events if isinstance(health_events, list) else [],
+            sleep_24h=sleep_24h,
             fetched_at=time.time(),
             available=True,
         )
