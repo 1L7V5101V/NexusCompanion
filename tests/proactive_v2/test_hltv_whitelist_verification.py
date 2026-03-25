@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, FakeRng, FakeStateStore, make_agent_tick
 
@@ -236,12 +237,16 @@ async def test_b8_hltv_news_triggers_web_fetch_for_ranking():
     tick = make_agent_tick(
         llm_fn=_build_real_llm_fn(),
         tool_deps=ToolDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(return_value=[b8_event]),
-            context_fn=AsyncMock(return_value=[]),
             recent_chat_fn=AsyncMock(return_value=[]),
             web_fetch_tool=web_fetch,
             memory=fake_memory,
+            max_chars=8000,
+        ),
+        gateway_deps=GatewayDeps(
+            alert_fn=AsyncMock(return_value=[]),
+            feed_fn=AsyncMock(return_value=[b8_event]),
+            context_fn=AsyncMock(return_value=[]),
+            web_fetch_tool=web_fetch,
             max_chars=8000,
         ),
         workspace_context_fn=lambda: _PROACTIVE_CONTEXT_WITH_HLTV_RULE,
@@ -292,12 +297,16 @@ async def test_b8_hltv_news_marked_not_interesting_after_ranking_check():
     tick = make_agent_tick(
         llm_fn=_build_real_llm_fn(),
         tool_deps=ToolDeps(
-            alert_fn=AsyncMock(return_value=[]),
-            feed_fn=AsyncMock(return_value=[b8_event]),
-            context_fn=AsyncMock(return_value=[]),
             recent_chat_fn=AsyncMock(return_value=[]),
             web_fetch_tool=web_fetch,
             memory=fake_memory,
+            max_chars=8000,
+        ),
+        gateway_deps=GatewayDeps(
+            alert_fn=AsyncMock(return_value=[]),
+            feed_fn=AsyncMock(return_value=[b8_event]),
+            context_fn=AsyncMock(return_value=[]),
+            web_fetch_tool=web_fetch,
             max_chars=8000,
         ),
         workspace_context_fn=lambda: _PROACTIVE_CONTEXT_WITH_HLTV_RULE,

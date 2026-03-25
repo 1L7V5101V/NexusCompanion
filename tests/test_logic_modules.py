@@ -11,7 +11,7 @@ import pytest
 from agent.provider import LLMResponse
 from core.memory.port import DefaultMemoryPort
 from memory2.sop_indexer import SopIndexer, _parse_sop_chunks
-from proactive.loop import ProactiveLoop
+from proactive_v2.loop import ProactiveLoop
 from proactive.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
@@ -252,9 +252,9 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
     loop._agent_tick = SimpleNamespace(tick=AsyncMock(return_value=0.2))
     assert await loop._tick() == 0.2
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("proactive.loop.compute_energy", lambda last_user_at: 0.8)
-        mp.setattr("proactive.loop.d_energy", lambda energy: 0.5)
-        mp.setattr("proactive.loop.next_tick_from_score", lambda *args, **kwargs: 7)
+        mp.setattr("proactive_v2.loop.compute_energy", lambda last_user_at: 0.8)
+        mp.setattr("proactive_v2.loop.d_energy", lambda energy: 0.5)
+        mp.setattr("proactive_v2.loop.next_tick_from_score", lambda *args, **kwargs: 7)
         assert loop._next_interval() == 7
     loop._cfg.threshold = 0.5
     loop._cfg.default_channel = "telegram"

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from agent.looping.memory_gate import _trace_memory_retrieve
 from core.common.strategy_trace import build_strategy_trace_envelope
-from proactive.loop import ProactiveLoop
+from proactive_v2.loop import ProactiveLoop
 
 
 def test_build_strategy_trace_envelope_uses_subject_scope():

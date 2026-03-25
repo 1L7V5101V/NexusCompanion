@@ -131,6 +131,9 @@ class ToolRegistry:
         self._metadata.pop(name, None)
         logger.debug(f"注销工具: {name}")
 
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
     def get_schemas(self, names: set[str] | None = None) -> list[dict]:
         """返回 OpenAI function calling 格式的工具定义列表。
 

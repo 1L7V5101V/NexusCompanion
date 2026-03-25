@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_agent_tick
 
@@ -72,7 +73,7 @@ async def test_loop_stops_after_partial_sequence_then_none():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[]),
         ),
@@ -199,7 +200,7 @@ async def test_alert_path_send_sets_terminal():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(alert_fn=AsyncMock(return_value=[alert])),
+        gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
     await tick.tick()
     assert tick.last_ctx.terminal_action == "reply"
@@ -216,7 +217,7 @@ async def test_alert_stored_in_ctx_fetched_alerts():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(alert_fn=AsyncMock(return_value=[alert])),
+        gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[alert])),
     )
     await tick.tick()
     assert tick.last_ctx.fetched_alerts == [alert]
@@ -232,7 +233,7 @@ async def test_alert_fn_called_once_even_if_llm_calls_twice():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(alert_fn=alert_fn),
+        gateway_deps=GatewayDeps(alert_fn=alert_fn),
     )
     await tick.tick()
     assert alert_fn.call_count == 1
@@ -251,7 +252,7 @@ async def test_content_stored_in_ctx_fetched_contents():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[event]),
         ),
@@ -278,7 +279,7 @@ async def test_content_fn_called_with_configured_limit():
     tick = make_agent_tick(
         llm_fn=llm,
         cfg=cfg_with(agent_tick_content_limit=3),
-        tool_deps=ToolDeps(feed_fn=feed_fn),
+        gateway_deps=GatewayDeps(feed_fn=feed_fn, content_limit=3),
     )
     await tick.tick()
     # limit 来自工具调用参数
@@ -297,7 +298,7 @@ async def test_content_path_send_interesting_tracked():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[event]),
         ),
@@ -320,7 +321,7 @@ async def test_mark_not_interesting_in_loop_writes_discarded():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(feed_fn=AsyncMock(return_value=[event])),
+        gateway_deps=GatewayDeps(feed_fn=AsyncMock(return_value=[event])),
     )
     await tick.tick()
     assert "feed-mcp:c1" in tick.last_ctx.discarded_item_ids
@@ -350,7 +351,7 @@ async def test_context_data_fn_called_only_once_in_loop():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(context_fn=context_fn),
+        gateway_deps=GatewayDeps(context_fn=context_fn),
     )
     await tick.tick()
     assert context_fn.call_count == 1
@@ -406,7 +407,7 @@ async def test_llm_receives_growing_message_history():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(alert_fn=AsyncMock(return_value=[])),
+        gateway_deps=GatewayDeps(alert_fn=AsyncMock(return_value=[])),
     )
     await tick.tick()
     # 第一次调用：messages 可能只有 system prompt（无工具历史）
@@ -456,10 +457,10 @@ async def test_steps_taken_counts_all_tool_calls():
     ])
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[]),
-            recent_chat_fn=AsyncMock(return_value=[]),
         ),
     )
     await tick.tick()
@@ -515,11 +516,11 @@ async def test_alert_present_llm_called_with_required_tool_choice():
 
     tick = make_agent_tick(
         llm_fn=llm,
-        tool_deps=ToolDeps(
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[alert]),
             feed_fn=AsyncMock(return_value=[]),
             context_fn=AsyncMock(return_value=[]),
-            recent_chat_fn=AsyncMock(return_value=[]),
         ),
     )
     await tick.tick()

@@ -34,10 +34,6 @@ class ToolDeps:
     ack_fn: Any = None                  # async (compound_key: str, ttl_hours: int) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None
     max_chars: int = 8_000
-    # Gateway 数据源（用于 DataGateway 构建，不直接暴露给 agent 工具）
-    alert_fn: Any = None
-    feed_fn: Any = None
-    context_fn: Any = None
 
 
 # ── Tool Schemas ──────────────────────────────────────────────────────────
@@ -239,38 +235,18 @@ async def _web_search(ctx: AgentTickContext, args: dict, *, web_search_tool) -> 
     return await web_search_tool.execute(**args)
 
 
-async def _get_alert_events(ctx: AgentTickContext, args: dict, *, alert_fn) -> str:
-    if not getattr(ctx, "_alerts_fetched", False):
-        if ctx.fetched_alerts:
-            ctx._alerts_fetched = True
-            return json.dumps(ctx.fetched_alerts, ensure_ascii=False)
-        events = await alert_fn() if alert_fn is not None else []
-        ctx.fetched_alerts = events or []
-        ctx._alerts_fetched = True
+async def _get_alert_events(ctx: AgentTickContext, args: dict) -> str:
+    ctx.alerts_fetched = True
     return json.dumps(ctx.fetched_alerts, ensure_ascii=False)
 
 
-async def _get_content_events(
-    ctx: AgentTickContext, args: dict, *, feed_fn, limit: int
-) -> str:
-    if not getattr(ctx, "_contents_fetched", False):
-        if ctx.fetched_contents:
-            ctx._contents_fetched = True
-            return json.dumps(ctx.fetched_contents, ensure_ascii=False)
-        events = await feed_fn(limit=limit) if feed_fn is not None else []
-        ctx.fetched_contents = events or []
-        ctx._contents_fetched = True
+async def _get_content_events(ctx: AgentTickContext, args: dict) -> str:
+    ctx.contents_fetched = True
     return json.dumps(ctx.fetched_contents, ensure_ascii=False)
 
 
-async def _get_context_data(ctx: AgentTickContext, args: dict, *, context_fn) -> str:
-    if not getattr(ctx, "_context_fetched", False):
-        if ctx.fetched_context:
-            ctx._context_fetched = True
-            return json.dumps(ctx.fetched_context, ensure_ascii=False)
-        rows = await context_fn() if context_fn is not None else []
-        ctx.fetched_context = rows or []
-        ctx._context_fetched = True
+async def _get_context_data(ctx: AgentTickContext, args: dict) -> str:
+    ctx.context_fetched = True
     return json.dumps(ctx.fetched_context, ensure_ascii=False)
 
 
@@ -368,18 +344,13 @@ async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolD
     ctx.steps_taken += 1
 
     if tool_name == "get_alert_events":
-        return await _get_alert_events(ctx, args, alert_fn=deps.alert_fn)
+        return await _get_alert_events(ctx, args)
 
     if tool_name == "get_content_events":
-        return await _get_content_events(
-            ctx,
-            args,
-            feed_fn=deps.feed_fn,
-            limit=int(args.get("limit", 5)),
-        )
+        return await _get_content_events(ctx, args)
 
     if tool_name == "get_context_data":
-        return await _get_context_data(ctx, args, context_fn=deps.context_fn)
+        return await _get_context_data(ctx, args)
 
     if tool_name == "recall_memory":
         return await _recall_memory(ctx, args, memory=deps.memory)

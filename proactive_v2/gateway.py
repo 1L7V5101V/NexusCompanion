@@ -25,6 +25,16 @@ class GatewayResult:
     content_store: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class GatewayDeps:
+    alert_fn: Any = None
+    feed_fn: Any = None
+    context_fn: Any = None
+    web_fetch_tool: Any = None
+    max_chars: int = 8_000
+    content_limit: int = 5
+
+
 class DataGateway:
     def __init__(
         self,

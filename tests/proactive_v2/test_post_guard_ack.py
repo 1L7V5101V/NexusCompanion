@@ -21,6 +21,7 @@ from proactive_v2.agent_tick import (
     build_delivery_key,
 )
 from proactive_v2.context import AgentTickContext
+from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import (
     FakeAckSink,
@@ -279,14 +280,19 @@ def _make_tick_with_sink(llm, *, state=None, sender=None, deduper=None,
     if state is None:
         state = FakeStateStore()
     deps = ToolDeps(
-        alert_fn=AsyncMock(return_value=[]),
-        feed_fn=AsyncMock(return_value=[]),
         recent_chat_fn=AsyncMock(return_value=[]),
         ack_fn=sink,
     )
+    gateway = GatewayDeps(
+        alert_fn=AsyncMock(return_value=[]),
+        feed_fn=AsyncMock(return_value=[]),
+    )
     if tool_deps_extra:
         for k, v in tool_deps_extra.items():
-            setattr(deps, k, v)
+            if hasattr(gateway, k):
+                setattr(gateway, k, v)
+            else:
+                setattr(deps, k, v)
     if sender is None:
         sender = AsyncMock()
         sender.send.return_value = True
@@ -299,6 +305,7 @@ def _make_tick_with_sink(llm, *, state=None, sender=None, deduper=None,
         sender=sender,
         deduper=deduper,
         tool_deps=deps,
+        gateway_deps=gateway,
         cfg=cfg,
     )
     return tick, sink
@@ -538,10 +545,12 @@ async def test_context_only_marks_state_on_success():
     llm = FakeLLM([("finish_turn", {"decision": "reply", "content": "steam update", "evidence": []})])
     sink = FakeAckSink()
     deps = ToolDeps(
-        alert_fn=AsyncMock(return_value=[]),
-        feed_fn=AsyncMock(return_value=[]),
         recent_chat_fn=AsyncMock(return_value=[]),
         ack_fn=sink,
+    )
+    gateway = GatewayDeps(
+        alert_fn=AsyncMock(return_value=[]),
+        feed_fn=AsyncMock(return_value=[]),
     )
     sender = AsyncMock()
     sender.send.return_value = True
@@ -554,6 +563,7 @@ async def test_context_only_marks_state_on_success():
         sender=sender,
         deduper=deduper,
         tool_deps=deps,
+        gateway_deps=gateway,
         cfg=cfg_with(agent_tick_context_prob=1.0, context_only_daily_max=3),
         rng=FakeRng(value=0.0),  # random() < 1.0 → gate 开
     )
@@ -573,10 +583,12 @@ async def test_context_only_not_marked_when_cited_ids_present():
     llm = FakeLLM([("finish_turn", {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1"]})])
     sink = FakeAckSink()
     deps = ToolDeps(
-        alert_fn=AsyncMock(return_value=[]),
-        feed_fn=AsyncMock(return_value=[]),
         recent_chat_fn=AsyncMock(return_value=[]),
         ack_fn=sink,
+    )
+    gateway = GatewayDeps(
+        alert_fn=AsyncMock(return_value=[]),
+        feed_fn=AsyncMock(return_value=[]),
     )
     sender = AsyncMock()
     sender.send.return_value = True
@@ -589,6 +601,7 @@ async def test_context_only_not_marked_when_cited_ids_present():
         sender=sender,
         deduper=deduper,
         tool_deps=deps,
+        gateway_deps=gateway,
         cfg=cfg_with(agent_tick_context_prob=1.0, context_only_daily_max=3),
         rng=FakeRng(value=0.0),
     )
@@ -694,10 +707,12 @@ async def test_message_dedupe_receives_recent_proactive_list():
     llm = FakeLLM([("finish_turn", {"decision": "reply", "content": "new message", "evidence": []})])
     sink = FakeAckSink()
     deps = ToolDeps(
-        alert_fn=AsyncMock(return_value=[]),
-        feed_fn=AsyncMock(return_value=[]),
         recent_chat_fn=AsyncMock(return_value=[]),
         ack_fn=sink,
+    )
+    gateway = GatewayDeps(
+        alert_fn=AsyncMock(return_value=[]),
+        feed_fn=AsyncMock(return_value=[]),
     )
     sender = AsyncMock()
     sender.send.return_value = True
@@ -707,6 +722,7 @@ async def test_message_dedupe_receives_recent_proactive_list():
         deduper=deduper,
         sender=sender,
         tool_deps=deps,
+        gateway_deps=gateway,
         recent_proactive_fn=recent_proactive_fn,
     )
     await tick.tick()

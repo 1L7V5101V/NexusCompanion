@@ -112,13 +112,13 @@ def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
     _write_config(config_path, socket_path)
     observed: dict[str, str] = {}
 
-    fake_cli_tui = types.ModuleType("channels.cli_tui")
+    fake_cli_tui = types.ModuleType("infra.channels.cli_tui")
 
     def _run_tui(socket: str) -> None:
         observed["socket"] = socket
 
     fake_cli_tui.run_tui = _run_tui  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "channels.cli_tui", fake_cli_tui)
+    monkeypatch.setitem(sys.modules, "infra.channels.cli_tui", fake_cli_tui)
 
     main.connect_cli(str(config_path))
 
@@ -130,9 +130,9 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     starts: list[str] = []
     registrations: list[str] = []
 
-    fake_ipc_server = types.ModuleType("channels.ipc_server")
-    fake_telegram_channel = types.ModuleType("channels.telegram_channel")
-    fake_qq_channel = types.ModuleType("channels.qq_channel")
+    fake_ipc_server = types.ModuleType("infra.channels.ipc_server")
+    fake_telegram_channel = types.ModuleType("infra.channels.telegram_channel")
+    fake_qq_channel = types.ModuleType("infra.channels.qq_channel")
 
     class _IPCServerChannel:
         def __init__(self, bus, socket):
@@ -186,9 +186,9 @@ async def test_start_channels_wires_telegram_and_qq(monkeypatch, tmp_path):
     fake_ipc_server.IPCServerChannel = _IPCServerChannel  # type: ignore[attr-defined]
     fake_telegram_channel.TelegramChannel = _TelegramChannel  # type: ignore[attr-defined]
     fake_qq_channel.QQChannel = _QQChannel  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "channels.ipc_server", fake_ipc_server)
-    monkeypatch.setitem(sys.modules, "channels.telegram_channel", fake_telegram_channel)
-    monkeypatch.setitem(sys.modules, "channels.qq_channel", fake_qq_channel)
+    monkeypatch.setitem(sys.modules, "infra.channels.ipc_server", fake_ipc_server)
+    monkeypatch.setitem(sys.modules, "infra.channels.telegram_channel", fake_telegram_channel)
+    monkeypatch.setitem(sys.modules, "infra.channels.qq_channel", fake_qq_channel)
 
     class _PushTool:
         def register_channel(self, name: str, **kwargs) -> None:

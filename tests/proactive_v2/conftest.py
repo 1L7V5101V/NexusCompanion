@@ -11,7 +11,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from proactive.config import ProactiveConfig
+from proactive_v2.config import ProactiveConfig
+from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
@@ -182,6 +183,7 @@ def make_agent_tick(
     sender: Any = None,
     deduper: Any = None,
     tool_deps: ToolDeps | None = None,
+    gateway_deps: GatewayDeps | None = None,
     llm_fn: Any = None,
     rng: Any = None,
     recent_proactive_fn: Any = None,
@@ -209,10 +211,16 @@ def make_agent_tick(
 
     if tool_deps is None:
         tool_deps = ToolDeps(
+            recent_chat_fn=AsyncMock(return_value=[]),
+        )
+    if gateway_deps is None:
+        gateway_deps = GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[]),
             context_fn=AsyncMock(return_value=[]),
-            recent_chat_fn=AsyncMock(return_value=[]),
+            web_fetch_tool=tool_deps.web_fetch_tool,
+            max_chars=tool_deps.max_chars,
+            content_limit=(cfg.agent_tick_content_limit if cfg else ProactiveConfig().agent_tick_content_limit),
         )
 
     if rng is None:
@@ -256,6 +264,7 @@ def make_agent_tick(
         turn_orchestrator=orchestrator,
         deduper=deduper,
         tool_deps=tool_deps,
+        gateway_deps=gateway_deps,
         llm_fn=llm_fn,
         rng=rng,
         recent_proactive_fn=recent_proactive_fn,

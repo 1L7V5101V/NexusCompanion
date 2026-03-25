@@ -10,7 +10,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from proactive.config import ProactiveConfig
-from proactive.loop import ProactiveLoop
+from proactive_v2.loop import ProactiveLoop
 
 
 # ── 工厂 ──────────────────────────────────────────────────────────────────

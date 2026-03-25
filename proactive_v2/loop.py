@@ -27,18 +27,18 @@ from agent.tools.message_push import MessagePushTool
 from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
-from proactive.anyaction import AnyActionGate, QuotaStore
-from proactive.energy import (
+from proactive_v2.anyaction import AnyActionGate, QuotaStore
+from proactive_v2.energy import (
     compute_energy,
     d_energy,
     next_tick_from_score,
 )
-from proactive.judge import MessageDeduper
-from proactive.config import ProactiveConfig
-from proactive.memory_sampler import sample_memory_chunks
-from proactive.presence import PresenceStore
-from proactive.sensor import Sensor
-from proactive.state import ProactiveStateStore
+from proactive_v2.judge import MessageDeduper
+from proactive_v2.config import ProactiveConfig
+from proactive_v2.memory_sampler import sample_memory_chunks
+from proactive_v2.presence import PresenceStore
+from proactive_v2.sensor import Sensor
+from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -95,7 +95,7 @@ class ProactiveLoop:
         self._init_runtime_components()
 
     def _init_runtime_state(self, config: ProactiveConfig) -> None:
-        from proactive.mcp_sources import McpClientPool
+        from proactive_v2.mcp_sources import McpClientPool
         self._running = False
         self._feed_poll_lock = asyncio.Lock()
         self._mcp_pool = McpClientPool()
@@ -112,7 +112,7 @@ class ProactiveLoop:
     def _build_fitbit_provider(self):
         if not getattr(self._cfg, "fitbit_enabled", False):
             return None
-        from proactive.fitbit_sleep import FitbitSleepProvider
+        from proactive_v2.fitbit_sleep import FitbitSleepProvider
 
         return FitbitSleepProvider(
             url=self._cfg.fitbit_url,
@@ -163,7 +163,7 @@ class ProactiveLoop:
         )
 
     def _build_agent_tick(self):
-        from proactive.agent_tick_factory import AgentTickDeps, AgentTickFactory
+        from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 
         return AgentTickFactory(
             AgentTickDeps(
@@ -316,7 +316,7 @@ class ProactiveLoop:
             return
         async with self._feed_poll_lock:
             try:
-                from proactive import mcp_sources
+                from proactive_v2 import mcp_sources
                 await mcp_sources.poll_content_feeds_async(self._mcp_pool)
                 logger.info("[proactive] feed poll 完成")
             except Exception as e:
@@ -337,7 +337,7 @@ class ProactiveLoop:
             f"目标={self._cfg.default_channel}:{self._cfg.default_chat_id}"
         )
         if not hasattr(self, "_mcp_pool"):
-            from proactive.mcp_sources import McpClientPool
+            from proactive_v2.mcp_sources import McpClientPool
             self._mcp_pool = McpClientPool()
         await self._mcp_pool.connect_all()
         try:

@@ -20,14 +20,14 @@ from urllib.parse import urlsplit, urlunsplit
 
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from proactive.config import ProactiveConfig
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,
     normalize_content,
     normalize_context,
 )
 from proactive_v2.context import AgentTickContext
-from proactive_v2.gateway import DataGateway, GatewayResult
+from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, execute
 
 logger = logging.getLogger(__name__)
@@ -205,6 +205,7 @@ class AgentTick:
         turn_orchestrator: TurnOrchestrator | None = None,
         deduper: Any,
         tool_deps: ToolDeps,
+        gateway_deps: GatewayDeps | None = None,
         workspace_context_fn: Callable[[], str] | None = None,
         llm_fn: Any | None = None,
         rng: Any | None = None,
@@ -219,6 +220,7 @@ class AgentTick:
         self._turn_orchestrator = turn_orchestrator
         self._deduper = deduper
         self._tool_deps = tool_deps
+        self._gateway_deps = gateway_deps
         self._workspace_context_fn = workspace_context_fn
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
@@ -455,21 +457,28 @@ class AgentTick:
             return 0.0
 
         # ── Gateway 预取 ──────────────────────────────────────────────────
-        gw = DataGateway(
-            alert_fn=self._tool_deps.alert_fn,
-            feed_fn=self._tool_deps.feed_fn,
-            context_fn=self._tool_deps.context_fn,
+        gateway_deps = self._gateway_deps or GatewayDeps(
+            alert_fn=None,
+            feed_fn=None,
+            context_fn=None,
             web_fetch_tool=self._tool_deps.web_fetch_tool,
             max_chars=self._tool_deps.max_chars,
             content_limit=self._cfg.agent_tick_content_limit,
+        )
+        gw = DataGateway(
+            alert_fn=gateway_deps.alert_fn,
+            feed_fn=gateway_deps.feed_fn,
+            context_fn=gateway_deps.context_fn,
+            web_fetch_tool=gateway_deps.web_fetch_tool,
+            max_chars=gateway_deps.max_chars,
+            content_limit=gateway_deps.content_limit,
         )
         gw_result = await gw.run()
         _log_content_candidates(gw_result)
 
         # 填充 ctx（供 ACK 路径使用）
-        ctx.fetched_alerts = gw_result.alerts
-        ctx._alerts_fetched = True
-        ctx.fetched_contents = [
+        ctx.mark_alerts_prefetched(gw_result.alerts)
+        fetched_contents = [
             {
                 "id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
                 "event_id": m["id"].split(":", 1)[1] if ":" in m["id"] else m["id"],
@@ -481,51 +490,21 @@ class AgentTick:
             }
             for m in gw_result.content_meta
         ]
-        ctx._contents_fetched = True
-        ctx.fetched_context = gw_result.context
-        ctx._context_fetched = True
-        ctx.content_store = gw_result.content_store
+        ctx.mark_contents_prefetched(fetched_contents, gw_result.content_store)
+        ctx.mark_context_prefetched(gw_result.context)
 
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
         messages: list[dict] = [system_msg]
 
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
-            tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, "required")
-            if tool_call is None:
-                logger.warning("[proactive_v2] loop: llm_fn returned None at step %d, stopping", ctx.steps_taken)
+            ok = await self._run_tool_step(
+                messages,
+                ctx,
+                loop_tag="loop",
+                tool_choice="required",
+            )
+            if not ok:
                 break
-
-            tool_name = tool_call.get("name", "")
-            tool_args = tool_call.get("input", {})
-            # 打印工具名 + 关键参数（截断避免日志过长）
-            _arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
-            logger.info("[proactive_v2] step %d: %s  args=%s", ctx.steps_taken, tool_name, _arg_summary)
-
-            try:
-                result = await execute(tool_name, tool_args, ctx, self._tool_deps)
-            except ValueError as e:
-                logger.warning("[proactive_v2] loop: tool error: %s", e)
-                break
-
-            # 追加工具调用和结果到 messages（OpenAI Chat Completions 格式）
-            call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(tool_args, ensure_ascii=False),
-                    },
-                }],
-            })
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result,
-            })
 
             if ctx.terminal_action is not None:
                 break
@@ -561,28 +540,13 @@ class AgentTick:
                 for _ in range(5):
                     if ctx.terminal_action is not None or ctx.steps_taken >= self._cfg.agent_tick_max_steps:
                         break
-                    tool_call = await self._llm_fn(messages, TOOL_SCHEMAS)
-                    if tool_call is None:
+                    ok = await self._run_tool_step(
+                        messages,
+                        ctx,
+                        loop_tag="complete",
+                    )
+                    if not ok:
                         break
-                    tool_name = tool_call.get("name", "")
-                    tool_args = tool_call.get("input", {})
-                    _arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
-                    logger.info("[proactive_v2] complete step %d: %s  args=%s", ctx.steps_taken, tool_name, _arg_summary)
-                    try:
-                        result = await execute(tool_name, tool_args, ctx, self._tool_deps)
-                    except ValueError as e:
-                        logger.warning("[proactive_v2] complete: tool error: %s", e)
-                        break
-                    call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
-                    messages.append({
-                        "role": "assistant",
-                        "content": None,
-                        "tool_calls": [{"id": call_id, "type": "function", "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(tool_args, ensure_ascii=False),
-                        }}],
-                    })
-                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
 
         # ── Reflection pass ───────────────────────────────────────────────
         # 若 agent 已标记 interesting 条目但忘记调用 finish_turn，
@@ -599,30 +563,90 @@ class AgentTick:
             for _ in range(3):
                 if ctx.terminal_action is not None or ctx.steps_taken >= self._cfg.agent_tick_max_steps:
                     break
-                tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, "required")
-                if tool_call is None:
+                ok = await self._run_tool_step(
+                    messages,
+                    ctx,
+                    loop_tag="reflect",
+                    tool_choice="required",
+                )
+                if not ok:
                     break
-                tool_name = tool_call.get("name", "")
-                tool_args = tool_call.get("input", {})
-                _arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
-                logger.info("[proactive_v2] reflect step %d: %s  args=%s", ctx.steps_taken, tool_name, _arg_summary)
-                try:
-                    result = await execute(tool_name, tool_args, ctx, self._tool_deps)
-                except ValueError as e:
-                    logger.warning("[proactive_v2] reflect: tool error: %s", e)
-                    break
-                call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{"id": call_id, "type": "function", "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(tool_args, ensure_ascii=False),
-                    }}],
-                })
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
 
         self.last_ctx = ctx
+
+    async def _run_tool_step(
+        self,
+        messages: list[dict],
+        ctx: AgentTickContext,
+        *,
+        loop_tag: str,
+        tool_choice: str | dict = "auto",
+    ) -> bool:
+        tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, tool_choice)
+        if tool_call is None:
+            logger.warning(
+                "[proactive_v2] %s: llm_fn returned None at step %d, stopping",
+                loop_tag,
+                ctx.steps_taken,
+            )
+            return False
+        tool_name = tool_call.get("name", "")
+        tool_args = tool_call.get("input", {})
+        arg_summary = json.dumps(tool_args, ensure_ascii=False)[:200]
+        logger.info(
+            "[proactive_v2] %s step %d: %s  args=%s",
+            loop_tag,
+            ctx.steps_taken,
+            tool_name,
+            arg_summary,
+        )
+        try:
+            result = await execute(tool_name, tool_args, ctx, self._tool_deps)
+        except ValueError as e:
+            logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, e)
+            return False
+        call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+        self._append_tool_messages(
+            messages,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_call_id=call_id,
+            result=result,
+        )
+        return True
+
+    @staticmethod
+    def _append_tool_messages(
+        messages: list[dict],
+        *,
+        tool_name: str,
+        tool_args: dict,
+        tool_call_id: str,
+        result: str,
+    ) -> None:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(tool_args, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": result,
+            }
+        )
 
     async def _post_loop(self, ctx: AgentTickContext) -> float:
         """收口到 TurnResult；发送与副作用交给 orchestrator。"""

@@ -175,7 +175,7 @@ class TurnExecutor:
                 pending_hints: list[str] = []
                 for tc in response.tool_calls:
                     if visible_names is not None and tc.name not in visible_names:
-                        if tc.name in self._tools._tools:
+                        if self._tools.has_tool(tc.name):
                             visible_names.add(tc.name)
                             logger.info("  ↑ 工具 %s 从历史记忆自动解锁", tc.name)
                         else:

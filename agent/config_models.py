@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from proactive.config import ProactiveConfig
+from proactive_v2.config import ProactiveConfig
 
 
 @dataclass

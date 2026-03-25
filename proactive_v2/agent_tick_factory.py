@@ -9,9 +9,10 @@ logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
 from agent.turns.orchestrator import TurnOrchestrator
-from proactive import mcp_sources
-from proactive.mcp_sources import McpClientPool
+from proactive_v2 import mcp_sources
+from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.agent_tick import AgentTick
+from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 
 
@@ -56,6 +57,7 @@ class AgentTickFactory:
         session_key = self._get_session_key()
         last_user_at_fn = self._build_last_user_at_fn(session_key)
         tool_deps = self._build_tool_deps()
+        gateway_deps = self._build_gateway_deps(tool_deps)
         recent_proactive_fn = self._build_recent_proactive_fn()
 
         return AgentTick(
@@ -68,6 +70,7 @@ class AgentTickFactory:
             turn_orchestrator=self._deps.turn_orchestrator,
             deduper=self._deps.deduper,
             tool_deps=tool_deps,
+            gateway_deps=gateway_deps,
             workspace_context_fn=self._deps.workspace_context_fn,
             llm_fn=self._build_llm_fn(),
             rng=self._deps.rng,
@@ -215,13 +218,20 @@ class AgentTickFactory:
         return ToolDeps(
             web_fetch_tool=web_fetch_tool,
             memory=self._deps.memory,
-            alert_fn=self._build_alert_fn(),
-            feed_fn=self._build_feed_fn(),
-            context_fn=self._build_context_fn(),
             recent_chat_fn=self._build_recent_chat_fn(),
             ack_fn=self._build_ack_fn(),
             alert_ack_fn=self._build_alert_ack_fn(),
             max_chars=self._deps.cfg.agent_tick_web_fetch_max_chars,
+        )
+
+    def _build_gateway_deps(self, tool_deps: ToolDeps) -> GatewayDeps:
+        return GatewayDeps(
+            alert_fn=self._build_alert_fn(),
+            feed_fn=self._build_feed_fn(),
+            context_fn=self._build_context_fn(),
+            web_fetch_tool=tool_deps.web_fetch_tool,
+            max_chars=tool_deps.max_chars,
+            content_limit=getattr(self._deps.cfg, "agent_tick_content_limit", 5),
         )
 
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:

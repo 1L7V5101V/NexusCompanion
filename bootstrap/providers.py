@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from agent.config_models import Config
-from agent.provider import LLMProvider
+from infra.providers.llm_provider import LLMProvider
 
 _MAIN_PROVIDER_TIMEOUT_S = 300.0
 _LIGHT_PROVIDER_TIMEOUT_S = 180.0

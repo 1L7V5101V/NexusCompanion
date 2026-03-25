@@ -23,8 +23,8 @@ from agent.config_models import (
     QQGroupConfig,
     TelegramChannelConfig,
 )
-from proactive.config import ProactiveConfig
-from proactive.config_loader import ProactiveConfigError, load_proactive_config
+from proactive_v2.config import ProactiveConfig
+from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 
 _PRESETS: dict[str, str] = {
     "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",

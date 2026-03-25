@@ -397,30 +397,30 @@ def test_mark_not_interesting_accumulates():
 
 @pytest.mark.asyncio
 async def test_get_alert_events_caches_on_second_call():
-    fake_alert_fn = AsyncMock(return_value=[
+    events = [
         {"id": "a1", "ack_server": "alert-mcp", "title": "CPU", "body": "", "severity": "high", "triggered_at": "2026-01-01T00:00:00Z"}
-    ])
+    ]
     ctx = AgentTickContext()
-    await _get_alert_events(ctx, {}, alert_fn=fake_alert_fn)
-    await _get_alert_events(ctx, {}, alert_fn=fake_alert_fn)
-    assert fake_alert_fn.call_count == 1
+    ctx.mark_alerts_prefetched(events)
+    await _get_alert_events(ctx, {})
+    await _get_alert_events(ctx, {})
+    assert ctx.fetched_alerts == events
 
 
 @pytest.mark.asyncio
 async def test_get_alert_events_stores_in_ctx():
     event = {"id": "a1", "ack_server": "alert-mcp", "title": "T", "body": "", "severity": "low", "triggered_at": "2026-01-01T00:00:00Z"}
-    fake_alert_fn = AsyncMock(return_value=[event])
     ctx = AgentTickContext()
-    await _get_alert_events(ctx, {}, alert_fn=fake_alert_fn)
+    ctx.mark_alerts_prefetched([event])
+    await _get_alert_events(ctx, {})
     assert ctx.fetched_alerts == [event]
-    assert ctx._alerts_fetched is True
+    assert ctx.alerts_fetched is True
 
 
 @pytest.mark.asyncio
 async def test_get_alert_events_returns_json_list():
-    fake_alert_fn = AsyncMock(return_value=[])
     ctx = AgentTickContext()
-    raw = await _get_alert_events(ctx, {}, alert_fn=fake_alert_fn)
+    raw = await _get_alert_events(ctx, {})
     parsed = json.loads(raw)
     assert isinstance(parsed, list)
 
@@ -429,38 +429,37 @@ async def test_get_alert_events_returns_json_list():
 
 @pytest.mark.asyncio
 async def test_get_content_events_caches_on_second_call():
-    fake_feed_fn = AsyncMock(return_value=[
+    events = [
         {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
-    ])
+    ]
     ctx = AgentTickContext()
-    await _get_content_events(ctx, {}, feed_fn=fake_feed_fn, limit=5)
-    await _get_content_events(ctx, {}, feed_fn=fake_feed_fn, limit=5)
-    assert fake_feed_fn.call_count == 1
+    ctx.mark_contents_prefetched(events, {})
+    await _get_content_events(ctx, {})
+    await _get_content_events(ctx, {})
+    assert ctx.fetched_contents == events
 
 
 @pytest.mark.asyncio
 async def test_get_content_events_stores_in_ctx():
     event = {"id": "c1", "ack_server": "feed-mcp", "url": "https://x.com", "title": "T", "source_name": "S", "published_at": "2026-01-01T00:00:00Z"}
-    fake_feed_fn = AsyncMock(return_value=[event])
     ctx = AgentTickContext()
-    await _get_content_events(ctx, {}, feed_fn=fake_feed_fn, limit=5)
+    ctx.mark_contents_prefetched([event], {})
+    await _get_content_events(ctx, {})
     assert ctx.fetched_contents == [event]
-    assert ctx._contents_fetched is True
+    assert ctx.contents_fetched is True
 
 
 @pytest.mark.asyncio
 async def test_get_content_events_passes_limit():
-    fake_feed_fn = AsyncMock(return_value=[])
     ctx = AgentTickContext()
-    await _get_content_events(ctx, {}, feed_fn=fake_feed_fn, limit=3)
-    fake_feed_fn.assert_called_once_with(limit=3)
+    await _get_content_events(ctx, {})
+    assert ctx.contents_fetched is True
 
 
 @pytest.mark.asyncio
 async def test_get_content_events_returns_json_list():
-    fake_feed_fn = AsyncMock(return_value=[])
     ctx = AgentTickContext()
-    raw = await _get_content_events(ctx, {}, feed_fn=fake_feed_fn, limit=5)
+    raw = await _get_content_events(ctx, {})
     assert isinstance(json.loads(raw), list)
 
 
@@ -468,28 +467,28 @@ async def test_get_content_events_returns_json_list():
 
 @pytest.mark.asyncio
 async def test_get_context_data_max_one_call():
-    fake_ctx_fn = AsyncMock(return_value=[{"title": "Steam", "body": "playing"}])
+    rows = [{"title": "Steam", "body": "playing"}]
     ctx = AgentTickContext()
-    await _get_context_data(ctx, {}, context_fn=fake_ctx_fn)
-    await _get_context_data(ctx, {}, context_fn=fake_ctx_fn)
-    assert fake_ctx_fn.call_count == 1
+    ctx.mark_context_prefetched(rows)
+    await _get_context_data(ctx, {})
+    await _get_context_data(ctx, {})
+    assert ctx.fetched_context == rows
 
 
 @pytest.mark.asyncio
 async def test_get_context_data_stores_in_ctx():
     item = {"title": "Steam", "body": "playing"}
-    fake_ctx_fn = AsyncMock(return_value=[item])
     ctx = AgentTickContext()
-    await _get_context_data(ctx, {}, context_fn=fake_ctx_fn)
+    ctx.mark_context_prefetched([item])
+    await _get_context_data(ctx, {})
     assert ctx.fetched_context == [item]
-    assert ctx._context_fetched is True
+    assert ctx.context_fetched is True
 
 
 @pytest.mark.asyncio
 async def test_get_context_data_returns_json():
-    fake_ctx_fn = AsyncMock(return_value=[])
     ctx = AgentTickContext()
-    raw = await _get_context_data(ctx, {}, context_fn=fake_ctx_fn)
+    raw = await _get_context_data(ctx, {})
     assert isinstance(json.loads(raw), list)
 
 
@@ -525,9 +524,7 @@ async def test_get_recent_chat_returns_json():
 @pytest.mark.asyncio
 async def test_execute_increments_steps_taken():
     ctx = AgentTickContext()
-    deps = ToolDeps(
-        alert_fn=AsyncMock(return_value=[]),
-    )
+    deps = ToolDeps()
     await execute("get_alert_events", {}, ctx, deps)
     assert ctx.steps_taken == 1
 
@@ -535,10 +532,7 @@ async def test_execute_increments_steps_taken():
 @pytest.mark.asyncio
 async def test_execute_increments_each_call():
     ctx = AgentTickContext()
-    deps = ToolDeps(
-        feed_fn=AsyncMock(return_value=[]),
-        alert_fn=AsyncMock(return_value=[]),
-    )
+    deps = ToolDeps()
     await execute("get_alert_events", {}, ctx, deps)
     await execute("get_content_events", {}, ctx, deps)
     assert ctx.steps_taken == 2

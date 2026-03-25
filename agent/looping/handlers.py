@@ -11,7 +11,7 @@ from agent.looping.ports import (
     SessionServices,
 )
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
-from agent.looping.turn_types import HistoryMessage, ToolCall, ToolCallGroup
+from agent.looping.turn_types import HistoryMessage, to_tool_call_groups
 from agent.retrieval.protocol import RetrievalRequest
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import parse_spawn_completion
@@ -19,6 +19,7 @@ from bus.internal_events import parse_spawn_completion
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.tools.registry import ToolRegistry
+    from agent.turns.orchestrator import TurnOrchestrator
 
 logger = logging.getLogger("agent.loop_handlers")
 
@@ -152,29 +153,10 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
                 role=role,
                 content=content,
                 tools_used=tools_used,
-                tool_chain=_to_tool_call_groups(msg.get("tool_chain") or []),
+                tool_chain=to_tool_call_groups(msg.get("tool_chain") or []),
             )
         )
     return out
-
-
-def _to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
-    groups: list[ToolCallGroup] = []
-    for group in raw_chain:
-        text = str(group.get("text", "") or "")
-        calls: list[ToolCall] = []
-        for call in (group.get("calls") or []):
-            args = call.get("arguments")
-            calls.append(
-                ToolCall(
-                    call_id=str(call.get("call_id", "") or ""),
-                    name=str(call.get("name", "") or ""),
-                    arguments=args if isinstance(args, dict) else {},
-                    result=str(call.get("result", "") or ""),
-                )
-            )
-        groups.append(ToolCallGroup(text=text, calls=calls))
-    return groups
 
 
 class InternalEventHandler:
@@ -185,12 +167,14 @@ class InternalEventHandler:
         tools: ToolRegistry,
         memory_window: int,
         run_agent_loop_fn: AgentLoopRunner,
+        orchestrator: "TurnOrchestrator",
     ) -> None:
         self._session = session_svc
         self._context = context
         self._tools = tools
         self._memory_window = memory_window
         self._run_agent_loop = run_agent_loop_fn
+        self._orchestrator = orchestrator
 
     async def process_spawn_completion(
         self, msg: InboundMessage, key: str
@@ -247,27 +231,28 @@ class InternalEventHandler:
         marker = f"[后台任务完成] {label} ({status})"
         if exit_reason:
             marker += f" [{exit_reason}]"
-        session.add_message("user", marker)
-        session.add_message(
-            "assistant",
-            final_content,
-            tools_used=tools_used if tools_used else None,
-            tool_chain=tool_chain if tool_chain else None,
-        )
-        _update_session_runtime_metadata(
-            session,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-        )
-        await self._session.session_manager.append_messages(session, session.messages[-2:])
-
-        return OutboundMessage(
+        pseudo_msg = InboundMessage(
             channel=msg.channel,
+            sender=msg.sender,
             chat_id=msg.chat_id,
-            content=final_content,
-            metadata={
-                **(msg.metadata or {}),
-                "tools_used": tools_used,
-                "tool_chain": tool_chain,
-            },
+            content=marker,
+            timestamp=msg.timestamp,
+            media=[],
+            metadata={**(msg.metadata or {}), "skip_post_memory": True},
+        )
+        result_obj = TurnResult(
+            decision="reply",
+            outbound=TurnOutbound(session_key=key, content=final_content),
+            trace=TurnTrace(
+                source="passive",
+                extra={
+                    "tools_used": tools_used,
+                    "tool_chain": tool_chain,
+                },
+            ),
+        )
+        return await self._orchestrator.handle_turn(
+            msg=pseudo_msg,
+            result=result_obj,
+            dispatch_outbound=True,
         )

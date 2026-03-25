@@ -274,13 +274,16 @@ async def test_passive_busy_checked_before_delivery_cooldown():
 async def test_pregate_fail_does_not_call_alert_fn():
     alert_fn = AsyncMock(return_value=[])
     from proactive_v2.tools import ToolDeps
+    from proactive_v2.gateway import GatewayDeps
     deps = ToolDeps(
-        alert_fn=alert_fn,
-        feed_fn=AsyncMock(return_value=[]),
     )
     tick = make_agent_tick(
         passive_busy_fn=lambda sk: True,
         tool_deps=deps,
+        gateway_deps=GatewayDeps(
+            alert_fn=alert_fn,
+            feed_fn=AsyncMock(return_value=[]),
+        ),
     )
     await tick.tick()
     alert_fn.assert_not_called()

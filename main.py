@@ -19,11 +19,11 @@ from bootstrap.app import build_app_runtime
 def connect_cli(config_path: str = "config.json") -> None:
     socket_path = Config.load(config_path).channels.socket
     try:
-        from channels.cli_tui import run_tui
+        from infra.channels.cli_tui import run_tui
     except RuntimeError as exc:
         print(exc)
         print("回退到纯文本 CLI。")
-        from channels.cli import CLIClient
+        from infra.channels.cli import CLIClient
 
         asyncio.run(CLIClient(socket_path).run())
         return

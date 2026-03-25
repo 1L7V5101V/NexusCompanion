@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from proactive.agent_tick_factory import AgentTickDeps, AgentTickFactory
-from proactive.mcp_sources import McpClientPool
+from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
+from proactive_v2.mcp_sources import McpClientPool
 from bootstrap.proactive import build_proactive_runtime
 
 

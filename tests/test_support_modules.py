@@ -401,23 +401,23 @@ async def test_loop_trigger_and_main_entry_cover_paths(
 ):
     module = __import__("main")
     monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.json": SimpleNamespace(channels=SimpleNamespace(socket="/tmp/sock"))))
-    monkeypatch.setitem(sys.modules, "channels.cli_tui", SimpleNamespace(run_tui=MagicMock()))
+    monkeypatch.setitem(sys.modules, "infra.channels.cli_tui", SimpleNamespace(run_tui=MagicMock()))
     module.connect_cli("config.json")
-    sys.modules["channels.cli_tui"].run_tui.assert_called_once_with("/tmp/sock")
+    sys.modules["infra.channels.cli_tui"].run_tui.assert_called_once_with("/tmp/sock")
 
     real_import = __import__
 
     def _fake_import(name, *args, **kwargs):
-        if name == "channels.cli_tui":
+        if name == "infra.channels.cli_tui":
             raise RuntimeError("bad tui")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.delitem(sys.modules, "channels.cli_tui", raising=False)
+    monkeypatch.delitem(sys.modules, "infra.channels.cli_tui", raising=False)
     monkeypatch.setattr("builtins.__import__", _fake_import)
     cli_run = AsyncMock()
     monkeypatch.setitem(
         sys.modules,
-        "channels.cli",
+        "infra.channels.cli",
         SimpleNamespace(CLIClient=lambda sock: SimpleNamespace(run=cli_run)),
     )
 

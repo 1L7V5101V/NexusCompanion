@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.looping.memory_gate import _update_session_runtime_metadata
-from agent.looping.turn_types import ToolCall, ToolCallGroup
+from agent.looping.turn_types import to_tool_call_groups
 from agent.postturn.protocol import PostTurnEvent
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
@@ -78,9 +78,14 @@ class TurnOrchestrator:
                 user_message=msg.content,
                 assistant_response=final_content,
                 tools_used=tools_used,
-                tool_chain=_to_tool_call_groups(tool_chain),
+                tool_chain=to_tool_call_groups(tool_chain),
                 session=session,
                 timestamp=msg.timestamp,
+                extra=(
+                    {"skip_post_memory": True}
+                    if (msg.metadata or {}).get("skip_post_memory")
+                    else {}
+                ),
             )
         )
         await self._run_side_effects(result)
@@ -213,7 +218,7 @@ class TurnOrchestrator:
         writer = self._trace.observe_writer
         if writer is None:
             return
-        from core.observe.events import TurnTrace
+        from core.observe.events import TurnTrace as TurnTraceEvent
 
         tool_calls = [
             {
@@ -245,7 +250,7 @@ class TurnOrchestrator:
         )
 
         writer.emit(
-            TurnTrace(
+            TurnTraceEvent(
                 source="agent",
                 session_key=key,
                 user_msg=msg.content,
@@ -312,7 +317,7 @@ class TurnOrchestrator:
                 user_message="",
                 assistant_response=result.outbound.content if result.outbound else "",
                 tools_used=tools_used,
-                tool_chain=_to_tool_call_groups(tool_chain),
+                tool_chain=to_tool_call_groups(tool_chain),
                 session=session,
             )
         )
@@ -329,12 +334,12 @@ class TurnOrchestrator:
         writer = self._trace.observe_writer
         if writer is None:
             return
-        from core.observe.events import TurnTrace
+        from core.observe.events import TurnTrace as TurnTraceEvent
 
         trace = result.trace
         extra = trace.extra if trace is not None and isinstance(trace.extra, dict) else {}
         writer.emit(
-            TurnTrace(
+            TurnTraceEvent(
                 source="proactive",
                 session_key=key,
                 user_msg="",
@@ -359,25 +364,6 @@ class TurnOrchestrator:
                 ],
             )
         )
-
-
-def _to_tool_call_groups(raw_chain: list[dict]) -> list[ToolCallGroup]:
-    groups: list[ToolCallGroup] = []
-    for group in raw_chain:
-        text = str(group.get("text", "") or "")
-        calls: list[ToolCall] = []
-        for call in (group.get("calls") or []):
-            args = call.get("arguments")
-            calls.append(
-                ToolCall(
-                    call_id=str(call.get("call_id", "") or ""),
-                    name=str(call.get("name", "") or ""),
-                    arguments=args if isinstance(args, dict) else {},
-                    result=str(call.get("result", "") or ""),
-                )
-            )
-        groups.append(ToolCallGroup(text=text, calls=calls))
-    return groups
 
 
 def _trace_tools_used(trace: Any | None) -> list[str]:

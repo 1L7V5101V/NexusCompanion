@@ -278,7 +278,7 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     )
     monkeypatch.setitem(
         sys.modules,
-        "channels.cli_tui",
+        "infra.channels.cli_tui",
         SimpleNamespace(run_tui=MagicMock()),
     )
     monkeypatch.setattr(
@@ -338,7 +338,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         lambda opt, interval_seconds: SimpleNamespace(run=lambda: ("mem-task", interval_seconds)),
     )
     monkeypatch.setattr(
-        "proactive.fitbit_sleep.run_fitbit_monitor",
+        "proactive_v2.fitbit_sleep.run_fitbit_monitor",
         lambda path, url: ("fitbit-task", path, url),
     )
 

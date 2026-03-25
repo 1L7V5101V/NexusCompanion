@@ -120,8 +120,8 @@ async def test_get_recent_chat_mixed_passive_and_proactive():
 
 def _make_system_prompt() -> str:
     from proactive_v2.agent_tick import AgentTick
-    from proactive_v2.gateway import GatewayResult
-    from proactive.config import ProactiveConfig
+    from proactive_v2.gateway import GatewayDeps, GatewayResult
+    from proactive_v2.config import ProactiveConfig
     from unittest.mock import MagicMock
 
     gate = MagicMock()
@@ -136,10 +136,12 @@ def _make_system_prompt() -> str:
         passive_busy_fn=None,
         deduper=MagicMock(),
         tool_deps=__import__("proactive_v2.tools", fromlist=["ToolDeps"]).ToolDeps(
+            recent_chat_fn=AsyncMock(return_value=[]),
+        ),
+        gateway_deps=GatewayDeps(
             alert_fn=AsyncMock(return_value=[]),
             feed_fn=AsyncMock(return_value=[]),
             context_fn=AsyncMock(return_value=[]),
-            recent_chat_fn=AsyncMock(return_value=[]),
         ),
         llm_fn=None,
     )

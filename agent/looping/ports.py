@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from memory2.post_response_worker import PostResponseMemoryWorker
     from memory2.query_rewriter import QueryRewriter
     from memory2.sufficiency_checker import SufficiencyChecker
-    from proactive.presence import PresenceStore
+    from proactive_v2.presence import PresenceStore
     from session.manager import SessionManager
 
 logger = logging.getLogger("agent.loop")

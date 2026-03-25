@@ -17,9 +17,9 @@ class AgentTickContext:
     fetched_alerts: list[dict] = field(default_factory=list)    # 含 ack_server 字段
     fetched_contents: list[dict] = field(default_factory=list)  # 含 ack_server 字段（从 content_meta 还原）
     fetched_context: list[dict] = field(default_factory=list)
-    _alerts_fetched: bool = False
-    _contents_fetched: bool = False
-    _context_fetched: bool = False
+    alerts_fetched: bool = False
+    contents_fetched: bool = False
+    context_fetched: bool = False
     # compound_key → 正文（fetch 失败时为 ""）；tick 结束后由 agent_tick 清空
     content_store: dict[str, str] = field(default_factory=dict)
 
@@ -34,3 +34,18 @@ class AgentTickContext:
     final_message: str = ""
     cited_item_ids: list[str] = field(default_factory=list)     # 复合键列表
     steps_taken: int = 0
+
+    def mark_alerts_prefetched(self, alerts: list[dict]) -> None:
+        self.fetched_alerts = alerts
+        self.alerts_fetched = True
+
+    def mark_contents_prefetched(
+        self, contents: list[dict], content_store: dict[str, str]
+    ) -> None:
+        self.fetched_contents = contents
+        self.content_store = content_store
+        self.contents_fetched = True
+
+    def mark_context_prefetched(self, context_rows: list[dict]) -> None:
+        self.fetched_context = context_rows
+        self.context_fetched = True

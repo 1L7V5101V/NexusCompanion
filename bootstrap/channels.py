@@ -17,7 +17,7 @@ async def start_channels(
     push_tool: MessagePushTool,
     http_resources: SharedHttpResources,
 ) -> tuple[Any, Any, Any]:
-    from channels.ipc_server import IPCServerChannel
+    from infra.channels.ipc_server import IPCServerChannel
 
     ipc = IPCServerChannel(bus, config.channels.socket)
     await ipc.start()
@@ -25,7 +25,7 @@ async def start_channels(
 
     tg_channel = None
     if config.channels.telegram:
-        from channels.telegram_channel import TelegramChannel
+        from infra.channels.telegram_channel import TelegramChannel
 
         tg = config.channels.telegram
         tg_channel = TelegramChannel(
@@ -45,7 +45,7 @@ async def start_channels(
 
     qq_channel = None
     if config.channels.qq:
-        from channels.qq_channel import QQChannel
+        from infra.channels.qq_channel import QQChannel
 
         qq = config.channels.qq
         qq_channel = QQChannel(

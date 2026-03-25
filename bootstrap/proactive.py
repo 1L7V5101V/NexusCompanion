@@ -7,10 +7,10 @@ from agent.config_models import Config
 from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
-from proactive.loop import ProactiveLoop
-from proactive.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
-from proactive.presence import PresenceStore
-from proactive.state import ProactiveStateStore
+from proactive_v2.loop import ProactiveLoop
+from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
+from proactive_v2.presence import PresenceStore
+from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ def build_proactive_runtime(
 
     fitbit_path = getattr(config.proactive, "fitbit_monitor_path", "").strip()
     if config.proactive.fitbit_enabled and fitbit_path:
-        from proactive.fitbit_sleep import run_fitbit_monitor
+        from proactive_v2.fitbit_sleep import run_fitbit_monitor
 
         tasks.append(run_fitbit_monitor(fitbit_path, config.proactive.fitbit_url))
         print(f"fitbit-monitor 已启动  |  路径={fitbit_path}")

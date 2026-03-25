@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -52,7 +51,7 @@ from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.query_rewriter import QueryRewriter
 from memory2.sufficiency_checker import SufficiencyChecker
-from proactive.presence import PresenceStore
+from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
@@ -261,6 +260,7 @@ class AgentLoop:
             tools=deps.tools,
             memory_window=config.memory.window,
             run_agent_loop_fn=self._run_agent_loop,
+            orchestrator=turn_orchestrator,
         )
 
     async def run(self) -> None:
@@ -295,21 +295,6 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         self.tools.set_context(channel=channel, chat_id=chat_id)
-
-    def _collect_skill_mentions(self, user_message: str) -> list[str]:
-        raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", user_message)
-        if not raw_names:
-            return []
-        available = {
-            s["name"] for s in self.context.skills.list_skills(filter_unavailable=False)
-        }
-        seen: set[str] = set()
-        result: list[str] = []
-        for name in raw_names:
-            if name in available and name not in seen:
-                seen.add(name)
-                result.append(name)
-        return result
 
     async def _process(
         self,

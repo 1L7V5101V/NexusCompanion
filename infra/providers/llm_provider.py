@@ -1,0 +1,179 @@
+"""
+LLM Provider — OpenAI 兼容格式
+支持所有兼容 OpenAI Chat Completions API 的服务：DeepSeek、Qwen、OpenAI 等。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from openai import AsyncOpenAI
+
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+logger = logging.getLogger(__name__)
+
+# 安全审查错误码（各厂商）
+_SAFETY_ERROR_CODES = {
+    "data_inspection_failed",  # Qwen / DashScope
+    "content_filter",  # Azure OpenAI
+    "content_policy_violation",  # OpenAI
+}
+
+_CONTEXT_LENGTH_KEYWORDS = (
+    "range of input length",  # DashScope / Qwen
+    "context_length_exceeded",  # OpenAI
+    "maximum context length",  # OpenAI
+    "string too long",  # 通用
+    "reduce the length",  # 通用
+    "too many tokens",  # 通用
+    "invalid_parameter_error",  # DashScope 超长
+)
+
+
+class ContentSafetyError(Exception):
+    """LLM provider 因内容安全审查拒绝请求"""
+
+
+class ContextLengthError(Exception):
+    """LLM provider 因上下文超长拒绝请求"""
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class LLMResponse:
+    content: str | None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    thinking: str | None = None
+
+
+class LLMProvider:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str | None = None,
+        system_prompt: str = "",
+        extra_body: dict | None = None,
+        request_timeout_s: float = 90.0,
+        max_retries: int = 1,
+    ) -> None:
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._system = system_prompt
+        self._extra_body = extra_body or {}
+        self._request_timeout_s = max(1.0, float(request_timeout_s))
+        self._max_retries = max(0, int(max_retries))
+
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        tool_choice: str | dict = "auto",
+    ) -> LLMResponse:
+        # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
+        already_has_system = messages and messages[0].get("role") == "system"
+        full_messages = (
+            [{"role": "system", "content": self._system}, *messages]
+            if self._system and not already_has_system
+            else messages
+        )
+        kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        if self._extra_body:
+            kwargs["extra_body"] = self._extra_body
+
+        resp = await self._create_with_retry(kwargs)
+        msg = resp.choices[0].message
+
+        tool_calls = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls.append(
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=json.loads(tc.function.arguments),
+                    )
+                )
+
+        raw = msg.content
+        thinking: str | None = None
+        if raw:
+            m = _THINK_RE.search(raw)
+            if m:
+                thinking = m.group(1).strip()
+                raw = _THINK_RE.sub("", raw).strip() or None
+        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+
+    async def _create_with_retry(self, kwargs: dict) -> object:
+        last_err: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                return await asyncio.wait_for(
+                    self._client.chat.completions.create(**kwargs),
+                    timeout=self._request_timeout_s,
+                )
+            except Exception as e:
+                last_err = e
+                if self._is_safety_error(e):
+                    raise ContentSafetyError(str(e)) from e
+                if self._is_context_length_error(e):
+                    raise ContextLengthError(str(e)) from e
+                retryable = self._is_retryable(e)
+                exhausted = attempt >= self._max_retries
+                if (not retryable) or exhausted:
+                    raise
+                wait_s = min(8.0, 1.0 * (2**attempt))
+                logger.warning(
+                    "[llm] 请求失败，将重试 attempt=%d/%d wait=%.1fs err=%s",
+                    attempt + 1,
+                    self._max_retries + 1,
+                    wait_s,
+                    type(e).__name__,
+                )
+                await asyncio.sleep(wait_s)
+        if last_err:
+            raise last_err
+        raise RuntimeError("LLM request failed without exception")
+
+    @staticmethod
+    def _is_safety_error(err: Exception) -> bool:
+        text = str(err)
+        return any(code in text for code in _SAFETY_ERROR_CODES)
+
+    @staticmethod
+    def _is_context_length_error(err: Exception) -> bool:
+        text = str(err).lower()
+        return any(kw in text for kw in _CONTEXT_LENGTH_KEYWORDS)
+
+    @staticmethod
+    def _is_retryable(err: Exception) -> bool:
+        if isinstance(err, TimeoutError):
+            return True
+        text = str(err).lower()
+        keywords = (
+            "timeout",
+            "timed out",
+            "connect",
+            "connection",
+            "temporarily unavailable",
+            "server error",
+            "502",
+            "503",
+            "504",
+            "rate limit",
+            "too many requests",
+        )
+        return any(k in text for k in keywords)
