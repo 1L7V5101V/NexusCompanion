@@ -32,6 +32,10 @@ class ScenarioAssertions:
     min_history_hits: int | None = None
     max_history_hits: int | None = None
     required_tools: list[str] = field(default_factory=list)
+    forbidden_tools: list[str] = field(default_factory=list)
+    required_tools_any_of: list[str] = field(default_factory=list)
+    # 工具调用次数上限：{"tool_search": 1} 表示 tool_search 最多调用 1 次
+    max_tool_calls: dict[str, int] = field(default_factory=dict)
     final_contains: list[str] = field(default_factory=list)
     final_not_contains: list[str] = field(default_factory=list)
     required_injected_rows: list["ScenarioMemoryRowAssertion"] = field(default_factory=list)
@@ -423,6 +427,133 @@ def build_multiturn_async_event_rag_noise_scenario() -> ScenarioSpec:
             ],
             final_contains=["只狼"],
             final_not_contains=["仁王2", "艾尔登法环", "黑神话", "血源"],
+        ),
+    )
+
+
+def build_tool_routing_direct_call_scenario() -> ScenarioSpec:
+    """S2: already-visible tool → model should call directly, no tool_search."""
+    return ScenarioSpec(
+        id="tool_routing_direct_call_web_search",
+        message="帮我搜索今天有没有关于 AI 大模型的最新新闻",
+        channel="cli",
+        chat_id="scenario-routing-direct",
+        session_key="cli:scenario-routing-direct",
+        request_time=datetime.fromisoformat("2026-03-25T10:00:00+08:00"),
+        assertions=ScenarioAssertions(
+            required_tools=["web_search"],
+            forbidden_tools=["tool_search", "list_tools"],
+        ),
+    )
+
+
+def build_tool_routing_capability_overview_scenario() -> ScenarioSpec:
+    """S3: capability_query_meta_only — 宏观能力查询只走元工具，不误执行具体业务工具。
+
+    用户明确说"先别执行，只列给我看"，agent 应仅调用 list_tools 或 tool_search，
+    不得调用任何具体业务工具（fitbit_health_snapshot / schedule / feed_manage 等）。
+    相比旧 S3 增加了 forbidden_tools 约束，消除"碰运气靠 judge 判断"的不确定性。
+    """
+    return ScenarioSpec(
+        id="capability_query_meta_only_health",
+        message="你有哪些和健康、运动相关的能力？先别执行，只列给我看。",
+        channel="cli",
+        chat_id="scenario-capability-meta",
+        session_key="cli:scenario-capability-meta",
+        request_time=datetime.fromisoformat("2026-03-25T11:10:00+08:00"),
+        assertions=ScenarioAssertions(
+            required_tools_any_of=["list_tools", "tool_search"],
+            forbidden_tools=["fitbit_health_snapshot", "schedule", "feed_manage"],
+            final_not_contains=["没有相关功能", "无法查询", "没有这个能力"],
+        ),
+        judge=ScenarioJudgeSpec(
+            goal="验证宏观能力查询只走元工具披露，不误执行具体工具",
+            rubric=[
+                "用了 list_tools 或 tool_search 至少一种",
+                "没有调用具体业务工具去真的执行动作",
+                "回复列出了健康/运动相关能力",
+            ],
+        ),
+    )
+
+
+def build_tool_routing_unknown_function_scenario() -> ScenarioSpec:
+    """S1: user describes function without knowing tool name → schedule must be called eventually.
+
+    路由路径不限定：模型可直接猜到 schedule 自动解锁（三段式直通），
+    也可以先 tool_search 再调用。两条路径均合法，只需最终调用到 schedule。
+    """
+    return ScenarioSpec(
+        id="tool_routing_unknown_function_schedule",
+        message="帮我设置一个明天早上八点的提醒，内容是'吃早饭'",
+        channel="cli",
+        chat_id="scenario-routing-unknown-fn",
+        session_key="cli:scenario-routing-unknown-fn",
+        request_time=datetime.fromisoformat("2026-03-25T10:10:00+08:00"),
+        assertions=ScenarioAssertions(
+            required_tools=["schedule"],
+            forbidden_tools=["list_tools"],
+            final_not_contains=["没有这个能力", "无法设置", "不支持提醒"],
+        ),
+    )
+
+
+def build_tool_routing_rss_management_scenario() -> ScenarioSpec:
+    """S4: obscure function → model must not refuse, should find feed_manage via tool_search."""
+    return ScenarioSpec(
+        id="tool_routing_rss_management",
+        message="帮我给订阅列表里加一个 AI 科技类的 RSS 源，随便找一个知名的就行",
+        channel="cli",
+        chat_id="scenario-routing-rss",
+        session_key="cli:scenario-routing-rss",
+        request_time=datetime.fromisoformat("2026-03-25T10:15:00+08:00"),
+        assertions=ScenarioAssertions(
+            required_tools=["feed_manage"],
+            final_not_contains=["没有这个能力", "无法添加", "不支持订阅"],
+        ),
+        judge=ScenarioJudgeSpec(
+            goal="判断 agent 是否尝试完成了 RSS 订阅添加任务",
+            rubric=[
+                "agent 尝试调用了订阅管理相关工具",
+                "没有以'我没有这个功能'直接拒绝用户",
+                "回复中有关于 RSS 或订阅操作的具体说明",
+            ],
+        ),
+    )
+
+
+def build_history_hit_removed_tool_self_heal_scenario() -> ScenarioSpec:
+    """S5: 用户提到已废弃的工具名 rss_add → agent 应通过 query hint 自愈到 feed_manage。
+
+    端到端验证改动二（query hint）的真实效果：
+      1. 模型尝试调用 rss_add（用户消息中提到）
+      2. Runtime 返回错误并注入 query hint "rss add"
+      3. 模型调用 tool_search(query="rss add") → 命中 feed_manage
+      4. 模型调用 feed_manage 完成任务
+
+    关键：registry 里没有 rss_add，只有 feed_manage。
+    tool_search 应仅调用一次（max_tool_calls 约束防止反复搜索）。
+    """
+    return ScenarioSpec(
+        id="history_hit_removed_tool_self_heal",
+        message="之前你是用 rss_add 给我加订阅的，这次再帮我加一个 AI 科技类的 RSS 源。",
+        channel="cli",
+        chat_id="scenario-history-removed",
+        session_key="cli:scenario-history-removed",
+        request_time=datetime.fromisoformat("2026-03-25T11:05:00+08:00"),
+        assertions=ScenarioAssertions(
+            required_tools=["feed_manage"],
+            required_tools_any_of=["tool_search", "list_tools"],
+            max_tool_calls={"tool_search": 2},
+            final_not_contains=["没有这个能力", "工具不存在所以无法继续", "不支持订阅"],
+        ),
+        judge=ScenarioJudgeSpec(
+            goal="验证旧工具名失效后，agent 能通过元工具自愈到现有工具",
+            rubric=[
+                "没有因为旧工具名失效而直接放弃",
+                "最终找到了现有订阅工具并尝试执行",
+                "回复中体现了恢复后的实际操作结果",
+            ],
         ),
     )
 

@@ -99,6 +99,21 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "不存在" in await reader.execute("missing.txt")
     assert "不是文件" in await reader.execute(".")
 
+    # 验证行号前缀格式（改动九）
+    full_content = await reader.execute("a.txt")
+    assert "     1\u2192line1" in full_content, "read_file 应输出 '     1→line1' 格式的行号前缀"
+    assert "     2\u2192line2" in full_content
+    assert "     3\u2192line3" in full_content
+
+    # 验证字符截断后提示语包含 limit 分页引导（改动九，决策 D）
+    from agent.tools import filesystem as _fs_mod
+    orig_max = _fs_mod._READ_MAX_CHARS
+    _fs_mod._READ_MAX_CHARS = 10  # 强制触发截断
+    truncated = await reader.execute("a.txt")
+    _fs_mod._READ_MAX_CHARS = orig_max
+    assert "limit=N" in truncated, "截断提示应引导用户用 limit=N 分页，而非 offset 续读"
+    assert "offset=0 limit=100" in truncated
+
     sop = MagicMock()
     sop.is_sop_file.return_value = True
     sop.reindex = AsyncMock(return_value="ok")
@@ -108,10 +123,19 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
 
     editor = EditFileTool(base, sop)
     assert "未找到 old_text" in await editor.execute("b.txt", "x", "y")
-    assert "已成功编辑" in await editor.execute("b.txt", "hello", "world")
+    result = await editor.execute("b.txt", "hello", "world")
+    assert "已成功编辑" in result
+    assert "替换 1 处" in result, "edit_file 应在结果中报告替换数量"
+
     dup = base / "dup.txt"
     dup.write_text("x\nx\n", encoding="utf-8")
     assert "出现了 2 次" in await editor.execute("dup.txt", "x", "y")
+
+    # 验证 replace_all=True（改动十）
+    dup.write_text("x\nx\n", encoding="utf-8")
+    result_all = await editor.execute("dup.txt", "x", "z", replace_all=True)
+    assert "替换 2 处" in result_all, "replace_all=true 应替换所有匹配并报告数量"
+    assert dup.read_text(encoding="utf-8") == "z\nz\n"
 
     lister = ListDirTool(base)
     assert "📄 a.txt" in await lister.execute(".")

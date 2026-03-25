@@ -596,6 +596,20 @@ class ScenarioRunner:
         for tool_name in assertions.required_tools:
             if tool_name not in called_tools:
                 errors.append(f"缺少预期工具调用: {tool_name}")
+        for tool_name in assertions.forbidden_tools:
+            if tool_name in called_tools:
+                errors.append(f"不应出现的工具调用: {tool_name}（实际调用了）")
+        if assertions.required_tools_any_of:
+            if not any(t in called_tools for t in assertions.required_tools_any_of):
+                errors.append(
+                    f"至少需要调用其中一个工具，但都未出现: {assertions.required_tools_any_of}"
+                )
+        for tool_name, max_count in assertions.max_tool_calls.items():
+            actual_count = called_tools.count(tool_name)
+            if actual_count > max_count:
+                errors.append(
+                    f"工具 {tool_name} 调用次数超限: expected<={max_count} actual={actual_count}"
+                )
         injected_ids = set(memory_trace.get("injected_item_ids") or [])
         injected_rows = [
             row for row in memory_rows if str(row.get("id", "")) in injected_ids

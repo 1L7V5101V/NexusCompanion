@@ -41,15 +41,35 @@ def _unlock_from_tool_search(result: str, visible_names: set[str]) -> None:
         pass
 
 
-def _build_reflect_content(pending_hints: list[str]) -> str:
+def _build_reflect_content(
+    pending_hints: list[str],
+    visible_names: set[str] | None = None,
+    always_on_names: set[str] | None = None,
+) -> str:
+    # 动态工具状态提示
+    tool_state_hint = ""
+    if visible_names is not None and always_on_names is not None:
+        unlocked_extra = visible_names - always_on_names - {"tool_search", "list_tools"}
+        if unlocked_extra:
+            tool_state_hint = (
+                f"【当前会话已额外解锁工具: {', '.join(sorted(unlocked_extra))}】\n"
+            )
+        else:
+            tool_state_hint = (
+                "【当前仅 always-on 工具可见】\n"
+                "若需其他工具：已知工具名可直接调用（系统自动解锁）；"
+                "不知道工具名时调用 tool_search 搜索。\n"
+            )
+
     if not pending_hints:
-        return _REFLECT_PROMPT
+        return tool_state_hint + _REFLECT_PROMPT
     combined = "\n".join(h for h in pending_hints if h.strip())
     if not combined.strip():
-        return _REFLECT_PROMPT
+        return tool_state_hint + _REFLECT_PROMPT
     return (
         "【⚠️ 操作规范提醒 | 适用于本轮工具调用】\n"
         f"{combined}\n\n---\n\n"
+        + tool_state_hint
         + _REFLECT_PROMPT
     )
 
@@ -179,8 +199,13 @@ class TurnExecutor:
                             visible_names.add(tc.name)
                             logger.info("  ↑ 工具 %s 从历史记忆自动解锁", tc.name)
                         else:
-                            logger.warning("  ✗ 工具 %s 不存在，拒绝执行", tc.name)
-                            result = f"工具 '{tc.name}' 不存在，请调用 tool_search 查找可用工具。"
+                            logger.warning("  ✗ 工具 %s 不存在，已注入 query hint", tc.name)
+                            suggested_query = tc.name.replace("_", " ").replace("-", " ")
+                            result = (
+                                f"工具 '{tc.name}' 当前不可见或不存在。"
+                                f"请立即调用 tool_search(query=\"{suggested_query}\") 搜索等价工具，"
+                                f"然后从结果中选择正确工具继续执行。不要放弃当前任务。"
+                            )
                             append_tool_result(messages, tool_call_id=tc.id, content=result)
                             iter_calls.append(
                                 {
@@ -255,7 +280,14 @@ class TurnExecutor:
                     )
                 tool_chain.append({"text": response.content, "calls": iter_calls})
                 messages.append(
-                    {"role": "user", "content": _build_reflect_content(pending_hints)}
+                    {
+                        "role": "user",
+                        "content": _build_reflect_content(
+                            pending_hints,
+                            visible_names=visible_names,
+                            always_on_names=self._tools.get_always_on_names() if self._tool_search_enabled else None,
+                        ),
+                    }
                 )
                 continue
 

@@ -10,6 +10,7 @@ Shell 工具（Bash 命令执行）
 
 import asyncio
 import json
+import logging
 import shlex
 import ipaddress
 from urllib.parse import urlparse
@@ -17,6 +18,8 @@ import time
 from typing import Any
 
 from agent.tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
 _MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
@@ -80,7 +83,8 @@ class ShellTool(Tool):
         "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
         "- 输出超过 30000 字符时自动截断\n"
         "- 超时默认 60 秒，最大 600 秒\n"
-        "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），必须用 `timeout 5 <命令> 2>&1` 包裹以快速获取启动日志，禁止直接运行导致阻塞"
+        "- 若命令是服务进程（如 python server.py、uvicorn、node app.js 等），必须用 `timeout 5 <命令> 2>&1` 包裹以快速获取启动日志，禁止直接运行导致阻塞\n"
+        "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
     )
     parameters = {
         "type": "object",
@@ -89,6 +93,13 @@ class ShellTool(Tool):
                 "type": "string",
                 "description": "要执行的 bash 命令",
             },
+            "description": {
+                "type": "string",
+                "description": (
+                    "用 5-10 字描述这条命令的作用，便于用户审查和日志追踪。"
+                    "示例：'列出当前目录文件' / '安装 Python 依赖' / '查看进程状态'"
+                ),
+            },
             "timeout": {
                 "type": "integer",
                 "description": f"超时秒数，默认 {_DEFAULT_TIMEOUT}，最大 {_MAX_TIMEOUT}",
@@ -96,15 +107,17 @@ class ShellTool(Tool):
                 "maximum": _MAX_TIMEOUT,
             },
         },
-        "required": ["command"],
+        "required": ["command", "description"],
     }
 
     async def execute(self, **kwargs: Any) -> str:
         command: str = kwargs.get("command", "").strip()
+        description: str = kwargs.get("description", "")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
 
         if not command:
             return _err("命令不能为空")
+        logger.info("shell [%s]: %s", description, command[:120])
 
         # 禁止命令检查（对应 OpenCode bannedCommands 逻辑）
         base_cmd = command.split()[0].lower()

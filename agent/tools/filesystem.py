@@ -87,9 +87,12 @@ class ReadFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "读取文件内容。超过 10K 字符时自动截断并提示总行数，"
-            "可用 offset/limit 参数分页读取（offset=起始行，limit=读取行数）。"
-            "对于大文件，先用 offset=0 limit=30 预览前几行，再决定读哪段。"
+            "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位；"
+            "Excel 文件（.xlsx/.xls）返回表格文本，不带行号。\n"
+            "默认每次最多 10K 字符；大文件须用 limit 分页，不要依赖字符截断后的自动续读。\n\n"
+            "推荐策略：先 limit=50 预览文件结构，再按需读取目标行段（offset=N limit=M）。\n"
+            "并行读取：可在同一次响应中同时读取多个文件，无需逐一等待。\n"
+            "参数说明：offset=跳过的行数（0-based），limit=读取行数。"
         )
 
     @property
@@ -139,21 +142,29 @@ class ReadFileTool(Tool):
 
             # 按行分页
             sliced = lines[offset:] if limit is None else lines[offset : offset + limit]
-            text = "".join(sliced)
 
-            # 字符上限截断
+            # 带行号输出（1-based 显示值，从 offset+1 开始）
+            numbered_lines = []
+            for i, line in enumerate(sliced, start=offset + 1):
+                numbered_lines.append(f"{i:6}\u2192{line}")
+            text = "".join(numbered_lines)
+
+            # 字符上限截断（回退到完整行边界，避免截断行中间）
             truncated_by_chars = False
             if len(text) > _READ_MAX_CHARS:
-                text = text[:_READ_MAX_CHARS]
+                truncated_text = text[:_READ_MAX_CHARS]
+                last_newline = truncated_text.rfind("\n")
+                if last_newline > 0:
+                    truncated_text = truncated_text[: last_newline + 1]
+                text = truncated_text
                 truncated_by_chars = True
 
             suffix_note = ""
             end_line = offset + len(sliced)
             if truncated_by_chars:
                 suffix_note = (
-                    f"\n\n[已截断：文件共 {total_lines} 行，"
-                    f"本次返回前 {_READ_MAX_CHARS} 字符。"
-                    f"用 offset={end_line} 继续读取。]"
+                    f"\n\n[已截断：文件共 {total_lines} 行，内容过长。"
+                    f"建议用 limit=N 分段读取，例如 offset=0 limit=100。]"
                 )
             elif offset > 0 or limit is not None:
                 suffix_note = (
@@ -184,7 +195,14 @@ class WriteFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "将内容写入指定路径的文件，不存在的父目录会自动创建。"
+        return (
+            "将内容写入文件（完整覆盖写）。不存在的父目录自动创建。\n\n"
+            "使用规则：\n"
+            "- 优先使用 edit_file 修改已有文件；仅在创建新文件或完整重写时使用 write_file\n"
+            "- 写入已存在的文件前，必须先用 read_file 读取当前内容，禁止盲写\n"
+            "- 不得主动创建文档文件（*.md、README）除非用户明确要求\n"
+            "- 写入路径须为绝对路径或相对工作目录的合法路径"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -234,7 +252,12 @@ class EditFileTool(Tool):
 
     @property
     def description(self) -> str:
-        return "将文件中的 old_text 替换为 new_text，old_text 必须与文件内容完全匹配。"
+        return (
+            "将文件中的 old_text 精确替换为 new_text。\n\n"
+            "重要：old_text 和 new_text 是文件的原始内容，不包含 read_file 输出的行号前缀。\n"
+            "从 read_file 输出复制 old_text 时，必须去掉行首的 '     N→' 前缀，只保留实际文本内容。\n"
+            "old_text 必须与文件内容完全一致（含缩进和换行）。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -244,9 +267,18 @@ class EditFileTool(Tool):
                 "path": {"type": "string", "description": "要编辑的文件路径"},
                 "old_text": {
                     "type": "string",
-                    "description": "要查找并替换的原始文本（必须与文件内容完全一致）",
+                    "description": "要查找并替换的原始文本（必须与文件内容完全一致，不含行号前缀）",
                 },
                 "new_text": {"type": "string", "description": "替换后的新文本"},
+                "replace_all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "是否替换文件中所有匹配项，默认 False（只替换第一处）。"
+                        "重命名变量、批量修改相同字符串时设为 true。"
+                        "不确定匹配数量时先省略，收到'出现N次'警告后再决定。"
+                    ),
+                },
             },
             "required": ["path", "old_text", "new_text"],
         }
@@ -254,6 +286,7 @@ class EditFileTool(Tool):
     async def execute(
         self, path: str, old_text: str, new_text: str, **kwargs: Any
     ) -> str:
+        replace_all: bool = bool(kwargs.get("replace_all", False))
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             if not file_path.exists():
@@ -264,17 +297,17 @@ class EditFileTool(Tool):
             if old_text not in content:
                 return "错误：未找到 old_text，请确保与文件内容完全一致。"
 
-            # 若匹配到多处，提示提供更多上下文以唯一定位
             count = content.count(old_text)
-            if count > 1:
-                return f"警告：old_text 在文件中出现了 {count} 次，请提供更多上下文以唯一匹配。"
+            if count > 1 and not replace_all:
+                return f"警告：old_text 在文件中出现了 {count} 次。如需全部替换，设 replace_all=true；如需精确定位，请在 old_text 中包含更多上下文。"
 
-            new_content = content.replace(old_text, new_text, 1)
+            new_content = content.replace(old_text, new_text) if replace_all else content.replace(old_text, new_text, 1)
+            replaced_count = count if replace_all else 1
             file_path.write_text(new_content, encoding="utf-8")
 
             if self._sop_indexer and self._sop_indexer.is_sop_file(file_path):
                 asyncio.create_task(self._reindex(file_path))
-            return f"已成功编辑 {path}"
+            return f"已成功编辑 {path}（替换 {replaced_count} 处）"
         except PermissionError as e:
             return f"错误：{e}"
         except Exception as e:

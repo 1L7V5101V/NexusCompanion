@@ -20,8 +20,10 @@ class ListToolsTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "列出所有已注册的可用工具，包括名称、功能摘要和标签。"
-            "当你需要了解自己有哪些能力时调用此工具。"
+            "列出系统中所有已注册工具的完整目录（全量，含当前不可见的工具），支持按 tag 过滤。\n\n"
+            "适用场景：宏观了解系统能力全貌、按分类（tag）浏览某领域工具。\n"
+            "不适用场景：按具体功能查找最合适的工具——请使用 tool_search(query=...) 而非 list_tools。\n"
+            "注意：list_tools 只做目录展示，不解锁工具；调用工具前仍需确认其在可见列表中或直接尝试调用。"
         )
 
     @property
