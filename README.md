@@ -589,7 +589,7 @@
 
 ### 9.2 测试策略
 
-测试分两层：
+测试分成公开和私有两层：
 
 ```text
 ┌──────────────────────────┐
@@ -599,15 +599,11 @@
            │
            ▼
 ┌──────────────────────────┐
-│ tests_scenarios/         │
-│ 接近真实链路的场景测试     │
-│ - 真模型                  │
-│ - 真检索                  │
-│ - 真工具注册              │
+│ private_tests/           │
+│ 私有高保真 scenario /     │
+│ replay baseline          │
 └──────────────────────────┘
 ```
-
-这一点面试里也可以讲，因为很多人只会写 isolated unit test，不会为 Agent 系统补“接近真实运行链路”的验证。
 
 ---
 
@@ -631,7 +627,7 @@
 ├── infra/                  channel / provider 适配层
 ├── core/                   observe / http / common
 ├── tests/                  单元与模块测试
-├── tests_scenarios/        接近真实链路的场景测试
+├── private_tests/          私有测试子模块（高保真 scenario / replay）
 └── scripts/                运维 / 迁移 / 分析脚本
 ```
 
@@ -656,7 +652,8 @@
 - 不是只靠上下文窗口，而是做了长期记忆系统
 - 记忆不是只写不管，有去重、失效和 supersede
 - 工具体系有 registry、关键词搜索和 MCP 扩展能力
-- 测试不只做单元测试，还补了真实链路场景测试
+- 测试以单元和模块级验证为主
+- 高保真私有场景测试通过 `private_tests/` 子模块维护
 
 ### 11.4 如果面试官追问“难点是什么”
 
@@ -709,13 +706,11 @@ python main.py cli
 pytest tests/
 ```
 
-场景测试：
+私有 scenario / replay：
 
 ```bash
-AKASIC_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/
+AKASIC_RUN_SCENARIOS=1 pytest -c private_tests/pytest-scenarios.ini private_tests/tests_scenarios/
 ```
-
----
 
 ## 14. 结论
 
