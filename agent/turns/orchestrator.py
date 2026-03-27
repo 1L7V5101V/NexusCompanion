@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.turn_types import to_tool_call_groups
+from agent.memes.decorator import MemeDecorator
 from agent.postturn.protocol import PostTurnEvent
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
@@ -30,6 +31,7 @@ class TurnOrchestratorDeps:
     trace: ObservabilityServices
     post_turn: PostTurnPipeline
     outbound: OutboundPort
+    meme_decorator: MemeDecorator | None = None
 
 
 class TurnOrchestrator:
@@ -38,6 +40,7 @@ class TurnOrchestrator:
         self._trace = deps.trace
         self._post_turn = deps.post_turn
         self._outbound = deps.outbound
+        self._meme_decorator = deps.meme_decorator
 
     async def handle_turn(
         self,
@@ -51,6 +54,11 @@ class TurnOrchestrator:
         key = result.outbound.session_key
         session = self._session.session_manager.get_or_create(key)
         final_content = result.outbound.content
+        meme_media: list[str] = []
+        if self._meme_decorator is not None:
+            decorated = self._meme_decorator.decorate(final_content)
+            final_content = decorated.content
+            meme_media = decorated.media
         tools_used = _trace_tools_used(result.trace)
         tool_chain = _trace_tool_chain(result.trace)
         thinking = _trace_thinking(result.trace)
@@ -94,6 +102,7 @@ class TurnOrchestrator:
             chat_id=msg.chat_id,
             content=final_content,
             thinking=thinking,
+            media=meme_media,
             metadata={
                 **(msg.metadata or {}),
                 "tools_used": tools_used,
@@ -108,6 +117,7 @@ class TurnOrchestrator:
                     content=outbound.content,
                     thinking=outbound.thinking,
                     metadata=outbound.metadata,
+                    media=meme_media,
                 )
             )
         return outbound

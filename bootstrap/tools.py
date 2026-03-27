@@ -29,6 +29,8 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.memes.catalog import MemeCatalog
+from agent.memes.decorator import MemeDecorator
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.fitbit import register_fitbit_tools
@@ -297,6 +299,7 @@ def _build_loop_deps(
             trace=trace_services,
             post_turn=post_turn_pipeline,
             outbound=BusOutboundPort(bus),
+            meme_decorator=MemeDecorator(MemeCatalog(workspace / "memes")),
         )
     )
     conversation_handler = ConversationTurnHandler(

@@ -289,20 +289,26 @@ class QQChannel:
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
-        try:
-            if msg.chat_id.startswith(_GROUP_PREFIX):
-                group_id = msg.chat_id[len(_GROUP_PREFIX) :]
-                logger.info(f"[qq] 群聊回复  group_id={group_id}  内容: {preview!r}")
-                await self._run_on_bot_loop(
-                    self._api.send_group_text(int(group_id), msg.content)
-                )
-            else:
-                logger.info(f"[qq] 私聊回复  user_id={msg.chat_id}  内容: {preview!r}")
-                await self._run_on_bot_loop(
-                    self._api.send_private_text(int(msg.chat_id), msg.content)
-                )
-        except Exception as e:
-            logger.error(f"[qq] 发送失败  chat_id={msg.chat_id}  错误: {e}")
+        if msg.content.strip():
+            try:
+                if msg.chat_id.startswith(_GROUP_PREFIX):
+                    group_id = msg.chat_id[len(_GROUP_PREFIX) :]
+                    logger.info(f"[qq] 群聊回复  group_id={group_id}  内容: {preview!r}")
+                    await self._run_on_bot_loop(
+                        self._api.send_group_text(int(group_id), msg.content)
+                    )
+                else:
+                    logger.info(f"[qq] 私聊回复  user_id={msg.chat_id}  内容: {preview!r}")
+                    await self._run_on_bot_loop(
+                        self._api.send_private_text(int(msg.chat_id), msg.content)
+                    )
+            except Exception as e:
+                logger.error(f"[qq] 发送失败  chat_id={msg.chat_id}  错误: {e}")
+        for image in (msg.media or []):
+            try:
+                await self.send_image(msg.chat_id, image)
+            except Exception as e:
+                logger.error(f"[qq] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
 
     # ── 主动推送（供 MessagePushTool 使用）────────────────────────────
 

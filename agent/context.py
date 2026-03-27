@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from agent.memes.catalog import MemeCatalog
 from agent.skills import SkillsLoader
 from prompts.agent import (
     build_agent_identity_prompt,
@@ -111,6 +112,20 @@ class SkillsSection:
         if not content:
             return None
         return f"# Active Skills\n\n{content}"
+
+
+class MemesSection:
+    priority = 65
+    label = "memes"
+
+    def __init__(self, catalog: MemeCatalog) -> None:
+        self._catalog = catalog
+
+    def render(self, ctx: TurnContext) -> str | None:
+        block = self._catalog.build_prompt_block()
+        if not block:
+            return None
+        return f"# Memes\n\n{block}"
 
 
 class SkillsCatalogSection:
@@ -228,6 +243,7 @@ class ContextBuilder:
                 SelfModelSection(),
                 SOPIndexSection(),
                 SkillsSection(),
+                MemesSection(MemeCatalog(workspace / "memes")),
                 SkillsCatalogSection(),
             ]
         )

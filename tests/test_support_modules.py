@@ -379,6 +379,11 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     (tmp_path / "sop").mkdir()
     (tmp_path / "sop" / "README.md").write_text("index", encoding="utf-8")
+    (tmp_path / "memes").mkdir()
+    (tmp_path / "memes" / "manifest.json").write_text(
+        '{"version":1,"categories":{"shy":{"desc":"害羞","enabled":true}}}',
+        encoding="utf-8",
+    )
     image = tmp_path / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
 
@@ -392,6 +397,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "retrieved" in prompt
     assert "memory block" in prompt
     assert "Nexus 自我认知" in prompt
+    assert "# Memes" in prompt
+    assert "<meme:shy>" in prompt
     assert "catalog:skill summary" in prompt
 
     messages = builder.build_messages(

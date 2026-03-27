@@ -14,6 +14,7 @@ class OutboundDispatch:
     content: str
     thinking: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    media: list[str] = field(default_factory=list)
 
 
 class OutboundPort(Protocol):
@@ -32,6 +33,7 @@ class BusOutboundPort:
                 content=outbound.content,
                 thinking=outbound.thinking,
                 metadata=dict(outbound.metadata or {}),
+                media=list(outbound.media or []),
             )
         )
         if inspect.isawaitable(maybe):

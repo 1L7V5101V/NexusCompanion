@@ -353,7 +353,13 @@ class TelegramChannel:
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
         if msg.thinking:
             await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
-        await send_markdown(self._app.bot, msg.chat_id, msg.content)
+        if msg.content.strip():
+            await send_markdown(self._app.bot, msg.chat_id, msg.content)
+        for image in (msg.media or []):
+            try:
+                await self.send_image(str(msg.chat_id), image)
+            except Exception as e:
+                logger.warning(f"[telegram] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
 
     async def _safe_send_typing(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int
