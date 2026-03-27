@@ -50,10 +50,11 @@ class _DummyRetriever:
 
 
 class _DummyMemorizer:
-    def __init__(self):
+    def __init__(self, store=None):
         self.save_item = AsyncMock(return_value="new:testid")
         self.supersede_batch = MagicMock()
         self.merge_item = AsyncMock()
+        self._store = store
 
 
 class _FixedDedupDecider:
@@ -168,7 +169,28 @@ def test_post_worker_saves_implicit_when_not_duplicate_to_explicit():
 
 
 def test_post_worker_deterministic_supersede_on_explicit_rule_conflict():
-    memorizer = _DummyMemorizer()
+    store = MagicMock()
+    store.get_items_by_ids.side_effect = lambda ids: [
+        {
+            "id": item_id,
+            "memory_type": "procedure",
+            "summary": "查 Steam 信息时必须直接使用 web_search，不能先用 steam MCP。",
+            "extra_json": {"tool_requirement": "web_search"},
+            "source_ref": "old@source",
+            "happened_at": None,
+        }
+        if item_id == "old-rule-1"
+        else {
+            "id": "testid",
+            "memory_type": "procedure",
+            "summary": "用户明确纠正 agent 的操作流程：查 Steam 信息时必须先使用 steam MCP，不能直接使用 web_search",
+            "extra_json": {"tool_requirement": "steam_mcp"},
+            "source_ref": "test@post_response",
+            "happened_at": None,
+        }
+        for item_id in ids
+    ]
+    memorizer = _DummyMemorizer(store=store)
     retriever = _DummyRetriever(
         [
             {
@@ -214,6 +236,11 @@ def test_post_worker_deterministic_supersede_on_explicit_rule_conflict():
 
     memorizer.supersede_batch.assert_called_once_with(["old-rule-1"])
     memorizer.save_item.assert_called_once()
+    store.record_replacements.assert_called_once()
+    record_call = store.record_replacements.call_args.kwargs
+    assert record_call["relation_type"] == "supersede"
+    assert record_call["old_items"][0]["id"] == "old-rule-1"
+    assert record_call["new_item"]["id"] == "testid"
 
 
 def test_build_procedure_rule_schema_prefers_explicit_rule_schema():
@@ -523,6 +550,77 @@ def test_dedup_none_with_delete_only_should_still_delete():
 
     memorizer.merge_item.assert_not_called()
     memorizer.supersede_batch.assert_called_once_with(["old-delete-target"])
+
+
+def test_dedup_create_records_replacement_snapshot():
+    store = MagicMock()
+    store.get_items_by_ids.side_effect = lambda ids: [
+        {
+            "id": item_id,
+            "memory_type": "procedure",
+            "summary": "Steam 查询废弃旧流程",
+            "extra_json": {"tool_requirement": "web_search"},
+            "source_ref": "old@source",
+            "happened_at": None,
+        }
+        if item_id == "old-delete-target"
+        else {
+            "id": "testid",
+            "memory_type": "procedure",
+            "summary": "新的 Steam 查询规则，必须先确认区服并使用 steam_mcp",
+            "extra_json": {"tool_requirement": "steam_mcp"},
+            "source_ref": "test@post_response",
+            "happened_at": None,
+        }
+        for item_id in ids
+    ]
+    memorizer = _DummyMemorizer(store=store)
+    dedup_result = DedupResult(
+        decision=DedupDecision.CREATE,
+        candidate_summary="新的 Steam 查询规则，必须先确认区服并使用 steam_mcp",
+        candidate_type="procedure",
+        similar_items=[
+            {"id": "old-delete-target", "summary": "Steam 查询废弃旧流程"},
+        ],
+        actions=[
+            ExistingAction(
+                item_id="old-delete-target",
+                summary="Steam 查询废弃旧流程",
+                action=MemoryAction.DELETE,
+                reason="fully obsolete",
+            ),
+        ],
+        reason="replace old flow",
+        query_vector=[1.0, 0.0],
+    )
+    worker = PostResponseMemoryWorker(
+        memorizer=cast(Any, memorizer),
+        retriever=cast(Any, _DummyRetriever([])),
+        light_provider=cast(Any, _DummyProvider()),
+        light_model="test",
+        dedup_decider=cast(Any, _FixedDedupDecider(dedup_result)),
+    )
+
+    asyncio.run(
+        worker._save_with_dedup(
+            {
+                "summary": "新的 Steam 查询规则，必须先确认区服并使用 steam_mcp",
+                "memory_type": "procedure",
+                "tool_requirement": "steam_mcp",
+                "steps": [],
+            },
+            "test@post_response",
+            protected_ids=None,
+            token_budget=256,
+            batch_vecs=[],
+        )
+    )
+
+    memorizer.supersede_batch.assert_called_once_with(["old-delete-target"])
+    store.record_replacements.assert_called_once()
+    record_call = store.record_replacements.call_args.kwargs
+    assert record_call["old_items"][0]["summary"] == "Steam 查询废弃旧流程"
+    assert record_call["new_item"]["summary"] == "新的 Steam 查询规则，必须先确认区服并使用 steam_mcp"
 
 
 def test_merge_item_should_keep_procedure_metadata_consistent():

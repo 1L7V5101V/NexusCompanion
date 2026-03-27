@@ -839,6 +839,7 @@ ASSISTANT: {agent_response}
                         if item_id not in supersede_ids:
                             supersede_ids.append(item_id)
                 if supersede_ids:
+                    old_items = self._get_store_items(supersede_ids)
                     self._memorizer.supersede_batch(supersede_ids)
                     if self._observe_writer is not None and self._current_run_session_key:
                         try:
@@ -851,8 +852,20 @@ ASSISTANT: {agent_response}
                             ))
                         except Exception:
                             pass
+                else:
+                    old_items = []
+            else:
+                old_items = []
+        else:
+            old_items = []
 
-        token_budget, _ = await self._save_item_direct(item, source_ref, token_budget)
+        token_budget, saved_id = await self._save_item_direct(item, source_ref, token_budget)
+        if old_items and saved_id:
+            self._record_replacements(
+                old_items=old_items,
+                new_item=self._get_store_item(saved_id),
+                source_ref=source_ref,
+            )
         return token_budget
 
     async def _save_with_dedup(
@@ -925,8 +938,15 @@ ASSISTANT: {agent_response}
                     await self._memorizer.merge_item(target.item_id, merged_summary)
                     logger.info("dedup merge into id=%s", target.item_id)
                     if delete_ids:
+                        old_items = self._get_store_items(delete_ids)
                         self._memorizer.supersede_batch(delete_ids)
                         logger.info("dedup delete(supersede) ids=%s", delete_ids)
+                        self._record_replacements(
+                            old_items=old_items,
+                            new_item=self._get_store_item(target.item_id),
+                            source_ref=source_ref,
+                            relation_type="merge",
+                        )
                 else:
                     # merge 失败：不删、不写候选，保持现状（信息无损）
                     logger.info(
@@ -940,11 +960,18 @@ ASSISTANT: {agent_response}
             return token_budget
 
         # CREATE → 先执行 delete，再写入新条目
+        old_items = self._get_store_items(delete_ids) if delete_ids else []
         if delete_ids:
             self._memorizer.supersede_batch(delete_ids)
             logger.info("dedup delete(supersede) ids=%s", delete_ids)
 
         token_budget, saved_id = await self._save_item_direct(item, source_ref, token_budget)
+        if old_items and saved_id:
+            self._record_replacements(
+                old_items=old_items,
+                new_item=self._get_store_item(saved_id),
+                source_ref=source_ref,
+            )
         if result.query_vector is not None and saved_id and batch_vecs is not None:
             batch_vecs.append((result.query_vector, {"id": saved_id, "summary": summary}))
 
@@ -1127,6 +1154,7 @@ ASSISTANT: {agent_response}
             logger.warning("profile supersede check failed: %s", e)
             return token_budget
         if supersede_ids:
+            old_items = self._get_store_items(supersede_ids)
             logger.info(
                 "post_response profile_supersede session=%s saved_id=%s supersede_ids=%s summary=%s",
                 self._current_run_session_key or "-",
@@ -1135,6 +1163,12 @@ ASSISTANT: {agent_response}
                 self._preview_text(fact.summary, 80),
             )
             self._memorizer.supersede_batch(supersede_ids)
+            if saved_id:
+                self._record_replacements(
+                    old_items=old_items,
+                    new_item=self._get_store_item(saved_id),
+                    source_ref=source_ref,
+                )
         return token_budget
 
     @staticmethod
@@ -1143,6 +1177,50 @@ ASSISTANT: {agent_response}
         if ":" not in text:
             return ""
         return text.split(":", 1)[1].strip()
+
+    def _get_store_item(self, item_id: str) -> dict | None:
+        store = getattr(self._memorizer, "_store", None)
+        if store is None or not item_id or not hasattr(store, "get_items_by_ids"):
+            return None
+        try:
+            rows = store.get_items_by_ids([item_id])
+        except Exception as e:
+            logger.warning("post_response get_store_item failed: %s", e)
+            return None
+        return rows[0] if rows else None
+
+    def _get_store_items(self, ids: list[str]) -> list[dict]:
+        store = getattr(self._memorizer, "_store", None)
+        if store is None or not ids or not hasattr(store, "get_items_by_ids"):
+            return []
+        try:
+            return store.get_items_by_ids(ids)
+        except Exception as e:
+            logger.warning("post_response get_store_items failed: %s", e)
+            return []
+
+    def _record_replacements(
+        self,
+        *,
+        old_items: list[dict],
+        new_item: dict | None,
+        source_ref: str,
+        relation_type: str = "supersede",
+    ) -> None:
+        if not old_items or not new_item:
+            return
+        store = getattr(self._memorizer, "_store", None)
+        if store is None or not hasattr(store, "record_replacements"):
+            return
+        try:
+            store.record_replacements(
+                old_items=old_items,
+                new_item=new_item,
+                source_ref=source_ref,
+                relation_type=relation_type,
+            )
+        except Exception as e:
+            logger.warning("post_response record_replacements failed: %s", e)
 
     async def _check_supersede(
         self,

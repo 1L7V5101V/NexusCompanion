@@ -197,4 +197,30 @@ async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: P
     results = store.vector_search([0.0, 1.0], top_k=2, memory_types=["event"])
     assert results and results[0]["memory_type"] == "event"
     assert store.list_by_type("event")
+    old_res = store.upsert_item(
+        "procedure",
+        "旧流程：查 Steam 时直接用 web_search",
+        [1.0, 0.0],
+        source_ref="old-rule",
+        extra={"tool_requirement": "web_search"},
+    )
+    new_res = store.upsert_item(
+        "procedure",
+        "新流程：查 Steam 时必须先用 steam_mcp",
+        [0.9, 0.1],
+        source_ref="new-rule",
+        extra={"tool_requirement": "steam_mcp"},
+    )
+    old_item = store.get_items_by_ids([old_res.split(":", 1)[1]])[0]
+    new_item = store.get_items_by_ids([new_res.split(":", 1)[1]])[0]
+    assert store.record_replacements(
+        old_items=[old_item],
+        new_item=new_item,
+        source_ref="test@replace",
+    ) == 1
+    replacements = store.list_replacements()
+    assert replacements[0]["old_summary"] == "旧流程：查 Steam 时直接用 web_search"
+    assert replacements[0]["new_summary"] == "新流程：查 Steam 时必须先用 steam_mcp"
+    assert replacements[0]["old_extra_json"]["tool_requirement"] == "web_search"
+    assert replacements[0]["new_extra_json"]["tool_requirement"] == "steam_mcp"
     store.close()

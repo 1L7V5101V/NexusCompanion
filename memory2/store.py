@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -14,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -37,6 +40,28 @@ CREATE TABLE IF NOT EXISTS consolidation_events (
     item_id     TEXT,
     created_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_replacements (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    old_item_id       TEXT NOT NULL,
+    old_memory_type   TEXT NOT NULL,
+    old_summary       TEXT NOT NULL,
+    old_source_ref    TEXT,
+    old_happened_at   TEXT,
+    old_extra_json    TEXT,
+    new_item_id       TEXT NOT NULL,
+    new_memory_type   TEXT NOT NULL,
+    new_summary       TEXT NOT NULL,
+    new_source_ref    TEXT,
+    new_happened_at   TEXT,
+    new_extra_json    TEXT,
+    relation_type     TEXT NOT NULL DEFAULT 'supersede',
+    source_ref        TEXT,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_memory_replacements_old_item
+    ON memory_replacements (old_item_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_memory_replacements_new_item
+    ON memory_replacements (new_item_id, created_at);
 """
 
 
@@ -264,6 +289,119 @@ class MemoryStore2:
             [(now, item_id) for item_id in ids],
         )
         self._db.commit()
+
+    def get_items_by_ids(self, ids: list[str]) -> list[dict]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        rows = self._db.execute(
+            "SELECT id, memory_type, summary, extra_json, source_ref, happened_at, "
+            "status, created_at, updated_at "
+            f"FROM memory_items WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        by_id: dict[str, dict] = {}
+        for (
+            row_id,
+            memory_type,
+            summary,
+            extra_json,
+            source_ref,
+            happened_at,
+            status,
+            created_at,
+            updated_at,
+        ) in rows:
+            by_id[str(row_id)] = {
+                "id": row_id,
+                "memory_type": memory_type,
+                "summary": summary,
+                "extra_json": json.loads(extra_json) if extra_json else {},
+                "source_ref": source_ref,
+                "happened_at": happened_at,
+                "status": status,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+        return [by_id[item_id] for item_id in ids if item_id in by_id]
+
+    def record_replacements(
+        self,
+        *,
+        old_items: list[dict],
+        new_item: dict,
+        source_ref: str | None = None,
+        relation_type: str = "supersede",
+    ) -> int:
+        if not old_items or not new_item or not new_item.get("id"):
+            return 0
+        now = _now_iso()
+        rows = []
+        for old_item in old_items:
+            if not old_item or not old_item.get("id"):
+                continue
+            rows.append(
+                (
+                    str(old_item.get("id")),
+                    str(old_item.get("memory_type") or ""),
+                    str(old_item.get("summary") or ""),
+                    old_item.get("source_ref"),
+                    old_item.get("happened_at"),
+                    json.dumps(old_item.get("extra_json") or {}, ensure_ascii=False),
+                    str(new_item.get("id")),
+                    str(new_item.get("memory_type") or ""),
+                    str(new_item.get("summary") or ""),
+                    new_item.get("source_ref"),
+                    new_item.get("happened_at"),
+                    json.dumps(new_item.get("extra_json") or {}, ensure_ascii=False),
+                    relation_type,
+                    source_ref or new_item.get("source_ref"),
+                    now,
+                )
+            )
+        if not rows:
+            return 0
+        self._db.executemany(
+            """INSERT INTO memory_replacements
+               (old_item_id, old_memory_type, old_summary, old_source_ref, old_happened_at,
+                old_extra_json, new_item_id, new_memory_type, new_summary, new_source_ref,
+                new_happened_at, new_extra_json, relation_type, source_ref, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+        self._db.commit()
+        return len(rows)
+
+    def list_replacements(self) -> list[dict]:
+        rows = self._db.execute(
+            "SELECT old_item_id, old_memory_type, old_summary, old_source_ref, "
+            "old_happened_at, old_extra_json, new_item_id, new_memory_type, "
+            "new_summary, new_source_ref, new_happened_at, new_extra_json, "
+            "relation_type, source_ref, created_at "
+            "FROM memory_replacements ORDER BY id ASC"
+        ).fetchall()
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "old_item_id": row[0],
+                    "old_memory_type": row[1],
+                    "old_summary": row[2],
+                    "old_source_ref": row[3],
+                    "old_happened_at": row[4],
+                    "old_extra_json": json.loads(row[5]) if row[5] else {},
+                    "new_item_id": row[6],
+                    "new_memory_type": row[7],
+                    "new_summary": row[8],
+                    "new_source_ref": row[9],
+                    "new_happened_at": row[10],
+                    "new_extra_json": json.loads(row[11]) if row[11] else {},
+                    "relation_type": row[12],
+                    "source_ref": row[13],
+                    "created_at": row[14],
+                }
+            )
+        return result
 
     def reinforce_items_batch(self, ids: list[str]) -> None:
         if not ids:

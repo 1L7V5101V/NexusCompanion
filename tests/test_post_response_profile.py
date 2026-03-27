@@ -22,9 +22,10 @@ class _DummyRetriever:
 
 
 class _DummyMemorizer:
-    def __init__(self):
+    def __init__(self, store=None):
         self.save_item = AsyncMock(return_value="new:testid")
         self.supersede_batch = MagicMock()
+        self._store = store
 
 
 def _fact(summary: str, category: str, happened_at: str | None = None) -> ProfileFact:
@@ -150,7 +151,28 @@ def test_worker_skips_profile_extraction_when_budget_exhausted():
 
 
 def test_status_fact_supersedes_stale_status_on_same_subject():
-    memorizer = _DummyMemorizer()
+    store = MagicMock()
+    store.get_items_by_ids.side_effect = lambda ids: [
+        {
+            "id": item_id,
+            "memory_type": "profile",
+            "summary": "用户正在等待键盘到货",
+            "extra_json": {"category": "status"},
+            "source_ref": "old@source",
+            "happened_at": None,
+        }
+        if item_id == "old-status"
+        else {
+            "id": "testid",
+            "memory_type": "profile",
+            "summary": "用户的键盘今天到了",
+            "extra_json": {"category": "status"},
+            "source_ref": "test@post_response",
+            "happened_at": None,
+        }
+        for item_id in ids
+    ]
+    memorizer = _DummyMemorizer(store=store)
     retriever = _DummyRetriever(
         [
             {
@@ -179,6 +201,10 @@ def test_status_fact_supersedes_stale_status_on_same_subject():
     )
 
     memorizer.supersede_batch.assert_called_once_with(["old-status"])
+    store.record_replacements.assert_called_once()
+    record_call = store.record_replacements.call_args.kwargs
+    assert record_call["old_items"][0]["id"] == "old-status"
+    assert record_call["new_item"]["id"] == "testid"
 
 
 def test_different_category_profile_not_superseded():
