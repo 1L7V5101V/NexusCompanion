@@ -185,3 +185,103 @@ async def test_extract_from_exchange_includes_both_user_and_agent_in_prompt():
     assert captured
     assert "我刚买了一个新键盘" in captured[0]
     assert "记住了" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# USER-first 证据源规则 — prompt 结构验证
+# ---------------------------------------------------------------------------
+
+
+def _capture_prompt(method_name: str = "extract") -> tuple["ProfileFactExtractor", list[str]]:
+    """返回一个会记录 prompt 的 extractor 和 captured 列表。"""
+    client = MagicMock()
+    captured: list[str] = []
+
+    async def _cap(*, messages, **kwargs):
+        captured.append(messages[0]["content"])
+        return "<facts></facts>"
+
+    client.chat = AsyncMock(side_effect=_cap)
+    return ProfileFactExtractor(llm_client=client), captured
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_includes_user_first_evidence_rule():
+    """_build_prompt() 必须包含 USER-first 证据源声明。"""
+    extractor, captured = _capture_prompt()
+    await extractor.extract("测试对话内容")
+    assert captured
+    assert "证据源规则" in captured[0]
+    assert "ASSISTANT" in captured[0]
+    assert "只有 USER 原话中明确陈述的事实才允许提取" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_forbids_engineering_process():
+    """_build_prompt() 必须禁止把工程操作提取为 profile。"""
+    extractor, captured = _capture_prompt()
+    await extractor.extract("测试对话内容")
+    assert captured
+    assert "工程操作" in captured[0]
+    assert "安装依赖" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_build_exchange_prompt_assistant_not_evidence():
+    """_build_exchange_prompt() 必须声明 ASSISTANT 内容不作为证据。"""
+    extractor, captured = _capture_prompt()
+    await extractor.extract_from_exchange("用户消息", "assistant 回复")
+    assert captured
+    assert "ASSISTANT" in captured[0]
+    # 单轮 prompt 里的 ASSISTANT 不作为证据说明
+    assert any(
+        kw in captured[0]
+        for kw in ["不算用户陈述", "不得提取", "不能作为"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_exchange_prompt_forbids_engineering_status():
+    """_build_exchange_prompt() 必须禁止把工程操作写成 status。"""
+    extractor, captured = _capture_prompt()
+    await extractor.extract_from_exchange("用户消息", "assistant 回复")
+    assert captured
+    assert "工程操作" in captured[0] or "安装" in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# PE1 — ASSISTANT 复述不产生幻觉 purchase profile（合成对话）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_assistant_restatement_as_purchase():
+    """ASSISTANT 复述了购买事实，但 USER 只是提问，不应提取为 purchase。
+
+    模拟 f4de91df8d02 类型污染：LLM 被告知 USER-first 规则后，应返回空列表。
+    """
+    # 合成对话：USER 只是记忆测试提问，ASSISTANT 复述了购买事实
+    conversation = (
+        "USER: 你还记得我之前买的那个鼠标吗？\n"
+        "ASSISTANT: 你之前买了一款罗技 MX Master 3 鼠标。"
+    )
+    # mock LLM 正确遵从 USER-first 规则，返回空
+    extractor = _make_extractor("<facts></facts>")
+    facts = await extractor.extract(conversation)
+    purchase_facts = [f for f in facts if f.category == "purchase"]
+    assert not purchase_facts
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_engineering_operations_as_profile():
+    """工程操作（升级工具、安装依赖）不应被提取为 profile。
+
+    模拟 d6ab2c80fc4a 类型污染：LLM 遵从规则后应返回空列表。
+    """
+    conversation = (
+        "USER: 我刚把 node 版本升到了 22，顺便装了一下 pnpm，配置文件也更新了。\n"
+        "ASSISTANT: 好的，已记录。"
+    )
+    extractor = _make_extractor("<facts></facts>")
+    facts = await extractor.extract(conversation)
+    assert facts == [], f"不应提取工程操作为 profile，但得到: {facts}"

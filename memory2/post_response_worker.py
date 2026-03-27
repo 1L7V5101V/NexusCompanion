@@ -464,62 +464,11 @@ class PostResponseMemoryWorker:
             lines = "\n".join(f"- {s}" for s in already_memorized if s)
             exclusion_block = f"\n\n【本轮已显式记录，不要重复提取】\n{lines}"
 
-        prompt = f"""你是记忆提取专家。从对话中提取对 agent 有长期价值的记忆条目。
-
-默认答案是 []。只有通过以下三步检查，才写入一条条目。
-
-【步骤一：引用 USER 原话】
-提取任何条目前，先在脑中写出引用：USER 说了哪句话支撑这条记忆？
-- 无法在 USER 原话中找到直接支撑句 → 不提取，返回 []
-- ASSISTANT 的回复只是背景，不能作为证据；即使 ASSISTANT 描述了正确的流程或规则，只要 USER 没有说出对应要求，就不能提取
-
-【步骤二：判断主体与类型】
-此步骤只输出 procedure 或 preference，不输出 event（event 由其他模块负责）。
-
-类型判断（二选一，不要混用）：
-
-问题 A：这条规则是否在说"agent 做某类事情时应该怎么做"？
-  （讲解方式、调查方式、回复风格、工具使用、操作流程）
-  是 → procedure
-  例："查资料时别只看 GitHub" / "讲流程时不能省略前置步骤" / "简单问题直接回答"
-
-问题 B：这条规则是否在说"用户喜欢或厌恶某类内容本身"？
-  （作品、题材、游戏、音乐、技术框架、信息来源的个人喜好）
-  是 → preference（必须有"以后""下次""不要再""别再"等未来约束词或稳定喜好信号）
-  例："用户讨厌恐怖游戏" / "用户不喜欢某作者" / "以后别推荐 X 框架"
-
-两个问题都不是，或只是一次性感受/感悟 → 不提取
-✗ 主体是外部系统、技术协议、算法 → 不提取
-
-【步骤三：泛化检查】
-summary 中不得出现任何具体实体名称（项目名、产品名、平台名、人名）：
-- 将 summary 中所有具体实体名替换成"某X"，若规则失去意义 → 无法泛化，不提取
-- 若规则仍然成立 → 按泛化后的无实体名形式写入
-
-【输出要求】
-- 返回 [] 是正常且正确的结果，绝大多数对话应返回 []
-- 每条条目独立通过三步检查；不要为了凑数写第二条
-- summary 以客观规则形式书写（如"遇到简单概念类问题时应直接回答""调查时应参考多方来源"），
-  不得以 agent 第一人称表达（"以后我会...""以后简单问题就直接答"这类均不合格）
-- summary 语气不得强于 USER 原话；不要把"单次评价"升级成"长期禁令"
-- 已显式记录的内容不要重复提取{exclusion_block}
-
-【对话内容】
-USER: {user_msg}
-ASSISTANT: {agent_response}
-
-只返回合法 JSON 数组，无内容时返回 []。
-每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
-
-【tool_requirement 填写规则】
-- 若该条目要求 agent 在某类请求下必须调用特定工具/skill，填写工具关键名称；否则填 null
-
-【rule_schema 填写规则】
-- 仅对 procedure 填写；preference 可省略或填空对象
-- required_tools：用户明确要求必须使用的工具
-- forbidden_tools：用户明确禁止的工具
-- mentioned_tools：规则涉及的工具别名
-- 无法确认的约束留空，不要猜"""
+        prompt = self._build_implicit_prompt(
+            user_msg=user_msg,
+            agent_response=agent_response,
+            exclusion_block=exclusion_block,
+        )
 
         ok, token_budget = self._consume_budget(
             token_budget,
@@ -553,6 +502,10 @@ ASSISTANT: {agent_response}
                     for r in result
                     if isinstance(r, dict) and r.get("summary")
                 ]
+                llm_items = [
+                    item for item in llm_items
+                    if not PostResponseMemoryWorker._should_drop_by_heuristic(item)
+                ]
                 items = self._merge_extracted_items(fallback_items, llm_items)
                 log_fn = logger.info if items else logger.debug
                 log_fn(
@@ -568,6 +521,116 @@ ASSISTANT: {agent_response}
         except Exception as e:
             logger.warning(f"post_response_memorize extract failed: {e}")
         return fallback_items, token_budget
+
+    @staticmethod
+    def _build_implicit_prompt(
+        *,
+        user_msg: str,
+        agent_response: str,
+        exclusion_block: str = "",
+    ) -> str:
+        return f"""你是记忆提取专家。请先按四类记忆做判断，再决定是否输出。
+
+默认答案是 []。宁可少写，也不要把局部上下文误写成长期记忆。
+
+【第一步：先引用 USER 原话】
+提取任何条目前，先在脑中写出引用：USER 到底说了哪句话支撑这条记忆？
+- 无法在 USER 原话中找到直接支撑句 → 不提取，返回 []
+- ASSISTANT 的回复只是背景，不能作为证据
+- 即使 ASSISTANT 讲了正确流程或知识，只要 USER 没明确表达对应要求，就不能提取
+
+【第二步：先分四类，不要直接输出】
+你必须先在脑中把候选内容归入以下四类之一：
+
+1. procedure
+- 定义：agent 在未来类似场景下必须遵守的长期执行规则
+- 特征：稳定、可复用、跨任务成立、明确面向 agent 行为
+- 例子："以后查 Steam 必须先走 steam MCP"
+
+2. preference
+- 定义：用户长期偏好的内容、风格，以及对 assistant 行为的长期倾向要求
+- 特征：偏好/厌恶/倾向，而不是硬流程
+- 例子："简单问题希望直接回答" / "不喜欢恐怖游戏"
+
+3. event
+- 定义：发生过的具体事情、决策、里程碑、当前任务过程
+- 特征：有时间性、情境性
+- 例子："今天把 readfile 工具修好了" / "决定把主动机制改成插件化"
+- 注意：event 由其他模块处理，这里绝对不要输出
+
+4. profile
+- 定义：用户自身长期稳定的身份、背景、持有物、关系、长期状态
+- 特征：描述“用户是谁 / 长期拥有什么”
+- 例子："用户购买了某鼠标" / "用户是后端方向学生"
+- 注意：profile 由其他模块处理，这里绝对不要输出
+
+如果内容更像：
+- 技术知识点
+- assistant 刚讲出来的概念解释
+- 当前任务的局部策略
+- 一次性补救办法
+- 原话碎片、语义不完整的短句
+→ 直接丢弃，返回 []。
+
+【第三步：只有两类允许输出】
+本模块只允许输出：
+- procedure
+- preference
+
+如果你判断为：
+- event
+- profile
+- 纯知识点
+- 当前任务局部上下文
+- 一次性纠错 / 一次性抱怨
+→ 都必须返回 []，不要硬转成 procedure / preference。
+
+【procedure 和 preference 的边界】
+优先把“用户对 assistant 的长期行为偏好”记为 preference，而不是 procedure。
+
+只有同时满足下面条件，才允许输出 procedure：
+- 明确在说 agent 以后应该怎么做
+- 这条规则跨任务复用，而不是只针对当前项目 / 当前 skill
+- 不是知识点，不是概念解释
+- 不是一句缺上下文的原话残片
+
+更适合记为 preference 的情况：
+- 用户偏好的回答风格
+- 用户偏好的信息密度
+- 用户偏好的工具使用倾向
+- 用户对 assistant 行为的长期偏好，但不是硬约束
+
+【额外防错规则】
+- 不要把用户对 A 的厌恶，迁移成对 B 的厌恶
+- 不要把“别在这个话题里乱比喻”升级成“用户厌恶该对象本身”
+- 不要把技术知识点写成 procedure
+- 不要把当前项目讨论中的观点写成全局长期规则
+- 不要把单次测试里的补救办法写成长期规则
+
+【summary 要求】
+- summary 必须脱离原对话也能独立成立
+- summary 必须是完整句，不能只是原话碎片
+- summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令
+- procedure 用客观规则句式
+- preference 用稳定偏好句式
+- 已显式记录的内容不要重复提取{exclusion_block}
+
+【对话内容】
+USER: {user_msg}
+ASSISTANT: {agent_response}
+
+只返回合法 JSON 数组，无内容时返回 []。
+每项格式：{{"summary": "...", "memory_type": "procedure|preference", "tool_requirement": null或"工具名", "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
+
+【tool_requirement 填写规则】
+- 若该条目要求 agent 在某类请求下必须调用特定工具/skill，填写工具关键名称；否则填 null
+
+【rule_schema 填写规则】
+- 仅对 procedure 填写；preference 可省略或填空对象
+- required_tools：用户明确要求必须使用的工具
+- forbidden_tools：用户明确禁止的工具
+- mentioned_tools：规则涉及的工具别名
+- 无法确认的约束留空，不要猜"""
 
     @staticmethod
     def _merge_extracted_items(
@@ -591,6 +654,29 @@ ASSISTANT: {agent_response}
         return merged
 
     @staticmethod
+    def _should_drop_by_heuristic(item: dict) -> bool:
+        """确定性后置过滤：兜底拦截 LLM 可能漏掉的知识点句式和碎片。
+
+        作用域：只针对高置信度信号，不应误伤正常 procedure/preference。
+        R3/R4（技术知识点）的主要防线；R1/R5/R6/R7 的防线在 prompt 层。
+        """
+        summary = str(item.get("summary", "") or "").strip()
+        if len(summary) <= 2:
+            return True
+        if item.get("memory_type") == "procedure":
+            _KNOWLEDGE_SIGNALS = (
+                "是指", "即为", "原理是", "的概念是",
+                "协议规定", "定义为", "实现原理",
+            )
+            if any(s in summary for s in _KNOWLEDGE_SIGNALS):
+                return True
+            # 架构/设计讨论：同时出现 2+ 个信号时判定为项目设计讨论而非 agent 执行规则
+            _ARCH_SIGNALS = ("在设计", "应采用", "架构时", "设计模式", "架构上应")
+            if sum(1 for s in _ARCH_SIGNALS if s in summary) >= 2:
+                return True
+        return False
+
+    @staticmethod
     def _normalize_extracted_item(item: dict) -> dict:
         normalized = dict(item)
         normalized["memory_type"] = PostResponseMemoryWorker._coerce_memory_type(
@@ -598,9 +684,15 @@ ASSISTANT: {agent_response}
             normalized.get("tool_requirement"),
             normalized.get("steps"),
         )
+        summary = str(normalized.get("summary", "") or "")
+        if (
+            normalized.get("memory_type") == "procedure"
+            and PostResponseMemoryWorker._extract_obvious_preferences(summary)
+        ):
+            normalized["memory_type"] = "preference"
         if normalized.get("memory_type") == "procedure":
             normalized["rule_schema"] = build_procedure_rule_schema(
-                summary=str(normalized.get("summary", "") or ""),
+                summary=summary,
                 tool_requirement=normalized.get("tool_requirement"),
                 steps=normalized.get("steps") or [],
                 rule_schema=normalized.get("rule_schema"),

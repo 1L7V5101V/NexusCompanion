@@ -669,7 +669,78 @@ def test_extract_implicit_prompt_is_conservative_for_preference_upgrade():
 
     assert items == []
     assert remain == 0
-    assert "宁可少写，也不要过度解读" in provider.last_prompt
-    assert "USER 只表达单次差评 → 不能写成" in provider.last_prompt
-    assert "summary 中出现的作品名、题材、作者、来源，必须能在 USER 原话中找到" in provider.last_prompt
-    assert "没有明确未来约束词，就不要自动补出未来禁令" in provider.last_prompt
+    assert "宁可少写，也不要把局部上下文误写成长期记忆" in provider.last_prompt
+    assert "不要把用户对 A 的厌恶，迁移成对 B 的厌恶" in provider.last_prompt
+    assert "不要把\u201c别在这个话题里乱比喻\u201d升级成\u201c用户厌恶该对象本身\u201d" in provider.last_prompt
+    assert "summary 语气不得强于 USER 原话，不要把单次评价升级成长期禁令" in provider.last_prompt
+
+
+def test_build_implicit_prompt_uses_four_memory_classes():
+    prompt = PostResponseMemoryWorker._build_implicit_prompt(
+        user_msg="这个任务你不该派给他的 你做一下简单研究就能回答的",
+        agent_response="好的，我下次会注意。",
+    )
+
+    assert '1. procedure' in prompt
+    assert '2. preference' in prompt
+    assert '3. event' in prompt
+    assert '4. profile' in prompt
+    assert 'event 由其他模块处理，这里绝对不要输出' in prompt
+    assert 'profile 由其他模块处理，这里绝对不要输出' in prompt
+    assert '优先把\u201c用户对 assistant 的长期行为偏好\u201d记为 preference' in prompt
+    assert '不要把技术知识点写成 procedure' in prompt
+    assert '不要把当前项目讨论中的观点写成全局长期规则' in prompt
+
+
+# ---------------------------------------------------------------------------
+# _should_drop_by_heuristic 单测
+# ---------------------------------------------------------------------------
+
+
+def test_heuristic_drops_too_short_summary():
+    # 2 个字符或以下属于碎片
+    assert PostResponseMemoryWorker._should_drop_by_heuristic({"summary": "短", "memory_type": "procedure"}) is True
+    assert PostResponseMemoryWorker._should_drop_by_heuristic({"summary": "ok", "memory_type": "procedure"}) is True
+    assert PostResponseMemoryWorker._should_drop_by_heuristic({"summary": "", "memory_type": "procedure"}) is True
+
+
+def test_heuristic_drops_knowledge_point_procedure_with_signal():
+    signals = ["是指", "即为", "原理是", "的概念是", "协议规定", "定义为", "实现原理"]
+    for signal in signals:
+        item = {"summary": f"TCP 三次握手{signal}建立连接的过程", "memory_type": "procedure"}
+        assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is True, signal
+
+
+def test_heuristic_keeps_normal_procedure():
+    item = {"summary": "查询 Steam 游戏信息时必须先走 steam MCP，不能直接网页搜索", "memory_type": "procedure"}
+    assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is False
+
+
+def test_heuristic_keeps_preference_even_with_knowledge_signal():
+    # 知识点信号只过滤 procedure，不过滤 preference
+    item = {"summary": "用户偏好直接回答，不需要知识点原理铺垫", "memory_type": "preference"}
+    assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is False
+
+
+def test_heuristic_keeps_empty_type_as_default_procedure_passthrough():
+    # type 缺失时视为 procedure，但 summary 正常则不 drop
+    item = {"summary": "以后提醒用户先备份再操作", "memory_type": "procedure"}
+    assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is False
+
+
+def test_heuristic_drops_architecture_discussion_with_two_signals():
+    # 同时出现 2+ 个架构讨论信号 → drop
+    item = {
+        "summary": "未来在设计主动推送架构时，应采用插件化模式，由每个 channel 注册 tick handler",
+        "memory_type": "procedure",
+    }
+    assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is True
+
+
+def test_heuristic_keeps_procedure_with_only_one_arch_signal():
+    # 只有一个架构信号，不 drop（避免误伤）
+    item = {
+        "summary": "查询工具时应采用 tool_search 先搜索再调用",
+        "memory_type": "procedure",
+    }
+    assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is False
