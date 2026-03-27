@@ -3,6 +3,7 @@ import json
 import pytest
 
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
+from session.manager import SessionManager
 from session.store import SessionStore
 
 
@@ -152,3 +153,18 @@ async def test_search_messages_empty_query_returns_empty(tmp_path):
     tool = SearchMessagesTool(store)
     payload = json.loads(await tool.execute(query="   "))
     assert payload == {"count": 0, "matched_count": 0, "messages": []}
+
+
+def test_next_seq_after_seq_zero_should_return_one(tmp_path):
+    manager = SessionManager(tmp_path)
+    session = manager.get_or_create("cli:test")
+    session.messages = [
+        {
+            "role": "assistant",
+            "content": "prev",
+            "timestamp": "2026-03-27T22:04:06+08:00",
+        }
+    ]
+    manager.save(session)
+
+    assert manager._store.next_seq("cli:test") == 1

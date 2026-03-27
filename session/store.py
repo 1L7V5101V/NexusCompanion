@@ -203,7 +203,10 @@ class SessionStore:
                 "SELECT COALESCE(MAX(seq), -1) AS m FROM messages WHERE session_key = ?",
                 (session_key,),
             ).fetchone()
-        return int((row["m"] if row else -1) or -1) + 1
+        max_seq = row["m"] if row is not None else -1
+        if max_seq is None:
+            max_seq = -1
+        return int(max_seq) + 1
 
     def insert_message(
         self,
