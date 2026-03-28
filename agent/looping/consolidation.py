@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -118,6 +119,14 @@ def _format_conversation_for_consolidation(old_messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _select_recent_history_entries(history_text: str, *, limit: int = 3) -> list[str]:
+    if not history_text.strip() or limit <= 0:
+        return []
+    chunks = re.split(r"\n\s*\n+", history_text.strip())
+    entries = [chunk.strip() for chunk in chunks if chunk.strip()]
+    return entries[-limit:]
+
+
 class ConsolidationService:
     def __init__(
         self,
@@ -220,6 +229,13 @@ class ConsolidationService:
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
+        recent_history_entries = _select_recent_history_entries(
+            await asyncio.to_thread(memory.read_history, 16000),
+            limit=3,
+        )
+        recent_history_block = "\n".join(
+            f"- {entry}" for entry in recent_history_entries
+        )
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
 
@@ -233,6 +249,26 @@ class ConsolidationService:
 1. 只提取 USER 明确表达的行动、经历、计划和状态；ASSISTANT 的建议、推荐、解释一律不写入，即使其中提到了地名、店名或活动。
 2. 每条必须是简洁的第三人称摘要句，绝对不能包含 "USER:" 或 "ASSISTANT:" 等原始对话标记，不得复制粘贴原始对话文本。
 3. 商家名称、地点、人名、数量、价格、型号等具体细节必须保留，不得用"某商店""某地方"概括。
+4. 先判断当前 USER 内容的材料类型：是“用户此刻直接自述”，还是“用户正在展示一段外部聊天记录、截图 OCR、转贴 transcript 给助手看”。
+5. 若 USER 内容属于外部聊天记录 / transcript，必须先做层级理解：
+   - 外层：当前 USER 正在把一段材料发给助手看。
+   - 内层：材料中可能有多个 speaker；这些 speaker 不自动等于当前 USER。
+   - 只有当材料中某个 speaker 与当前 USER 的映射在当前会话里被明确确认时，才允许把该 speaker 的事实写入摘要。
+6. 对 transcript 场景，默认认为 speaker 映射不明确；除非当前会话中有非常明确的显式说明，否则不要尝试判断材料里的某个昵称/说话人就是用户或对方。
+7. 若 speaker 映射不明确，history_entries 只允许写 1 条高层 event，例如“用户向助手展示了一段与某人的聊天记录，内容涉及求职、学校、兴趣等话题”。
+8. 对 transcript 场景，禁止输出任何未确认关系的句子，例如：
+   - “用户向对方透露……”
+   - “对方是……”
+   - “双方确认……”
+   - 把聊天记录里的具体事实直接写成用户个人经历
+9. transcript 场景下，默认最多输出 1 条高层 history_entry；不要下钻成人物小传，不要替材料里的 speaker 自动补全身份关系，不要写任何昵称归属、学校归属、出生年份归属、爱好归属。
+
+**transcript 场景示例（严格遵守）**：
+- 错误：用户贴出一段聊天记录，speaker 归属未确认，却写成“用户向对方透露自己正在找暑期实习”。
+- 错误：用户贴出一段聊天记录，直接写成“对方位于北京大兴区，就读于二外 MPAcc 专业”。
+- 错误：用户贴出一段聊天记录，直接写成“对方昵称为‘一只快乐的小奶龙’”。
+- 错误：用户贴出一段聊天记录，直接写成“用户曾为打 FGO 日服选修日语”。
+- 正确：用户向助手展示了一段与匹配对象的聊天记录，聊天内容涉及学校背景、兴趣爱好和求职话题。
 
 ### 2. "pending_items" → PENDING.md 候选缓冲
 只写用户的长期记忆候选，返回对象数组。每个对象格式：
@@ -261,6 +297,14 @@ class ConsolidationService:
 
 ## 当前用户档案（用于查重）
 {current_memory or "（空）"}
+
+## 最近三次 consolidation event（仅用于主题延续参考）
+使用原则（严格遵守）：
+- 这些旧 event 只能帮助你理解“当前窗口大概在延续什么话题”，不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据。
+- 若旧 event 与当前窗口原文在昵称、身份、关系、事实归属上存在冲突或不一致，必须以当前窗口原文为准。
+- 不要因为旧 event 里出现了某个昵称、人设或关系描述，就在新的 history_entries 中继续沿用这些判断。
+- 对 transcript / 聊天截图 / 转贴聊天场景，旧 event 绝不能用于推断“谁是当前用户、谁是对方、哪句话归谁”。
+{recent_history_block or "（空）"},
 
 ## 待处理对话
 {conversation}
