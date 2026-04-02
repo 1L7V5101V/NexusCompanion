@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 SpawnDecisionSource = Literal["heuristic", "llm", "manual_rule"]
@@ -12,6 +12,8 @@ SpawnDecisionReasonCode = Literal[
     "stay_inline",
     "fallback_inline",
 ]
+
+_MAX_CONCURRENT_SPAWNS = 3
 
 
 @dataclass(frozen=True)
@@ -26,13 +28,30 @@ class SpawnDecision:
     should_spawn: bool
     label: str
     meta: SpawnDecisionMeta
+    block_reason: str = ""
 
 
 class DelegationPolicy:
-    """Traceability-only policy: the LLM decides when to spawn, this just records metadata."""
+    """Gate policy: enforces concurrent spawn limit; otherwise defers to LLM guidance."""
 
-    def decide(self, *, task: str, label: str | None = None) -> SpawnDecision:
+    def decide(
+        self, *, task: str, label: str | None = None, running_count: int = 0
+    ) -> SpawnDecision:
         normalized_label = (label or (task or "")[:30] or "").strip()
+        if running_count >= _MAX_CONCURRENT_SPAWNS:
+            return SpawnDecision(
+                should_spawn=False,
+                label=normalized_label,
+                block_reason=(
+                    f"已有 {running_count} 个并发子任务在运行，上限 {_MAX_CONCURRENT_SPAWNS}，"
+                    "请等待当前任务完成后再试"
+                ),
+                meta=SpawnDecisionMeta(
+                    source="heuristic",
+                    confidence="high",
+                    reason_code="stay_inline",
+                ),
+            )
         return SpawnDecision(
             should_spawn=True,
             label=normalized_label,

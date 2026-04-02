@@ -21,6 +21,8 @@ class SpawnCompletionEvent:
     status: str
     exit_reason: str
     result: str
+    retry_count: int = 0
+    profile: str = ""
 
 
 def make_spawn_completion_message(
@@ -61,6 +63,8 @@ def parse_spawn_completion(msg: InboundMessage) -> SpawnCompletionEvent:
         status=str(payload.get("status", "") or ""),
         exit_reason=str(payload.get("exit_reason", "") or ""),
         result=str(payload.get("result", "") or ""),
+        retry_count=int(payload.get("retry_count", 0) or 0),
+        profile=str(payload.get("profile", "") or ""),
     )
 
 

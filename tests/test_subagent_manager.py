@@ -80,7 +80,7 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
             return "已完成检索，剩余整理，下一步继续"
 
     manager._build_subagent = (
-        lambda *, task_dir: _FakeSubAgent()
+        lambda *, task_dir, profile="research": _FakeSubAgent()
     )  # type: ignore[assignment]
 
     await manager.spawn(
@@ -122,3 +122,37 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
     assert started["trace_type"] == "spawn"
     assert started["subject"]["kind"] == "job"
     assert completed["payload"]["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_spawn_sync_uses_shorter_iteration_budget(tmp_path):
+    bus = MessageBus()
+    manager = SubagentManager(
+        provider=cast(Any, _Provider()),
+        workspace=tmp_path,
+        bus=bus,
+        model="m",
+        max_tokens=256,
+        fetch_requester=object(),  # type: ignore[arg-type]
+    )
+    observed: dict[str, object] = {}
+
+    class _FakeSubAgent:
+        last_exit_reason = "completed"
+
+        async def run(self, task: str) -> str:
+            return "ok"
+
+    def _fake_build_subagent(*, task_dir, profile="research", max_iterations=50):
+        observed["task_dir"] = task_dir
+        observed["profile"] = profile
+        observed["max_iterations"] = max_iterations
+        return _FakeSubAgent()
+
+    manager._build_subagent = _fake_build_subagent  # type: ignore[assignment]
+
+    result = await manager.spawn_sync(task="research this", label="job")
+
+    assert "退出原因: completed" in result
+    assert observed["profile"] == "research"
+    assert observed["max_iterations"] == 10

@@ -13,7 +13,11 @@ from agent.background.runtime import (
 from agent.policies.delegation import SpawnDecision
 from agent.provider import LLMProvider
 from agent.subagent import SubAgent
-from agent.background.subagent_profiles import SubagentRuntime, build_spawn_spec
+from agent.background.subagent_profiles import (
+    PROFILE_RESEARCH,
+    SubagentRuntime,
+    build_spawn_spec,
+)
 from bus.internal_events import (
     SpawnCompletionEvent,
     make_spawn_completion_message,
@@ -27,7 +31,9 @@ from prompts.background import build_spawn_subagent_prompt
 logger = logging.getLogger(__name__)
 
 _RESULT_MAX_CHARS = 12_000
+_SYNC_RESULT_MAX_CHARS = 100_000
 _SPAWN_MAX_ITERATIONS = 50
+_SYNC_MAX_ITERATIONS = 10
 
 
 class SubagentManager:
@@ -65,6 +71,57 @@ class SubagentManager:
         task_dir.mkdir(parents=True, exist_ok=True)
         return task_dir
 
+    async def spawn_sync(
+        self,
+        *,
+        task: str,
+        label: str | None,
+        profile: str = PROFILE_RESEARCH,
+    ) -> str:
+        """同步执行 subagent，阻塞当前 turn 直到完成，结果作为 tool result 直接返回。
+
+        适合：调研后需要立即回复用户的任务，预计 ≤ 10 次工具调用。
+        """
+        job_id = uuid.uuid4().hex[:8]
+        display_label = (label or task[:30] or job_id).strip()
+        task_dir = self._job_task_dir(job_id)
+
+        logger.info(
+            "[spawn_sync] started job_id=%s label=%r profile=%s",
+            job_id,
+            display_label,
+            profile,
+        )
+
+        subagent = self._build_subagent(
+            task_dir=task_dir,
+            profile=profile,
+            max_iterations=_SYNC_MAX_ITERATIONS,
+        )
+        try:
+            result = await subagent.run(task)
+            exit_reason = getattr(subagent, "last_exit_reason", None) or "completed"
+        except Exception as e:
+            logger.exception("[spawn_sync] subagent failed job_id=%s err=%s", job_id, e)
+            result = f"执行出错：{e}"
+            exit_reason = "error"
+
+        truncated = result
+        if len(truncated) > _SYNC_RESULT_MAX_CHARS:
+            original_len = len(truncated)
+            truncated = (
+                truncated[:_SYNC_RESULT_MAX_CHARS]
+                + f"\n...[结果已截断，原始长度 {original_len}]"
+            )
+
+        logger.info(
+            "[spawn_sync] completed job_id=%s exit_reason=%s result_len=%d",
+            job_id,
+            exit_reason,
+            len(truncated),
+        )
+        return f"[子任务「{display_label}」结果]\n退出原因: {exit_reason}\n\n{truncated}"
+
     async def spawn(
         self,
         *,
@@ -73,6 +130,8 @@ class SubagentManager:
         origin_channel: str,
         origin_chat_id: str,
         decision: SpawnDecision | None = None,
+        profile: str = PROFILE_RESEARCH,
+        retry_count: int = 0,
     ) -> str:
         """创建后台 subagent 任务，并立即把控制权还给主 agent。"""
         job_id = uuid.uuid4().hex[:8]
@@ -87,6 +146,8 @@ class SubagentManager:
                 "task_dir": str(task_dir),
                 "origin_channel": origin_channel,
                 "origin_chat_id": origin_chat_id,
+                "profile": profile,
+                "retry_count": retry_count,
                 "decision": _decision_payload(decision),
             },
         )
@@ -100,6 +161,8 @@ class SubagentManager:
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
                 decision=decision,
+                profile=profile,
+                retry_count=retry_count,
             ),
             name=f"spawn:{job_id}",
         )
@@ -107,9 +170,11 @@ class SubagentManager:
         self._running_tasks[job_id] = bg_task
         bg_task.add_done_callback(lambda _: self._running_tasks.pop(job_id, None))
         logger.info(
-            "[spawn] started job_id=%s label=%r origin=%s:%s reason=%s confidence=%s",
+            "[spawn] started job_id=%s label=%r profile=%s retry_count=%d origin=%s:%s reason=%s confidence=%s",
             job_id,
             display_label,
+            profile,
+            retry_count,
             origin_channel,
             origin_chat_id,
             decision.meta.reason_code if decision is not None else "-",
@@ -133,10 +198,12 @@ class SubagentManager:
         origin_channel: str,
         origin_chat_id: str,
         decision: SpawnDecision | None,
+        profile: str = PROFILE_RESEARCH,
+        retry_count: int = 0,
     ) -> None:
         """运行后台 subagent，并把统一结果协议回灌给主 agent。"""
         job_runner = AgentBackgroundJobRunner(
-            lambda: self._build_subagent(task_dir=task_dir)
+            lambda: self._build_subagent(task_dir=task_dir, profile=profile)
         )
         # 1. 先按统一 background job spec 执行 subagent，本层不直接碰 loop 细节。
         result = await job_runner.run(
@@ -165,8 +232,10 @@ class SubagentManager:
             exit_reason=result.exit_reason,
             result=result.result_summary,
             decision=decision,
+            profile=profile,
+            retry_count=retry_count,
         )
-        # 3. 最后补 completion trace，方便排查“为什么这个后台任务结束了”。
+        # 3. 最后补 completion trace，方便排查"为什么这个后台任务结束了"。
         self._append_spawn_trace(
             job_id=job_id,
             payload={
@@ -179,22 +248,31 @@ class SubagentManager:
                 "persistence_mode": result.persistence_mode,
                 "started_at": result.started_at,
                 "finished_at": result.finished_at,
+                "profile": profile,
+                "retry_count": retry_count,
                 "decision": _decision_payload(decision),
             },
         )
 
-    def _build_subagent(self, *, task_dir: Path) -> SubAgent:
+    def _build_subagent(
+        self,
+        *,
+        task_dir: Path,
+        profile: str = PROFILE_RESEARCH,
+        max_iterations: int = _SPAWN_MAX_ITERATIONS,
+    ) -> SubAgent:
         spec = build_spawn_spec(
             workspace=self._workspace,
             task_dir=task_dir,
             fetch_requester=self._fetch_requester,
-            system_prompt=self._build_subagent_prompt(task_dir),
-            max_iterations=_SPAWN_MAX_ITERATIONS,
+            system_prompt=self._build_subagent_prompt(task_dir=task_dir, profile=profile),
+            max_iterations=max_iterations,
+            profile=profile,
         )
         return spec.build(self._runtime)
 
-    def _build_subagent_prompt(self, task_dir: Path) -> str:
-        return build_spawn_subagent_prompt(self._workspace, task_dir)
+    def _build_subagent_prompt(self, task_dir: Path, profile: str = PROFILE_RESEARCH) -> str:
+        return build_spawn_subagent_prompt(self._workspace, task_dir, profile)
 
     async def _announce_result(
         self,
@@ -208,6 +286,8 @@ class SubagentManager:
         exit_reason: str,
         result: str,
         decision: SpawnDecision | None,
+        profile: str = PROFILE_RESEARCH,
+        retry_count: int = 0,
     ) -> None:
         """把后台结果包装成内部事件，重新投回主 agent 的消息总线。"""
         payload_result = result
@@ -229,16 +309,20 @@ class SubagentManager:
                 status=status,
                 exit_reason=exit_reason,
                 result=payload_result,
+                retry_count=retry_count,
+                profile=profile,
             ),
             decision=decision,
         )
         # 3. 最后发布到 bus，让主 agent 以同一会话身份继续回复用户。
         await self._bus.publish_inbound(msg)
         logger.info(
-            "[spawn] completed job_id=%s status=%s exit_reason=%s route=%s:%s decision_reason=%s",
+            "[spawn] completed job_id=%s status=%s exit_reason=%s profile=%s retry_count=%d route=%s:%s decision_reason=%s",
             job_id,
             status,
             exit_reason,
+            profile,
+            retry_count,
             origin_channel,
             origin_chat_id,
             decision.meta.reason_code if decision is not None else "-",
@@ -272,6 +356,7 @@ def _decision_payload(decision: SpawnDecision | None) -> dict[str, object] | Non
     return {
         "should_spawn": decision.should_spawn,
         "label": decision.label,
+        "block_reason": decision.block_reason,
         "meta": {
             "source": decision.meta.source,
             "confidence": decision.meta.confidence,
