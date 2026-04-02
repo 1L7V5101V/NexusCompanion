@@ -10,13 +10,22 @@ import logging
 import math
 import re
 import sqlite3
+import struct
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 
+try:
+    import sqlite_vec
+    _SQLITE_VEC_AVAILABLE = True
+except ImportError:
+    _SQLITE_VEC_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+VEC_DIM = 1024  # 默认维度，MemoryStore2 构造时可覆盖
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_items (
@@ -64,6 +73,8 @@ CREATE INDEX IF NOT EXISTS ix_memory_replacements_new_item
     ON memory_replacements (new_item_id, created_at);
 """
 
+# VEC_SCHEMA 在 MemoryStore2.__init__ 中按 vec_dim 动态生成
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -101,8 +112,30 @@ def _hotness_score(
     return freq * recency
 
 
+def _normalize_emb(emb: list[float]) -> list[float]:
+    """L2 归一化，供 vec_items 存储用（L2 KNN on unit vectors ≡ cosine ranking）。"""
+    v = np.array(emb, dtype=np.float32)
+    n = float(np.linalg.norm(v))
+    if n < 1e-9:
+        return emb
+    return (v / n).tolist()
+
+
+def _emb_to_blob(emb: list[float]) -> bytes:
+    """将归一化后的 embedding 打包为 float32 blob。"""
+    normed = _normalize_emb(emb)
+    return struct.pack(f"{len(normed)}f", *normed)
+
+
+def _l2dist_to_cosine(distance: float) -> float:
+    """将单位球上的 L2 距离转换回 cosine similarity。
+    |a-b|² = 2(1 - cos) → cos = 1 - d²/2
+    """
+    return 1.0 - (distance * distance) / 2.0
+
+
 class MemoryStore2:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, vec_dim: int = VEC_DIM) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -120,6 +153,86 @@ class MemoryStore2:
         )
         self._db.commit()
 
+        # --- sqlite-vec 初始化 ---
+        self._vec_dim = vec_dim
+        self._vec_enabled = False
+        if _SQLITE_VEC_AVAILABLE:
+            try:
+                self._db.enable_load_extension(True)
+                sqlite_vec.load(self._db)
+                self._db.enable_load_extension(False)
+                vec_schema = f"""
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
+    embedding float[{self._vec_dim}]
+);
+"""
+                self._db.executescript(vec_schema)
+                self._db.commit()
+                self._vec_enabled = True
+                self._migrate_existing_to_vec()
+                logger.info("sqlite-vec 已启用（dim=%d）", self._vec_dim)
+            except Exception as exc:
+                logger.warning("sqlite-vec 初始化失败（%s），回退到全表扫描", exc)
+        else:
+            logger.debug("sqlite-vec 未安装，使用全表扫描")
+
+    # ------------------------------------------------------------------
+    # vec_items 内部辅助
+    # ------------------------------------------------------------------
+
+    def _migrate_existing_to_vec(self) -> None:
+        """启动时将 memory_items 中尚未同步到 vec_items 的 embedding 迁移过去。"""
+        existing = {r[0] for r in self._db.execute("SELECT rowid FROM vec_items").fetchall()}
+        rows = self._db.execute(
+            "SELECT rowid, embedding FROM memory_items WHERE embedding IS NOT NULL"
+        ).fetchall()
+        migrated = 0
+        for rowid, emb_json in rows:
+            if rowid in existing:
+                continue
+            try:
+                emb = json.loads(emb_json)
+                if len(emb) != self._vec_dim:
+                    continue
+                self._db.execute(
+                    "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
+                    (rowid, _emb_to_blob(emb)),
+                )
+                migrated += 1
+            except Exception as exc:
+                logger.debug("vec migrate skip rowid %s: %s", rowid, exc)
+        if migrated:
+            self._db.commit()
+            logger.info("sqlite-vec: 迁移了 %d 条历史 embedding", migrated)
+
+    def _vec_insert(self, rowid: int, emb: list[float]) -> None:
+        """向 vec_items 插入一条向量（幂等：先删再插）。维度不匹配时静默跳过。"""
+        if not self._vec_enabled or len(emb) != self._vec_dim:
+            return
+        try:
+            self._db.execute("DELETE FROM vec_items WHERE rowid=?", (rowid,))
+            self._db.execute(
+                "INSERT INTO vec_items(rowid, embedding) VALUES (?, ?)",
+                (rowid, _emb_to_blob(emb)),
+            )
+        except Exception as exc:
+            logger.warning("vec_insert rowid=%s 失败: %s", rowid, exc)
+
+    def _vec_delete(self, rowids: list[int]) -> None:
+        """从 vec_items 批量删除。"""
+        if not self._vec_enabled or not rowids:
+            return
+        try:
+            self._db.executemany(
+                "DELETE FROM vec_items WHERE rowid=?", [(r,) for r in rowids]
+            )
+        except Exception as exc:
+            logger.warning("vec_delete 失败: %s", exc)
+
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
+
     def close(self) -> None:
         db = getattr(self, "_db", None)
         if db is None:
@@ -131,6 +244,10 @@ class MemoryStore2:
 
     def __del__(self) -> None:
         self.close()
+
+    # ------------------------------------------------------------------
+    # 写操作
+    # ------------------------------------------------------------------
 
     def upsert_item(
         self,
@@ -163,7 +280,7 @@ class MemoryStore2:
             return f"reinforced:{row_id}"
 
         item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
-        self._db.execute(
+        cur = self._db.execute(
             """INSERT INTO memory_items
                (id, memory_type, summary, content_hash, embedding, extra_json,
                 source_ref, happened_at, created_at, updated_at)
@@ -181,7 +298,13 @@ class MemoryStore2:
                 _now_iso(),
             ),
         )
+        item_rowid = cur.lastrowid
         self._db.commit()
+
+        if embedding is not None:
+            self._vec_insert(item_rowid, embedding)
+            self._db.commit()
+
         return f"new:{item_id}"
 
     def upsert_consolidation_event(
@@ -200,6 +323,8 @@ class MemoryStore2:
             return "skipped:empty"
 
         self._db.execute("BEGIN IMMEDIATE")
+        new_item_rowid: int | None = None
+        new_item_emb: list[float] | None = None
         try:
             already = self._db.execute(
                 "SELECT item_id FROM consolidation_events WHERE source_ref=?",
@@ -232,7 +357,7 @@ class MemoryStore2:
                 result = f"reinforced:{row_id}"
             else:
                 item_id = hashlib.md5(f"{chash}{time.time()}".encode()).hexdigest()[:12]
-                self._db.execute(
+                cur = self._db.execute(
                     """INSERT INTO memory_items
                        (id, memory_type, summary, content_hash, embedding, extra_json,
                         source_ref, happened_at, created_at, updated_at)
@@ -250,6 +375,8 @@ class MemoryStore2:
                         _now_iso(),
                     ),
                 )
+                new_item_rowid = cur.lastrowid
+                new_item_emb = embedding
                 result = f"new:{item_id}"
 
             self._db.execute(
@@ -257,6 +384,11 @@ class MemoryStore2:
                 (src, item_id, _now_iso()),
             )
             self._db.execute("COMMIT")
+
+            if new_item_rowid is not None and new_item_emb is not None:
+                self._vec_insert(new_item_rowid, new_item_emb)
+                self._db.commit()
+
             return result
         except Exception:
             try:
@@ -413,6 +545,10 @@ class MemoryStore2:
         )
         self._db.commit()
 
+    # ------------------------------------------------------------------
+    # 读操作
+    # ------------------------------------------------------------------
+
     def get_all_with_embedding(self, include_superseded: bool = False) -> list[tuple]:
         """返回 [(id, memory_type, summary, embedding_list, extra_json_dict, happened_at, source_ref)]
         extra_json_dict 中注入 _reinforcement 和 _updated_at（_ 前缀，不污染用户字段）。
@@ -448,6 +584,156 @@ class MemoryStore2:
         """cosine similarity 检索，返回 top-k 结果。
         hotness_alpha > 0 时启用热度融合：final = (1-alpha)*semantic + alpha*hotness。
         """
+        if self._vec_enabled:
+            return self._vector_search_vec(
+                query_vec,
+                top_k=top_k,
+                memory_types=memory_types,
+                score_threshold=score_threshold,
+                include_superseded=include_superseded,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                hotness_alpha=hotness_alpha,
+                hotness_half_life_days=hotness_half_life_days,
+            )
+        return self._vector_search_fullscan(
+            query_vec,
+            top_k=top_k,
+            memory_types=memory_types,
+            score_threshold=score_threshold,
+            include_superseded=include_superseded,
+            scope_channel=scope_channel,
+            scope_chat_id=scope_chat_id,
+            require_scope_match=require_scope_match,
+            hotness_alpha=hotness_alpha,
+            hotness_half_life_days=hotness_half_life_days,
+        )
+
+    def _vector_search_vec(
+        self,
+        query_vec: list[float],
+        top_k: int = 8,
+        memory_types: list[str] | None = None,
+        score_threshold: float = 0.0,
+        include_superseded: bool = False,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+        hotness_alpha: float = 0.0,
+        hotness_half_life_days: float = 14.0,
+    ) -> list[dict]:
+        """sqlite-vec KNN 检索路径。维度不符时自动回退全表扫描。"""
+        if len(query_vec) != self._vec_dim:
+            logger.debug(
+                "query dim %d ≠ vec_dim %d，回退全表扫描", len(query_vec), self._vec_dim
+            )
+            return self._vector_search_fullscan(
+                query_vec,
+                top_k=top_k,
+                memory_types=memory_types,
+                score_threshold=score_threshold,
+                include_superseded=include_superseded,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                hotness_alpha=hotness_alpha,
+                hotness_half_life_days=hotness_half_life_days,
+            )
+        blob = _emb_to_blob(query_vec)
+
+        # 多取候选以补偿 memory_type / scope 过滤的损耗
+        needs_filter = bool(memory_types) or require_scope_match
+        fetch_k = max(top_k * 4 if needs_filter else top_k * 2, 20)
+
+        status_filter = "" if include_superseded else "AND m.status = 'active'"
+        sql = f"""
+            SELECT m.id, m.memory_type, m.summary, m.extra_json, m.happened_at,
+                   m.reinforcement, m.updated_at, m.source_ref,
+                   v.distance
+            FROM (
+                SELECT rowid, distance
+                FROM vec_items
+                WHERE embedding MATCH ?
+                  AND k = ?
+            ) v
+            JOIN memory_items m ON m.rowid = v.rowid
+            WHERE 1=1 {status_filter}
+            ORDER BY v.distance ASC
+        """
+        rows = self._db.execute(sql, [blob, fetch_k]).fetchall()
+
+        if memory_types:
+            rows = [r for r in rows if r[1] in memory_types]
+
+        if require_scope_match:
+            s_channel = (scope_channel or "").strip()
+            s_chat = (scope_chat_id or "").strip()
+            filtered = []
+            for r in rows:
+                extra_raw = json.loads(r[3]) if r[3] else {}
+                if (
+                    str(extra_raw.get("scope_channel", "")).strip() == s_channel
+                    and str(extra_raw.get("scope_chat_id", "")).strip() == s_chat
+                ):
+                    filtered.append(r)
+            rows = filtered
+
+        now = datetime.now(timezone.utc)
+        scored = []
+        for row_id, mtype, summary, extra_json, happened_at, reinforcement, updated_at_str, source_ref, distance in rows:
+            # L2 distance on unit sphere → cosine similarity
+            similarity = _l2dist_to_cosine(distance)
+            if similarity < score_threshold:
+                continue
+
+            extra = json.loads(extra_json) if extra_json else {}
+            extra["_reinforcement"] = reinforcement
+            extra["_updated_at"] = updated_at_str
+
+            hotness = 0.0
+            if hotness_alpha > 0 and updated_at_str:
+                try:
+                    updated_at = datetime.fromisoformat(updated_at_str)
+                    hotness = _hotness_score(reinforcement, updated_at, now, hotness_half_life_days)
+                except (ValueError, TypeError):
+                    pass
+
+            final = (1.0 - hotness_alpha) * similarity + hotness_alpha * hotness
+            scored.append(
+                {
+                    "id": row_id,
+                    "memory_type": mtype,
+                    "summary": summary,
+                    "extra_json": extra,
+                    "happened_at": happened_at,
+                    "source_ref": source_ref,
+                    "score": round(final, 4),
+                    "_score_debug": {
+                        "semantic": round(similarity, 4),
+                        "hotness": round(hotness, 4),
+                        "final": round(final, 4),
+                    },
+                }
+            )
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:top_k]
+
+    def _vector_search_fullscan(
+        self,
+        query_vec: list[float],
+        top_k: int = 8,
+        memory_types: list[str] | None = None,
+        score_threshold: float = 0.0,
+        include_superseded: bool = False,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+        hotness_alpha: float = 0.0,
+        hotness_half_life_days: float = 14.0,
+    ) -> list[dict]:
+        """全表扫描回退路径（sqlite-vec 不可用时使用）。"""
         rows = self.get_all_with_embedding(include_superseded=include_superseded)
         if not rows:
             return []
@@ -550,6 +836,15 @@ class MemoryStore2:
                 )
             self._db.commit()
 
+            # 同步更新 vec_items（embedding 变了）
+            if self._vec_enabled:
+                row = self._db.execute(
+                    "SELECT rowid FROM memory_items WHERE id=?", (item_id,)
+                ).fetchone()
+                if row:
+                    self._vec_insert(row[0], new_embedding)
+                    self._db.commit()
+
         except sqlite3.IntegrityError:
             # content_hash 撞上库中已有条目（极低概率）
             # 安全降级：supersede 旧条目，让 upsert_item 走 reinforce 路径
@@ -622,9 +917,16 @@ class MemoryStore2:
 
     def delete_by_source_ref(self, source_ref: str) -> int:
         """删除指定 source_ref 的所有条目，返回删除行数。"""
+        rowids = [
+            r[0]
+            for r in self._db.execute(
+                "SELECT rowid FROM memory_items WHERE source_ref=?", (source_ref,)
+            ).fetchall()
+        ]
         cur = self._db.execute(
             "DELETE FROM memory_items WHERE source_ref=?", (source_ref,)
         )
+        self._vec_delete(rowids)
         self._db.commit()
         return cur.rowcount
 
