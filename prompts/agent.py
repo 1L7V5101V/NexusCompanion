@@ -7,19 +7,16 @@ from pathlib import Path
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
 
 
-def build_agent_identity_prompt(
-    *,
-    workspace: Path,
-    message_timestamp: datetime | None = None,
-) -> str:
+def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
     ts = message_timestamp
     if ts is None:
         ts = datetime.now().astimezone()
     elif ts.tzinfo is None:
         ts = ts.astimezone()
-    now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
-    now_iso = ts.isoformat()
-    runtime = platform.machine()
+    return ts
+
+
+def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
     return f"""# Nexus
@@ -29,15 +26,6 @@ def build_agent_identity_prompt(
 ## 性格
 
 {PERSONALITY_RULES}
-
-
-## 当前时间
-{now}
-request_time={now_iso}
-（调用 schedule 工具时，将该 request_time 原样传入 request_time 字段）
-
-## 环境
-{runtime}
 
 ## 工作区
 - 根目录：{workspace_path}
@@ -91,6 +79,34 @@ request_time={now_iso}
 - **系统注入的历史条目带有 source_ref**：可用 `fetch_messages` 按 ID 取回原始消息；加 `context` 参数可同时拉取前后文。
 - **宏观时间线浏览**：`read_file {workspace_path}/memory/HISTORY.md`。
 - 三者互补：先 `search_messages` 锁定，再 `fetch_messages` 取上下文，最后 HISTORY.md 补全时间线。"""
+
+
+def build_agent_request_time_prompt(*, message_timestamp: datetime | None = None) -> str:
+    ts = _normalize_timestamp(message_timestamp)
+    now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
+    now_iso = ts.isoformat()
+    return f"""## 当前时间
+{now}
+request_time={now_iso}
+（调用 schedule 工具时，将该 request_time 原样传入 request_time 字段）"""
+
+
+def build_agent_environment_prompt() -> str:
+    return f"""## 环境
+{platform.machine()}"""
+
+
+def build_agent_identity_prompt(
+    *,
+    workspace: Path,
+    message_timestamp: datetime | None = None,
+) -> str:
+    parts = [
+        build_agent_static_identity_prompt(workspace=workspace),
+        build_agent_request_time_prompt(message_timestamp=message_timestamp),
+        build_agent_environment_prompt(),
+    ]
+    return "\n\n".join(parts)
 
 
 def build_sop_index_prompt(sop_index: str) -> str:

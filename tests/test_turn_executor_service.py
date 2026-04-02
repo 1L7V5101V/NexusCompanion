@@ -95,9 +95,13 @@ def test_turn_executor_runs_tool_then_returns_final():
     assert len(tool_chain) == 1
     assert visible is None
     assert thinking is None
-    # 第一次调用时，preflight prompt 已追加到消息列表
+    # 第一次调用时，preflight prompt 已作为 system note 追加到消息列表
     first_messages = provider.calls[0]["messages"]
     assert any("本轮时间锚点" in str(m.get("content", "")) for m in first_messages)
+    assert any(
+        m.get("role") == "system" and "本轮时间锚点" in str(m.get("content", ""))
+        for m in first_messages
+    )
 
 
 def test_turn_executor_preflight_includes_deferred_tool_names():

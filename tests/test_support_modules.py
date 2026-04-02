@@ -349,7 +349,15 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             return "self note"
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
-    monkeypatch.setattr("agent.context.build_agent_identity_prompt", lambda **_: "identity")
+    monkeypatch.setattr(
+        "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
+    )
+    monkeypatch.setattr(
+        "agent.context.build_agent_request_time_prompt", lambda **_: "request time"
+    )
+    monkeypatch.setattr(
+        "agent.context.build_agent_environment_prompt", lambda: "environment"
+    )
     monkeypatch.setattr(
         "agent.context.build_current_session_prompt", lambda **_: "\nsession prompt"
     )
@@ -384,6 +392,18 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "# Memes" in prompt
     assert "<meme:shy>" in prompt
     assert "catalog:skill summary" in prompt
+    assert [item.name for item in builder.last_debug_breakdown][:1] == ["identity"]
+
+    prompt2 = builder.build_system_prompt(
+        skill_names=["extra"],
+        message_timestamp=datetime.now(timezone.utc),
+        retrieved_memory_block="retrieved",
+    )
+    assert prompt2
+    identity_meta = next(
+        item for item in builder.last_debug_breakdown if item.name == "identity"
+    )
+    assert identity_meta.cache_hit is True
 
     messages = builder.build_messages(
         history=[{"role": "assistant", "content": "hi"}],
@@ -394,10 +414,18 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         chat_id="42",
     )
     assert messages[0]["role"] == "system"
-    assert "session prompt" in messages[0]["content"]
+    assert "session prompt" not in messages[0]["content"]
+    assert messages[1]["role"] == "system"
+    assert "request time" in messages[1]["content"]
+    assert messages[2]["role"] == "system"
+    assert "environment" in messages[2]["content"]
+    assert messages[3]["role"] == "system"
+    assert "session prompt" in messages[3]["content"]
     assert messages[-1]["role"] == "user"
     assert len(messages[-1]["content"]) == 3
-
+    assert builder.last_assembled_contexts["system_context"]["request_time"] == "request time"
+    assert builder.last_assembled_contexts["system_context"]["environment"] == "environment"
+    assert builder.last_assembled_contexts["system_context"]["current_session"] == "session prompt"
     msgs = builder.add_tool_result([], "call-1", "dummy", "ok")
     assert msgs[-1]["role"] == "tool"
     msgs = builder.add_assistant_message(msgs, None, [{"id": "1"}], "thinking")

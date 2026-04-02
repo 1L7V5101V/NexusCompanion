@@ -56,6 +56,7 @@ class AgentLoopRunner(Protocol):
         initial_messages: list[dict],
         request_time: object | None = None,
         preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = False,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         ...
 

@@ -65,6 +65,7 @@ class TurnOrchestrator:
         tools_used = _trace_tools_used(result.trace)
         tool_chain = _trace_tool_chain(result.trace)
         thinking = _trace_thinking(result.trace)
+        context_retry = _trace_context_retry(result.trace)
         retrieval_raw = _trace_retrieval_raw(result.trace)
 
         await self._persist_session(
@@ -113,6 +114,7 @@ class TurnOrchestrator:
                 **(msg.metadata or {}),
                 "tools_used": tools_used,
                 "tool_chain": tool_chain,
+                "context_retry": context_retry,
             },
         )
         if dispatch_outbound:
@@ -424,3 +426,12 @@ def _trace_retrieval_raw(trace: Any | None) -> Any | None:
     if trace is None or not isinstance(trace.retrieval, dict):
         return None
     return trace.retrieval.get("raw")
+
+
+def _trace_context_retry(trace: Any | None) -> dict[str, Any]:
+    if trace is None or not isinstance(trace.extra, dict):
+        return {}
+    raw = trace.extra.get("context_retry")
+    if not isinstance(raw, dict):
+        return {}
+    return dict(raw)

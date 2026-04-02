@@ -25,7 +25,10 @@ class _SafetyHarness:
     def __init__(self, outcomes):
         self.tools = SimpleNamespace(get_always_on_names=lambda: {"always"})
         self.context = SimpleNamespace(
-            build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}]
+            build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}],
+            build_runtime_guard_context=lambda *, preflight_prompt=None: (
+                {"preflight": preflight_prompt} if preflight_prompt else {}
+            ),
         )
         self.session_manager = SimpleNamespace(save_async=AsyncMock())
         self._outcomes = list(outcomes)
@@ -75,11 +78,35 @@ async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
     assert tools_used == ["tool_search", "x", "y"]
     assert list(harness.discovery._unlocked["s:1"].keys())[-2:] == ["x", "y"]
 
-    harness = _SafetyHarness([ContextLengthError("long")] * 3)
+    harness = _SafetyHarness([ContextLengthError("long")] * 7)
     content, tools_used, chain, _ = await harness.service.run(msg, session)
     assert "上下文过长" in content
     assert tools_used == []
     assert chain == []
+
+    observed: list[tuple[int, set[str]]] = []
+    harness.context = SimpleNamespace(
+        build_messages=lambda **kwargs: observed.append(
+            (len(kwargs["history"]), set(kwargs.get("disabled_sections") or set()))
+        )
+        or kwargs["history"]
+        + [{"role": "user"}],
+        build_runtime_guard_context=lambda *, preflight_prompt=None: (
+            {"preflight": preflight_prompt} if preflight_prompt else {}
+        ),
+    )
+    harness.service._context = harness.context
+    harness.executor = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[ContextLengthError("long"), ("ok", [], [], None, None)]
+        )
+    )
+    harness.service._executor = harness.executor
+    content, tools_used, chain, _ = await harness.service.run(msg, session)
+    assert content == "ok"
+    assert tools_used == []
+    assert chain == []
+    assert observed[:2] == [(6, set()), (6, {"skills_catalog"})]
 
     harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None, None)])
     harness.discovery.update("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], harness.tools.get_always_on_names())
@@ -95,7 +122,7 @@ async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
     assert "禁止访问内网" in _validate_network_command("curl http://127.0.0.1")
     assert "省略" in _truncate("a" * 31000)
 
-    async def _run(command: str, timeout: int):
+    async def _run(command: str, timeout: int, cwd=None):
         return "out", "err", 2, False
 
     with pytest.MonkeyPatch.context() as mp:

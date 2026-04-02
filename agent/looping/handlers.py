@@ -72,6 +72,7 @@ class ConversationTurnHandler:
             skill_mentions=skill_mentions,
             retrieved_block=retrieval_result.block,
         )
+        retry_trace = getattr(self._turn_runner, "last_retry_trace", {})
         result = TurnResult(
             decision="reply",
             outbound=TurnOutbound(session_key=key, content=final_content),
@@ -86,6 +87,7 @@ class ConversationTurnHandler:
                     "tools_used": tools_used,
                     "tool_chain": tool_chain,
                     "thinking": thinking,
+                    "context_retry": retry_trace,
                 },
             ),
         )

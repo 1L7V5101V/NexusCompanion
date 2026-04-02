@@ -123,3 +123,51 @@ async def test_orchestrator_passive_order_and_outbound_metadata():
     assert len(writer.events) == 2
     assert dispatched[0].content == "收到"
     assert order == ["persist", "observe", "observe", "post_turn", "side_effect", "dispatch"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_keeps_context_retry_trace_in_outbound_metadata():
+    presence = SimpleNamespace(record_user_message=lambda _key: None)
+    session_manager = SimpleNamespace(
+        append_messages=AsyncMock(),
+        get_or_create=lambda _key: _DummySession("telegram:123"),
+    )
+    session_svc = SessionServices(session_manager=session_manager, presence=presence)
+    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
+    post_turn = SimpleNamespace(schedule=lambda event: None)
+    dispatched: list[OutboundDispatch] = []
+
+    class _Outbound:
+        async def dispatch(self, outbound: OutboundDispatch) -> bool:
+            dispatched.append(outbound)
+            return True
+
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=session_svc,
+            trace=trace_svc,
+            post_turn=post_turn,
+            outbound=_Outbound(),
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="user", chat_id="123", content="你好")
+    result = TurnResult(
+        decision="reply",
+        outbound=TurnOutbound(session_key="telegram:123", content="收到"),
+        trace=TurnTrace(
+            source="passive",
+            extra={
+                "tools_used": [],
+                "tool_chain": [],
+                "thinking": None,
+                "context_retry": {
+                    "selected_plan": "trim_skills_catalog",
+                    "trimmed_sections": ["skills_catalog"],
+                },
+            },
+        ),
+    )
+
+    out = await orchestrator.handle_turn(msg=msg, result=result)
+    assert dispatched[0].metadata["context_retry"]["selected_plan"] == "trim_skills_catalog"
+    assert out.metadata["context_retry"]["trimmed_sections"] == ["skills_catalog"]

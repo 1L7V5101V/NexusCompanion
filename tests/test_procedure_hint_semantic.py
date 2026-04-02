@@ -117,7 +117,7 @@ def test_hint_appears_in_reflect_prompt(tmp_path: Path):
 
     asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
 
-    reflect_messages = [m for m in provider.calls[1]["messages"] if m.get("role") == "user"]
+    reflect_messages = [m for m in provider.calls[1]["messages"] if m.get("role") == "system"]
     assert "【⚠️ 操作规范提醒 | 适用于本轮工具调用】" in reflect_messages[-1]["content"]
     assert "--noconfirm" in reflect_messages[-1]["content"]
 
@@ -139,7 +139,7 @@ def test_hint_header_is_distinct_from_tool_output(tmp_path: Path):
     asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
 
     tool_message = [m for m in provider.calls[1]["messages"] if m.get("role") == "tool"][0]
-    reflect_message = [m for m in provider.calls[1]["messages"] if m.get("role") == "user"][-1]
+    reflect_message = [m for m in provider.calls[1]["messages"] if m.get("role") == "system"][-1]
     assert tool_message["content"] == "tool output"
     assert "【⚠️ 操作规范提醒 | 适用于本轮工具调用】" in reflect_message["content"]
 
@@ -159,5 +159,5 @@ def test_no_hint_when_no_matching_procedure(tmp_path: Path):
 
     asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
 
-    reflect_message = [m for m in provider.calls[1]["messages"] if m.get("role") == "user"][-1]
+    reflect_message = [m for m in provider.calls[1]["messages"] if m.get("role") == "system"][-1]
     assert "【⚠️ 操作规范提醒 | 适用于本轮工具调用】" not in reflect_message["content"]

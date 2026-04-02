@@ -13,6 +13,7 @@ from agent.looping.constants import (
     _TOOL_LOOP_REPEAT_LIMIT,
     _tool_call_signature,
 )
+from agent.prompting import build_runtime_guard_message
 from agent.procedure_hint import (
     _match_procedure_items,
     build_intercept_hint,
@@ -84,7 +85,10 @@ def _build_deferred_tools_hint(
     visible: 当前 turn 已可见工具名（always_on + preloaded），从目录中排除，
     避免把已加载的工具误报为"未加载"。
     """
-    deferred = tools.get_deferred_names(visible=visible)
+    get_deferred_names = getattr(tools, "get_deferred_names", None)
+    if not callable(get_deferred_names):
+        return ""
+    deferred = get_deferred_names(visible=visible)
     builtin: list[str] = deferred.get("builtin", [])
     mcp: dict[str, list[str]] = deferred.get("mcp", {})
 
@@ -104,6 +108,26 @@ def _build_deferred_tools_hint(
         "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
     )
     return "\n".join(lines) + "\n\n"
+
+
+def build_preflight_prompt(
+    *,
+    request_time: datetime | None,
+    tools: "ToolRegistry",
+    tool_search_enabled: bool,
+    visible_names: set[str] | None,
+) -> str:
+    # preflight 只负责本轮时间锚点和工具可见性约束，不承载长期 persona/规则。
+    return (
+        f"【本轮时间锚点】{TurnExecutor._format_request_time_anchor(request_time)}\n"
+        "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
+        + (
+            _build_deferred_tools_hint(tools, visible=visible_names)
+            if tool_search_enabled
+            else ""
+        )
+        + _PRE_FLIGHT_PROMPT
+    )
 
 
 @dataclass
@@ -153,6 +177,7 @@ class TurnExecutor:
         initial_messages: list[dict],
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
+        preflight_injected: bool = False,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         # 1. 先初始化本轮对话状态：消息上下文、工具使用轨迹、循环检测状态。
         messages = initial_messages
@@ -177,18 +202,18 @@ class TurnExecutor:
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
-        preflight_prompt = (
-            f"【本轮时间锚点】{self._format_request_time_anchor(request_time)}\n"
-            "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
-            + (
-                _build_deferred_tools_hint(self._tools, visible=visible_names)
-                if self._tool_search_enabled
-                else ""
-            )
-            + _PRE_FLIGHT_PROMPT
-        )
-        # 3. 每轮开始前都补一条 preflight 提示，约束时间判断和工具使用方式。
-        messages = messages + [{"role": "user", "content": preflight_prompt}]
+        # 3. 初始 preflight 优先走 assembled input；缺失时再兜底补一条。
+        if not preflight_injected:
+            messages = messages + [
+                build_runtime_guard_message(
+                    build_preflight_prompt(
+                        request_time=request_time,
+                        tools=self._tools,
+                        tool_search_enabled=self._tool_search_enabled,
+                        visible_names=visible_names,
+                    )
+                )
+            ]
 
         for iteration in range(self._llm_config.max_iterations):
             # 4. 用当前 messages + visible tools 调一次 LLM。
@@ -347,15 +372,17 @@ class TurnExecutor:
 
                 # 7. 本轮工具执行完后，补一条 reflect 提示，让模型基于结果继续下一轮决策。
                 tool_chain.append({"text": response.content, "calls": iter_calls})
+                # reflect 也是 runtime guard，不再伪装成用户消息。
                 messages.append(
-                    {
-                        "role": "user",
-                        "content": _build_reflect_content(
+                    build_runtime_guard_message(
+                        _build_reflect_content(
                             pending_hints,
                             visible_names=visible_names,
-                            always_on_names=self._tools.get_always_on_names() if self._tool_search_enabled else None,
-                        ),
-                    }
+                            always_on_names=self._tools.get_always_on_names()
+                            if self._tool_search_enabled
+                            else None,
+                        )
+                    )
                 )
                 continue
 
@@ -396,7 +423,7 @@ class TurnExecutor:
         )
         try:
             resp = await self._llm.provider.chat(
-                messages=messages + [{"role": "user", "content": summary_prompt}],
+                messages=messages + [build_runtime_guard_message(summary_prompt)],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),
