@@ -721,6 +721,18 @@ ASSISTANT: 明白，以后只推荐快手菜……
 → [{{"summary": "查询菜谱时只推荐 20 分钟内可完成的菜式", "memory_type": "procedure"}}]
 </example>
 
+<example id="keep_multi_source_research">
+场景: 用户要求以后调研时使用多来源交叉验证
+USER: 以后帮我查耳机先看 B 站评测和 Reddit 讨论，别只看官网参数
+ASSISTANT: 好的，以后推荐耳机时会先参考 B 站评测和 Reddit 的用户反馈……
+
+检查A: USER原句="以后帮我查耳机先看B站评测和Reddit讨论" ✓
+检查B: "以后"明确跨session，不绑定当前任务 ✓
+检查C: 调研方法论由USER主动提出，不是ASSISTANT建议 ✓
+注意: 提到具体平台（B站/Reddit）不等于"当前任务特定"，只要USER用"以后"明确泛化，就是长期rule
+→ [{{"summary": "查询耳机时先看 B 站评测和 Reddit 讨论，不只依赖官网参数", "memory_type": "procedure"}}]
+</example>
+
 <example id="keep_preference_trimmed">
 场景: 用户表达了喜好，但 ASSISTANT 的回复有过度延伸
 USER: 我不喜欢这种悬疑风格的游戏，太压抑了
