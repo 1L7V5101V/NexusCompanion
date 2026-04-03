@@ -156,6 +156,8 @@ class MemoryStore2:
         # --- sqlite-vec 初始化 ---
         self._vec_dim = vec_dim
         self._vec_enabled = False
+        self._vec_init_error: str | None = None
+        self._vec_fallback_logged = False
         if _SQLITE_VEC_AVAILABLE:
             try:
                 self._db.enable_load_extension(True)
@@ -172,8 +174,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 self._migrate_existing_to_vec()
                 logger.info("sqlite-vec 已启用（dim=%d）", self._vec_dim)
             except Exception as exc:
+                self._vec_init_error = str(exc)
                 logger.warning("sqlite-vec 初始化失败（%s），回退到全表扫描", exc)
         else:
+            self._vec_init_error = "sqlite_vec 未安装"
             logger.debug("sqlite-vec 未安装，使用全表扫描")
 
     # ------------------------------------------------------------------
@@ -597,6 +601,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 hotness_alpha=hotness_alpha,
                 hotness_half_life_days=hotness_half_life_days,
             )
+        if not self._vec_fallback_logged:
+            reason = self._vec_init_error or "sqlite-vec 未启用"
+            logger.warning("vector_search 已降级为全表扫描：%s", reason)
+            self._vec_fallback_logged = True
         return self._vector_search_fullscan(
             query_vec,
             top_k=top_k,

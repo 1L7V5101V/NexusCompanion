@@ -133,6 +133,14 @@ class QueryRewriter:
 - 如果隐含意图指向历史记录，则应 RETRIEVE，history_query 应面向隐含意图，而不是表面词
 - <thinking> 只用于内部推理，不要把它混入最终 XML 字段
 
+元问题处理（用户在问 agent 是否记得某件事）：
+- 识别标志：”你忘了吗””你还记得吗””你知道我的...””你记不记得””我跟你说过”等
+- 隐含意图是查询该事实本身，history_query 应提取目标事实的语义，而非保留问句形式
+- 记忆库中 profile 条目是纯事实陈述（如”用户佩戴 Fitbit Inspire 3”），event 条目带时间戳；query 需贴近这种陈述语义才能命中
+- 例：”你忘记我用的是哪个 Fitbit 了吗” → history_query: “用户佩戴的 Fitbit 设备型号”
+- 例：”你还记得我喜欢哪个游戏吗” → history_query: “用户喜欢的游戏 偏好”
+- 例：”我跟你说过我的 Steam ID 吧” → history_query: “用户 Steam ID”
+
 输出要求：
 - history_query：面向 event/profile 的完整语义 query，可以包含上下文
 
