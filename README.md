@@ -1,726 +1,889 @@
-# Akasic Agent
-
-一个面向个人助理场景的多通道 Agent 项目。
-
-它不只是一个“会聊天的 LLM 外壳”，而是把以下几件事接到了一起：
-
-- 多通道消息接入：Telegram、QQ、CLI
-- 被动对话主链路：用户发消息，Agent 检索记忆、决定是否调用工具、生成回复
-- 主动触达链路：系统定时轮询外部信息，判断“现在值不值得主动提醒用户”
-- 分层记忆系统：短期会话 + 长期语义记忆 + SOP/偏好/画像
-- 工具体系：本地工具、MCP 工具、定时任务、消息推送
-
-这个项目整体是典型的 MVP 架构：目标不是做成“超重型通用 Agent 平台”，而是围绕“个人助理”这个明确场景，把关键闭环先跑通。
-
----
-
-## 1. 我会怎么一句话介绍这个项目
-
-> 这是一个有长期记忆、工具调用能力和主动触达能力的个人助理 Agent。  
-> 它把外部消息统一收进 `MessageBus`，由 `AgentLoop` 跑被动对话主链；同时用 `ProactiveLoop` 定期感知外部世界和用户状态，决定是否主动发消息。记忆层用 `memory2` 做语义检索和回复后写回，形成持续演化的助手。
-
----
-
-## 2. 先看总架构
+# Akasic Agent Passive Reply Layer
 
 ```text
-┌──────────────────────────────────────────────────────────────────────┐
-│                              Akasic Agent                            │
-└──────────────────────────────────────────────────────────────────────┘
+当前仓库里的被动回复层
+是怎么按“大块抽象 <-> 大块抽象”组织起来的
+```
 
-                         ┌──────────────────────┐
-                         │      main.py         │
-                         │  进程入口 / CLI入口   │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │   bootstrap/app.py   │
-                         │   装配整个运行时      │
-                         └──────────┬───────────┘
-                                    │
-            ┌───────────────────────┼────────────────────────┐
-            │                       │                        │
-            ▼                       ▼                        ▼
-┌──────────────────┐    ┌─────────────────────┐   ┌────────────────────┐
-│   Channels       │    │    Core Runtime     │   │  Proactive Runtime │
-│ Telegram / QQ /  │    │  AgentLoop 主链路   │   │  ProactiveLoop     │
-│ CLI / IPC        │    │  ToolRegistry       │   │  AgentTick         │
-└────────┬─────────┘    │  SessionManager     │   └─────────┬──────────┘
-         │              │  MemoryRuntime      │             │
-         │              │  Scheduler          │             │
-         │              └──────────┬──────────┘             │
-         │                         │                        │
-         │                         ▼                        │
-         │              ┌─────────────────────┐             │
-         │              │      MessageBus     │             │
-         │              │ inbound / outbound  │             │
-         │              └──────────┬──────────┘             │
-         │                         │                        │
-         │                         ▼                        ▼
-         │              ┌─────────────────────┐   ┌────────────────────┐
-         │              │      memory2        │   │   PushTool /       │
-         │              │ 检索 / 写回 / 去重   │   │ channel outbound   │
-         │              └─────────────────────┘   └────────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ 外部用户 / 群聊   │
-└──────────────────┘
+不讲 proactive。
+不讲全项目营销式介绍。
+只讲被动主链。
+
+---
+
+## 1. 目标
+
+被动回复层现在追求的是这件事：
+
+```text
+┌──────────────────────────────────────┐
+│ 大块抽象之间                         │
+├──────────────────────────────────────┤
+│ 1. 用稳定协议对接                    │
+│ 2. 每块只管自己那一段职责            │
+│ 3. 块内实现可以继续拆                │
+│ 4. 收尾时不靠隐式状态传语义          │
+└──────────────────────────────────────┘
+```
+
+换句话说，这一层现在不是“一个大函数把所有事做完”，而是：
+
+```text
+prepare -> execute -> commit
+```
+
+三段主流程，分别交给不同大块负责。
+
+---
+
+## 2. 当前主链
+
+当前默认被动主链是：
+
+```text
+┌──────────────────────────────────────┐
+│ AgentLoop                            │
+│ runtime shell                        │
+└──────────────────┬───────────────────┘
+                   │
+                   v
+┌──────────────────────────────────────┐
+│ CoreRunner.process()                 │
+│ 分流：spawn completion / 普通消息    │
+└──────────────────┬───────────────────┘
+                   │
+                   v
+┌──────────────────────────────────────┐
+│ AgentCore.process()                  │
+│ 1. prepare                           │
+│ 2. build prompt                      │
+│ 3. reasoner.run_turn()               │
+│ 4. commit                            │
+└───────────────┬───────────────┬──────┘
+                │               │
+                v               v
+┌────────────────────────┐  ┌────────────────────────┐
+│ ContextStore           │  │ Reasoner               │
+│ prepare / commit       │  │ run_turn / run         │
+└────────────────────────┘  └────────────────────────┘
+```
+
+这条链里，大块职责已经比较清楚：
+
+- `AgentLoop`：运行时入口壳
+- `CoreRunner`：分流层
+- `AgentCore`：主编排层
+- `ContextStore`：上下文准备与提交边界
+- `Reasoner`：执行层
+
+---
+
+## 3. 大块抽象
+
+### 3.1 AgentLoop
+
+角色：
+
+```text
+runtime shell
+```
+
+负责：
+
+- `run()`
+- `_process()`
+- `process_direct()`
+- `trigger_memory_consolidation()`
+- 组装 passive runtime
+
+不负责：
+
+- retrieval 细节
+- tool loop 细节
+- commit 落盘细节
+
+它的意义不是“业务中心”，而是：
+
+```text
+把 runtime 入口和被动主链装起来
 ```
 
 ---
 
-## 3. 核心模块分工
+### 3.2 CoreRunner
 
-### 3.1 入口与装配
-
-- `main.py`
-  - 启动服务：`python main.py`
-  - 启动本地 CLI：`python main.py cli`
-- `bootstrap/app.py`
-  - 这是整个系统的运行时装配中心
-  - 负责初始化：
-    - `CoreRuntime`
-    - channels
-    - `ProactiveLoop`
-    - `MemoryOptimizerLoop`
-    - observe writer
-
-装配关系可以理解成：
+角色：
 
 ```text
-┌──────────────────────┐
-│   AppRuntime.start   │
-└──────────┬───────────┘
-           │
-           ├─ build_core_runtime()
-           │  ├─ MessageBus
-           │  ├─ AgentLoop
-           │  ├─ ToolRegistry
-           │  ├─ SessionManager
-           │  ├─ MemoryRuntime
-           │  └─ Provider / MCP / Scheduler
-           │
-           ├─ start_channels()
-           │  ├─ IPC
-           │  ├─ Telegram
-           │  └─ QQ
-           │
-           ├─ build_proactive_runtime()
-           │  └─ ProactiveLoop
-           │
-           └─ build_memory_optimizer_task()
+主链分流层
 ```
 
-### 3.2 被动对话主链
+当前职责很单纯：
 
-- `agent/looping/`
-  - 负责被动消息驱动的 Agent 主循环
-- `agent/turns/`
-  - 负责 turn 结果编排、持久化、出站
-- `agent/retrieval/`
-  - 负责记忆检索流水线
-- `agent/tools/`
-  - 负责工具定义与工具执行
+- `spawn completion` 走 helper
+- 普通被动消息走 `AgentCore`
 
-### 3.3 主动触达链
+接口形态：
 
-- `proactive_v2/`
-  - 负责主动消息的感知、打分、决策、去重、发送
-  - 核心不是“对着用户消息回答”，而是“系统自己决定要不要说一句”
+```text
+输入
+- msg: InboundMessage
+- key: str
+- dispatch_outbound: bool
 
-### 3.4 记忆系统
+输出
+- OutboundMessage
+```
 
-- `memory2/`
-  - 长期语义记忆
-  - 负责 embedding、召回、记忆注入、回复后写回、去重、画像提取
-- `session/`
-  - 会话级短期历史
-  - 用 SQLite 存消息和 session metadata
+这层的价值是：
 
-### 3.5 基础设施
-
-- `bus/`
-  - 进程内异步消息总线
-- `infra/channels/`
-  - 各聊天渠道适配器
-- `infra/providers/`
-  - LLM Provider 适配
-- `core/observe/`
-  - trace 落盘和保留策略
+```text
+外层 runtime 不需要知道
+内部事件和普通消息
+分别怎么跑
+```
 
 ---
 
-## 4. 被动对话链路怎么跑
+### 3.3 AgentCore
 
-这是面试里最值得讲清楚的一条链。
+角色：
 
-### 4.1 数据流
+```text
+主流程编排 facade
+```
+
+当前固定流程：
+
+```text
+┌──────────────────────────────────────┐
+│ AgentCore.process()                  │
+├──────────────────────────────────────┤
+│ 1. session                           │
+│ 2. context_store.prepare()           │
+│ 3. build_system_prompt()             │
+│ 4. tools.set_context()               │
+│ 5. reasoner.run_turn()               │
+│ 6. context_store.commit()            │
+└──────────────────────────────────────┘
+```
+
+接口形态：
+
+```text
+输入
+- msg: InboundMessage
+- key: str
+- dispatch_outbound: bool
+
+输出
+- OutboundMessage
+```
+
+它不应该知道：
+
+- retrieval pipeline 怎么查
+- tool loop 怎么多轮跑
+- commit 内部怎么落盘/observe/dispatch
+
+它只负责：
+
+```text
+把 prepare / execute / commit 串起来
+```
+
+---
+
+### 3.4 ContextStore
+
+角色：
+
+```text
+上下文边界 + 提交边界
+```
+
+它被故意拆成两个固定大接口。
+
+#### `prepare()`
+
+接口：
+
+```text
+输入
+- msg
+- session_key
+- session
+
+输出
+- ContextBundle
+```
+
+负责：
+
+- 读 session history
+- 调 retrieval pipeline
+- 收 `skill_mentions`
+- 生成 `ContextBundle`
+
+`ContextBundle` 里现在承载的是被动链真正需要的正式字段，例如：
+
+- `history`
+- `skill_mentions`
+- `retrieved_memory_block`
+- `retrieval_trace_raw`
+
+#### `commit()`
+
+接口：
+
+```text
+输入
+- msg
+- session_key
+- reply
+- tools_used
+- tool_chain
+- thinking
+- retrieval_raw
+- context_retry
+- post_turn_actions
+- dispatch_outbound
+
+输出
+- OutboundMessage
+```
+
+负责：
+
+- session append
+- observe trace
+- post_turn schedule
+- `post_turn_actions`
+- meme decorate
+- outbound dispatch
+
+也就是说：
+
+```text
+prepare 管“本轮怎么准备输入”
+commit  管“本轮怎么提交结果”
+```
+
+---
+
+### 3.5 Reasoner
+
+角色：
+
+```text
+执行层
+```
+
+现在是双层结构，但两层职责已经不同。
+
+#### `run_turn()`
+
+角色：
+
+```text
+完整被动执行入口
+```
+
+接口：
+
+```text
+输入
+- msg
+- session
+- skill_names
+- base_history
+- retrieved_memory_block
+
+输出
+- TurnRunResult
+```
+
+负责：
+
+- build retry plan
+- trim history / sections
+- build preflight
+- 调 `run()`
+- 生成 `TurnRunResult`
+
+`TurnRunResult` 目前包含：
+
+- `reply`
+- `tools_used`
+- `tool_chain`
+- `thinking`
+- `context_retry`
+
+#### `run()`
+
+角色：
+
+```text
+单次 tool loop 原语
+```
+
+接口：
+
+```text
+输入
+- initial_messages
+- request_time
+- preloaded_tools
+- preflight_injected
+
+输出
+- ReasonerResult
+```
+
+负责：
+
+- 调模型
+- 执行工具
+- tool_search 解锁
+- reflect
+- repeat guard
+- incomplete summary fallback
+
+这两层现在不要混淆：
+
+```text
+run_turn()
+├─ 完整被动执行
+└─ 包括 retry / trim / preflight
+
+run()
+├─ 低层 tool loop
+└─ 是执行原语
+```
+
+---
+
+## 4. 入参 / 出参协议
+
+### 4.1 CoreRunner
+
+```text
+CoreRunner.process(
+  msg,
+  key,
+  dispatch_outbound=True,
+) -> OutboundMessage
+```
+
+### 4.2 ContextStore
+
+```text
+ContextStore.prepare(
+  msg,
+  session_key,
+  session,
+) -> ContextBundle
+```
+
+```text
+ContextStore.commit(
+  msg,
+  session_key,
+  reply,
+  tools_used,
+  tool_chain,
+  thinking,
+  retrieval_raw,
+  context_retry,
+  post_turn_actions=None,
+  dispatch_outbound=True,
+) -> OutboundMessage
+```
+
+### 4.3 Reasoner
+
+```text
+Reasoner.run_turn(
+  msg,
+  session,
+  skill_names=None,
+  base_history=None,
+  retrieved_memory_block="",
+) -> TurnRunResult
+```
+
+```text
+Reasoner.run(
+  initial_messages,
+  request_time=None,
+  preloaded_tools=None,
+  preflight_injected=False,
+) -> ReasonerResult
+```
+
+### 4.4 AgentCore
+
+```text
+AgentCore.process(
+  msg,
+  key,
+  dispatch_outbound=True,
+) -> OutboundMessage
+```
+
+---
+
+## 5. 块内怎么做功能划分
+
+### 5.1 ContextStore 内部分工
+
+```text
+prepare
+├─ history -> retrieval 输入格式
+├─ retrieval request
+├─ skill mention 收集
+└─ ContextBundle
+
+commit
+├─ session append
+├─ runtime metadata update
+├─ observe
+├─ post_turn
+├─ post_turn_actions
+├─ meme decorate
+└─ outbound dispatch
+```
+
+### 5.2 Reasoner 内部分工
+
+```text
+run_turn
+├─ retry trace
+├─ trim plan
+├─ preflight
+├─ assembled input
+├─ 调 run
+└─ TurnRunResult
+
+run
+├─ tool visibility
+├─ llm call
+├─ tool execution
+├─ procedure hint / intercept
+├─ tool_search unlock
+├─ repeat guard
+└─ summary fallback
+```
+
+### 5.3 AgentCore 内部分工
+
+```text
+AgentCore
+├─ 读取 session
+├─ 取 ContextBundle
+├─ 渲染 prompt preview
+├─ 设置 tool context
+├─ 执行 run_turn
+└─ 提交 commit
+```
+
+这里故意不让 `AgentCore` 直接吸收：
+
+- retrieval 实现
+- retry 策略
+- tool loop 细节
+- commit 内部副作用
+
+否则它会重新膨胀成巨石。
+
+---
+
+## 6. 一次完整被动回复怎么跑
 
 ```text
 ┌──────────────┐
-│ 用户发来消息 │
+│ 用户消息进入 │
 └──────┬───────┘
-       │
-       ▼
+       v
 ┌──────────────────────┐
-│ Channel Adapter      │
-│ Telegram / QQ / CLI  │
+│ AgentLoop._process() │
 └──────┬───────────────┘
-       │ publish_inbound
-       ▼
+       v
 ┌──────────────────────┐
-│ MessageBus.inbound   │
+│ CoreRunner.process() │
 └──────┬───────────────┘
-       │ consume
-       ▼
+       v
 ┌──────────────────────┐
-│ AgentLoop.run()      │
+│ AgentCore.process()  │
+├──────────────────────┤
+│ 1. prepare           │
+│ 2. prompt preview    │
+│ 3. run_turn          │
+│ 4. commit            │
 └──────┬───────────────┘
-       │
-       ▼
-┌──────────────────────────────┐
-│ ConversationTurnHandler      │
-│ 1. 取 session                │
-│ 2. 跑 retrieval pipeline     │
-│ 3. 调用 LLM + tools          │
-│ 4. 交给 orchestrator 落盘     │
-└──────┬───────────────────────┘
-       │
-       ▼
+       v
 ┌──────────────────────┐
-│ TurnOrchestrator     │
-│ - 持久化 session      │
-│ - observe trace      │
-│ - post-turn 异步任务  │
-│ - 产出 OutboundMessage│
-└──────┬───────────────┘
-       │ publish_outbound
-       ▼
-┌──────────────────────┐
-│ MessageBus.outbound  │
-└──────┬───────────────┘
-       │ dispatch
-       ▼
-┌──────────────────────┐
-│ Channel send back    │
+│ OutboundMessage      │
 └──────────────────────┘
 ```
 
-### 4.2 主链分成四步
-
-#### 第一步：消息进入系统
-
-各 channel 会把外部平台消息统一转换成 `InboundMessage`，再投递进 `MessageBus`。
-
-这里的价值是：
-
-- 渠道差异先被吸收
-- 核心 Agent 不直接依赖 Telegram/QQ SDK
-- 后续扩渠道时，核心主链基本不用改
-
-#### 第二步：找到 session，组织上下文
-
-`AgentLoop` 先根据 `channel + chat_id` 找到会话，再从 `SessionManager` 取历史消息。
-
-这里的历史不是无限塞给模型，而是做了两层控制：
-
-- 会话窗口控制：只取最近若干轮
-- 工具结果裁剪：较老轮次的 `tool_result` 会被清空成占位符，避免上下文爆炸
-
-#### 第三步：先检索记忆，再让模型决定是否调工具
-
-这一层是整个项目和“普通聊天机器人”最不一样的地方。
-
-不是直接把用户消息 + 历史发给模型，而是先走 `DefaultMemoryRetrievalPipeline`：
+再展开一点：
 
 ```text
-┌────────────────────────────┐
-│ 当前用户消息                │
-└──────────┬─────────────────┘
-           │
-           ▼
-┌────────────────────────────┐
-│ Gate 阶段                   │
-│ - 是否需要查长期记忆         │
-│ - 改写 episodic query        │
-│ - 判断查哪些 memory type     │
-└──────────┬─────────────────┘
-           │
-           ├─ procedure / preference
-           │    规则类记忆
-           │
-           └─ event / profile
-                历史类记忆
-           │
-           ▼
-┌────────────────────────────┐
-│ Retriever                  │
-│ - embedding 检索            │
-│ - 阈值过滤                  │
-│ - 注入裁剪                  │
-└──────────┬─────────────────┘
-           │
-           ▼
-┌────────────────────────────┐
-│ memory block               │
-│ 注入到主模型上下文           │
-└────────────────────────────┘
+AgentCore
+├─ ContextStore.prepare()
+│  ├─ history
+│  ├─ retrieval
+│  └─ ContextBundle
+├─ Reasoner.run_turn()
+│  ├─ retry / trim / preflight
+│  └─ run()
+│     ├─ tool loop
+│     ├─ tool_search
+│     └─ final reply
+└─ ContextStore.commit()
+   ├─ session
+   ├─ observe
+   ├─ post_turn
+   ├─ meme
+   └─ dispatch
 ```
-
-这一步的目的很明确：
-
-- 让模型先看到“和当前问题最相关的长期记忆”
-- 降低纯靠上下文窗口硬撑的成本
-- 把“用户偏好 / 执行规程 / 历史事实 / 用户画像”从聊天记录里抽出来，形成可复用知识
-
-#### 第四步：工具调用 + 回复落盘
-
-模型进入 `TurnExecutor` / `SafetyRetryService` 之后，可以按需调工具。
-
-工具执行完成后，不是直接返回，而是交给 `TurnOrchestrator` 统一处理：
-
-- 把 user / assistant 消息写入 session
-- 保存工具链 `tool_chain`
-- 写 observe trace
-- 触发 post-turn 任务
-- 再投递到 outbound bus
-
-这个编排层的好处是：**回复生成** 和 **结果落地** 分开了，后续要改 trace、持久化、post-turn，不用碰主推理链。
 
 ---
 
-## 5. 记忆系统怎么设计
+## 7. 现在这套架构的意义
 
-### 5.1 为什么要拆成两层记忆
+当前被动层已经基本不是“高耦合巨石”了。
 
-这个项目不是只靠 session history。
-
-它实际上有两层：
+它的核心价值是：
 
 ```text
-┌──────────────────────────────┐
-│ 短期记忆：session/messages    │
-│ - 当前会话上下文              │
-│ - 最近几轮工具调用            │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│ 长期记忆：memory2             │
-│ - preference 用户偏好         │
-│ - procedure 执行规程          │
-│ - event 历史事实              │
-│ - profile 用户画像            │
-└──────────────────────────────┘
+┌──────────────────────────────────────┐
+│ 1. 主链被拆成 prepare / execute / commit │
+│ 2. 大块之间协议已经比较稳定          │
+│ 3. reviewer 能明确判断改动边界       │
+│ 4. 块内实现还能继续细拆              │
+└──────────────────────────────────────┘
 ```
 
-短期记忆解决“这轮上下文接不接得上”，长期记忆解决“系统过几天还记不记得你是谁、你喜欢什么、应该怎么做”。
-
-### 5.2 memory2 的核心能力
-
-`memory2` 不是单一向量表，而是一条完整链路：
-
-- `Embedder`
-  - 负责向 embedding 模型取向量
-- `Retriever`
-  - 负责按 memory type 检索并做阈值筛选
-- `Memorizer`
-  - 负责新记忆写入
-- `PostResponseMemoryWorker`
-  - 负责在回复后异步提取隐式记忆并写回
-- `ProfileFactExtractor`
-  - 负责从对话中抽用户画像事实
-- `DedupDecider`
-  - 负责去重和 supersede
-
-### 5.3 memory2 的读取链路
+更直接一点：
 
 ```text
-┌──────────────┐
-│ 当前用户消息 │
-└──────┬───────┘
-       │
-       ▼
-┌──────────────────────────────┐
-│ QueryRewriter / Gate         │
-│ 决定是否扩写、是否查历史       │
-└──────┬───────────────────────┘
-       │
-       ▼
-┌──────────────────────────────┐
-│ Retriever                    │
-│ 检 procedure/preference/event │
-│ /profile                     │
-└──────┬───────────────────────┘
-       │
-       ▼
-┌──────────────────────────────┐
-│ Injection Planner            │
-│ 把命中的记忆整理成 memory block │
-└──────┬───────────────────────┘
-       │
-       ▼
-┌──────────────────────────────┐
-│ LLM 上下文                   │
-└──────────────────────────────┘
+现在我们要改 retrieval
+不应该去改 commit
+
+现在我们要改 retry
+不应该去改 AgentCore 协议
+
+现在我们要改 dispatch
+不应该去改 Reasoner 内部
 ```
 
-### 5.4 memory2 的写入链路
+这就是这套分块真正想得到的效果。
 
-这个项目没有把记忆写入塞进主回复同步路径，而是放到 reply 后异步执行。
+---
 
-这样做很实用：
+## 8. 当前还没完全收尾的地方
 
-- 用户先收到回复，首响应更快
-- 记忆提取失败不会卡死主链
-- 记忆写入可以独立演进
+这套被动层已经基本成型，但还不是“所有边界都最终定案”。
 
-写入流程：
+当前还在收尾的主要是：
+
+- `AgentLoop` 仍然是 runtime shell + composer
+- 部分兼容 property 仍然保留
+- `Reasoner.run_turn()` / `run()` 的最终长期边界还没完全定死
+
+所以更准确的状态是：
 
 ```text
-┌────────────────────────────┐
-│ 本轮 user_msg + reply      │
-└──────────┬─────────────────┘
-           │
-           ▼
-┌────────────────────────────┐
-│ PostResponseMemoryWorker   │
-│ - 提取隐式偏好              │
-│ - 识别失效旧规则            │
-│ - profile 抽取              │
-│ - dedup / supersede         │
-└──────────┬─────────────────┘
-           │
-           ▼
-┌────────────────────────────┐
-│ MemoryStore2               │
-│ SQLite + 向量检索            │
-└────────────────────────────┘
+主骨架已成型
+正在收尾
+不是仍在混乱重构
 ```
-
-### 5.5 这套记忆设计的面试亮点
-
-- 不是“把所有聊天记录都塞上下文”
-- 记忆分类型，能解释为什么需要 `preference / procedure / event / profile`
-- 读写链路分离，主响应和记忆维护解耦
-- 有 dedup / supersede，说明记忆不是只增不改的垃圾堆
 
 ---
 
-## 6. 主动触达链路怎么跑
+## 9. 一句话总结
 
-被动对话解决“用户问，我回答”。  
-主动触达解决“用户没问，但系统判断现在应该说一句”。
-
-### 6.1 核心思路
-
-`ProactiveLoop` 独立运行，不依赖用户即时输入。
-
-它会周期性做这些事：
-
-- 拉内容源和告警源
-- 看最近聊天和用户状态
-- 评估当前是否适合打扰用户
-- 调 `AgentTick` 让模型做一次主动决策
-- 决定要不要发消息
-
-### 6.2 主动链路图
+当前被动回复层可以概括成：
 
 ```text
-┌──────────────────────┐
-│ ProactiveLoop.run()  │
-└──────────┬───────────┘
-           │ tick
-           ▼
-┌──────────────────────────────┐
-│ Sensor / MCP Sources         │
-│ - feed                        │
-│ - alert                       │
-│ - context                     │
-│ - recent chat                 │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│ AnyActionGate / Energy       │
-│ - 冷却                         │
-│ - 概率                         │
-│ - 忙碌判断                     │
-│ - 打扰成本                     │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│ AgentTick                    │
-│ - 组 prompt                   │
-│ - 跑 tool loop                │
-│ - 生成主动消息                 │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│ TurnOrchestrator             │
-│ - persist proactive msg      │
-│ - observe                    │
-│ - outbound                   │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌──────────────────────┐
-│ PushTool / Channel   │
-└──────────────────────┘
+AgentLoop 提供 runtime 入口
+CoreRunner 负责分流
+AgentCore 负责主编排
+ContextStore 负责准备与提交
+Reasoner 负责完整执行
 ```
 
-### 6.3 这条链的工程价值
-
-很多 Agent 项目只做到“问答”。  
-这个项目进一步往前走了一步：让 Agent 能做“主动服务”。
-
-主动链路的难点不是生成文本，而是控制“何时发、值不值得发、会不会重复发、会不会打扰用户”。
-
-所以你面试里可以强调：
-
-- 这不是简单定时任务
-- 它有：
-  - 用户活跃度感知
-  - 忙碌态避让
-  - 冷却与去重
-  - 外部 feed / alert 汇聚
-  - 主动消息持久化
-
----
-
-## 7. 工具系统怎么设计
-
-### 7.1 为什么单独做 ToolRegistry
-
-工具在这个项目里不是“顺手塞几个函数”，而是显式注册到 `ToolRegistry`。
-
-每个工具都有元信息：
-
-- `tags`
-- `risk`
-- `always_on`
-- `search_hint`
-
-这带来两个直接收益：
-
-- 模型能按需发现工具，而不是每轮暴露全量工具
-- 可以按风险、关键词做工具搜索和路由
-
-### 7.2 工具注册结构
+也就是：
 
 ```text
-┌──────────────────────────┐
-│ build_registered_tools() │
-└──────────┬───────────────┘
-           │
-           ├─ meta/common tools
-           ├─ memory tools
-           ├─ fitbit tools
-           ├─ spawn tool
-           ├─ scheduler tools
-           ├─ MCP tools
-           └─ peer agent tools
+大块抽象对接
+块内实现可继续拆
+主链协议逐步收稳
 ```
 
-### 7.3 目前工具来源
-
-- 本地内置工具
-  - 文件、shell、schedule、message_lookup、message_push 等
-- memory 工具
-  - `memorize`、SOP 文件写入
-- MCP 工具
-  - 外部 MCP server 暴露的能力
-- peer agent 工具
-  - 其他 agent 进程暴露出来的专家能力
-
-这说明它不是封闭单体，而是能继续向外接能力。
-
 ---
 
-## 8. 数据与持久化
+## 10. 用一条消息走完整个被动链
 
-### 8.1 会话数据
+只讲抽象，读起来容易“知道分层，但没感觉”。
 
-`SessionManager` + `SessionStore` 用 SQLite 管理：
+所以这里直接用一条消息走一遍当前主链。
 
-- `sessions`
-- `messages`
-- `messages_fts`
+### 10.1 示例消息
 
-所以这个项目的 session 不只是内存态，重启后还能恢复。
-
-### 8.2 长期记忆
-
-`memory2` 默认也是 SQLite 路径下存储，配合 embedding 检索使用。
-
-### 8.3 运行时状态
-
-还有几类轻量状态文件：
-
-- `presence.json`
-- `proactive_state.json`
-- observe traces
-
-整体思路是：
-
-- 核心业务数据进 SQLite
-- 轻量状态用 JSON
-- 不做过度复杂的基础设施依赖
-
-这很符合 MVP 项目的取舍。
-
----
-
-## 9. 可观测性与测试
-
-### 9.1 可观测性
-
-项目专门做了 observe trace：
-
-- 对话 turn trace
-- memory 写入 trace
-- proactive 配置与速率 trace
-
-这意味着出问题时不只能“猜 prompt”，还能看链路数据。
-
-### 9.2 测试策略
-
-测试分成公开和私有两层：
+假设用户发来一条 Telegram 消息：
 
 ```text
-┌──────────────────────────┐
-│ tests/                   │
-│ 单元 / 模块级测试         │
-└──────────┬───────────────┘
-           │
-           ▼
-┌──────────────────────────┐
-│ private_tests/           │
-│ 私有高保真 scenario /     │
-│ replay baseline          │
-└──────────────────────────┘
+“帮我看看明天北京天气，如果下雨提醒我带伞”
 ```
 
----
-
-## 10. 目录地图
+系统里首先拿到的是一条统一的 `InboundMessage`：
 
 ```text
-.
-├── main.py                 进程入口
-├── bootstrap/              运行时装配
-├── agent/                  被动对话主链
-│   ├── looping/            AgentLoop、handler、executor
-│   ├── turns/              turn 编排与出站
-│   ├── retrieval/          记忆检索流水线
-│   ├── tools/              工具定义与注册
-│   ├── mcp/                MCP 工具桥接
-│   └── background/         后台子任务 / subagent 管理
-├── proactive_v2/           主动触达链路
-├── memory2/                长期语义记忆
-├── session/                session 持久化
-├── bus/                    进程内消息总线
-├── infra/                  channel / provider 适配层
-├── core/                   observe / http / common
-├── tests/                  单元与模块测试
-├── private_tests/          私有测试子模块（高保真 scenario / replay）
-└── scripts/                运维 / 迁移 / 分析脚本
+InboundMessage
+├─ channel = "telegram"
+├─ chat_id = "123"
+├─ sender = "user"
+└─ content = "帮我看看明天北京天气，如果下雨提醒我带伞"
 ```
 
----
+### 10.2 第一步：进入 AgentLoop
 
-## 11. 面试时可以怎么讲
+`AgentLoop._process()` 收到这条消息。
 
-### 11.1 30 秒版本
+它这一层不负责“想怎么回答”，只负责：
 
-> 这是一个个人助理型 Agent。系统把 Telegram、QQ、CLI 等渠道消息统一进 `MessageBus`，由 `AgentLoop` 跑对话主链。主链不是直接把聊天记录塞给模型，而是先检索 `memory2` 的长期记忆，再决定是否调用工具，最后通过统一 orchestrator 落盘和回包。除此之外，我还做了一条 `ProactiveLoop`，它可以周期性读外部 feed 和用户状态，决定要不要主动推送消息。
+- 把它当成一次被动 turn
+- 交给 `CoreRunner`
+- 管 runtime 级别的 timeout / processing state
 
-### 11.2 3 分钟版本
+可以理解成：
 
-> 我把这个系统拆成三块：接入层、对话核心、主动服务。  
-> 接入层负责把 Telegram/QQ/CLI 这些外部渠道统一转成内部消息对象，放进 `MessageBus`。  
-> 对话核心由 `AgentLoop` 驱动，一轮消息大概会经历四步：先找到对应 session，取最近历史；然后走 `memory2` 检索，把偏好、规程、历史事实、用户画像整理成 memory block 注入上下文；接着模型决定是否调工具；最后 `TurnOrchestrator` 统一做持久化、trace 和回包。  
-> 除了被动问答，我还做了 `ProactiveLoop`。它会定期轮询外部内容源、结合用户活跃度和冷却状态做打扰决策，再由 `AgentTick` 生成主动消息。这样这个项目就不是单纯聊天机器人，而是一个能持续服务用户的助理系统。
-
-### 11.3 如果面试官追问“亮点是什么”
-
-- 不是简单 ChatBot，而是被动对话 + 主动触达双链路
-- 不是只靠上下文窗口，而是做了长期记忆系统
-- 记忆不是只写不管，有去重、失效和 supersede
-- 工具体系有 registry、关键词搜索和 MCP 扩展能力
-- 测试以单元和模块级验证为主
-- 高保真私有场景测试通过 `private_tests/` 子模块维护
-
-### 11.4 如果面试官追问“难点是什么”
-
-- 如何把渠道差异收敛到统一消息模型
-- 如何让记忆命中有用，而不是把噪音塞进 prompt
-- 如何在不拖慢主响应的前提下做回复后记忆写回
-- 如何控制主动触达的打扰成本，避免乱推
-
-### 11.5 如果面试官追问“还有哪些不足”
-
-这部分建议诚实说：
-
-- 当前是 MVP，重点在闭环，不是高可用分布式架构
-- 主动链和被动链虽然已经比较清楚，但还没有完全统一成同一套 turn runtime
-- 部分能力依赖外部模型质量，稳定性仍需要靠更多真实场景测试继续压
-- 配置项已经不少，后续还可以继续收敛默认值和运行模式
-
----
-
-## 12. 我个人认为这个项目最值得讲的点
-
-如果时间不多，优先讲这四个：
-
-1. `MessageBus + AgentLoop` 让多渠道输入收敛成统一对话主链
-2. `memory2` 让系统具备长期记忆，而不是只靠上下文窗口
-3. `TurnOrchestrator` 把“生成回复”和“结果落地”拆开
-4. `ProactiveLoop` 让系统从“等用户问”进化到“主动服务”
-
----
-
-## 13. 运行方式
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements-dev.txt
-cp config.example.json config.json
-python main.py
+```text
+AgentLoop
+└─ 这条消息要不要处理？
+   要。
+   交给 CoreRunner。
 ```
 
-本地 CLI：
+### 10.3 第二步：CoreRunner 分流
 
-```bash
-python main.py cli
+`CoreRunner.process()` 先判断：
+
+```text
+这是不是 spawn completion 内部事件？
 ```
 
-单元测试：
+这条是普通用户消息，所以直接走：
 
-```bash
-pytest tests/
+```text
+CoreRunner
+└─ AgentCore.process()
 ```
 
-私有 scenario / replay：
+这层的意义是让外层 runtime 不需要知道：
 
-```bash
-AKASIC_RUN_SCENARIOS=1 pytest -c private_tests/pytest-scenarios.ini private_tests/tests_scenarios/
+- 普通消息怎么跑
+- 内部事件怎么跑
+
+### 10.4 第三步：AgentCore 开始主编排
+
+`AgentCore.process()` 开始串主流程。
+
+它做的第一件事是：
+
+```text
+session = session_manager.get_or_create(key)
 ```
 
-## 14. 结论
+也就是先找到这条消息对应的会话。
 
-从工程角度看，这个项目最核心的价值，不是“接了几个模型 API”，而是把一个个人助理 Agent 真正拆成了可运行的系统：
+然后进入：
 
-- 有接入层
-- 有主对话链
-- 有长期记忆
-- 有工具体系
-- 有主动触达
-- 有持久化和可观测性
+```text
+ContextStore.prepare()
+```
 
-如果你在面试里把这几个层次和它们之间的数据流讲清楚，这个项目的说服力会比“我做了一个聊天机器人”强很多。
+### 10.5 第四步：ContextStore.prepare 准备输入
+
+`prepare()` 会做这几件事：
+
+```text
+1. 读取 session history
+2. 调 retrieval pipeline
+3. 收 skill mentions
+4. 生成 ContextBundle
+```
+
+如果这条天气消息命中了长期记忆或流程记忆，这一步会把相关内容整理进：
+
+- `retrieved_memory_block`
+- `retrieval_trace_raw`
+- `skill_mentions`
+
+最后产出：
+
+```text
+ContextBundle
+├─ history
+├─ skill_mentions
+├─ retrieved_memory_block
+└─ retrieval_trace_raw
+```
+
+这一步的意义是：
+
+```text
+把“本轮需要喂给执行层的输入”
+一次性准备好
+```
+
+### 10.6 第五步：AgentCore 补 prompt 预览和 tool context
+
+拿到 `ContextBundle` 后，`AgentCore` 会：
+
+```text
+1. build_system_prompt(...)
+2. tools.set_context(channel, chat_id)
+```
+
+这里的 `tool context` 很重要。
+
+因为后面如果真的调用天气工具、定时提醒工具，工具运行时要知道：
+
+- 当前来自哪个 channel
+- 当前属于哪个 chat_id
+
+### 10.7 第六步：Reasoner.run_turn 执行完整被动 turn
+
+然后进入真正的执行层：
+
+```text
+reasoner.run_turn(...)
+```
+
+对于这条天气消息，`run_turn()` 负责的是：
+
+```text
+1. build retry plan
+2. trim history / sections
+3. build preflight
+4. 调 run()
+5. 产出 TurnRunResult
+```
+
+也就是说，这一层负责“这一整轮怎么执行”，而不只是“调一次模型”。
+
+### 10.8 第七步：Reasoner.run 做底层 tool loop
+
+`run_turn()` 内部会继续调用：
+
+```text
+run()
+```
+
+这一层做的是低层 tool loop：
+
+```text
+1. 带着当前 messages 调模型
+2. 如果模型要调工具，就执行工具
+3. 如果模型调用 tool_search，就解锁更多工具
+4. 如果出现重复调用，就做 repeat guard
+5. 如果达到上限，就做 incomplete summary fallback
+```
+
+比如在天气这个例子里，可能发生的是：
+
+```text
+模型先决定调用天气工具
+-> 工具返回“明天北京有雨”
+-> 模型生成最终回复
+```
+
+也可能发生的是：
+
+```text
+模型先 tool_search 找天气相关工具
+-> 解锁
+-> 再调用真实天气工具
+-> 再生成回复
+```
+
+最后 `run_turn()` 会收成一个统一结果：
+
+```text
+TurnRunResult
+├─ reply
+├─ tools_used
+├─ tool_chain
+├─ thinking
+└─ context_retry
+```
+
+### 10.9 第八步：AgentCore 把执行结果交给 commit
+
+`AgentCore` 拿到 `TurnRunResult` 后，不自己落盘，不自己发消息，而是统一交给：
+
+```text
+ContextStore.commit()
+```
+
+传进去的就是这一轮执行产物：
+
+- `reply`
+- `tools_used`
+- `tool_chain`
+- `thinking`
+- `retrieval_raw`
+- `context_retry`
+
+### 10.10 第九步：ContextStore.commit 提交这一轮结果
+
+`commit()` 会统一做：
+
+```text
+1. session append
+2. observe trace
+3. post_turn schedule
+4. post_turn_actions
+5. meme decorate
+6. outbound dispatch
+```
+
+对这条天气消息来说，它最终会：
+
+- 把 user / assistant 两条消息写进 session
+- 记录 trace
+- 安排 post-turn 后台动作
+- 生成最终 `OutboundMessage`
+- 通过 outbound 发回 Telegram
+
+### 10.11 最终结果
+
+所以从这条消息的视角看，整条链是：
+
+```text
+用户消息
+-> AgentLoop
+-> CoreRunner
+-> AgentCore
+-> ContextStore.prepare
+-> Reasoner.run_turn
+-> Reasoner.run
+-> ContextStore.commit
+-> OutboundMessage
+```
+
+而从职责视角看，是：
+
+```text
+AgentLoop      管入口
+CoreRunner     管分流
+AgentCore      管编排
+ContextStore   管准备与提交
+Reasoner       管执行
+```
+
+这就是现在这套被动回复层最核心的设计。
