@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.context import ContextBuilder
+from agent.core.agent_core import AgentCore, AgentCoreDeps
+from agent.core.context_store import DefaultContextStore
+from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.looping.consolidation import (
     ConsolidationService,
     _select_consolidation_window,
@@ -99,6 +102,7 @@ class AgentLoopDeps:
     orchestrator: TurnOrchestrator | None = None
     conversation_handler: ConversationTurnHandler | None = None
     internal_event_handler: InternalEventHandler | None = None
+    core_runner: CoreRunner | None = None
 
 
 @dataclass
@@ -277,6 +281,25 @@ class AgentLoop:
             run_agent_loop_fn=self._run_agent_loop,
             orchestrator=turn_orchestrator,
         )
+        self._agent_core = AgentCore(
+            AgentCoreDeps(
+                session=session_svc,
+                context_store=DefaultContextStore(
+                    retrieval=retrieval_pipeline,
+                    context=self.context,
+                ),
+                context=self.context,
+                tools=deps.tools,
+                turn_runner=self._safety_retry,
+                orchestrator=turn_orchestrator,
+            )
+        )
+        self._core_runner = deps.core_runner or CoreRunner(
+            CoreRunnerDeps(
+                agent_core=self._agent_core,
+                internal_event_handler=self._internal_event_handler,
+            )
+        )
 
     async def run(self) -> None:
         self._running = True
@@ -351,9 +374,7 @@ class AgentLoop:
         *,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        if self._is_spawn_completion(msg):
-            return await self._internal_event_handler.process_spawn_completion(msg, key)
-        return await self._conversation_handler.process(
+        return await self._core_runner.process(
             msg,
             key,
             dispatch_outbound=dispatch_outbound,
