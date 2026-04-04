@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from agent.core.types import ChatMessage, ContextBundle
+from agent.looping.memory_gate import _update_session_runtime_metadata
 from agent.looping.turn_types import HistoryMessage, to_tool_call_groups
+from agent.postturn.protocol import PostTurnEvent
 from agent.retrieval.protocol import RetrievalRequest
+from agent.turns.outbound import OutboundDispatch
+from bus.events import OutboundMessage
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.looping.ports import SessionLike
+    from agent.looping.ports import ObservabilityServices, SessionLike, SessionServices
+    from agent.memes.decorator import MemeDecorator
+    from agent.postturn.protocol import PostTurnPipeline
     from agent.retrieval.protocol import MemoryRetrievalPipeline
+    from agent.turns.outbound import OutboundPort
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
@@ -40,6 +49,23 @@ class ContextStore(ABC):
     ) -> ContextBundle:
         """准备本轮对话需要的上下文。"""
 
+    @abstractmethod
+    async def commit(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        reply: str,
+        tools_used: list[str],
+        tool_chain: list[dict],
+        thinking: str | None,
+        retrieval_raw: object | None,
+        context_retry: dict[str, object],
+        side_effects: list[object] | None = None,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        """提交本轮被动 turn，并返回最终出站消息。"""
+
 
 class DefaultContextStore(ContextStore):
     def __init__(
@@ -47,9 +73,19 @@ class DefaultContextStore(ContextStore):
         *,
         retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
+        session: "SessionServices | None" = None,
+        trace: "ObservabilityServices | None" = None,
+        post_turn: "PostTurnPipeline | None" = None,
+        outbound: "OutboundPort | None" = None,
+        meme_decorator: "MemeDecorator | None" = None,
     ) -> None:
         self._retrieval = retrieval
         self._context = context
+        self._session = session
+        self._trace = trace
+        self._post_turn = post_turn
+        self._outbound = outbound
+        self._meme_decorator = meme_decorator
 
     async def prepare(
         self,
@@ -99,6 +135,115 @@ class DefaultContextStore(ContextStore):
             },
         )
 
+    async def commit(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        reply: str,
+        tools_used: list[str],
+        tool_chain: list[dict],
+        thinking: str | None,
+        retrieval_raw: object | None,
+        context_retry: dict[str, object],
+        side_effects: list[object] | None = None,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        if (
+            self._session is None
+            or self._trace is None
+            or self._post_turn is None
+            or self._outbound is None
+        ):
+            raise RuntimeError("ContextStore.commit requires session/trace/post_turn/outbound")
+
+        # 1. 先做 meme decorate，并准备最终回复文本。
+        final_content = reply
+        meme_media: list[str] = []
+        meme_tag: str | None = None
+        if self._meme_decorator is not None:
+            decorated = self._meme_decorator.decorate(final_content)
+            final_content = decorated.content
+            meme_media = decorated.media
+            meme_tag = decorated.tag
+
+        # 2. 再把 user/assistant 两条消息持久化到 session。
+        session = self._session.session_manager.get_or_create(session_key)
+        if self._session.presence:
+            self._session.presence.record_user_message(session.key)
+        session.add_message("user", msg.content, media=msg.media if msg.media else None)
+        session.add_message(
+            "assistant",
+            final_content,
+            tools_used=tools_used if tools_used else None,
+            tool_chain=tool_chain if tool_chain else None,
+        )
+        _update_session_runtime_metadata(
+            session,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
+        await self._session.session_manager.append_messages(session, session.messages[-2:])
+
+        # 3. 发 observe trace，并安排 post_turn。
+        _emit_observe_traces(
+            trace=self._trace,
+            session_key=session_key,
+            msg=msg,
+            final_content=final_content,
+            raw_content=reply,
+            meme_tag=meme_tag,
+            meme_media_count=len(meme_media),
+            tool_chain=tool_chain,
+            retrieval_raw=retrieval_raw,
+        )
+        self._post_turn.schedule(
+            PostTurnEvent(
+                session_key=session_key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                user_message=msg.content,
+                assistant_response=final_content,
+                tools_used=tools_used,
+                tool_chain=to_tool_call_groups(tool_chain),
+                session=session,
+                timestamp=msg.timestamp,
+                extra=(
+                    {"skip_post_memory": True}
+                    if (msg.metadata or {}).get("skip_post_memory")
+                    else {}
+                ),
+            )
+        )
+        await _run_effects(side_effects or [])
+
+        # 4. 最后构造 outbound，并按需 dispatch。
+        outbound = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            thinking=thinking,
+            media=meme_media,
+            metadata={
+                **(msg.metadata or {}),
+                "tools_used": tools_used,
+                "tool_chain": tool_chain,
+                "context_retry": context_retry,
+            },
+        )
+        if dispatch_outbound:
+            await self._outbound.dispatch(
+                OutboundDispatch(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=outbound.content,
+                    thinking=outbound.thinking,
+                    metadata=outbound.metadata,
+                    media=meme_media,
+                )
+            )
+        return outbound
+
 
 def _collect_skill_mentions(content: str, skills: list[dict]) -> list[str]:
     raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", content)
@@ -145,3 +290,76 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
             )
         )
     return out
+
+
+def _emit_observe_traces(
+    *,
+    trace: "ObservabilityServices",
+    session_key: str,
+    msg: "InboundMessage",
+    final_content: str,
+    raw_content: str,
+    meme_tag: str | None,
+    meme_media_count: int,
+    tool_chain: list[dict],
+    retrieval_raw: object | None,
+) -> None:
+    writer = trace.observe_writer
+    if writer is None:
+        return
+    from core.observe.events import TurnTrace as TurnTraceEvent
+
+    tool_calls = [
+        {
+            "name": call.get("name", ""),
+            "args": str(call.get("arguments", ""))[:300],
+            "result": str(call.get("result", ""))[:500],
+        }
+        for group in tool_chain
+        for call in (group.get("calls") or [])
+    ]
+
+    def _slim_chain(chain: list[dict]) -> list[dict]:
+        out = []
+        for group in chain:
+            text = str(group.get("text") or "")
+            calls = [
+                {
+                    "name": c.get("name", ""),
+                    "args": str(c.get("arguments", ""))[:800],
+                    "result": str(c.get("result", ""))[:1200],
+                }
+                for c in (group.get("calls") or [])
+            ]
+            out.append({"text": text, "calls": calls})
+        return out
+
+    tool_chain_json = (
+        json.dumps(_slim_chain(tool_chain), ensure_ascii=False) if tool_chain else None
+    )
+
+    writer.emit(
+        TurnTraceEvent(
+            source="agent",
+            session_key=session_key,
+            user_msg=msg.content,
+            llm_output=final_content,
+            raw_llm_output=raw_content,
+            meme_tag=meme_tag,
+            meme_media_count=meme_media_count,
+            tool_calls=tool_calls,
+            tool_chain_json=tool_chain_json,
+        )
+    )
+    if retrieval_raw is not None:
+        writer.emit(retrieval_raw)
+
+
+async def _run_effects(effects: list[object]) -> None:
+    for effect in effects:
+        try:
+            maybe = effect.run()
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception as e:
+            logger.warning("turn side effect failed: %s", e)

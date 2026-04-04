@@ -287,11 +287,15 @@ class AgentLoop:
                 context_store=DefaultContextStore(
                     retrieval=retrieval_pipeline,
                     context=self.context,
+                    session=session_svc,
+                    trace=trace_svc,
+                    post_turn=post_turn_pipeline,
+                    outbound=BusOutboundPort(self.bus),
+                    meme_decorator=turn_orchestrator._meme_decorator,
                 ),
                 context=self.context,
                 tools=deps.tools,
                 turn_runner=self._safety_retry,
-                orchestrator=turn_orchestrator,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(

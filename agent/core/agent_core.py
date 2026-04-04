@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
@@ -11,7 +10,6 @@ if TYPE_CHECKING:
     from agent.core.context_store import ContextStore
     from agent.looping.ports import SessionServices, TurnRunner
     from agent.tools.registry import ToolRegistry
-    from agent.turns.orchestrator import TurnOrchestrator
 
 
 @dataclass
@@ -21,7 +19,6 @@ class AgentCoreDeps:
     context: "ContextBuilder"
     tools: "ToolRegistry"
     turn_runner: "TurnRunner"
-    orchestrator: "TurnOrchestrator"
 
 
 class AgentCore:
@@ -43,7 +40,6 @@ class AgentCore:
         self._context = deps.context
         self._tools = deps.tools
         self._turn_runner = deps.turn_runner
-        self._orchestrator = deps.orchestrator
 
     async def process(
         self,
@@ -81,26 +77,18 @@ class AgentCore:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
-        # 4. 继续委托旧 orchestrator 做 commit / outbound。
+        # 4. 继续走新的 ContextStore.commit 做被动 turn 提交。
         retry_trace = getattr(self._turn_runner, "last_retry_trace", {})
-        result = TurnResult(
-            decision="reply",
-            outbound=TurnOutbound(session_key=key, content=final_content),
-            trace=TurnTrace(
-                source="passive",
-                retrieval={"raw": context_bundle.metadata.get("retrieval_trace_raw")},
-                extra={
-                    "tools_used": tools_used,
-                    "tool_chain": tool_chain,
-                    "thinking": thinking,
-                    "context_retry": retry_trace,
-                },
-            ),
-        )
-
-        # 5. 返回最终出站消息。
-        return await self._orchestrator.handle_turn(
+        side_effects = list(getattr(self._turn_runner, "last_side_effects", []) or [])
+        return await self._context_store.commit(
             msg=msg,
-            result=result,
+            session_key=key,
+            reply=final_content,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+            thinking=thinking,
+            retrieval_raw=context_bundle.metadata.get("retrieval_trace_raw"),
+            context_retry=retry_trace,
+            side_effects=side_effects,
             dispatch_outbound=dispatch_outbound,
         )

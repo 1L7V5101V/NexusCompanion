@@ -53,11 +53,9 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         ),
         last_retry_trace={"selected_plan": "full"},
     )
-    orchestrator = SimpleNamespace(
-        handle_turn=AsyncMock(
-            side_effect=lambda **kwargs: order.append("commit")
-            or OutboundMessage(channel="telegram", chat_id="123", content="final")
-        )
+    context_store.commit = AsyncMock(
+        side_effect=lambda **kwargs: order.append("commit")
+        or OutboundMessage(channel="telegram", chat_id="123", content="final")
     )
     agent_core = AgentCore(
         AgentCoreDeps(
@@ -70,7 +68,6 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
             context=context,
             tools=tools,
             turn_runner=turn_runner,
-            orchestrator=orchestrator,
         )
     )
     msg = InboundMessage(
@@ -89,14 +86,19 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
     assert turn_runner.run.await_args.kwargs["skill_names"] == ["refactor"]
     assert turn_runner.run.await_args.kwargs["retrieved_memory_block"] == "remembered"
-    result = orchestrator.handle_turn.await_args.kwargs["result"]
-    assert result.trace.retrieval == {"raw": {"route": "RETRIEVE"}}
-    assert result.trace.extra["thinking"] == "think"
+    assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
+    assert context_store.commit.await_args.kwargs["thinking"] == "think"
 
 
 @pytest.mark.asyncio
 async def test_agent_core_process_coerces_empty_reply_before_commit():
     session = _DummySession("cli:1")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle(metadata={})),
+        commit=AsyncMock(
+            return_value=OutboundMessage(channel="cli", chat_id="1", content="fallback")
+        )
+    )
     agent_core = AgentCore(
         AgentCoreDeps(
             session=SimpleNamespace(
@@ -104,19 +106,12 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                     get_or_create=MagicMock(return_value=session)
                 )
             ),
-            context_store=SimpleNamespace(
-                prepare=AsyncMock(return_value=ContextBundle(metadata={}))
-            ),
+            context_store=context_store,
             context=SimpleNamespace(build_system_prompt=MagicMock(return_value="prompt")),
             tools=SimpleNamespace(set_context=MagicMock()),
             turn_runner=SimpleNamespace(
                 run=AsyncMock(return_value=(None, [], [], None)),
                 last_retry_trace={},
-            ),
-            orchestrator=SimpleNamespace(
-                handle_turn=AsyncMock(
-                    return_value=OutboundMessage(channel="cli", chat_id="1", content="fallback")
-                )
             ),
         )
     )
@@ -124,5 +119,4 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
 
     await agent_core.process(msg, "cli:1")
 
-    result = agent_core._orchestrator.handle_turn.await_args.kwargs["result"]
-    assert "no response to give" in result.outbound.content
+    assert "no response to give" in context_store.commit.await_args.kwargs["reply"]
