@@ -6,22 +6,19 @@ from typing import Any, Callable
 
 from agent.config_models import Config
 from agent.context import ContextBuilder
+from agent.core.context_store import DefaultContextStore
 from agent.looping.consolidation import ConsolidationService
-from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
 from agent.looping.ports import (
-    ConversationTurnDeps,
     LLMServices,
     MemoryServices,
     ObservabilityServices,
     SessionServices,
     TurnScheduler,
 )
-from agent.looping.safety_retry import SafetyRetryService
-from agent.looping.tool_execution import ToolDiscoveryState, TurnExecutor
 from agent.mcp.registry import McpServerRegistry
 from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.provider import LLMProvider
@@ -245,24 +242,6 @@ def _build_loop_deps(
     )
     session_services = SessionServices(session_manager=session_manager, presence=presence)
     trace_services = ObservabilityServices(workspace=workspace, observe_writer=observe_writer)
-    tool_discovery = ToolDiscoveryState()
-    turn_executor = TurnExecutor(
-        llm=llm_services,
-        llm_config=llm_config,
-        tools=tools,
-        discovery=tool_discovery,
-        memory_port=memory_runtime.port,
-        tool_search_enabled=bool(llm_config.tool_search_enabled),
-    )
-    safety_retry = SafetyRetryService(
-        executor=turn_executor,
-        context=context,
-        session_manager=session_manager,
-        tools=tools,
-        discovery=tool_discovery,
-        tool_search_enabled=bool(llm_config.tool_search_enabled),
-        memory_window=memory_config.window,
-    )
     consolidation = ConsolidationService(
         memory_port=memory_runtime.port,
         provider=provider,
@@ -292,34 +271,25 @@ def _build_loop_deps(
         scheduler=turn_scheduler,
         post_mem_worker=memory_runtime.post_response_worker,
     )
+    passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
+    passive_context_store = DefaultContextStore(
+        retrieval=retrieval_pipeline,
+        context=context,
+        session=session_services,
+        trace=trace_services,
+        post_turn=post_turn_pipeline,
+        outbound=BusOutboundPort(bus),
+        meme_decorator=passive_meme_decorator,
+    )
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=session_services,
             trace=trace_services,
             post_turn=post_turn_pipeline,
             outbound=BusOutboundPort(bus),
-            meme_decorator=MemeDecorator(MemeCatalog(workspace / "memes")),
+            meme_decorator=passive_meme_decorator,
+            passive_context_store=passive_context_store,
         )
-    )
-    conversation_handler = ConversationTurnHandler(
-        ConversationTurnDeps(
-            llm=llm_services,
-            llm_config=llm_config,
-            turn_runner=safety_retry,
-            retrieval=retrieval_pipeline,
-            orchestrator=orchestrator,
-            session=session_services,
-            tools=tools,
-            context=context,
-        )
-    )
-    internal_event_handler = InternalEventHandler(
-        session_svc=session_services,
-        context=context,
-        tools=tools,
-        memory_window=memory_config.window,
-        run_agent_loop_fn=turn_executor.execute,
-        orchestrator=orchestrator,
     )
     return AgentLoopDeps(
         bus=bus,
@@ -343,14 +313,9 @@ def _build_loop_deps(
         session_services=session_services,
         observability_services=trace_services,
         hyde_enhancer=hyde_enhancer,
-        tool_discovery=tool_discovery,
-        turn_executor=turn_executor,
-        safety_retry=safety_retry,
         consolidation_service=consolidation,
         scheduler=turn_scheduler,
         orchestrator=orchestrator,
-        conversation_handler=conversation_handler,
-        internal_event_handler=internal_event_handler,
     )
 
 

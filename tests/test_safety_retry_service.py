@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from agent.core.types import ReasonerResult
 from agent.looping.safety_retry import SafetyRetryService
 from agent.looping.tool_execution import ToolDiscoveryState
 from agent.provider import ContentSafetyError, ContextLengthError
@@ -38,16 +39,19 @@ def test_safety_retry_retries_and_updates_discovery():
     discovery = ToolDiscoveryState()
     discovery._unlocked = {"s:1": OrderedDict({"old": None})}
 
-    executor = SimpleNamespace(
-        execute=AsyncMock(
+    reasoner = SimpleNamespace(
+        run=AsyncMock(
             side_effect=[
                 ContentSafetyError("blocked"),
-                ("ok", ["tool_search", "x"], [], None, None),
+                ReasonerResult(
+                    reply="ok",
+                    metadata={"tools_used": ["tool_search", "x"], "tool_chain": []},
+                ),
             ]
         )
     )
     service = SafetyRetryService(
-        executor=executor,
+        reasoner=reasoner,
         context=SimpleNamespace(
             build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}],
             build_runtime_guard_context=_stub_runtime_guard_context,
@@ -70,7 +74,7 @@ def test_safety_retry_retries_and_updates_discovery():
 
 def test_safety_retry_context_length_all_fail_returns_fallback():
     service = SafetyRetryService(
-        executor=SimpleNamespace(execute=AsyncMock(side_effect=[ContextLengthError("long")] * 7)),
+        reasoner=SimpleNamespace(run=AsyncMock(side_effect=[ContextLengthError("long")] * 7)),
         context=SimpleNamespace(
             build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}],
             build_runtime_guard_context=_stub_runtime_guard_context,
@@ -100,16 +104,19 @@ def test_safety_retry_context_length_trims_dynamic_sections_before_history():
         )
         return kwargs["history"] + [{"role": "user"}]
 
-    executor = SimpleNamespace(
-        execute=AsyncMock(
+    reasoner = SimpleNamespace(
+        run=AsyncMock(
             side_effect=[
                 ContextLengthError("long"),
-                ("ok", [], [], None, None),
+                ReasonerResult(
+                    reply="ok",
+                    metadata={"tools_used": [], "tool_chain": []},
+                ),
             ]
         )
     )
     service = SafetyRetryService(
-        executor=executor,
+        reasoner=reasoner,
         context=SimpleNamespace(
             build_messages=_build_messages,
             build_runtime_guard_context=_stub_runtime_guard_context,

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from agent.context import ContextBuilder
 from agent.core.agent_core import AgentCore, AgentCoreDeps
 from agent.core.context_store import DefaultContextStore
+from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.looping.consolidation import (
     ConsolidationService,
@@ -18,7 +19,6 @@ from agent.looping.consolidation import (
 from agent.looping.handlers import ConversationTurnHandler, InternalEventHandler
 
 from agent.looping.ports import (
-    ConversationTurnDeps,
     LLMConfig,
     LLMServices,
     MemoryConfig,
@@ -43,10 +43,9 @@ __all__ = [
     "MemoryConfig",
 ]
 from agent.looping.safety_retry import SafetyRetryService
-from agent.looping.tool_execution import (
-    ToolDiscoveryState,
-    TurnExecutor,
-)
+from agent.looping.tool_execution import ToolDiscoveryState
+from agent.memes.catalog import MemeCatalog
+from agent.memes.decorator import MemeDecorator
 from bus.events import InboundMessage, OutboundMessage
 from bus.internal_events import is_spawn_completion_message
 from bus.processing import ProcessingState
@@ -95,7 +94,6 @@ class AgentLoopDeps:
     observability_services: ObservabilityServices | None = None
     hyde_enhancer: "HyDEEnhancer | None" = None
     tool_discovery: ToolDiscoveryState | None = None
-    turn_executor: TurnExecutor | None = None
     safety_retry: SafetyRetryService | None = None
     consolidation_service: ConsolidationService | None = None
     scheduler: TurnScheduler | None = None
@@ -195,7 +193,7 @@ class AgentLoop:
             observe_writer=deps.observe_writer,
         )
         self._tool_discovery = deps.tool_discovery or ToolDiscoveryState()
-        self._turn_executor = deps.turn_executor or TurnExecutor(
+        self._reasoner = DefaultReasoner(
             llm=llm_svc,
             llm_config=config.llm,
             tools=deps.tools,
@@ -204,7 +202,7 @@ class AgentLoop:
             tool_search_enabled=self._tool_search_enabled,
         )
         self._safety_retry = deps.safety_retry or SafetyRetryService(
-            executor=self._turn_executor,
+            reasoner=self._reasoner,
             context=self.context,
             session_manager=self.session_manager,
             tools=self.tools,
@@ -248,9 +246,20 @@ class AgentLoop:
             workspace=deps.workspace,
             light_model=self.light_model,
         )
+        self._retrieval_pipeline = retrieval_pipeline
         post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
             scheduler=self._scheduler,
             post_mem_worker=post_mem_worker,
+        )
+        passive_meme_decorator = MemeDecorator(MemeCatalog(self.workspace / "memes"))
+        passive_context_store = DefaultContextStore(
+            retrieval=retrieval_pipeline,
+            context=self.context,
+            session=session_svc,
+            trace=trace_svc,
+            post_turn=post_turn_pipeline,
+            outbound=BusOutboundPort(self.bus),
+            meme_decorator=passive_meme_decorator,
         )
         turn_orchestrator = deps.orchestrator or TurnOrchestrator(
             TurnOrchestratorDeps(
@@ -258,49 +267,34 @@ class AgentLoop:
                 trace=trace_svc,
                 post_turn=post_turn_pipeline,
                 outbound=BusOutboundPort(self.bus),
+                meme_decorator=passive_meme_decorator,
+                passive_context_store=passive_context_store,
             )
         )
 
-        self._conversation_handler = deps.conversation_handler or ConversationTurnHandler(
-            ConversationTurnDeps(
-                llm=llm_svc,
-                llm_config=config.llm,
-                turn_runner=self._safety_retry,
-                retrieval=retrieval_pipeline,
-                orchestrator=turn_orchestrator,
-                session=session_svc,
-                tools=deps.tools,
-                context=self.context,
-            )
-        )
-        self._internal_event_handler = deps.internal_event_handler or InternalEventHandler(
-            session_svc=session_svc,
-            context=self.context,
-            tools=deps.tools,
-            memory_window=config.memory.window,
-            run_agent_loop_fn=self._run_agent_loop,
-            orchestrator=turn_orchestrator,
-        )
+        self._conversation_handler = deps.conversation_handler
+        self._internal_event_handler = deps.internal_event_handler
         self._agent_core = AgentCore(
             AgentCoreDeps(
                 session=session_svc,
-                context_store=DefaultContextStore(
-                    retrieval=retrieval_pipeline,
-                    context=self.context,
-                    session=session_svc,
-                    trace=trace_svc,
-                    post_turn=post_turn_pipeline,
-                    outbound=BusOutboundPort(self.bus),
-                    meme_decorator=turn_orchestrator._meme_decorator,
-                ),
+                context_store=passive_context_store,
                 context=self.context,
                 tools=deps.tools,
                 turn_runner=self._safety_retry,
             )
         )
+        if isinstance(self._conversation_handler, ConversationTurnHandler):
+            self._conversation_handler.bind_agent_core(self._agent_core)
         self._core_runner = deps.core_runner or CoreRunner(
             CoreRunnerDeps(
                 agent_core=self._agent_core,
+                conversation_handler=self._conversation_handler,
+                session=session_svc,
+                context=self.context,
+                context_store=passive_context_store,
+                tools=deps.tools,
+                memory_window=config.memory.window,
+                run_agent_loop_fn=self._run_agent_loop,
                 internal_event_handler=self._internal_event_handler,
             )
         )
@@ -410,11 +404,16 @@ class AgentLoop:
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
-        return await self._turn_executor.execute(
+        # 1. 内部事件链统一直接走新 Reasoner。
+        result = await self._reasoner.run(
             initial_messages,
             request_time=request_time,
             preloaded_tools=preloaded_tools,
         )
+        tools_used = list(result.metadata.get("tools_used") or [])
+        tool_chain = list(result.metadata.get("tool_chain") or [])
+        visible_names = result.metadata.get("visible_names")
+        return result.reply, tools_used, tool_chain, visible_names, result.thinking
 
     async def _run_with_safety_retry(
         self,
@@ -446,7 +445,7 @@ class AgentLoop:
 
     @staticmethod
     def _format_request_time_anchor(ts: datetime | None) -> str:
-        return TurnExecutor._format_request_time_anchor(ts)
+        return DefaultReasoner.format_request_time_anchor(ts)
 
     async def trigger_memory_consolidation(
         self,

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.core.types import ReasonerResult
 from agent.looping.safety_retry import SafetyRetryService
 from agent.looping.tool_execution import ToolDiscoveryState
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
@@ -34,9 +35,9 @@ class _SafetyHarness:
         self._outcomes = list(outcomes)
         self.discovery = ToolDiscoveryState()
         self.discovery._unlocked = {"s:1": OrderedDict({"old": None})}
-        self.executor = SimpleNamespace(execute=AsyncMock(side_effect=self._run_executor))
+        self.reasoner = SimpleNamespace(run=AsyncMock(side_effect=self._run_reasoner))
         self.service = SafetyRetryService(
-            executor=self.executor,
+            reasoner=self.reasoner,
             context=self.context,
             session_manager=self.session_manager,
             tools=self.tools,
@@ -45,11 +46,18 @@ class _SafetyHarness:
             memory_window=10,
         )
 
-    async def _run_executor(self, initial_messages, **kwargs):
+    async def _run_reasoner(self, initial_messages, **kwargs):
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return outcome
+        return ReasonerResult(
+            reply=outcome[0],
+            thinking=outcome[4],
+            metadata={
+                "tools_used": outcome[1],
+                "tool_chain": outcome[2],
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -96,12 +104,18 @@ async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
         ),
     )
     harness.service._context = harness.context
-    harness.executor = SimpleNamespace(
-        execute=AsyncMock(
-            side_effect=[ContextLengthError("long"), ("ok", [], [], None, None)]
+    harness.reasoner = SimpleNamespace(
+        run=AsyncMock(
+            side_effect=[
+                ContextLengthError("long"),
+                ReasonerResult(
+                    reply="ok",
+                    metadata={"tools_used": [], "tool_chain": []},
+                ),
+            ]
         )
     )
-    harness.service._executor = harness.executor
+    harness.service._reasoner = harness.reasoner
     content, tools_used, chain, _ = await harness.service.run(msg, session)
     assert content == "ok"
     assert tools_used == []

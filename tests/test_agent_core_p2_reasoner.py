@@ -68,6 +68,12 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert result.metadata["tools_used"] == ["dummy"]
     assert result.invocations[0].name == "dummy"
     assert result.metadata["visible_names"] is None
+    first_messages = provider.calls[0]["messages"]
+    assert any("本轮时间锚点" in str(m.get("content", "")) for m in first_messages)
+    assert any(
+        m.get("role") == "system" and "本轮时间锚点" in str(m.get("content", ""))
+        for m in first_messages
+    )
 
 
 def test_default_reasoner_unlocks_tool_search_visibility():
@@ -100,3 +106,100 @@ def test_default_reasoner_unlocks_tool_search_visibility():
     assert "hidden_tool" in result.metadata["tools_used"]
     assert "hidden_tool" in result.metadata["visible_names"]
     assert len(hidden.calls) == 1
+
+
+def test_default_reasoner_preflight_includes_deferred_tool_names():
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    tools.register(
+        _DummyTool("mcp_github__list_commits"),
+        source_type="mcp",
+        source_name="github",
+    )
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
+        tool_search_enabled=True,
+    )
+
+    asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    first_messages = provider.calls[0]["messages"]
+    preflight = next(
+        str(m.get("content", ""))
+        for m in first_messages
+        if "本轮时间锚点" in str(m.get("content", ""))
+    )
+    assert "未加载工具目录" in preflight
+    assert "mcp_github__list_commits" in preflight
+    assert "dummy" not in preflight
+
+
+def test_default_reasoner_deferred_tool_direct_call_requires_select():
+    provider = _Provider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "schedule", {})]),
+            LLMResponse(content="final", tool_calls=[]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool("schedule"))
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
+        tool_search_enabled=True,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert "schedule" not in result.metadata["tools_used"]
+    assert result.reply == "final"
+    tool_chain = list(result.metadata["tool_chain"])
+    assert len(tool_chain) >= 1
+    schedule_call = next((c for c in tool_chain[0]["calls"] if c["name"] == "schedule"), None)
+    assert schedule_call is not None
+    assert "select:" in schedule_call["result"]
+    assert "tool_search" in schedule_call["result"]
+
+
+def test_default_reasoner_preloaded_tool_not_in_deferred_list():
+    provider = _Provider([LLMResponse(content="done", tool_calls=[])])
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    tools.register(_DummyTool("schedule"))
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
+        tool_search_enabled=True,
+    )
+
+    asyncio.run(
+        reasoner.run(
+            [{"role": "user", "content": "hi"}],
+            preloaded_tools={"schedule"},
+        )
+    )
+
+    first_messages = provider.calls[0]["messages"]
+    preflight = next(
+        str(m.get("content", ""))
+        for m in first_messages
+        if "本轮时间锚点" in str(m.get("content", ""))
+    )
+    assert "schedule" not in preflight

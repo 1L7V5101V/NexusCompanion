@@ -7,7 +7,6 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
-from agent.looping.handlers import ConversationTurnHandler
 from agent.looping.turn_types import HistoryMessage
 from agent.looping.memory_gate import (
     _decide_history_route,
@@ -108,13 +107,8 @@ def _make_loop(
     )
 
 
-def _make_handler(loop: AgentLoop) -> ConversationTurnHandler:
-    return cast(ConversationTurnHandler, loop._conversation_handler)
-
-
 def _make_retrieval(loop: AgentLoop) -> DefaultMemoryRetrievalPipeline:
-    handler = _make_handler(loop)
-    return cast(DefaultMemoryRetrievalPipeline, handler._retrieval)
+    return cast(DefaultMemoryRetrievalPipeline, loop._retrieval_pipeline)
 
 
 def _req(msg: InboundMessage, session: _DummySession) -> RetrievalRequest:
@@ -312,7 +306,6 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
             ),
         )
 
-    handler = _make_handler(loop)
     retrieval = _make_retrieval(loop)
     retrieval._memory.query_rewriter = None
     memory_port = MagicMock()

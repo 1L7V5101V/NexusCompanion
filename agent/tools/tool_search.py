@@ -8,7 +8,7 @@ from agent.tools.registry import _META_TOOLS
 if TYPE_CHECKING:
     from agent.tools.registry import ToolRegistry
 
-# 当前 tool_search 调用的 excluded_names，由 TurnExecutor 在调用前通过 ContextVar 注入。
+# 当前 tool_search 调用的 excluded_names，由 reasoner 在调用前通过 ContextVar 注入。
 # 不走 execute() 参数，避免污染 RecordingToolRegistry 记录的 arguments dict。
 # asyncio 单线程 + ContextVar per-task 语义保证并发安全。
 _excluded_names_ctx: ContextVar[set[str] | None] = ContextVar(
@@ -82,7 +82,7 @@ class ToolSearchTool(Tool):
         allowed_risk: list[str] | None = None,
         **_: Any,
     ) -> str:
-        # excluded_names 由 TurnExecutor 通过 ContextVar 注入，不走 execute() 参数，
+        # excluded_names 由 reasoner 通过 ContextVar 注入，不走 execute() 参数，
         # 避免 set 进入 RecordingToolRegistry 记录的 arguments dict（JSON 不可序列化）。
         excluded_names = _excluded_names_ctx.get()
 

@@ -140,6 +140,41 @@ async def test_conversation_turn_handler_process_reads_prepare_from_context_stor
 
 
 @pytest.mark.asyncio
+async def test_conversation_turn_handler_process_delegates_to_agent_core_when_bound():
+    deps = SimpleNamespace(
+        llm=object(),
+        llm_config=object(),
+        turn_runner=SimpleNamespace(run=AsyncMock(), last_retry_trace={}),
+        retrieval=SimpleNamespace(retrieve=AsyncMock()),
+        orchestrator=SimpleNamespace(handle_turn=AsyncMock()),
+        session=SimpleNamespace(
+            session_manager=SimpleNamespace(get_or_create=MagicMock(return_value=_DummySession()))
+        ),
+        tools=SimpleNamespace(set_context=MagicMock()),
+        context=SimpleNamespace(
+            skills=SimpleNamespace(list_skills=MagicMock(return_value=[]))
+        ),
+    )
+    agent_core = SimpleNamespace(
+        process=AsyncMock(
+            return_value=OutboundMessage(channel="cli", chat_id="1", content="from core")
+        )
+    )
+    handler = ConversationTurnHandler(deps, agent_core=agent_core)
+    msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hello")
+
+    out = await handler.process(msg, "cli:1", dispatch_outbound=False)
+
+    assert out.content == "from core"
+    agent_core.process.assert_awaited_once_with(
+        msg,
+        "cli:1",
+        dispatch_outbound=False,
+    )
+    deps.retrieval.retrieve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_conversation_turn_handler_process_uses_explicit_session_key_for_retrieval():
     turn_runner = SimpleNamespace(
         run=AsyncMock(return_value=("final", [], [], None)),

@@ -171,3 +171,54 @@ async def test_orchestrator_keeps_context_retry_trace_in_outbound_metadata():
     out = await orchestrator.handle_turn(msg=msg, result=result)
     assert dispatched[0].metadata["context_retry"]["selected_plan"] == "trim_skills_catalog"
     assert out.metadata["context_retry"]["trimmed_sections"] == ["skills_catalog"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_delegates_passive_turn_to_context_store_when_provided():
+    session_svc = SessionServices(
+        session_manager=SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123")),
+        presence=None,
+    )
+    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
+    post_turn = SimpleNamespace(schedule=lambda event: None)
+    passive_context_store = SimpleNamespace(
+        commit=AsyncMock(
+            return_value=SimpleNamespace(
+                channel="telegram",
+                chat_id="123",
+                content="收到",
+                metadata={"context_retry": {"selected_plan": "full"}},
+            )
+        )
+    )
+    orchestrator = TurnOrchestrator(
+        TurnOrchestratorDeps(
+            session=session_svc,
+            trace=trace_svc,
+            post_turn=post_turn,
+            outbound=SimpleNamespace(dispatch=AsyncMock()),
+            passive_context_store=passive_context_store,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="user", chat_id="123", content="你好")
+    result = TurnResult(
+        decision="reply",
+        outbound=TurnOutbound(session_key="telegram:123", content="收到"),
+        trace=TurnTrace(
+            source="passive",
+            retrieval={"raw": {"rag": 1}},
+            extra={
+                "tools_used": ["noop"],
+                "tool_chain": [{"text": "", "calls": []}],
+                "thinking": "思考",
+                "context_retry": {"selected_plan": "full"},
+            },
+        ),
+    )
+
+    out = await orchestrator.handle_turn(msg=msg, result=result, dispatch_outbound=False)
+
+    assert out.content == "收到"
+    passive_context_store.commit.assert_awaited_once()
+    assert passive_context_store.commit.await_args.kwargs["session_key"] == "telegram:123"
+    assert passive_context_store.commit.await_args.kwargs["retrieval_raw"] == {"rag": 1}

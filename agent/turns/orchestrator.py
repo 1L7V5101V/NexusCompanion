@@ -15,6 +15,7 @@ from agent.turns.result import TurnResult
 from bus.events import InboundMessage, OutboundMessage
 
 if TYPE_CHECKING:
+    from agent.core.context_store import ContextStore
     from agent.looping.ports import (
         SessionLike,
         SessionServices,
@@ -32,6 +33,7 @@ class TurnOrchestratorDeps:
     post_turn: PostTurnPipeline
     outbound: OutboundPort
     meme_decorator: MemeDecorator | None = None
+    passive_context_store: "ContextStore | None" = None
 
 
 class TurnOrchestrator:
@@ -41,6 +43,7 @@ class TurnOrchestrator:
         self._post_turn = deps.post_turn
         self._outbound = deps.outbound
         self._meme_decorator = deps.meme_decorator
+        self._passive_context_store = deps.passive_context_store
 
     async def handle_turn(
         self,
@@ -51,6 +54,20 @@ class TurnOrchestrator:
     ) -> OutboundMessage:
         if result.decision != "reply" or result.outbound is None:
             raise ValueError("passive turn result must be reply with outbound")
+        if self._passive_context_store is not None:
+            return await self._passive_context_store.commit(
+                msg=msg,
+                session_key=result.outbound.session_key,
+                reply=result.outbound.content,
+                tools_used=_trace_tools_used(result.trace),
+                tool_chain=_trace_tool_chain(result.trace),
+                thinking=_trace_thinking(result.trace),
+                retrieval_raw=_trace_retrieval_raw(result.trace),
+                context_retry=_trace_context_retry(result.trace),
+                side_effects=list(result.side_effects or []),
+                dispatch_outbound=dispatch_outbound,
+            )
+
         key = result.outbound.session_key
         session = self._session.session_manager.get_or_create(key)
         raw_content = result.outbound.content

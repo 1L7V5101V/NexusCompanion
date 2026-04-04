@@ -10,8 +10,9 @@ from agent.provider import ContentSafetyError, ContextLengthError
 logger = logging.getLogger("agent.loop")
 
 if TYPE_CHECKING:
+    from agent.core.reasoner import Reasoner
     from agent.context import ContextBuilder
-    from agent.looping.tool_execution import ToolDiscoveryState, TurnExecutor
+    from agent.looping.tool_execution import ToolDiscoveryState
     from agent.tools.registry import ToolRegistry
     from session.manager import SessionManager
 
@@ -19,16 +20,16 @@ if TYPE_CHECKING:
 class SafetyRetryService:
     def __init__(
         self,
-        executor: "TurnExecutor",
         context: "ContextBuilder",
         session_manager: "SessionManager",
         tools: "ToolRegistry",
         discovery: "ToolDiscoveryState",
         *,
+        reasoner: "Reasoner",
         tool_search_enabled: bool,
         memory_window: int,
     ) -> None:
-        self._executor = executor
+        self._reasoner = reasoner
         self._context = context
         self._session_manager = session_manager
         self._tools = tools
@@ -98,7 +99,7 @@ class SafetyRetryService:
                 runtime_guard_context=runtime_guard_context,
             )
             try:
-                content, tools_used, tool_chain, _visible, thinking = await self._executor.execute(
+                content, tools_used, tool_chain, thinking = await self._run_attempt(
                     initial_messages,
                     request_time=msg.timestamp,
                     preloaded_tools=preloaded,
@@ -163,6 +164,25 @@ class SafetyRetryService:
                     return "上下文过长无法处理，请尝试新建对话。", [], [], None
 
         return "（安全重试异常）", [], [], None
+
+    async def _run_attempt(
+        self,
+        initial_messages: list[dict],
+        *,
+        request_time,
+        preloaded_tools: set[str] | None,
+        preflight_injected: bool,
+    ) -> tuple[str, list[str], list[dict], str | None]:
+        # 1. 统一直接走新 ReasonerResult，再在这里做一次本地解包。
+        result = await self._reasoner.run(
+            initial_messages,
+            request_time=request_time,
+            preloaded_tools=preloaded_tools,
+            preflight_injected=preflight_injected,
+        )
+        tools_used = list(result.metadata.get("tools_used") or [])
+        tool_chain = list(result.metadata.get("tool_chain") or [])
+        return result.reply, tools_used, tool_chain, result.thinking
 
     @staticmethod
     def _slice_history(source_history: list[dict], window: int) -> list[dict]:
