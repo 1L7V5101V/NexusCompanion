@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent.config_models import Config
-from agent.core.runner import PassiveRunner
+from agent.looping.core import AgentLoop
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
 from proactive_v2.loop import ProactiveLoop
@@ -27,7 +27,7 @@ def build_proactive_runtime(
     push_tool: MessagePushTool,
     memory_store: "MemoryPort | None",
     presence: PresenceStore,
-    passive_runner: PassiveRunner | None,
+    agent_loop: AgentLoop,
     observe_writer=None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
@@ -55,9 +55,7 @@ def build_proactive_runtime(
         light_provider=light_provider,
         light_model=config.light_model,
         passive_busy_fn=(
-            passive_runner.processing_state.is_busy
-            if passive_runner is not None and passive_runner.processing_state
-            else None
+            agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         observe_writer=observe_writer,
     )

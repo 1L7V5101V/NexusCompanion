@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from agent.core.history_types import HistoryMessage, RetrievalTrace
+from agent.looping.turn_types import HistoryMessage, RetrievalTrace
 
 
 @dataclass

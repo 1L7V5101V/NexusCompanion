@@ -91,39 +91,17 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeClient([RuntimeError("content_policy_violation")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(ContentSafetyError):
-        await LLMProvider(api_key="k").chat([], [], model="m", max_tokens=1)
+        await LLMProvider(api_key="k").chat([], [], "m", 1)
 
     fake = _FakeClient([RuntimeError("maximum context length exceeded")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(ContextLengthError):
-        await LLMProvider(api_key="k").chat([], [], model="m", max_tokens=1)
+        await LLMProvider(api_key="k").chat([], [], "m", 1)
 
     fake = _FakeClient([RuntimeError("bad request")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(RuntimeError):
-        await LLMProvider(api_key="k", max_retries=0).chat(
-            [],
-            [],
-            model="m",
-            max_tokens=1,
-        )
-
-
-@pytest.mark.asyncio
-async def test_provider_chat_uses_safe_defaults_when_tools_and_max_tokens_omitted(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    fake = _FakeClient([_Response(content="ok")])
-    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
-
-    result = await LLMProvider(api_key="k").chat(
-        messages=[{"role": "user", "content": "hi"}],
-        model="m",
-    )
-
-    assert result.content == "ok"
-    assert "tools" not in fake.calls[0]
-    assert fake.calls[0]["max_tokens"] == 1024
+        await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
 
 
 @pytest.mark.asyncio
@@ -335,7 +313,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         push_tool=MagicMock(),
         memory_store=None,
         presence=MagicMock(),
-        passive_runner=SimpleNamespace(processing_state=None),
+        agent_loop=SimpleNamespace(processing_state=None),
     )
     assert tasks == []
     assert loop is None
@@ -381,9 +359,7 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         push_tool=MagicMock(),
         memory_store=MagicMock(),
         presence=MagicMock(),
-        passive_runner=SimpleNamespace(
-            processing_state=SimpleNamespace(is_busy=lambda: False)
-        ),
+        agent_loop=SimpleNamespace(processing_state=SimpleNamespace(is_busy=lambda: False)),
     )
     assert tasks == ["loop-task", ("fitbit-task", "/tmp/fitbit.json", "http://fitbit")]
     assert loop is proactive_loop

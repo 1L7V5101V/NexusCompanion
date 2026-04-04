@@ -2,21 +2,117 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.provider import LLMResponse
+from agent.looping.safety_retry import SafetyRetryService
+from agent.looping.tool_execution import ToolDiscoveryState
+from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
 from agent.tools.shell import ShellTool, _truncate, _validate_network_command
 from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
 from proactive_v2.event import GenericContentEvent
- 
+
+
+class _SafetyHarness:
+    def __init__(self, outcomes):
+        self.tools = SimpleNamespace(get_always_on_names=lambda: {"always"})
+        self.context = SimpleNamespace(
+            build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}],
+            build_runtime_guard_context=lambda *, preflight_prompt=None: (
+                {"preflight": preflight_prompt} if preflight_prompt else {}
+            ),
+        )
+        self.session_manager = SimpleNamespace(save_async=AsyncMock())
+        self._outcomes = list(outcomes)
+        self.discovery = ToolDiscoveryState()
+        self.discovery._unlocked = {"s:1": OrderedDict({"old": None})}
+        self.executor = SimpleNamespace(execute=AsyncMock(side_effect=self._run_executor))
+        self.service = SafetyRetryService(
+            executor=self.executor,
+            context=self.context,
+            session_manager=self.session_manager,
+            tools=self.tools,
+            discovery=self.discovery,
+            tool_search_enabled=True,
+            memory_window=10,
+        )
+
+    async def _run_executor(self, initial_messages, **kwargs):
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 @pytest.mark.asyncio
-async def test_shell_and_task_note_cover_branches(tmp_path: Path):
+async def test_safety_retry_shell_and_task_note_cover_branches(tmp_path: Path):
+    msg = SimpleNamespace(
+        content="hello",
+        media=[],
+        channel="telegram",
+        chat_id="1",
+        timestamp=datetime.now(timezone.utc),
+    )
+    session = SimpleNamespace(
+        key="s:1",
+        messages=[{"role": "u", "content": str(i)} for i in range(6)],
+        get_history=lambda max_messages: [{"role": "u", "content": str(i)} for i in range(6)],
+        last_consolidated=3,
+    )
+    harness = _SafetyHarness(
+        [
+            ContentSafetyError("bad"),
+            ("ok", ["tool_search", "x", "y"], [{"calls": []}], None, None),
+        ]
+    )
+    content, tools_used, _, _ = await harness.service.run(msg, session)
+    assert content == "ok"
+    assert tools_used == ["tool_search", "x", "y"]
+    assert list(harness.discovery._unlocked["s:1"].keys())[-2:] == ["x", "y"]
+
+    harness = _SafetyHarness([ContextLengthError("long")] * 7)
+    content, tools_used, chain, _ = await harness.service.run(msg, session)
+    assert "上下文过长" in content
+    assert tools_used == []
+    assert chain == []
+
+    observed: list[tuple[int, set[str]]] = []
+    harness.context = SimpleNamespace(
+        build_messages=lambda **kwargs: observed.append(
+            (len(kwargs["history"]), set(kwargs.get("disabled_sections") or set()))
+        )
+        or kwargs["history"]
+        + [{"role": "user"}],
+        build_runtime_guard_context=lambda *, preflight_prompt=None: (
+            {"preflight": preflight_prompt} if preflight_prompt else {}
+        ),
+    )
+    harness.service._context = harness.context
+    harness.executor = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[ContextLengthError("long"), ("ok", [], [], None, None)]
+        )
+    )
+    harness.service._executor = harness.executor
+    content, tools_used, chain, _ = await harness.service.run(msg, session)
+    assert content == "ok"
+    assert tools_used == []
+    assert chain == []
+    assert observed[:2] == [(6, set()), (6, {"skills_catalog"})]
+
+    harness = _SafetyHarness([("ok", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], [], None, None)])
+    harness.discovery.update("s:1", ["always", "tool_search", "a", "b", "c", "d", "e", "f"], harness.tools.get_always_on_names())
+    assert "always" not in harness.discovery._unlocked["s:1"]
+    assert len(harness.discovery._unlocked["s:1"]) == 5
+
     tool = ShellTool()
     assert "命令不能为空" in await tool.execute(command="")
     assert "不被允许" in await tool.execute(command="nc localhost 1")

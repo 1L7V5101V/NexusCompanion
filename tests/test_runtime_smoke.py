@@ -52,11 +52,11 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
 
     def _patched_build_core_runtime(config, workspace, http_resources):
         runtime = original_build_core_runtime(config, workspace, http_resources)
-        passive_runner = runtime.runner
+        agent_loop = runtime.loop
         bus = runtime.bus
         scheduler = runtime.scheduler
 
-        async def _runner_run():
+        async def _agent_loop_run():
             return None
 
         async def _bus_dispatch_outbound():
@@ -65,7 +65,7 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
         async def _scheduler_run():
             return None
 
-        passive_runner.run = _runner_run  # type: ignore[assignment]
+        agent_loop.run = _agent_loop_run  # type: ignore[assignment]
         bus.dispatch_outbound = _bus_dispatch_outbound  # type: ignore[assignment]
         scheduler.run = _scheduler_run  # type: ignore[assignment]
         observed["scheduler"] = scheduler

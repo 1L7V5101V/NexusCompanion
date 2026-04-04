@@ -80,7 +80,7 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
         push_tool=SimpleNamespace(),
         memory_store=None,
         presence=SimpleNamespace(),
-        passive_runner=SimpleNamespace(processing_state=None),
+        agent_loop=SimpleNamespace(processing_state=None),
     )
     assert tasks == []
     assert loop is None

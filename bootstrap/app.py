@@ -62,8 +62,7 @@ class AppRuntime:
         self.tg_channel = None
         self.qq_channel = None
         self.core: CoreRuntime | None = None
-        self.agent_core = None
-        self.passive_runner = None
+        self.agent_loop = None
         self.bus = None
         self.tools = None
         self.push_tool = None
@@ -104,8 +103,7 @@ class AppRuntime:
                 self.http_resources,
                 **build_core_kwargs,
             )
-            self.agent_core = self.core.agent_core
-            self.passive_runner = self.core.runner
+            self.agent_loop = self.core.loop
             self.bus = self.core.bus
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
@@ -129,7 +127,7 @@ class AppRuntime:
             )
 
             self.tasks = [
-                self.passive_runner.run(),
+                self.agent_loop.run(),
                 self.bus.dispatch_outbound(),
                 self.scheduler.run(),
             ]
@@ -146,7 +144,7 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 memory_store=self.memory_runtime.port,
                 presence=self.presence,
-                passive_runner=self.passive_runner,
+                agent_loop=self.agent_loop,
                 observe_writer=self.observe_writer,
             )
             self.tasks.extend(proactive_tasks)
