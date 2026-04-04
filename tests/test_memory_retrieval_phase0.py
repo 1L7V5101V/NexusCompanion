@@ -7,8 +7,7 @@ import pytest
 
 from bootstrap import app as bootstrap_app
 from agent.config import Config
-from agent.looping.core import AgentLoop, AgentLoopConfig, AgentLoopDeps
-from agent.looping.memory_gate import _update_session_runtime_metadata
+from agent.core.context_store import _update_session_runtime_metadata
 from agent.memory import MemoryStore
 from agent.provider import LLMResponse
 from agent.tools.base import Tool
@@ -98,19 +97,6 @@ def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
 
 
 def test_loop_updates_session_runtime_metadata(tmp_path: Path):
-    tools = ToolRegistry()
-    tools.register(_NoopTool())
-    loop = AgentLoop(
-        AgentLoopDeps(
-            bus=MagicMock(),
-            provider=cast(Any, _FakeProvider()),
-            tools=tools,
-            session_manager=MagicMock(),
-            workspace=tmp_path,
-            memory_port=DefaultMemoryPort(MemoryStore(tmp_path)),
-        ),
-        AgentLoopConfig(),
-    )
     session = Session("telegram:1")
 
     _update_session_runtime_metadata(
@@ -179,33 +165,6 @@ async def test_memorize_tool_uses_memory_port():
         source_ref="memorize_tool",
     )
     assert "已记住" in result
-
-
-def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
-    tools = ToolRegistry()
-    tools.register(_NoopTool())
-    memory_port = cast(Any, MagicMock())
-    post_mem_worker = MagicMock()
-    runtime = MemoryRuntime(
-        port=memory_port,
-        post_response_worker=post_mem_worker,
-    )
-
-    loop = AgentLoop(
-        AgentLoopDeps(
-            bus=MagicMock(),
-            provider=cast(Any, _FakeProvider()),
-            tools=tools,
-            session_manager=MagicMock(),
-            workspace=tmp_path,
-            memory_runtime=runtime,
-        ),
-        AgentLoopConfig(),
-    )
-
-    assert loop._memory_port is memory_port
-    assert loop._post_mem_worker is post_mem_worker
-    assert loop.context.memory is memory_port
 
 
 @pytest.mark.asyncio

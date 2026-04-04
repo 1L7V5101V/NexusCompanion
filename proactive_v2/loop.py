@@ -5,7 +5,7 @@ ProactiveLoop — 主动触达核心循环。
   1. 拉取所有内容源的最新候选事件
   2. 获取用户最近聊天上下文
   3. 调用 LLM 反思：有没有值得主动说的
-  4. 产出 TurnResult 并由统一 OutboundPort 发送消息
+  4. 产出 proactive result 并由 dispatcher 发送消息
 """
 
 from __future__ import annotations
@@ -21,13 +21,11 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
-from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
-from agent.turns.outbound import PushToolOutboundPort
-from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive_v2.anyaction import AnyActionGate, QuotaStore
+from proactive_v2.turn_dispatcher import ProactiveTurnDispatcher
 from proactive_v2.energy import (
     compute_energy,
     d_energy,
@@ -120,24 +118,19 @@ class ProactiveLoop:
             sleeping_modifier=self._cfg.sleep_modifier_sleeping,
         )
 
-    def _build_turn_orchestrator(self) -> TurnOrchestrator:
+    def _build_turn_dispatcher(self) -> ProactiveTurnDispatcher:
         class _NoopPostTurn:
             def schedule(self, event) -> None:
                 return
 
-        return TurnOrchestrator(
-            TurnOrchestratorDeps(
-                session=SessionServices(
-                    session_manager=self._sessions,
-                    presence=self._presence,
-                ),
-                trace=ObservabilityServices(
-                    workspace=self._sessions.workspace,
-                    observe_writer=self._observe_writer,
-                ),
-                post_turn=_NoopPostTurn(),
-                outbound=PushToolOutboundPort(self._push),
-            )
+        return ProactiveTurnDispatcher(
+            session_manager=self._sessions,
+            push_tool=self._push,
+            channel=str(self._cfg.default_channel or "").strip(),
+            chat_id=str(self._cfg.default_chat_id or "").strip(),
+            presence=self._presence,
+            observe_writer=self._observe_writer,
+            post_turn_pipeline=_NoopPostTurn(),
         )
 
     def _build_anyaction_gate(self) -> AnyActionGate:
@@ -179,7 +172,7 @@ class ProactiveLoop:
                 state_store=self._state,
                 any_action_gate=self._anyaction,
                 passive_busy_fn=self._passive_busy_fn,
-                turn_orchestrator=self._turn_orchestrator,
+                turn_dispatcher=self._turn_dispatcher,
                 deduper=self._message_deduper,
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
@@ -203,7 +196,7 @@ class ProactiveLoop:
         # 2. 预读规则面板内容并做缓存。
         self._read_workspace_proactive_context()
         # 3. 构建发送编排器、前置 gate、传感器、去重器和单次 tick 执行器。
-        self._turn_orchestrator = self._build_turn_orchestrator()
+        self._turn_dispatcher = self._build_turn_dispatcher()
         self._anyaction = self._build_anyaction_gate()
         self._sense = self._build_sense(self._build_fitbit_provider())
         self._message_deduper = self._build_message_deduper()

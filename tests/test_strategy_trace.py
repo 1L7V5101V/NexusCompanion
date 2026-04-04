@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.looping.memory_gate import _trace_memory_retrieve
+from agent.core.retrieval_support import trace_memory_retrieve
 from core.common.strategy_trace import build_strategy_trace_envelope
 from proactive_v2.loop import ProactiveLoop
 
@@ -24,7 +24,7 @@ def test_build_strategy_trace_envelope_uses_subject_scope():
 
 
 def test_route_trace_writes_strategy_envelope(tmp_path: Path):
-    _trace_memory_retrieve(
+    trace_memory_retrieve(
         tmp_path,
         session_key="telegram:1",
         channel="telegram",

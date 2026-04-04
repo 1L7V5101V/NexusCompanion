@@ -75,9 +75,10 @@ class LLMProvider:
     async def chat(
         self,
         messages: list[dict],
-        tools: list[dict],
+        tools: list[dict] | None = None,
+        *,
         model: str,
-        max_tokens: int,
+        max_tokens: int | None = None,
         tool_choice: str | dict = "auto",
     ) -> LLMResponse:
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
@@ -87,7 +88,11 @@ class LLMProvider:
             if self._system and not already_has_system
             else messages
         )
-        kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
+        kwargs: dict = dict(
+            model=model,
+            max_tokens=max_tokens or 1024,
+            messages=full_messages,
+        )
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice

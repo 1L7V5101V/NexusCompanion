@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.looping.consolidation import (
+from agent.core.consolidation import (
     ConsolidationService,
     _build_consolidation_source_ref,
     _format_conversation_for_consolidation,
@@ -18,7 +18,7 @@ from agent.looping.consolidation import (
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
-from agent.looping.ports import TurnScheduler
+from agent.core.turn_scheduler import TurnScheduler
 from memory2.profile_extractor import ProfileFactExtractor
 from memory2.post_response_worker import PostResponseMemoryWorker
 from proactive_v2.fitbit_sleep import (
@@ -37,6 +37,8 @@ class _ConsolidationHarness:
     def __init__(self, payload: str) -> None:
         self._memory_port = SimpleNamespace(
             read_long_term=MagicMock(return_value="MEM"),
+            read_history=MagicMock(return_value=""),
+            read_profile=MagicMock(return_value=""),
             append_history_once=MagicMock(return_value=True),
             append_pending_once=MagicMock(return_value=True),
             save_from_consolidation=AsyncMock(),
@@ -171,7 +173,7 @@ async def test_consolidation_helpers(
         await_vector_store=True,
     )
     assert awaited._memory_port.save_from_consolidation.await_count == 1
-    assert scheduled and all(task.done() for task in scheduled)
+    assert not scheduled
 
     empty = _ConsolidationHarness("")
     short_session = SimpleNamespace(key="s", messages=[{"role": "user", "content": "u"}], last_consolidated=0)

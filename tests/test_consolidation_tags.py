@@ -1,4 +1,4 @@
-from agent.looping.consolidation import _format_pending_items
+from agent.core.consolidation import _format_pending_items
 
 
 def test_format_pending_items_keeps_allowed_tags_only():

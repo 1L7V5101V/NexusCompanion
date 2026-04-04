@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from agent.looping.consolidation import (
+from agent.core.consolidation import (
     ConsolidationService,
     _select_recent_history_entries,
 )
@@ -16,6 +16,7 @@ class _Resp:
 def test_consolidation_service_archive_all_and_profile_extract():
     memory = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEM"),
+        read_profile=MagicMock(return_value=""),
         read_history=MagicMock(
             return_value=(
                 "[2026-03-15 09:00] 用户确认 Zigbee 需求\n\n"
@@ -75,6 +76,8 @@ def test_consolidation_service_archive_all_and_profile_extract():
     assert "## 最近三次 consolidation event" in prompt
     assert "用户准备下单 Zigbee 网关" in prompt
     assert "不能作为人物身份、说话人归属、关系判断或具体事实归属的直接证据" in prompt
+    assert provider.chat.await_args.kwargs["tools"] == []
+    assert provider.chat.await_args.kwargs["max_tokens"] == 1024
     assert session.last_consolidated == 0
 
 

@@ -8,11 +8,11 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
-from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
 from proactive_v2.mcp_sources import McpClientPool
 from proactive_v2.agent_tick import AgentTick
 from proactive_v2.gateway import GatewayDeps
+from proactive_v2.turn_dispatcher import ProactiveTurnDispatcher
 from proactive_v2.tools import ToolDeps
 
 
@@ -42,7 +42,7 @@ class AgentTickDeps:
     rng: Any
     workspace_context_fn: Callable[[], str]
     observe_writer: Any | None
-    turn_orchestrator: TurnOrchestrator | None = None
+    turn_dispatcher: ProactiveTurnDispatcher | None = None
     pool: McpClientPool | None = None
 
 
@@ -71,7 +71,7 @@ class AgentTickFactory:
             any_action_gate=self._deps.any_action_gate,
             last_user_at_fn=last_user_at_fn,
             passive_busy_fn=self._deps.passive_busy_fn,
-            turn_orchestrator=self._deps.turn_orchestrator,
+            turn_dispatcher=self._deps.turn_dispatcher,
             deduper=self._deps.deduper,
             tool_deps=tool_deps,
             gateway_deps=gateway_deps,

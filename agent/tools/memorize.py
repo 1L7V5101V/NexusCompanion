@@ -5,6 +5,7 @@ memorize 工具：用户主动写记忆
 from __future__ import annotations
 
 import logging
+import inspect
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
@@ -130,12 +131,31 @@ class MemorizeTool(Tool):
                     )
             except Exception as e:
                 logger.warning("memorize: trigger_tags generation failed: %s", e)
-        result = await self._memory.save_item_with_supersede(
-            summary=summary,
-            memory_type=memory_type,
-            extra=extra,
-            source_ref="memorize_tool",
-        )
+        # 4. 优先走 supersede 写入；旧 MemoryPort 替身缺失该接口时退回 save_item。
+        save_with_supersede = getattr(self._memory, "save_item_with_supersede", None)
+        if callable(save_with_supersede):
+            maybe_result = save_with_supersede(
+                summary=summary,
+                memory_type=memory_type,
+                extra=extra,
+                source_ref="memorize_tool",
+            )
+            if inspect.isawaitable(maybe_result):
+                result = await maybe_result
+            else:
+                result = await self._memory.save_item(
+                    summary=summary,
+                    memory_type=memory_type,
+                    extra=extra,
+                    source_ref="memorize_tool",
+                )
+        else:
+            result = await self._memory.save_item(
+                summary=summary,
+                memory_type=memory_type,
+                extra=extra,
+                source_ref="memorize_tool",
+            )
         if persist_file:
             try:
                 _append_to_sop_file(persist_file, summary, steps)

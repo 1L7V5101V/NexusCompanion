@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
 from agent.llm_json import load_json_object_loose
-from agent.looping.constants import _FLOW_SEQUENCE_PATTERN, _FLOW_TRIGGER_WORDS
+
+_FLOW_TRIGGER_WORDS = (
+    "步骤",
+    "流程",
+    "下次",
+    "按这个逻辑",
+)
+_FLOW_SEQUENCE_PATTERN = re.compile(r"先.{0,20}再")
 
 RouteDecisionSource = Literal["heuristic", "llm", "fallback"]
 RouteDecisionConfidence = Literal["high", "medium", "low"]

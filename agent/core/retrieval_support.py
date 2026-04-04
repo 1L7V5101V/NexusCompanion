@@ -1,23 +1,22 @@
+from __future__ import annotations
+
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.looping.constants import _RETRIEVE_TRACE_SUMMARY_MAX
 from agent.policies.history_route import HistoryRoutePolicy, RouteDecision
 from core.common.strategy_trace import build_strategy_trace_envelope
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
 
-logger = logging.getLogger("agent.loop")
+logger = logging.getLogger("agent.core.retrieval")
+_RETRIEVE_TRACE_SUMMARY_MAX = 240
 
 
-# ── Module-level functions (moved from AgentLoopMemoryGateMixin in Phase 2) ──
-
-
-def _trace_memory_retrieve(
+def trace_memory_retrieve(
     workspace: Path,
     *,
     session_key: str,
@@ -89,59 +88,7 @@ def _trace_memory_retrieve(
         logger.warning("memory2 retrieve trace write failed: %s", e)
 
 
-def _extract_task_tools(tools_used: list[str]) -> list[str]:
-    task_tools = []
-    for name in tools_used:
-        if name in {"task_note", "update_now"}:
-            task_tools.append(name)
-    return task_tools
-
-
-def _update_session_runtime_metadata(
-    session: object,
-    *,
-    tools_used: list[str],
-    tool_chain: list[dict],
-) -> None:
-    md = session.metadata if isinstance(session.metadata, dict) else {}  # type: ignore[union-attr]
-    call_count = 0
-    for group in tool_chain:
-        if not isinstance(group, dict):
-            continue
-        calls = group.get("calls") or []
-        if isinstance(calls, list):
-            call_count += len(calls)
-
-    turn_task_tools = _extract_task_tools(tools_used)
-    turns = md.get("_task_tools_turns")
-    if not isinstance(turns, list):
-        turns = []
-    turns.append(turn_task_tools)
-    turns = turns[-2:]
-
-    flat_recent = []
-    seen: set[str] = set()
-    for turn in turns:
-        if not isinstance(turn, list):
-            continue
-        for name in turn:
-            if isinstance(name, str) and name not in seen:
-                seen.add(name)
-                flat_recent.append(name)
-
-    md["last_turn_tool_calls_count"] = call_count
-    md["recent_task_tools"] = flat_recent
-    md["last_turn_had_task_tool"] = bool(turn_task_tools)
-    md["last_turn_ts"] = datetime.now().astimezone().isoformat()
-    md["_task_tools_turns"] = turns
-    session.metadata = md  # type: ignore[union-attr]
-
-
-def _is_flow_execution_state(user_msg: str, metadata: dict) -> bool:
-    return HistoryRoutePolicy.is_flow_execution_state(user_msg, metadata)
-
-
-def _format_gate_history(
+def format_gate_history(
     history: list[dict],
     max_turns: int = 3,
     max_content_len: int | None = 100,
@@ -153,9 +100,7 @@ def _format_gate_history(
             continue
         content = msg.get("content") or ""
         if isinstance(content, list):
-            content = " ".join(
-                c.get("text", "") for c in content if isinstance(c, dict)
-            )
+            content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
         content = str(content).strip()
         if max_content_len is not None:
             content = content[:max_content_len]
@@ -166,7 +111,7 @@ def _format_gate_history(
     return "\n".join(reversed(turns))
 
 
-def _trace_route_reason(decision: RouteDecision) -> str:
+def trace_route_reason(decision: RouteDecision) -> str:
     reason_code = decision.meta.reason_code
     if reason_code == "route_disabled":
         return "disabled"
@@ -177,12 +122,12 @@ def _trace_route_reason(decision: RouteDecision) -> str:
     return "ok"
 
 
-async def _decide_history_route(
+async def decide_history_route(
     *,
     user_msg: str,
     metadata: dict,
     recent_history: str = "",
-    light_provider: LLMProvider,
+    light_provider: "LLMProvider",
     light_model: str,
     route_intention_enabled: bool,
     gate_llm_timeout_ms: int,

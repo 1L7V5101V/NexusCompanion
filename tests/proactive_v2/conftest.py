@@ -13,10 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.gateway import GatewayDeps
+from proactive_v2.turn_dispatcher import ProactiveTurnDispatcher
 from proactive_v2.tools import ToolDeps
-from agent.looping.ports import ObservabilityServices, SessionServices
-from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
-from agent.turns.outbound import OutboundDispatch
 
 
 # ── FakeStateStore ────────────────────────────────────────────────────────
@@ -231,27 +229,23 @@ def make_agent_tick(
         get_or_create=lambda _key: session,
         append_messages=AsyncMock(return_value=None),
     )
-    session_svc = SessionServices(
-        session_manager=session_manager,
-        presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
-    )
-    trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
-
     class _PostTurn:
         def schedule(self, event) -> None:
             return
 
-    class _Outbound:
-        async def dispatch(self, outbound: OutboundDispatch) -> bool:
-            return await sender.send(outbound.content)
+    async def _push_execute(*, channel: str, chat_id: str, message: str) -> str:
+        ok = await sender.send(message)
+        return "文本已发送" if ok else "发送失败"
 
-    orchestrator = TurnOrchestrator(
-        TurnOrchestratorDeps(
-            session=session_svc,
-            trace=trace_svc,
-            post_turn=_PostTurn(),
-            outbound=_Outbound(),
-        )
+    push_tool = SimpleNamespace(execute=AsyncMock(side_effect=_push_execute))
+    dispatcher = ProactiveTurnDispatcher(
+        session_manager=session_manager,
+        push_tool=push_tool,
+        channel="telegram",
+        chat_id="123",
+        presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+        observe_writer=None,
+        post_turn_pipeline=_PostTurn(),
     )
 
     return AgentTick(
@@ -261,7 +255,7 @@ def make_agent_tick(
         any_action_gate=any_action_gate,
         last_user_at_fn=last_user_at_fn or (lambda: None),
         passive_busy_fn=passive_busy_fn,
-        turn_orchestrator=orchestrator,
+        turn_dispatcher=dispatcher,
         deduper=deduper,
         tool_deps=tool_deps,
         gateway_deps=gateway_deps,

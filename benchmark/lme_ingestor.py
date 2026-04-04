@@ -18,7 +18,7 @@ from typing import Any
 
 import openai
 
-from agent.looping.consolidation import ConsolidationService
+from agent.core.consolidation import ConsolidationService
 from agent.memory import MemoryStore
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker

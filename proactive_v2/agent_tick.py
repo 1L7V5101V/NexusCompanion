@@ -18,8 +18,6 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from agent.turns.orchestrator import TurnOrchestrator
-from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,
@@ -28,6 +26,12 @@ from proactive_v2.contracts import (
 )
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
+from proactive_v2.turn_dispatcher import (
+    ProactiveTurnDispatcher,
+    ProactiveTurnOutbound,
+    ProactiveTurnResult,
+    ProactiveTurnTrace,
+)
 from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, execute
 
 logger = logging.getLogger(__name__)
@@ -202,7 +206,7 @@ class AgentTick:
         any_action_gate: Any | None,
         last_user_at_fn: Callable[[], datetime | None],
         passive_busy_fn: Callable[[str], bool] | None,
-        turn_orchestrator: TurnOrchestrator | None = None,
+        turn_dispatcher: ProactiveTurnDispatcher | None = None,
         deduper: Any,
         tool_deps: ToolDeps,
         gateway_deps: GatewayDeps | None = None,
@@ -217,7 +221,7 @@ class AgentTick:
         self._any_action_gate = any_action_gate
         self._last_user_at_fn = last_user_at_fn
         self._passive_busy_fn = passive_busy_fn
-        self._turn_orchestrator = turn_orchestrator
+        self._turn_dispatcher = turn_dispatcher
         self._deduper = deduper
         self._tool_deps = tool_deps
         self._gateway_deps = gateway_deps
@@ -662,21 +666,17 @@ class AgentTick:
         )
 
     async def _post_loop(self, ctx: AgentTickContext) -> float:
-        """收口到 TurnResult；发送与副作用交给 orchestrator。"""
-        # 1. 先把 ctx 归并成 TurnResult（reply/skip、evidence、副作用）。
+        """收口到 proactive result；发送与副作用交给 dispatcher。"""
+        # 1. 先把 ctx 归并成 proactive result（reply/skip、evidence、副作用）。
         result = await self._build_turn_result(ctx)
-        if self._turn_orchestrator is None:
-            raise RuntimeError("proactive turn_orchestrator is required")
-        # 2. 再统一交给 TurnOrchestrator 落会话、发送消息、执行 side effects。
-        await self._turn_orchestrator.handle_proactive_turn(
-            result=result,
-            session_key=self._session_key,
-            channel=str(self._cfg.default_channel or "").strip(),
-            chat_id=str(self._cfg.default_chat_id or "").strip(),
-        )
+        if self._turn_dispatcher is None:
+            raise RuntimeError("proactive turn_dispatcher is required")
+
+        # 2. 再统一交给 dispatcher 落会话、发送消息、执行 side effects。
+        await self._turn_dispatcher.handle(result=result, session_key=self._session_key)
         return 0.0
 
-    async def _build_turn_result(self, ctx: AgentTickContext) -> TurnResult:
+    async def _build_turn_result(self, ctx: AgentTickContext) -> ProactiveTurnResult:
         ack_fn = self._tool_deps.ack_fn
         # 1. 如果最终不是 reply，直接构造成 skip，并只保留 skip 路径需要的副作用。
         if ctx.terminal_action != "reply":
@@ -689,10 +689,10 @@ class AgentTick:
                 getattr(ctx, "skip_reason", ""),
                 getattr(ctx, "skip_note", ""),
             )
-            return TurnResult(
+            return ProactiveTurnResult(
                 decision="skip",
                 outbound=None,
-                trace=TurnTrace(
+                trace=ProactiveTurnTrace(
                     source="proactive",
                     extra={
                         "steps_taken": ctx.steps_taken,
@@ -714,11 +714,11 @@ class AgentTick:
             self._session_key, delivery_key, self._cfg.delivery_dedupe_hours
         ):
             logger.info("[proactive_v2] delivery_dedupe hit")
-            return TurnResult(
+            return ProactiveTurnResult(
                 decision="skip",
                 outbound=None,
                 evidence=list(ctx.cited_item_ids),
-                trace=TurnTrace(
+                trace=ProactiveTurnTrace(
                     source="proactive",
                     extra={
                         "steps_taken": ctx.steps_taken,
@@ -750,11 +750,11 @@ class AgentTick:
             )
             if is_dup:
                 logger.info("[proactive_v2] message_dedupe hit: %s", reason)
-                return TurnResult(
+                return ProactiveTurnResult(
                     decision="skip",
                     outbound=None,
                     evidence=list(ctx.cited_item_ids),
-                    trace=TurnTrace(
+                    trace=ProactiveTurnTrace(
                         source="proactive",
                         extra={
                             "steps_taken": ctx.steps_taken,
@@ -775,11 +775,14 @@ class AgentTick:
 
         # 4. 两层 post-guard 都通过后，才真正产出 reply 类型 TurnResult。
         #    发送成功/失败后的状态更新和 ACK 都以 side effect 形式挂在这里。
-        return TurnResult(
+        return ProactiveTurnResult(
             decision="reply",
-            outbound=TurnOutbound(session_key=self._session_key, content=ctx.final_message),
+            outbound=ProactiveTurnOutbound(
+                session_key=self._session_key,
+                content=ctx.final_message,
+            ),
             evidence=list(ctx.cited_item_ids),
-            trace=TurnTrace(
+            trace=ProactiveTurnTrace(
                 source="proactive",
                 extra={
                     "steps_taken": ctx.steps_taken,

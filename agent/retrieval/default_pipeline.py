@@ -7,14 +7,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent.looping.memory_gate import (
-    _decide_history_route,
-    _format_gate_history,
-    _trace_memory_retrieve,
-    _trace_route_reason,
+from agent.core.history_types import HistoryMessage, RetrievalTrace
+from agent.core.retrieval_support import (
+    decide_history_route,
+    format_gate_history,
+    trace_memory_retrieve,
+    trace_route_reason,
 )
-from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
-from agent.looping.turn_types import HistoryMessage, RetrievalTrace
+from agent.core.runtime_support import LLMServices, MemoryConfig, MemoryServices
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
     RetrievalRequest,
@@ -250,7 +250,7 @@ class _MemoryRetrievalFinalizer:
         sufficiency_trace: dict[str, object],
         error: Exception,
     ) -> RagTrace:
-        _trace_memory_retrieve(
+        trace_memory_retrieve(
             self._workspace,
             session_key=session_key,
             channel=channel,
@@ -301,7 +301,7 @@ async def _retrieve_memory_block_impl(
     try:
         # 1. 先从近期对话里整理出 gate / HyDE 需要的轻量上下文。
         main_history = _to_history_dicts(history[-gate_resolver.memory_window :])
-        recent_turns = _format_gate_history(main_history, max_turns=3)
+        recent_turns = format_gate_history(main_history, max_turns=3)
         hyde_context = _build_hyde_context(main_history)
 
         # 2. 再做检索门控：
@@ -409,7 +409,7 @@ def _empty_sufficiency_state() -> dict[str, object]:
 def _build_hyde_context(main_history: list[dict]) -> str:
     now = datetime.now()
     date_str = now.strftime(f"%Y-%m-%d {_WEEKDAY_CN[now.weekday()]} %H:%M")
-    hyde_turns = _format_gate_history(
+    hyde_turns = format_gate_history(
         main_history,
         max_turns=3,
         max_content_len=None,
@@ -479,7 +479,7 @@ async def _resolve_fallback_memory_gate(
         )
     )
     route_task = asyncio.create_task(
-        _decide_history_route(
+        decide_history_route(
             user_msg=message,
             metadata=session_metadata,
             recent_history=recent_turns,
@@ -491,7 +491,7 @@ async def _resolve_fallback_memory_gate(
         )
     )
     p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
-    route_reason = _trace_route_reason(route_decision_obj)
+    route_reason = trace_route_reason(route_decision_obj)
     return {
         "gate_type": "history_route",
         "episodic_query": route_decision_obj.rewritten_query,
@@ -661,7 +661,7 @@ def _finalize_memory_retrieval(
         injected_item_ids=injected_item_ids,
         config=config,
     )
-    _trace_memory_retrieve(
+    trace_memory_retrieve(
         workspace,
         session_key=session_key,
         channel=channel,
