@@ -226,6 +226,11 @@ class DefaultReasoner(Reasoner):
 
         for iteration in range(self._llm_config.max_iterations):
             # 4. 调用 LLM，带上当前可见工具 schema。
+            logger.info(
+                "[LLM调用] 第%d轮，可见工具=%s",
+                iteration + 1,
+                f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
+            )
             response = await self._llm.provider.chat(
                 messages=messages,
                 tools=self._tools.get_schemas(names=visible_names),
@@ -236,6 +241,11 @@ class DefaultReasoner(Reasoner):
 
             # 5. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
+                logger.info(
+                    "[LLM决策→工具] 第%d轮，调用: %s",
+                    iteration + 1,
+                    [tc.name for tc in response.tool_calls],
+                )
                 signature = _tool_call_signature(response.tool_calls)
                 if signature and signature == last_tool_signature:
                     repeat_count += 1
@@ -244,6 +254,12 @@ class DefaultReasoner(Reasoner):
                     last_tool_signature = signature
 
                 if repeat_count >= _TOOL_LOOP_REPEAT_LIMIT:
+                    logger.warning(
+                        "[循环检测] 工具调用连续重复%d次，强制收尾 (iteration=%d, signature=%s)",
+                        repeat_count,
+                        iteration + 1,
+                        signature[:80] if signature else "",
+                    )
                     summary = await self._summarize_incomplete_progress(
                         messages,
                         reason="tool_call_loop",
@@ -270,6 +286,10 @@ class DefaultReasoner(Reasoner):
                 for tool_call in response.tool_calls:
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
+                        logger.warning(
+                            "[工具未解锁] LLM 尝试调用 '%s'，但该工具 schema 不可见，引导模型先 tool_search",
+                            tool_call.name,
+                        )
                         result = (
                             f"工具 '{tool_call.name}' 当前未加载（schema 不可见）。"
                             f"请先调用 tool_search(query=\"select:{tool_call.name}\") 加载，"
@@ -304,6 +324,11 @@ class DefaultReasoner(Reasoner):
                         and str(item.get("id", "")) not in injected_proc_ids
                     ]
                     if intercept_items:
+                        logger.info(
+                            "[流程拦截] 工具 '%s' 被 procedure 拦截，注入%d条规范，跳过执行",
+                            tool_call.name,
+                            len(intercept_items),
+                        )
                         result = build_intercept_hint(intercept_items, tool_call.name)
                         injected_proc_ids.update(
                             str(item.get("id", "")) for item in intercept_items
@@ -329,6 +354,8 @@ class DefaultReasoner(Reasoner):
                     else:
                         token = None
                     tools_used.append(tool_call.name)
+                    _args_preview = str(tool_call.arguments)[:150]
+                    logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
                     try:
                         result = await self._tools.execute(
                             tool_call.name,
@@ -338,6 +365,7 @@ class DefaultReasoner(Reasoner):
                         if token is not None:
                             _excluded_names_ctx.reset(token)
                     normalized = normalize_tool_result(result)
+                    logger.info("[工具结果←] %s  结果=%s", tool_call.name, normalized.preview())
                     append_tool_result(
                         messages,
                         tool_call_id=tool_call.id,
@@ -362,7 +390,13 @@ class DefaultReasoner(Reasoner):
 
                     # 6.5 tool_search 的结果会扩展下一轮可见工具。
                     if tool_call.name == "tool_search" and visible_names is not None:
+                        _before_unlock = set(visible_names)
                         _unlock_from_tool_search(normalized.text, visible_names)
+                        _newly_unlocked = visible_names - _before_unlock
+                        if _newly_unlocked:
+                            logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
+                        else:
+                            logger.info("[工具解锁] tool_search 未解锁新工具")
                     iter_calls.append(
                         {
                             "call_id": tool_call.id,
@@ -388,6 +422,12 @@ class DefaultReasoner(Reasoner):
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
+            logger.info(
+                "[LLM决策→回复] 第%d轮，共调用工具%d次: %s",
+                iteration + 1,
+                len(tools_used),
+                tools_used if tools_used else "无",
+            )
             messages.append({"role": "assistant", "content": response.content})
             return self._build_result(
                 reply=response.content or "（无响应）",
@@ -398,6 +438,11 @@ class DefaultReasoner(Reasoner):
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
+        logger.warning(
+            "[迭代上限] 达到最大轮次%d，触发收尾总结，已调用工具: %s",
+            self._llm_config.max_iterations,
+            tools_used if tools_used else "无",
+        )
         summary = await self._summarize_incomplete_progress(
             messages,
             reason="max_iterations",

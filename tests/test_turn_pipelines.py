@@ -147,7 +147,7 @@ def test_agent_loop_uses_custom_pipelines(tmp_path: Path):
     loop._safety_retry.run = AsyncMock(return_value=("ok", [], [], None))
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
-    asyncio.run(loop._process_inner(msg, msg.session_key))
+    asyncio.run(loop._core_runner.process(msg, msg.session_key))
 
     assert custom_retrieval.requests
     assert custom_retrieval.requests[0].message == "hello"

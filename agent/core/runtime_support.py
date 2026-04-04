@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
+
+logger = logging.getLogger("agent.tool_discovery")
 
 from bus.events import InboundMessage
 
@@ -48,6 +51,7 @@ class ToolDiscoveryState:
             session_key,
             OrderedDict(),
         )
+        newly_added: list[str] = []
         for name in tools_used:
             if name in skip:
                 continue
@@ -55,8 +59,17 @@ class ToolDiscoveryState:
                 lru.move_to_end(name)
             else:
                 lru[name] = None
+                newly_added.append(name)
             while len(lru) > self.capacity:
-                lru.popitem(last=False)
+                evicted, _ = lru.popitem(last=False)
+                logger.info("[LRU驱逐] session=%s 移除最旧工具: %s", session_key, evicted)
+        if newly_added:
+            logger.info(
+                "[LRU更新] session=%s 新增工具: %s，当前LRU: %s",
+                session_key,
+                newly_added,
+                list(lru.keys()),
+            )
 
 
 class SessionLike(Protocol):

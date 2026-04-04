@@ -321,7 +321,7 @@ def test_process_inner_parallelizes_procedure_retrieve_and_route_gate():
         new=AsyncMock(side_effect=_slow_route_decision),
     ):
         start = time.perf_counter()
-        asyncio.run(loop._process_inner(msg, msg.session_key))
+        asyncio.run(loop._core_runner.process(msg, msg.session_key))
         elapsed = time.perf_counter() - start
 
     # 若串行应接近 0.24s；并行时应接近单个分支耗时。
@@ -430,7 +430,7 @@ def test_process_inner_schedules_consolidation_only_after_append_messages():
 
     msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
     with patch.object(loop._scheduler, "schedule_consolidation", side_effect=_wrapped_schedule):
-        asyncio.run(loop._process_inner(msg, msg.session_key))
+        asyncio.run(loop._core_runner.process(msg, msg.session_key))
 
     assert scheduled_after_append
 

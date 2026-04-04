@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -12,6 +11,7 @@ from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.consolidation import (
+    ConsolidationRuntime,
     ConsolidationService,
     _select_consolidation_window,
 )
@@ -40,7 +40,6 @@ from agent.looping.safety_retry import SafetyRetryService
 from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.events import InboundMessage, OutboundMessage
-from bus.internal_events import is_spawn_completion_message
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -189,6 +188,13 @@ class AgentLoop:
             consolidation_runner=self._consolidate_and_save,
             memory_window=config.memory.window,
         )
+        self._consolidation_runtime = ConsolidationRuntime(
+            session_manager=self.session_manager,
+            scheduler=self._scheduler,
+            consolidation=self._consolidation,
+            memory_window=self.memory_window,
+            wait_timeout_s=self._CONSOLIDATION_WAIT_S,
+        )
 
         retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
             memory=memory_svc,
@@ -263,9 +269,6 @@ class AgentLoop:
         self._running = False
         logger.info("AgentLoop 停止")
 
-    def _set_tool_context(self, channel: str, chat_id: str) -> None:
-        self.tools.set_context(channel=channel, chat_id=chat_id)
-
     async def _process(
         self,
         msg: InboundMessage,
@@ -281,7 +284,11 @@ class AgentLoop:
             self._processing_state.enter(key)
         try:
             return await asyncio.wait_for(
-                self._process_inner(msg, key, dispatch_outbound=dispatch_outbound),
+                self._core_runner.process(
+                    msg,
+                    key,
+                    dispatch_outbound=dispatch_outbound,
+                ),
                 timeout=self._MESSAGE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
@@ -298,19 +305,6 @@ class AgentLoop:
             if self._processing_state:
                 self._processing_state.exit(key)
             _ = started
-
-    async def _process_inner(
-        self,
-        msg: InboundMessage,
-        key: str,
-        *,
-        dispatch_outbound: bool = True,
-    ) -> OutboundMessage:
-        return await self._core_runner.process(
-            msg,
-            key,
-            dispatch_outbound=dispatch_outbound,
-        )
 
     async def process_direct(
         self,
@@ -349,37 +343,17 @@ class AgentLoop:
         visible_names = result.metadata.get("visible_names")
         return result.reply, tools_used, tool_chain, visible_names, result.thinking
 
-    async def _run_with_safety_retry(
-        self,
-        msg,
-        session,
-        skill_names: list[str] | None = None,
-        base_history: list[dict] | None = None,
-        retrieved_memory_block: str = "",
-    ) -> tuple[str, list[str], list[dict], str | None]:
-        return await self._safety_retry.run(
-            msg,
-            session,
-            skill_names=skill_names,
-            base_history=base_history,
-            retrieved_memory_block=retrieved_memory_block,
-        )
-
     async def _consolidate_memory(
         self,
         session,
         archive_all: bool = False,
         await_vector_store: bool = False,
     ) -> None:
-        await self._consolidation.consolidate(
+        await self._consolidation_runtime.consolidate_memory(
             session,
             archive_all=archive_all,
             await_vector_store=await_vector_store,
         )
-
-    @staticmethod
-    def _format_request_time_anchor(ts: datetime | None) -> str:
-        return DefaultReasoner.format_request_time_anchor(ts)
 
     async def trigger_memory_consolidation(
         self,
@@ -387,74 +361,14 @@ class AgentLoop:
         *,
         archive_all: bool = False,
     ) -> bool:
-        # 1. 先读取真实 session，并判断当前是否真的需要 consolidation。
-        session = self.session_manager.get_or_create(session_key)
-        window = _select_consolidation_window(
-            session,
-            memory_window=self.memory_window,
+        return await self._consolidation_runtime.trigger_memory_consolidation(
+            session_key,
             archive_all=archive_all,
+            consolidate_fn=self._consolidate_memory,
         )
-        if window is None:
-            return False
-        if self._scheduler.is_consolidating(session_key):
-            # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
-            await self._wait_for_consolidation_idle(session_key)
-            session = self.session_manager.get_or_create(session_key)
-            window = _select_consolidation_window(
-                session,
-                memory_window=self.memory_window,
-                archive_all=archive_all,
-            )
-            if window is None:
-                return True
-        # 2. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
-        if not self._scheduler.mark_manual_start(session_key):
-            return False
-        try:
-            await self._consolidate_memory(
-                session,
-                archive_all=archive_all,
-                await_vector_store=True,
-            )
-            await self.session_manager.save_async(session)
-            return True
-        finally:
-            self._scheduler.mark_manual_end(session_key)
 
     async def _wait_for_consolidation_idle(self, session_key: str) -> None:
-        # 后台 consolidation 是异步任务，这里短轮询等待它退出运行态。
-        deadline = time.perf_counter() + self._CONSOLIDATION_WAIT_S
-        while self._scheduler.is_consolidating(session_key):
-            if time.perf_counter() >= deadline:
-                raise TimeoutError(
-                    f"等待 consolidation 完成超时: session_key={session_key}"
-                )
-            await asyncio.sleep(0.05)
-
-    @staticmethod
-    def _is_spawn_completion(msg: InboundMessage) -> bool:
-        return is_spawn_completion_message(msg)
+        await self._consolidation_runtime.wait_for_consolidation_idle(session_key)
 
     async def _consolidate_and_save(self, session: object) -> None:
-        """Consolidation runner passed to TurnScheduler.
-
-        Runs _consolidate_memory + session_manager.save_async.
-        _consolidating set management is TurnScheduler's responsibility.
-        """
-        await self._consolidate_memory(session)  # type: ignore[arg-type]
-        await self.session_manager.save_async(session)  # type: ignore[arg-type]
-
-    def _collect_skill_mentions(self, content: str) -> list[str]:
-        raw_names = re.findall(r"\$([a-zA-Z0-9_-]+)", content)
-        if not raw_names:
-            return []
-        available = {
-            s["name"] for s in self.context.skills.list_skills(filter_unavailable=False)
-        }
-        seen: set[str] = set()
-        result: list[str] = []
-        for name in raw_names:
-            if name in available and name not in seen:
-                seen.add(name)
-                result.append(name)
-        return result
+        await self._consolidation_runtime.consolidate_and_save(session)

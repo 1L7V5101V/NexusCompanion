@@ -3,17 +3,20 @@ import hashlib
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from agent.llm_json import load_json_object_loose
 
 logger = logging.getLogger("agent.loop")
 
 if TYPE_CHECKING:
+    from agent.looping.ports import TurnScheduler
     from agent.provider import LLMProvider
     from core.memory.port import MemoryPort
     from memory2.profile_extractor import ProfileFactExtractor
+    from session.manager import SessionManager
 
 _ALLOWED_PENDING_TAGS = frozenset(
     {
@@ -237,9 +240,11 @@ class ConsolidationService:
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
         current_memory = await asyncio.to_thread(memory.read_long_term)
-        history_text = _coerce_history_text(
-            await asyncio.to_thread(memory.read_history, 16000)
-        )
+        history_text = ""
+        if hasattr(memory, "read_history"):
+            history_text = _coerce_history_text(
+                await asyncio.to_thread(memory.read_history, 16000)
+            )
         recent_history_entries = _select_recent_history_entries(
             history_text,
             limit=3,
@@ -437,3 +442,100 @@ class ConsolidationService:
             )
         except Exception as e:
             logger.error("Memory consolidation failed: %s", e)
+
+
+class ConsolidationRuntime:
+    """
+    ┌──────────────────────────────────────┐
+    │ ConsolidationRuntime                 │
+    ├──────────────────────────────────────┤
+    │ 1. 暴露手动 consolidation 入口       │
+    │ 2. 等待后台 consolidation 空闲       │
+    │ 3. 复用 service 做 consolidate/save  │
+    └──────────────────────────────────────┘
+    """
+
+    def __init__(
+        self,
+        *,
+        session_manager: "SessionManager",
+        scheduler: "TurnScheduler",
+        consolidation: ConsolidationService,
+        memory_window: int,
+        wait_timeout_s: float,
+    ) -> None:
+        self._session_manager = session_manager
+        self._scheduler = scheduler
+        self._consolidation = consolidation
+        self._memory_window = memory_window
+        self._wait_timeout_s = wait_timeout_s
+
+    async def consolidate_memory(
+        self,
+        session,
+        *,
+        archive_all: bool = False,
+        await_vector_store: bool = False,
+    ) -> None:
+        await self._consolidation.consolidate(
+            session,
+            archive_all=archive_all,
+            await_vector_store=await_vector_store,
+        )
+
+    async def trigger_memory_consolidation(
+        self,
+        session_key: str,
+        *,
+        archive_all: bool = False,
+        consolidate_fn: Callable[..., Awaitable[None]] | None = None,
+    ) -> bool:
+        # 1. 先读取真实 session，并判断当前是否真的需要 consolidation。
+        session = self._session_manager.get_or_create(session_key)
+        window = _select_consolidation_window(
+            session,
+            memory_window=self._memory_window,
+            archive_all=archive_all,
+        )
+        if window is None:
+            return False
+
+        # 2. 若后台已在跑，同步等待那次 consolidation 完成，避免返回语义含糊的 False。
+        if self._scheduler.is_consolidating(session_key):
+            await self.wait_for_consolidation_idle(session_key)
+            session = self._session_manager.get_or_create(session_key)
+            window = _select_consolidation_window(
+                session,
+                memory_window=self._memory_window,
+                archive_all=archive_all,
+            )
+            if window is None:
+                return True
+
+        # 3. 再复用现有真实 consolidation 逻辑执行一次，避免测试绕过主实现。
+        if not self._scheduler.mark_manual_start(session_key):
+            return False
+        try:
+            runner = consolidate_fn or self.consolidate_memory
+            await runner(
+                session,
+                archive_all=archive_all,
+                await_vector_store=True,
+            )
+            await self._session_manager.save_async(session)
+            return True
+        finally:
+            self._scheduler.mark_manual_end(session_key)
+
+    async def wait_for_consolidation_idle(self, session_key: str) -> None:
+        deadline = time.perf_counter() + self._wait_timeout_s
+        while self._scheduler.is_consolidating(session_key):
+            if time.perf_counter() >= deadline:
+                raise TimeoutError(
+                    f"等待 consolidation 完成超时: session_key={session_key}"
+                )
+            await asyncio.sleep(0.05)
+
+    async def consolidate_and_save(self, session: object) -> None:
+        await self.consolidate_memory(session)  # type: ignore[arg-type]
+        await self._session_manager.save_async(session)  # type: ignore[arg-type]
