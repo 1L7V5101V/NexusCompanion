@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -47,16 +46,6 @@ def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
         return text
     return text[:limit] + "..."
 
-
-def _unlock_from_tool_search(result: str, visible_names: set[str]) -> None:
-    try:
-        data = json.loads(result)
-        for item in data.get("matched", []):
-            name = item.get("name")
-            if isinstance(name, str) and name:
-                visible_names.add(name)
-    except Exception:
-        pass
 
 
 def _build_reflect_content(
@@ -577,10 +566,10 @@ class DefaultReasoner(Reasoner):
 
                     # 6.5 tool_search 的结果会扩展下一轮可见工具。
                     if tool_call.name == "tool_search" and visible_names is not None:
-                        _before_unlock = set(visible_names)
-                        _unlock_from_tool_search(normalized.text, visible_names)
-                        _newly_unlocked = visible_names - _before_unlock
+                        _newly_unlocked = self._discovery.unlock_from_result(normalized.text)
+                        _newly_unlocked -= visible_names  # keep only genuinely new ones
                         if _newly_unlocked:
+                            visible_names.update(_newly_unlocked)
                             logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
                         else:
                             logger.info("[工具解锁] tool_search 未解锁新工具")

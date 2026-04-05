@@ -60,6 +60,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
         discovery=ToolDiscoveryState(),
         memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=False,
+        memory_window=40,
     )
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
@@ -98,6 +99,7 @@ def test_default_reasoner_unlocks_tool_search_visibility():
         discovery=ToolDiscoveryState(),
         memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
+        memory_window=40,
     )
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
@@ -129,6 +131,7 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         discovery=ToolDiscoveryState(),
         memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
+        memory_window=40,
     )
 
     asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
@@ -161,6 +164,7 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         discovery=ToolDiscoveryState(),
         memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
+        memory_window=40,
     )
 
     result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
@@ -187,6 +191,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
         discovery=ToolDiscoveryState(),
         memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
+        memory_window=40,
     )
 
     asyncio.run(

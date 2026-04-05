@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -44,6 +45,23 @@ class ToolDiscoveryState:
 
     def get_preloaded(self, session_key: str) -> set[str]:
         return set(self._unlocked.get(session_key, {}).keys())
+
+    def unlock_from_result(self, result_json: str) -> set[str]:
+        """Parse a tool_search JSON result and return the tool names in 'matched'.
+
+        Replaces the module-level _unlock_from_tool_search() that previously
+        lived in agent/core/reasoner.py. Pure parsing — no mutation of external
+        state; caller decides what to do with the returned names.
+        """
+        try:
+            data = json.loads(result_json)
+            return {
+                item["name"]
+                for item in data.get("matched", [])
+                if isinstance(item.get("name"), str) and item["name"]
+            }
+        except Exception:
+            return set()
 
     def update(self, session_key: str, tools_used: list[str], always_on: set[str]) -> None:
         skip = always_on | {"tool_search"}

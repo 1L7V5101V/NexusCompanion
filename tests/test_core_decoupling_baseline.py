@@ -120,6 +120,52 @@ async def test_tool_search_select_not_excluded_returns_match():
     assert any(m["name"] == "web_search" for m in json.loads(raw)["matched"])
 
 
+# ── Item 3: _unlock_from_tool_search behavior ────────────────────────────────
+#
+# Canonical behavior: parse a tool_search JSON result and return the set of
+# tool names in "matched". After refactoring this logic lives in
+# ToolDiscoveryState.unlock_from_result(); the shim (_unlock_from_tool_search
+# in reasoner.py) is deleted entirely.
+
+
+def _make_discovery():
+    from agent.core.runtime_support import ToolDiscoveryState
+    return ToolDiscoveryState()
+
+
+def test_unlock_extracts_matched_names():
+    """Names in 'matched' list are returned as a set."""
+    d = _make_discovery()
+    result = d.unlock_from_result(
+        '{"matched": [{"name": "shell"}, {"name": "web_search"}]}'
+    )
+    assert result == {"shell", "web_search"}
+
+
+def test_unlock_empty_matched():
+    """Empty matched list → empty set."""
+    d = _make_discovery()
+    assert d.unlock_from_result('{"matched": []}') == set()
+
+
+def test_unlock_invalid_json_is_silent():
+    """Invalid JSON must not raise; returns empty set."""
+    d = _make_discovery()
+    assert d.unlock_from_result("not-json") == set()
+
+
+def test_unlock_item_missing_name_skipped():
+    """Items without a 'name' key are silently skipped."""
+    d = _make_discovery()
+    assert d.unlock_from_result('{"matched": [{"summary": "no name here"}]}') == set()
+
+
+def test_unlock_blank_name_skipped():
+    """Items with empty string name are silently skipped."""
+    d = _make_discovery()
+    assert d.unlock_from_result('{"matched": [{"name": ""}]}') == set()
+
+
 # ── Item 2a: session metadata update behavior ─────────────────────────────────
 
 
