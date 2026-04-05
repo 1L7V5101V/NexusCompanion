@@ -139,14 +139,11 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "limit=N" in truncated, "截断提示应引导用户用 limit=N 分页，而非 offset 续读"
     assert "offset=0 limit=100" in truncated
 
-    sop = MagicMock()
-    sop.is_sop_file.return_value = True
-    sop.reindex = AsyncMock(return_value="ok")
-    writer = WriteFileTool(base, sop)
+    writer = WriteFileTool(base)
     result = await writer.execute("b.txt", "hello")
     assert "已写入" in result
 
-    editor = EditFileTool(base, sop)
+    editor = EditFileTool(base)
     assert "未找到 old_text" in await editor.execute("b.txt", "x", "y")
     result = await editor.execute("b.txt", "hello", "world")
     assert "已成功编辑" in result

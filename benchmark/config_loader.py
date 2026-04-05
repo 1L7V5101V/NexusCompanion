@@ -114,7 +114,7 @@ def load_benchmark_components(
         inject_max_procedure_preference=config.memory_v2.inject_max_procedure_preference,
         inject_max_event_profile=inject_max_event_profile_override if inject_max_event_profile_override is not None else config.memory_v2.inject_max_event_profile,
         inject_line_max=config.memory_v2.inject_line_max,
-        sop_guard_enabled=config.memory_v2.sop_guard_enabled,
+        procedure_guard_enabled=config.memory_v2.procedure_guard_enabled,
     )
 
     # 5. 主 LLM 客户端（response/evaluate）走主模型配置。

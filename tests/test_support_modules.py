@@ -13,7 +13,7 @@ import pytest
 
 from agent.context import ContextBuilder
 from agent.tools.base import Tool
-from agent.tools.memorize import MemorizeTool, _append_to_sop_file
+from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.notify_owner import NotifyOwnerTool
 from agent.tools.registry import ToolMeta, ToolRegistry
@@ -120,15 +120,6 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     push.execute = AsyncMock(side_effect=RuntimeError("nope"))
     assert "发送失败" in await notify.execute("hi")
 
-    home = tmp_path / "home"
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
-    _append_to_sop_file("user.md", "规则", ["一步", "二步"])
-    content = (home / ".akasic" / "workspace" / "sop" / "user.md").read_text(
-        encoding="utf-8"
-    )
-    assert "## 规则" in content
-    assert "- 一步" in content
-
     memory = MagicMock()
     memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
 
@@ -142,13 +133,11 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
         summary="记住这条流程",
         memory_type="procedure",
         steps=["先查", "再做"],
-        persist_file="ops.md",
     )
 
     assert "已记住（mem-1）" in result
     extra = memory.save_item_with_supersede.await_args.kwargs["extra"]
     assert extra["trigger_tags"] == {"scope": "task"}
-    assert extra["persist_file"] == "ops.md"
     assert extra["rule_schema"]["required_tools"] == []
     assert extra["rule_schema"]["forbidden_tools"] == []
 

@@ -32,7 +32,7 @@ class Retriever:
         inject_max_procedure_preference: int = 4,
         inject_max_event_profile: int = 2,
         inject_line_max: int = 180,
-        sop_guard_enabled: bool = True,
+        procedure_guard_enabled: bool = True,
         hotness_alpha: float = 0.0,
         hotness_half_life_days: float = 14.0,
     ) -> None:
@@ -55,7 +55,7 @@ class Retriever:
         )
         self._inject_max_event_profile = max(0, int(inject_max_event_profile))
         self._inject_line_max = max(60, int(inject_line_max))
-        self._sop_guard_enabled = bool(sop_guard_enabled)
+        self._procedure_guard_enabled = bool(procedure_guard_enabled)
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
 
@@ -181,7 +181,7 @@ class Retriever:
             summary = self._shorten(item.get("summary", ""), self._inject_line_max)
             happened_at = item.get("happened_at") or ""
             if (
-                self._sop_guard_enabled
+                self._procedure_guard_enabled
                 and mtype == "procedure"
                 and extra.get("tool_requirement")
             ):

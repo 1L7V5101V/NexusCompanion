@@ -5,8 +5,6 @@ memorize 工具：用户主动写记忆
 from __future__ import annotations
 
 import logging
-import inspect
-from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from agent.tools.base import Tool
@@ -16,16 +14,6 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
-
-
-def _pick_save_method(memory: "MemoryPort") -> str:
-    # 1. 优先走显式 supersede 写口，保证 procedure / preference 仍按新语义写入。
-    save_with_supersede = getattr(memory, "save_item_with_supersede", None)
-    if callable(save_with_supersede) and inspect.iscoroutinefunction(save_with_supersede):
-        return "save_item_with_supersede"
-
-    # 2. 测试或旧实现未提供 supersede 写口时，退回基础 save_item。
-    return "save_item"
 
 
 def _coerce_memory_type(
@@ -43,24 +31,6 @@ def _coerce_memory_type(
     return memory_type
 
 
-def _append_to_sop_file(
-    persist_file: str, summary: str, steps: list[str] | None
-) -> None:
-    """将规则追加写入 workspace/sop/ 下的对应文件"""
-    workspace = Path.home() / ".akasic" / "workspace"
-    sop_dir = workspace / "sop"
-    sop_dir.mkdir(parents=True, exist_ok=True)
-    target = sop_dir / persist_file
-    lines = [f"\n## {summary}\n"]
-    if steps:
-        for s in steps:
-            lines.append(f"- {s}")
-    content = "\n".join(lines) + "\n"
-    with open(target, "a", encoding="utf-8") as f:
-        f.write(content)
-    logger.info(f"memorize: appended to {target}")
-
-
 class MemorizeTool(Tool):
     name = "memorize"
     description = (
@@ -70,7 +40,7 @@ class MemorizeTool(Tool):
         "【勿记录】：时效性事件（发布日期/赛季/已过期日程节点）、"
         "系统连接状态（管道/Token/服务可用性）、"
         "生理指标具体数值或推断（心率/血氧基线等，应通过 fitbit_health_snapshot 实时查询）、"
-        "针对单次任务的专项操作规范（应写入对应 SOP 文件）。"
+        "针对单次任务的专项操作规范。"
     )
     parameters = {
         "type": "object",
@@ -93,10 +63,6 @@ class MemorizeTool(Tool):
                 "items": {"type": "string"},
                 "description": "执行步骤（可选）",
             },
-            "persist_file": {
-                "type": "string",
-                "description": "同步写入的 SOP 文件名（可选，如 user-preferences.md）",
-            },
         },
         "required": ["summary", "memory_type"],
     }
@@ -111,16 +77,14 @@ class MemorizeTool(Tool):
         memory_type: str,
         tool_requirement: str | None = None,
         steps: list[str] | None = None,
-        persist_file: str | None = None,
         **_: Any,
     ) -> str:
         # 0. 类型纠正：无 tool_requirement 且无 steps 的 procedure → preference。
         memory_type = _coerce_memory_type(memory_type, tool_requirement, steps)
-        # 1. 先构造基础 extra，保留原有 tool_requirement / steps / persist_file 字段。
+        # 1. 构造 extra，保留 tool_requirement / steps 字段。
         extra: dict = {
             "tool_requirement": tool_requirement,
             "steps": steps or [],
-            "persist_file": persist_file,
         }
         # 2. procedure 规则额外写入结构化 rule_schema，供后续冲突检测与 supersede 使用。
         if memory_type == "procedure":
@@ -129,7 +93,7 @@ class MemorizeTool(Tool):
                 tool_requirement=tool_requirement,
                 steps=steps or [],
             )
-        # 3. 最后再补 tagger 产物并写入 memory port。
+        # 3. 补 tagger 产物并写入 memory port。
         if memory_type == "procedure" and self._tagger is not None:
             try:
                 trigger_tags = await self._tagger.tag(summary)
@@ -141,17 +105,10 @@ class MemorizeTool(Tool):
                     )
             except Exception as e:
                 logger.warning("memorize: trigger_tags generation failed: %s", e)
-        # 4. 最后选择当前 memory port 支持的写入口。
-        save_method = getattr(self._memory, _pick_save_method(self._memory))
-        result = await save_method(
+        result = await self._memory.save_item_with_supersede(
             summary=summary,
             memory_type=memory_type,
             extra=extra,
             source_ref="memorize_tool",
         )
-        if persist_file:
-            try:
-                _append_to_sop_file(persist_file, summary, steps)
-            except Exception as e:
-                logger.warning(f"memorize: 写入 SOP 文件失败: {e}")
         return f"已记住（{result}）：{summary}"

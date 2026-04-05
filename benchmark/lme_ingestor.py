@@ -182,6 +182,9 @@ class _MemoryPortAdapter:
     async def save_item(self, *args, **kwargs) -> str:
         return await self._memorizer.save_item(*args, **kwargs)
 
+    async def save_item_with_supersede(self, *args, **kwargs) -> str:
+        return await self._memorizer.save_item(*args, **kwargs)
+
 
 class _ScopedMemorizerAdapter:
     """为 post-response 写入补齐 benchmark scope，避免跨 question 污染。"""

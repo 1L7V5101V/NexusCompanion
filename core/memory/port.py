@@ -133,6 +133,15 @@ class MemoryPort(Protocol):
         happened_at: str | None = None,
     ) -> str: ...
 
+    async def save_item_with_supersede(
+        self,
+        summary: str,
+        memory_type: str,
+        extra: dict,
+        source_ref: str,
+        happened_at: str | None = None,
+    ) -> str: ...
+
     async def save_from_consolidation(
         self,
         history_entry: str,

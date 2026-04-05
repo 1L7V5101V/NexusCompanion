@@ -190,7 +190,7 @@ class AgentLoop:
             ),
             top_k_history=max(1, int(config.memory.top_k_history)),
             route_intention_enabled=config.memory.route_intention_enabled,
-            sop_guard_enabled=config.memory.sop_guard_enabled,
+            procedure_guard_enabled=config.memory.procedure_guard_enabled,
             gate_llm_timeout_ms=max(100, int(config.memory.gate_llm_timeout_ms)),
             gate_max_tokens=max(32, int(config.memory.gate_max_tokens)),
             hyde_enabled=config.memory.hyde_enabled,

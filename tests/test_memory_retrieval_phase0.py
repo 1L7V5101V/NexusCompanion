@@ -154,7 +154,7 @@ async def test_update_now_tool_uses_memory_port():
 @pytest.mark.asyncio
 async def test_memorize_tool_uses_memory_port():
     memory = MagicMock()
-    memory.save_item = AsyncMock(return_value="mem-1")
+    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
     tool = MemorizeTool(cast(Any, memory))
 
     result = await tool.execute(
@@ -164,13 +164,12 @@ async def test_memorize_tool_uses_memory_port():
         steps=["先查", "再执行"],
     )
 
-    memory.save_item.assert_awaited_once_with(
+    memory.save_item_with_supersede.assert_awaited_once_with(
         summary="以后先查工具状态",
         memory_type="procedure",
         extra={
             "tool_requirement": "task_note",
             "steps": ["先查", "再执行"],
-            "persist_file": None,
             "rule_schema": {
                 "required_tools": ["task_note"],
                 "forbidden_tools": [],
@@ -366,7 +365,7 @@ def test_retriever_select_for_injection_can_drop_protected_when_guard_disabled()
             "event": 0.7,
             "profile": 0.7,
         },
-        sop_guard_enabled=False,
+        procedure_guard_enabled=False,
     )
     items = [
         {
@@ -388,7 +387,7 @@ def test_retriever_forced_limit_and_injected_ids_match_formatted_output():
         store=MagicMock(),
         embedder=MagicMock(),
         inject_max_forced=1,
-        sop_guard_enabled=True,
+        procedure_guard_enabled=True,
     )
     items = [
         {

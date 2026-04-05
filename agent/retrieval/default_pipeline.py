@@ -656,7 +656,7 @@ def _finalize_memory_retrieval(
         "" if retrieved_block else "（无内容注入）",
     )
     _log_memory_injection(selected_items)
-    sop_guard_applied = _has_sop_guard_hit(
+    procedure_guard_applied = _has_procedure_guard_hit(
         procedure_items=p_items,
         injected_item_ids=injected_item_ids,
         config=config,
@@ -673,7 +673,7 @@ def _finalize_memory_retrieval(
         route_decision=route_decision,
         rewritten_query=rewritten_query,
         fallback_reason=fallback_reason,
-        sop_guard_applied=sop_guard_applied,
+        procedure_guard_applied=procedure_guard_applied,
         procedure_hits=len(p_items),
         history_hits=len(h_items),
         injected_item_ids=injected_item_ids,
@@ -716,7 +716,7 @@ def _log_memory_injection(selected_items: list[dict]) -> None:
         )
 
 
-def _has_sop_guard_hit(
+def _has_procedure_guard_hit(
     *,
     procedure_items: list[dict],
     injected_item_ids: list[str],
@@ -731,7 +731,7 @@ def _has_sop_guard_hit(
         and item.get("id")
     }
     return bool(
-        config.sop_guard_enabled
+        config.procedure_guard_enabled
         and any(item_id in protected_ids for item_id in injected_item_ids)
     )
 

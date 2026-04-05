@@ -184,7 +184,7 @@ def _load_memory_v2_config(data: dict) -> MemoryV2Config:
         inject_max_event_profile=int(inject_limits.get("event_profile", 2)),
         inject_line_max=int(inject_limits.get("line_max", 180)),
         route_intention_enabled=bool(mv2.get("route_intention_enabled", False)),
-        sop_guard_enabled=bool(mv2.get("sop_guard_enabled", True)),
+        procedure_guard_enabled=bool(mv2.get("procedure_guard_enabled", True)),
         gate_llm_timeout_ms=int(mv2.get("gate_llm_timeout_ms", 800)),
         gate_max_tokens=int(mv2.get("gate_max_tokens", 96)),
         hyde_enabled=bool(mv2.get("hyde_enabled", False)),

@@ -52,7 +52,7 @@ class MemoryV2Config:
     inject_max_event_profile: int = 2
     inject_line_max: int = 180
     route_intention_enabled: bool = False
-    sop_guard_enabled: bool = True
+    procedure_guard_enabled: bool = True
     gate_llm_timeout_ms: int = 800
     gate_max_tokens: int = 96
     hyde_enabled: bool = False
