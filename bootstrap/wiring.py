@@ -27,6 +27,8 @@ class MemoryEngineBuildDeps:
     light_provider: LLMProvider | None
     http_resources: SharedHttpResources
     retriever: object
+    memorizer: object | None
+    tagger: object | None
     post_response_worker: object | None
 
 
@@ -40,6 +42,8 @@ _MEMORY_WIRING = {
 def _build_default_memory_engine(deps: MemoryEngineBuildDeps):
     return DefaultMemoryEngine(
         retriever=deps.retriever,
+        memorizer=deps.memorizer,
+        tagger=deps.tagger,
         post_response_worker=deps.post_response_worker,
     )
 

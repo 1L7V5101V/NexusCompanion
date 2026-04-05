@@ -24,7 +24,7 @@ from agent.tools.registry import ToolRegistry
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
-from core.memory.engine import MemoryEngineRetrieveResult, MemoryHit, PassiveRetrieveResult
+from core.memory.engine import MemoryEngineRetrieveResult, MemoryHit, RememberResult
 from memory2.retriever import Retriever
 from session.manager import Session
 
@@ -158,10 +158,12 @@ async def test_update_now_tool_uses_memory_port():
 
 
 @pytest.mark.asyncio
-async def test_memorize_tool_uses_memory_port():
-    memory = MagicMock()
-    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
-    tool = MemorizeTool(cast(Any, memory))
+async def test_memorize_tool_uses_engine_remember_without_scope():
+    engine = MagicMock()
+    engine.remember = AsyncMock(
+        return_value=RememberResult(item_id="mem-1", actual_type="procedure")
+    )
+    tool = MemorizeTool(cast(Any, engine))
 
     result = await tool.execute(
         summary="以后先查工具状态",
@@ -170,33 +172,24 @@ async def test_memorize_tool_uses_memory_port():
         steps=["先查", "再执行"],
     )
 
-    memory.save_item_with_supersede.assert_awaited_once_with(
-        summary="以后先查工具状态",
-        memory_type="procedure",
-        extra={
-            "tool_requirement": "task_note",
-            "steps": ["先查", "再执行"],
-            "rule_schema": {
-                "required_tools": ["task_note"],
-                "forbidden_tools": [],
-                "mentioned_tools": ["task_note"],
-            },
-        },
-        source_ref="memorize_tool",
-    )
+    engine.remember.assert_awaited_once()
+    request = engine.remember.await_args.args[0]
+    assert request.summary == "以后先查工具状态"
+    assert request.memory_type == "procedure"
+    assert request.raw_extra == {
+        "tool_requirement": "task_note",
+        "steps": ["先查", "再执行"],
+    }
     assert "已记住" in result
 
 
 @pytest.mark.asyncio
-async def test_memorize_tool_prefers_passive_engine_when_bound():
-    memory = MagicMock()
-    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
-    passive_engine = MagicMock()
-    passive_engine.remember = AsyncMock(
-        return_value=MagicMock(item_id="passive-1", actual_type="procedure")
+async def test_memorize_tool_uses_engine_remember():
+    engine = MagicMock()
+    engine.remember = AsyncMock(
+        return_value=RememberResult(item_id="engine-1", actual_type="procedure")
     )
-    tool = MemorizeTool(cast(Any, memory))
-    tool.bind_passive_engine(cast(Any, passive_engine))
+    tool = MemorizeTool(cast(Any, engine))
 
     result = await tool.execute(
         summary="以后先查工具状态",
@@ -207,13 +200,12 @@ async def test_memorize_tool_prefers_passive_engine_when_bound():
         chat_id="1",
     )
 
-    passive_engine.remember.assert_awaited_once()
-    request = passive_engine.remember.await_args.args[0]
+    engine.remember.assert_awaited_once()
+    request = engine.remember.await_args.args[0]
     assert request.scope.session_key == "cli:1"
     assert request.scope.channel == "cli"
     assert request.scope.chat_id == "1"
-    memory.save_item_with_supersede.assert_not_awaited()
-    assert "passive-1" in result
+    assert "engine-1" in result
 
 
 def test_agent_loop_accepts_memory_runtime(tmp_path: Path):
@@ -479,7 +471,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
         hyde_enhancer=None,
     )
 
-    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
+    items, scope_mode, hyde, engine_result = await _retrieve_episodic_items(
         session_key="telegram:7674283004",
         channel="telegram",
         chat_id="7674283004",
@@ -497,7 +489,7 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
     assert items[0]["memory_type"] == "event"
     assert items[0]["extra_json"] == {"origin": "engine"}
     assert items[0]["_retrieval_path"] == "history_raw"
-    assert passive_result is None
+    assert engine_result is not None
     request = engine.retrieve.await_args.args[0]
     assert request.scope.session_key == "telegram:7674283004"
     assert request.hints["require_scope_match"] is True
@@ -505,19 +497,14 @@ async def test_retrieve_episodic_items_prefers_memory_engine_when_available():
 
 
 @pytest.mark.asyncio
-async def test_retrieve_episodic_items_falls_back_to_legacy_port_path(monkeypatch):
-    mocked = AsyncMock(return_value=([{"id": "h1"}], "local", "hyde"))
-    monkeypatch.setattr(
-        "agent.retrieval.default_pipeline.retrieve_episodic",
-        mocked,
-    )
+async def test_retrieve_episodic_items_returns_disabled_without_engine():
     memory = SimpleNamespace(
         port=MagicMock(),
         engine=None,
         hyde_enhancer=None,
     )
 
-    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
+    items, scope_mode, hyde, engine_result = await _retrieve_episodic_items(
         session_key="cli:1",
         channel="cli",
         chat_id="1",
@@ -529,30 +516,60 @@ async def test_retrieve_episodic_items_falls_back_to_legacy_port_path(monkeypatc
         config=AgentLoopConfig().memory,
     )
 
-    assert items == [{"id": "h1"}]
-    assert scope_mode == "local"
-    assert hyde == "hyde"
-    assert passive_result is None
-    mocked.assert_awaited_once()
+    assert items == []
+    assert scope_mode == "disabled"
+    assert hyde is None
+    assert engine_result is None
 
 
 @pytest.mark.asyncio
-async def test_retrieve_episodic_items_keeps_legacy_hyde_path_when_enabled(monkeypatch):
-    mocked = AsyncMock(
-        return_value=([{"id": "h1", "_retrieval_path": "history_hyde"}], "global+hyde", "hypo")
+async def test_retrieve_episodic_items_uses_engine_hyde_path_when_enabled():
+    engine = SimpleNamespace(
+        retrieve=AsyncMock(
+            side_effect=[
+                MemoryEngineRetrieveResult(
+                    text_block="raw block",
+                    hits=[
+                        MemoryHit(
+                            id="h1",
+                            summary="原始命中",
+                            content="原始命中",
+                            score=0.8,
+                            source_ref="seed",
+                            engine_kind="default",
+                            metadata={"memory_type": "event"},
+                            injected=True,
+                        )
+                    ],
+                    raw={"items": [{"id": "h1", "memory_type": "event", "summary": "原始命中"}]},
+                ),
+                MemoryEngineRetrieveResult(
+                    text_block="hyde block",
+                    hits=[
+                        MemoryHit(
+                            id="h2",
+                            summary="HyDE 命中",
+                            content="HyDE 命中",
+                            score=0.79,
+                            source_ref="seed",
+                            engine_kind="default",
+                            metadata={"memory_type": "event"},
+                            injected=True,
+                        )
+                    ],
+                    raw={"items": [{"id": "h2", "memory_type": "event", "summary": "HyDE 命中"}]},
+                ),
+            ]
+        )
     )
-    monkeypatch.setattr(
-        "agent.retrieval.default_pipeline.retrieve_episodic",
-        mocked,
-    )
-    engine = SimpleNamespace(retrieve=AsyncMock())
+    hyde = SimpleNamespace(generate_hypothesis=AsyncMock(return_value="hypo"))
     memory = SimpleNamespace(
         port=MagicMock(),
         engine=engine,
-        hyde_enhancer=object(),
+        hyde_enhancer=hyde,
     )
 
-    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
+    items, scope_mode, hyde_hypothesis, engine_result = await _retrieve_episodic_items(
         session_key="cli:1",
         channel="cli",
         chat_id="1",
@@ -564,19 +581,106 @@ async def test_retrieve_episodic_items_keeps_legacy_hyde_path_when_enabled(monke
         config=AgentLoopConfig().memory,
     )
 
-    assert items == [{"id": "h1", "_retrieval_path": "history_hyde"}]
+    assert [item["id"] for item in items] == ["h1", "h2"]
+    assert [item["_retrieval_path"] for item in items] == ["history_raw", "history_hyde"]
     assert scope_mode == "global+hyde"
-    assert hyde == "hypo"
-    assert passive_result is None
-    mocked.assert_awaited_once()
-    engine.retrieve.assert_not_called()
+    assert hyde_hypothesis == "hypo"
+    assert engine_result is not None
+    assert engine_result.text_block == "raw block\n\nhyde block"
+    assert engine.retrieve.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_retrieve_episodic_items_returns_passive_result_for_engine_managed_injection():
-    passive_engine = SimpleNamespace(
+async def test_retrieve_episodic_items_hyde_max_pools_same_id_to_higher_score():
+    engine = SimpleNamespace(
         retrieve=AsyncMock(
-            return_value=PassiveRetrieveResult(
+            side_effect=[
+                MemoryEngineRetrieveResult(
+                    text_block="raw block",
+                    hits=[
+                        MemoryHit(
+                            id="h1",
+                            summary="原始摘要",
+                            content="原始摘要",
+                            score=0.6,
+                            source_ref="seed",
+                            engine_kind="default",
+                            metadata={"memory_type": "event"},
+                            injected=False,
+                        )
+                    ],
+                    raw={
+                        "items": [
+                            {
+                                "id": "h1",
+                                "memory_type": "event",
+                                "summary": "原始摘要",
+                                "score": 0.6,
+                            }
+                        ]
+                    },
+                ),
+                MemoryEngineRetrieveResult(
+                    text_block="hyde block",
+                    hits=[
+                        MemoryHit(
+                            id="h1",
+                            summary="HyDE 更优摘要",
+                            content="HyDE 更优摘要",
+                            score=0.9,
+                            source_ref="seed",
+                            engine_kind="default",
+                            metadata={"memory_type": "event"},
+                            injected=True,
+                        )
+                    ],
+                    raw={
+                        "items": [
+                            {
+                                "id": "h1",
+                                "memory_type": "event",
+                                "summary": "HyDE 更优摘要",
+                                "score": 0.9,
+                            }
+                        ]
+                    },
+                ),
+            ]
+        )
+    )
+    hyde = SimpleNamespace(generate_hypothesis=AsyncMock(return_value="hypo"))
+    memory = SimpleNamespace(
+        port=MagicMock(),
+        engine=engine,
+        hyde_enhancer=hyde,
+    )
+
+    items, _scope_mode, _hyde_hypothesis, engine_result = await _retrieve_episodic_items(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        route_decision="RETRIEVE",
+        rewritten_query="历史查询",
+        history_memory_types=["event"],
+        hyde_context="recent turns",
+        memory=memory,
+        config=AgentLoopConfig().memory,
+    )
+
+    assert len(items) == 1
+    assert items[0]["summary"] == "HyDE 更优摘要"
+    assert items[0]["_retrieval_path"] == "history_hyde"
+    assert engine_result is not None
+    assert len(engine_result.hits) == 1
+    assert engine_result.hits[0].summary == "HyDE 更优摘要"
+    assert engine_result.hits[0].injected is True
+
+
+@pytest.mark.asyncio
+async def test_retrieve_episodic_items_returns_engine_managed_injection():
+    engine = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=MemoryEngineRetrieveResult(
                 text_block="engine block",
                 hits=[
                     MemoryHit(
@@ -585,7 +689,7 @@ async def test_retrieve_episodic_items_returns_passive_result_for_engine_managed
                         content="用户昨天提过 FitBit",
                         score=0.81,
                         source_ref="telegram:7674283004@seed",
-                        engine_kind="compat",
+                        engine_kind="default",
                         metadata={"memory_type": "event", "origin": "engine"},
                         injected=True,
                     ),
@@ -595,22 +699,27 @@ async def test_retrieve_episodic_items_returns_passive_result_for_engine_managed
                         content="未注入候选",
                         score=0.75,
                         source_ref="telegram:7674283004@seed",
-                        engine_kind="compat",
+                        engine_kind="default",
                         metadata={"memory_type": "event"},
                         injected=False,
                     ),
                 ],
+                raw={
+                    "items": [
+                        {"id": "e1", "memory_type": "event", "summary": "用户昨天提过 FitBit"},
+                        {"id": "e2", "memory_type": "event", "summary": "未注入候选"},
+                    ]
+                },
             )
         )
     )
     memory = SimpleNamespace(
         port=MagicMock(),
-        engine=None,
-        passive_engine=passive_engine,
+        engine=engine,
         hyde_enhancer=None,
     )
 
-    items, scope_mode, hyde, passive_result = await _retrieve_episodic_items(
+    items, scope_mode, hyde, engine_result = await _retrieve_episodic_items(
         session_key="telegram:7674283004",
         channel="telegram",
         chat_id="7674283004",
@@ -625,18 +734,28 @@ async def test_retrieve_episodic_items_returns_passive_result_for_engine_managed
     assert scope_mode == "global"
     assert hyde is None
     assert len(items) == 2
-    assert passive_result is not None
-    assert passive_result.text_block == "engine block"
-    assert passive_result.injected_ids == ["e1"]
+    assert engine_result is not None
+    assert engine_result.text_block == "engine block"
+    assert [item.id for item in engine_result.hits if item.injected] == ["e1"]
 
 
-def test_build_injection_payload_prefers_passive_result_text_block_and_injected_ids():
-    memory_port = MagicMock()
-    memory_port.select_for_injection.return_value = [
-        {"id": "p1", "memory_type": "procedure", "summary": "先查状态"}
-    ]
-    memory_port.build_injection_block.return_value = ("procedure block", ["p1"])
-    passive_result = PassiveRetrieveResult(
+def test_build_injection_payload_uses_engine_result_text_block_and_injected_ids():
+    procedure_result = MemoryEngineRetrieveResult(
+        text_block="procedure block",
+        hits=[
+            MemoryHit(
+                id="p1",
+                summary="先查状态",
+                content="先查状态",
+                score=0.9,
+                source_ref="seed",
+                engine_kind="default",
+                metadata={"memory_type": "procedure"},
+                injected=True,
+            )
+        ],
+    )
+    history_result = MemoryEngineRetrieveResult(
         text_block="engine block",
         hits=[
             MemoryHit(
@@ -664,12 +783,12 @@ def test_build_injection_payload_prefers_passive_result_text_block_and_injected_
 
     selected_items, block, injected_ids = _build_injection_payload(
         procedure_items=[{"id": "p1", "memory_type": "procedure", "summary": "先查状态"}],
+        procedure_result=procedure_result,
         history_items=[
             {"id": "e1", "memory_type": "event", "summary": "用户昨天提过 FitBit"},
             {"id": "e2", "memory_type": "event", "summary": "未注入候选"},
         ],
-        memory=SimpleNamespace(port=memory_port),
-        passive_result=passive_result,
+        history_result=history_result,
     )
 
     assert block == "procedure block\n\nengine block"

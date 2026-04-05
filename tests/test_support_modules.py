@@ -21,7 +21,7 @@ from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from core.common import timekit
-from core.memory.port import DefaultMemoryPort
+from core.memory.default_engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
@@ -120,23 +120,30 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
     push.execute = AsyncMock(side_effect=RuntimeError("nope"))
     assert "发送失败" in await notify.execute("hi")
 
-    memory = MagicMock()
-    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
+    memorizer = MagicMock()
+    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
 
     class _Tagger:
         async def tag(self, summary: str) -> dict[str, str]:
             assert summary == "记住这条流程"
             return {"scope": "task"}
 
-    tool = MemorizeTool(memory, tagger=_Tagger())
+    tool = MemorizeTool(
+        DefaultMemoryEngine(
+            retriever=MagicMock(),
+            memorizer=memorizer,
+            tagger=_Tagger(),
+        )
+    )
     result = await tool.execute(
         summary="记住这条流程",
         memory_type="procedure",
         steps=["先查", "再做"],
     )
 
-    assert "已记住（mem-1）" in result
-    extra = memory.save_item_with_supersede.await_args.kwargs["extra"]
+    assert "item_id=mem-1" in result
+    assert "status=new" in result
+    extra = memorizer.save_item_with_supersede.await_args.kwargs["extra"]
     assert extra["trigger_tags"] == {"scope": "task"}
     assert extra["rule_schema"]["required_tools"] == []
     assert extra["rule_schema"]["forbidden_tools"] == []
@@ -145,7 +152,13 @@ async def test_notify_owner_tool_and_memorize_tool_cover_branches(
         async def tag(self, summary: str) -> dict[str, str]:
             raise RuntimeError("bad")
 
-    bad = MemorizeTool(memory, tagger=_BadTagger())
+    bad = MemorizeTool(
+        DefaultMemoryEngine(
+            retriever=MagicMock(),
+            memorizer=memorizer,
+            tagger=_BadTagger(),
+        )
+    )
     await bad.execute(summary="普通偏好", memory_type="procedure")
     await bad.execute(summary="偏好", memory_type="preference")
 
@@ -158,8 +171,12 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
 
     store = MemoryStore2(":memory:")
     memorizer = Memorizer(store, _Embedder())
-    memory = DefaultMemoryPort(MagicMock(), memorizer=memorizer, retriever=None)
-    tool = MemorizeTool(memory)
+    tool = MemorizeTool(
+        DefaultMemoryEngine(
+            retriever=MagicMock(),
+            memorizer=memorizer,
+        )
+    )
 
     await memorizer.save_item(
         summary="查询 Steam 游戏信息时，必须先使用 steam_mcp 工具查询游戏详情，再用 web_search 补充验证价格和评价信息。",
@@ -188,16 +205,21 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
 
 @pytest.mark.asyncio
 async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
-    memory = MagicMock()
-    memory.save_item_with_supersede = AsyncMock(return_value="mem-1")
-    tool = MemorizeTool(memory)
+    memorizer = MagicMock()
+    memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
+    tool = MemorizeTool(
+        DefaultMemoryEngine(
+            retriever=MagicMock(),
+            memorizer=memorizer,
+        )
+    )
 
     await tool.execute(
         summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
         memory_type="procedure",
     )
 
-    assert memory.save_item_with_supersede.await_args.kwargs["memory_type"] == "preference"
+    assert memorizer.save_item_with_supersede.await_args.kwargs["memory_type"] == "preference"
 
 
 @pytest.mark.asyncio

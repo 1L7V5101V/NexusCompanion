@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from core.memory.engine import (
@@ -11,10 +12,15 @@ from core.memory.engine import (
     MemoryHit,
     MemoryIngestRequest,
     MemoryIngestResult,
+    RememberRequest,
+    RememberResult,
 )
+from memory2.rule_schema import build_procedure_rule_schema
 
 if TYPE_CHECKING:
+    from memory2.memorizer import Memorizer
     from memory2.post_response_worker import PostResponseMemoryWorker
+    from memory2.procedure_tagger import ProcedureTagger
     from memory2.retriever import Retriever
 
 
@@ -37,9 +43,13 @@ class DefaultMemoryEngine:
     def __init__(
         self,
         retriever: "Retriever",
+        memorizer: "Memorizer | None" = None,
+        tagger: "ProcedureTagger | None" = None,
         post_response_worker: "PostResponseMemoryWorker | None" = None,
     ) -> None:
         self._retriever = retriever
+        self._memorizer = memorizer
+        self._tagger = tagger
         self._post_response_worker = post_response_worker
 
     # ┌──────────────────────────────────────────────┐
@@ -52,19 +62,8 @@ class DefaultMemoryEngine:
     async def retrieve(
         self, request: MemoryEngineRetrieveRequest
     ) -> MemoryEngineRetrieveResult:
-        # 1. 读取检索请求，映射到当前 memory2 retriever 的最小参数集合。
         scope = self._resolve_scope(request.scope)
-        memory_types = request.hints.get("memory_types")
-        items = await self._retriever.retrieve(
-            request.query,
-            memory_types=list(memory_types) if isinstance(memory_types, list) else None,
-            top_k=request.top_k,
-            scope_channel=scope.channel or None,
-            scope_chat_id=scope.chat_id or None,
-            require_scope_match=bool(request.hints.get("require_scope_match", False)),
-        )
-
-        # 2. 调用默认 rich retrieval 组装 block，并把命中项收敛成统一结构。
+        items = await self._retrieve_items(request=request, scope=scope)
         text_block, injected_ids = self._retriever.build_injection_block(items)
         hits = [
             self._build_hit(item, injected_ids=injected_ids)
@@ -72,7 +71,6 @@ class DefaultMemoryEngine:
             if isinstance(item, dict)
         ]
 
-        # 3. 汇总 trace/raw，返回给上层内部引擎调用方。
         return MemoryEngineRetrieveResult(
             text_block=text_block,
             hits=hits,
@@ -92,7 +90,6 @@ class DefaultMemoryEngine:
     # │ -> MemoryIngestResult                        │
     # └──────────────────────────────────────────────┘
     async def ingest(self, request: MemoryIngestRequest) -> MemoryIngestResult:
-        # 1. 读取输入与上下文，完成当前兼容壳支持范围判断。
         scope = self._resolve_scope(request.scope)
         if self._post_response_worker is None:
             return MemoryIngestResult(
@@ -114,7 +111,6 @@ class DefaultMemoryEngine:
                 raw={"reason": "invalid_content"},
             )
 
-        # 2. 构造当前默认实现需要的参数，并进入现有 post-turn 主流程。
         await self._post_response_worker.run(
             user_msg=normalized["user_message"],
             agent_response=normalized["assistant_response"],
@@ -127,11 +123,47 @@ class DefaultMemoryEngine:
             session_key=scope.session_key,
         )
 
-        # 3. 返回兼容壳结果；当前 memory2 worker 不直接暴露 created ids。
         return MemoryIngestResult(
             accepted=True,
             summary="delegated to post_response_worker",
             raw={"engine": self.DESCRIPTOR.name},
+        )
+
+    async def remember(self, request: RememberRequest) -> RememberResult:
+        if self._memorizer is None:
+            raise RuntimeError("memorizer unavailable")
+
+        memory_type = _coerce_memory_type(
+            request.memory_type,
+            str(request.raw_extra.get("tool_requirement") or ""),
+            request.raw_extra.get("steps")
+            if isinstance(request.raw_extra.get("steps"), list)
+            else None,
+        )
+        extra = {
+            "tool_requirement": request.raw_extra.get("tool_requirement"),
+            "steps": list(request.raw_extra.get("steps") or []),
+        }
+        if memory_type == "procedure":
+            extra["rule_schema"] = build_procedure_rule_schema(
+                summary=request.summary,
+                tool_requirement=str(request.raw_extra.get("tool_requirement") or "") or None,
+                steps=list(request.raw_extra.get("steps") or []),
+            )
+            await self._attach_trigger_tags(extra=extra, summary=request.summary)
+
+        result = await self._memorizer.save_item_with_supersede(
+            summary=request.summary,
+            memory_type=memory_type,
+            extra=extra,
+            source_ref=request.source_ref,
+        )
+        write_status, actual_id = _split_write_result(result)
+        return RememberResult(
+            item_id=actual_id,
+            actual_type=memory_type,
+            write_status=write_status,
+            superseded_ids=[],
         )
 
     def describe(self) -> MemoryEngineDescriptor:
@@ -204,3 +236,102 @@ class DefaultMemoryEngine:
             "tool_chain": tool_chain,
             "source_ref": "",
         }
+
+    async def _retrieve_items(self, *, request, scope) -> list[dict]:
+        memory_types = request.hints.get("memory_types")
+        queries = request.hints.get("queries")
+        active_queries = (
+            [str(item).strip() for item in queries if str(item).strip()]
+            if isinstance(queries, list)
+            else []
+        )
+        if not active_queries:
+            active_queries = [request.query]
+        all_results = await self._gather_queries(
+            queries=active_queries,
+            memory_types=list(memory_types) if isinstance(memory_types, list) else None,
+            top_k=request.top_k,
+            scope=scope,
+            require_scope_match=bool(request.hints.get("require_scope_match", False)),
+        )
+        return _max_pool_memory_items(all_results, top_k=request.top_k)
+
+    async def _gather_queries(
+        self,
+        *,
+        queries: list[str],
+        memory_types: list[str] | None,
+        top_k: int | None,
+        scope,
+        require_scope_match: bool,
+    ) -> list[list[dict]]:
+        tasks = [
+            self._retriever.retrieve(
+                item_query,
+                memory_types=memory_types,
+                top_k=top_k,
+                scope_channel=scope.channel or None,
+                scope_chat_id=scope.chat_id or None,
+                require_scope_match=require_scope_match,
+            )
+            for item_query in queries
+        ]
+        return await asyncio.gather(*tasks)
+
+    async def _attach_trigger_tags(self, *, extra: dict, summary: str) -> None:
+        if self._tagger is None:
+            return
+        try:
+            trigger_tags = await self._tagger.tag(summary)
+        except Exception:
+            return
+        if trigger_tags is not None:
+            extra["trigger_tags"] = trigger_tags
+
+
+def _coerce_memory_type(
+    memory_type: str,
+    tool_requirement: str | None,
+    steps: list[str] | None,
+) -> str:
+    if memory_type != "procedure":
+        return memory_type
+    if tool_requirement and tool_requirement.strip():
+        return memory_type
+    if steps and any(str(step).strip() for step in steps):
+        return memory_type
+    return "preference"
+
+
+def _max_pool_memory_items(raw_results: list[list[dict]], top_k: int | None) -> list[dict]:
+    pooled: dict[str, dict] = {}
+    ordered: list[dict] = []
+    for bucket in raw_results:
+        for item in bucket:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id", "") or "")
+            if item_id:
+                current = pooled.get(item_id)
+                if current is None or float(item.get("score", 0.0) or 0.0) > float(
+                    current.get("score", 0.0) or 0.0
+                ):
+                    pooled[item_id] = item
+                continue
+            ordered.append(item)
+    merged = list(pooled.values()) + ordered
+    merged.sort(
+        key=lambda item: (float(item.get("score", 0.0) or 0.0), str(item.get("id", ""))),
+        reverse=True,
+    )
+    if top_k is None:
+        return merged
+    return merged[: max(1, int(top_k))]
+
+
+def _split_write_result(value: str) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if ":" not in raw:
+        return "new", raw
+    status, item_id = raw.split(":", 1)
+    return status or "new", item_id

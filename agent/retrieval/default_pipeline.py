@@ -24,11 +24,7 @@ from core.memory.engine import (
     MemoryEngineRetrieveRequest,
     MemoryEngineRetrieveResult,
     MemoryScope,
-    PassiveRetrieveRequest,
-    RetrieveBudget,
-    TurnContext,
 )
-from memory2.injection_planner import retrieve_episodic, retrieve_procedure_items
 from memory2.query_rewriter import GateDecision
 
 if TYPE_CHECKING:
@@ -115,7 +111,7 @@ class _GateResolver:
         message: str,
         session_metadata: dict[str, object],
         recent_turns: str,
-    ) -> tuple[dict[str, object], list[dict]]:
+    ) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
         return await _resolve_memory_gate(
             message=message,
             session_metadata=session_metadata,
@@ -149,10 +145,11 @@ class _EpisodicRetriever:
         rewritten_query: str,
         history_memory_types: list[str],
         procedure_items: list[dict],
+        procedure_result: MemoryEngineRetrieveResult | None,
         hyde_context: str,
         sufficiency_trace: dict[str, object],
     ) -> tuple[list[dict], str, str | None, list[dict], str, list[str]]:
-        history_items, history_scope_mode, hyde_hypothesis, passive_result = await _retrieve_episodic_items(
+        history_items, history_scope_mode, hyde_hypothesis, history_result = await _retrieve_episodic_items(
             session_key=session_key,
             channel=channel,
             chat_id=chat_id,
@@ -165,9 +162,9 @@ class _EpisodicRetriever:
         )
         selected_items, retrieved_block, injected_item_ids = _build_injection_payload(
             procedure_items=procedure_items,
+            procedure_result=procedure_result,
             history_items=history_items,
-            memory=self._memory,
-            passive_result=passive_result,
+            history_result=history_result,
         )
         history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids = (
             await _retry_empty_episodic_block(
@@ -180,6 +177,7 @@ class _EpisodicRetriever:
                 rewritten_query=rewritten_query,
                 history_memory_types=history_memory_types,
                 procedure_items=procedure_items,
+                procedure_result=procedure_result,
                 history_items=history_items,
                 history_scope_mode=history_scope_mode,
                 selected_items=selected_items,
@@ -188,7 +186,7 @@ class _EpisodicRetriever:
                 sufficiency_trace=sufficiency_trace,
                 memory=self._memory,
                 config=self._config,
-                passive_result=passive_result,
+                history_result=history_result,
             )
         )
         return (
@@ -326,7 +324,7 @@ async def _retrieve_memory_block_impl(
         # 2. 再做检索门控：
         #    - 产出 route_decision / rewritten_query
         #    - 同时拿到 procedure/preference 记忆命中
-        gate_result, p_items = await gate_resolver.resolve(
+        gate_result, p_items, p_result = await gate_resolver.resolve(
             message=message,
             session_metadata=session_metadata,
             recent_turns=recent_turns,
@@ -351,6 +349,7 @@ async def _retrieve_memory_block_impl(
                 rewritten_query=rewritten_query,
                 history_memory_types=history_memory_types,
                 procedure_items=p_items,
+                procedure_result=p_result,
                 hyde_context=hyde_context,
                 sufficiency_trace=sufficiency_trace,
             )
@@ -448,19 +447,25 @@ async def _resolve_memory_gate(
     config: MemoryConfig,
     llm: LLMServices,
     light_model: str,
-) -> tuple[dict[str, object], list[dict]]:
+) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
     if memory.query_rewriter is not None:
-        # 1. 新门控路径：light model 直接判断要不要查 episodic，
-        #    procedure/preference 仍然照常检索。
-        decision: GateDecision = await memory.query_rewriter.decide(
-            user_msg=message,
-            recent_history=recent_turns,
+        decision_task = asyncio.create_task(
+            memory.query_rewriter.decide(
+                user_msg=message,
+                recent_history=recent_turns,
+            )
         )
-        p_items = await retrieve_procedure_items(
-            memory.port,
-            query=message,
-            top_k=config.top_k_procedure,
+        procedure_task = asyncio.create_task(
+            _retrieve_engine_items(
+                memory=memory,
+                query=message,
+                scope=MemoryScope(),
+                mode="procedure",
+                memory_types=["procedure", "preference"],
+                top_k=config.top_k_procedure,
+            )
         )
+        decision, p_result = await asyncio.gather(decision_task, procedure_task)
         return {
             "gate_type": "query_rewriter",
             "episodic_query": decision.episodic_query,
@@ -468,7 +473,7 @@ async def _resolve_memory_gate(
             "route_latency_ms": decision.latency_ms,
             "fallback_reason": "",
             "history_memory_types": ["event", "profile"],
-        }, p_items
+        }, _map_engine_result_to_history_items(p_result), p_result
     return await _resolve_fallback_memory_gate(
         message=message,
         session_metadata=session_metadata,
@@ -489,14 +494,17 @@ async def _resolve_fallback_memory_gate(
     config: MemoryConfig,
     llm: LLMServices,
     light_model: str,
-) -> tuple[dict[str, object], list[dict]]:
+) -> tuple[dict[str, object], list[dict], MemoryEngineRetrieveResult | None]:
     # 1. 旧门控路径把两个动作并发执行，降低主链延迟：
     #    - procedure/preference 检索
     #    - history route 判定
     p_task = asyncio.create_task(
-        retrieve_procedure_items(
-            memory.port,
+        _retrieve_engine_items(
+            memory=memory,
             query=message,
+            scope=MemoryScope(),
+            mode="procedure",
+            memory_types=["procedure", "preference"],
             top_k=config.top_k_procedure,
         )
     )
@@ -512,7 +520,7 @@ async def _resolve_fallback_memory_gate(
             gate_max_tokens=config.gate_max_tokens,
         )
     )
-    p_items, route_decision_obj = await asyncio.gather(p_task, route_task)
+    p_result, route_decision_obj = await asyncio.gather(p_task, route_task)
     route_reason = _trace_route_reason(route_decision_obj)
     return {
         "gate_type": "history_route",
@@ -521,7 +529,7 @@ async def _resolve_fallback_memory_gate(
         "route_latency_ms": route_decision_obj.latency_ms,
         "fallback_reason": "" if route_reason == "ok" else route_reason,
         "history_memory_types": ["event", "profile"],
-    }, p_items
+    }, _map_engine_result_to_history_items(p_result), p_result
 
 
 async def _retrieve_episodic_items(
@@ -540,68 +548,45 @@ async def _retrieve_episodic_items(
     if route_decision != "RETRIEVE" or not history_memory_types:
         return [], "disabled", None, None
 
-    passive_engine = getattr(memory, "passive_engine", None)
-    if passive_engine is not None and memory.hyde_enhancer is None:
-        passive_result = await passive_engine.retrieve(
-            PassiveRetrieveRequest(
-                query=rewritten_query,
-                turn_context=TurnContext(
-                    recent_messages=[
-                        {"role": "system", "content": hyde_context},
-                    ],
-                    session_id=session_key,
-                ),
-                scope=MemoryScope(
-                    session_key=session_key,
-                    channel=channel,
-                    chat_id=chat_id,
-                ),
-                budget=RetrieveBudget(max_hits=config.top_k_history),
-            )
-        )
-        return (
-            _map_passive_result_to_history_items(passive_result),
-            "global",
-            None,
-            passive_result,
-        )
+    if memory.engine is None:
+        return [], "disabled", None, None
 
-    if memory.engine is not None and memory.hyde_enhancer is None:
-        # 2. 新引擎路径只接管“无 HyDE 的全局 episodic 命中”，对外仍保持旧 scope/path 语义。
-        engine_result = await memory.engine.retrieve(
-            MemoryEngineRetrieveRequest(
-                query=rewritten_query,
-                context={"recent_turns": hyde_context},
-                scope=MemoryScope(
-                    session_key=session_key,
-                    channel=channel,
-                    chat_id=chat_id,
-                ),
-                mode="episodic",
-                hints={
-                    "memory_types": history_memory_types,
-                    "require_scope_match": True,
-                },
-                top_k=config.top_k_history,
-            )
+    if memory.hyde_enhancer is None:
+        engine_result = await _retrieve_engine_items(
+            memory=memory,
+            query=rewritten_query,
+            scope=MemoryScope(
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+            ),
+            mode="episodic",
+            memory_types=history_memory_types,
+            top_k=config.top_k_history,
+            recent_turns=hyde_context,
+            require_scope_match=True,
         )
         return (
             _map_engine_result_to_history_items(engine_result),
             "global",
             None,
-            None,
+            engine_result,
         )
 
-    # 3. HyDE 开启时仍走旧 episodic 路径，避免在主链切换阶段丢失旧增强能力。
-    history_items, scope_mode, hyde_hypothesis = await retrieve_episodic(
-        memory.port,
-        rewritten_query,
+    engine_result, hyde_hypothesis = await _retrieve_episodic_with_hyde(
+        memory=memory,
+        query=rewritten_query,
+        scope=MemoryScope(
+            session_key=session_key,
+            channel=channel,
+            chat_id=chat_id,
+        ),
         memory_types=history_memory_types,
         top_k=config.top_k_history,
-        context=hyde_context,
-        hyde_enhancer=memory.hyde_enhancer,
+        hyde_context=hyde_context,
     )
-    return history_items, scope_mode, hyde_hypothesis, None
+    scope_mode = "global+hyde" if hyde_hypothesis else "global"
+    return _map_engine_result_to_history_items(engine_result), scope_mode, hyde_hypothesis, engine_result
 
 
 def _map_engine_result_to_history_items(
@@ -612,6 +597,7 @@ def _map_engine_result_to_history_items(
         for hit in engine_result.hits:
             metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
             memory_type = str(metadata.pop("memory_type", "") or "")
+            retrieval_path = str(metadata.pop("_retrieval_path", "history_raw") or "history_raw")
             history_items.append(
                 {
                     "id": hit.id,
@@ -620,66 +606,41 @@ def _map_engine_result_to_history_items(
                     "score": hit.score,
                     "source_ref": hit.source_ref,
                     "extra_json": metadata,
-                    "_retrieval_path": "history_raw",
+                    "_retrieval_path": retrieval_path,
                 }
             )
         return history_items
     return [
-        dict(item, _retrieval_path="history_raw")
+        dict(
+            item,
+            _retrieval_path=str(item.get("_retrieval_path", "history_raw") or "history_raw"),
+        )
         for item in engine_result.raw.get("items", [])
         if isinstance(item, dict)
     ]
 
 
-def _map_passive_result_to_history_items(passive_result) -> list[dict]:
-    history_items: list[dict] = []
-    for hit in passive_result.hits:
-        metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
-        memory_type = str(metadata.pop("memory_type", "") or "")
-        history_items.append(
-            {
-                "id": hit.id,
-                "memory_type": memory_type,
-                "summary": hit.summary,
-                "score": hit.score,
-                "source_ref": hit.source_ref,
-                "extra_json": metadata,
-                "_retrieval_path": "history_raw",
-            }
-        )
-    return history_items
-
-
 def _build_injection_payload(
     *,
     procedure_items: list[dict],
+    procedure_result: MemoryEngineRetrieveResult | None,
     history_items: list[dict],
-    memory: MemoryServices,
-    passive_result=None,
+    history_result: MemoryEngineRetrieveResult | None,
 ) -> tuple[list[dict], str, list[str]]:
-    if passive_result is not None:
-        selected_procedure = memory.port.select_for_injection(procedure_items)
-        procedure_block, procedure_ids = memory.port.build_injection_block(procedure_items)
-        injected_history_ids = list(passive_result.injected_ids)
-        injected_history_id_set = set(injected_history_ids)
-        selected_history = [
-            item
-            for item in history_items
-            if str(item.get("id", "")) in injected_history_id_set
+    procedure_ids = _engine_injected_ids(procedure_result)
+    history_ids = _engine_injected_ids(history_result)
+    selected_procedure = _filter_injected_items(procedure_items, procedure_ids)
+    selected_history = _filter_injected_items(history_items, history_ids)
+    selected_items = _merge_memory_items(selected_procedure + selected_history)
+    block = "\n\n".join(
+        block
+        for block in [
+            procedure_result.text_block if procedure_result is not None else "",
+            history_result.text_block if history_result is not None else "",
         ]
-        selected_items = _merge_memory_items(selected_procedure + selected_history)
-        blocks = [block for block in [procedure_block, passive_result.text_block] if block]
-        injected_item_ids = _dedupe_ids(procedure_ids + injected_history_ids)
-        return selected_items, "\n\n".join(blocks), injected_item_ids
-
-    # 1. procedure + episodic 先合并去重。
-    merged = _merge_memory_items(procedure_items + history_items)
-
-    # 2. select_for_injection 决定“哪些条目值得注入”；
-    #    build_injection_block 负责真正拼成给模型看的文本块。
-    selected_items = memory.port.select_for_injection(merged)
-    block, item_ids = memory.port.build_injection_block(merged)
-    return selected_items, block, item_ids
+        if block
+    )
+    return selected_items, block, _dedupe_ids(procedure_ids + history_ids)
 
 
 async def _retry_empty_episodic_block(
@@ -693,6 +654,7 @@ async def _retry_empty_episodic_block(
     rewritten_query: str,
     history_memory_types: list[str],
     procedure_items: list[dict],
+    procedure_result: MemoryEngineRetrieveResult | None,
     history_items: list[dict],
     history_scope_mode: str,
     selected_items: list[dict],
@@ -701,7 +663,7 @@ async def _retry_empty_episodic_block(
     sufficiency_trace: dict[str, object],
     memory: MemoryServices,
     config: MemoryConfig,
-    passive_result=None,
+    history_result: MemoryEngineRetrieveResult | None,
 ) -> tuple[list[dict], str, list[dict], str, list[str]]:
     checker = memory.sufficiency_checker
     # 1. 只有“本来决定查 history，但第一次没注入出有效块”时，才做 sufficiency retry。
@@ -733,7 +695,7 @@ async def _retry_empty_episodic_block(
         )
 
     # 2. sufficiency checker 给出 refined query 后，补做一次 episodic 检索。
-    extra_h_items, extra_scope_mode, _retry_hypothesis, extra_passive_result = await _retrieve_episodic_items(
+    extra_h_items, extra_scope_mode, _retry_hypothesis, extra_history_result = await _retrieve_episodic_items(
         session_key=session_key,
         channel=channel,
         chat_id=chat_id,
@@ -747,14 +709,201 @@ async def _retry_empty_episodic_block(
     sufficiency_trace["retry_count"] = 1
     history_items = history_items + extra_h_items
     history_scope_mode = extra_scope_mode or history_scope_mode
-    passive_result = extra_passive_result if extra_passive_result is not None else passive_result
+    history_result = extra_history_result if extra_history_result is not None else history_result
     selected_items, retrieved_block, injected_item_ids = _build_injection_payload(
         procedure_items=procedure_items,
+        procedure_result=procedure_result,
         history_items=history_items,
-        memory=memory,
-        passive_result=passive_result,
+        history_result=history_result,
     )
     return history_items, history_scope_mode, selected_items, retrieved_block, injected_item_ids
+
+
+async def _retrieve_engine_items(
+    *,
+    memory: MemoryServices,
+    query: str,
+    scope: MemoryScope,
+    mode: str,
+    memory_types: list[str],
+    top_k: int,
+    recent_turns: str = "",
+    require_scope_match: bool = False,
+) -> MemoryEngineRetrieveResult:
+    if memory.engine is None:
+        return MemoryEngineRetrieveResult(text_block="", hits=[], trace={}, raw={"items": []})
+    return await memory.engine.retrieve(
+        MemoryEngineRetrieveRequest(
+            query=query,
+            context={"recent_turns": recent_turns},
+            scope=scope,
+            mode=mode,
+            hints={
+                "memory_types": memory_types,
+                "require_scope_match": require_scope_match,
+            },
+            top_k=top_k,
+        )
+    )
+
+
+async def _retrieve_episodic_with_hyde(
+    *,
+    memory: MemoryServices,
+    query: str,
+    scope: MemoryScope,
+    memory_types: list[str],
+    top_k: int,
+    hyde_context: str,
+) -> tuple[MemoryEngineRetrieveResult, str | None]:
+    if memory.hyde_enhancer is None:
+        return await _retrieve_engine_items(
+            memory=memory,
+            query=query,
+            scope=scope,
+            mode="episodic",
+            memory_types=memory_types,
+            top_k=top_k,
+            recent_turns=hyde_context,
+            require_scope_match=True,
+        ), None
+
+    raw_task = asyncio.create_task(
+        _retrieve_engine_items(
+            memory=memory,
+            query=query,
+            scope=scope,
+            mode="episodic",
+            memory_types=memory_types,
+            top_k=top_k,
+            recent_turns=hyde_context,
+            require_scope_match=True,
+        )
+    )
+    hyp_task = asyncio.create_task(
+        memory.hyde_enhancer.generate_hypothesis(query, hyde_context)
+    )
+    raw_result, hypothesis = await asyncio.gather(raw_task, hyp_task)
+    if not hypothesis:
+        return raw_result, None
+
+    raw_result = _annotate_engine_result_path(raw_result, "history_raw")
+    hyde_result = await _retrieve_engine_items(
+        memory=memory,
+        query=hypothesis,
+        scope=scope,
+        mode="episodic",
+        memory_types=memory_types,
+        top_k=top_k,
+        recent_turns=hyde_context,
+        require_scope_match=True,
+    )
+    hyde_result = _annotate_engine_result_path(hyde_result, "history_hyde")
+    merged_items = _max_pool_history_items(
+        _engine_raw_items(raw_result) + _engine_raw_items(hyde_result)
+    )
+    merged_hits = _merge_engine_hits(raw_result.hits + hyde_result.hits)
+    blocks = [raw_result.text_block]
+    if hyde_result.text_block and not set(_engine_injected_ids(hyde_result)).issubset(
+        set(_engine_injected_ids(raw_result))
+    ):
+        blocks.append(hyde_result.text_block)
+    return (
+        MemoryEngineRetrieveResult(
+            text_block="\n\n".join(block for block in blocks if block),
+            hits=merged_hits,
+            trace=dict(raw_result.trace),
+            raw={"items": merged_items},
+        ),
+        hypothesis,
+    )
+
+
+def _engine_raw_items(result: MemoryEngineRetrieveResult | None) -> list[dict]:
+    if result is None:
+        return []
+    return [
+        dict(item)
+        for item in result.raw.get("items", [])
+        if isinstance(item, dict)
+    ]
+
+
+def _annotate_engine_result_path(
+    result: MemoryEngineRetrieveResult,
+    path: str,
+) -> MemoryEngineRetrieveResult:
+    for hit in result.hits:
+        metadata = dict(hit.metadata) if isinstance(hit.metadata, dict) else {}
+        metadata["_retrieval_path"] = path
+        hit.metadata = metadata
+    for item in result.raw.get("items", []):
+        if isinstance(item, dict):
+            item["_retrieval_path"] = path
+    return result
+
+
+def _engine_injected_ids(result: MemoryEngineRetrieveResult | None) -> list[str]:
+    if result is None:
+        return []
+    return [hit.id for hit in result.hits if hit.injected and hit.id]
+
+
+def _filter_injected_items(items: list[dict], injected_ids: list[str]) -> list[dict]:
+    injected_id_set = set(injected_ids)
+    return [
+        item
+        for item in items
+        if str(item.get("id", "")) in injected_id_set
+    ]
+
+
+def _merge_engine_hits(hits) -> list:
+    by_id: dict[str, object] = {}
+    extras: list[object] = []
+    for hit in hits:
+        item_id = str(getattr(hit, "id", "") or "")
+        if not item_id:
+            extras.append(hit)
+            continue
+        existing = by_id.get(item_id)
+        if existing is None:
+            by_id[item_id] = hit
+            continue
+        injected = bool(getattr(existing, "injected", False)) or bool(
+            getattr(hit, "injected", False)
+        )
+        existing_score = float(getattr(existing, "score", 0.0) or 0.0)
+        hit_score = float(getattr(hit, "score", 0.0) or 0.0)
+        if hit_score > existing_score:
+            hit.injected = injected
+            by_id[item_id] = hit
+            continue
+        existing.injected = injected
+    return list(by_id.values()) + extras
+
+
+def _max_pool_history_items(items: list[dict]) -> list[dict]:
+    pooled: dict[str, dict] = {}
+    extras: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", "") or "")
+        if not item_id:
+            extras.append(item)
+            continue
+        current = pooled.get(item_id)
+        if current is None or float(item.get("score", 0.0) or 0.0) > float(
+            current.get("score", 0.0) or 0.0
+        ):
+            pooled[item_id] = item
+    merged = list(pooled.values()) + extras
+    merged.sort(
+        key=lambda item: (float(item.get("score", 0.0) or 0.0), str(item.get("id", ""))),
+        reverse=True,
+    )
+    return merged
 
 
 def _merge_memory_items(items: list[dict]) -> list[dict]:

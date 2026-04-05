@@ -22,7 +22,7 @@ from agent.retrieval.protocol import (
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage
-from core.memory.engine import IngestRequest, MemoryIngestRequest
+from core.memory.engine import MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
 
 
@@ -91,13 +91,10 @@ def _make_loop(
 
 
 @pytest.mark.asyncio
-async def test_default_post_turn_pipeline_uses_scheduler_post_mem_callback():
+async def test_default_post_turn_pipeline_skips_post_mem_without_engine():
     scheduler = MagicMock()
-    worker = MagicMock()
-    worker.run = AsyncMock(return_value=None)
     pipeline = DefaultPostTurnPipeline(
         scheduler=scheduler,
-        post_mem_worker=worker,
         engine=None,
     )
 
@@ -128,20 +125,16 @@ async def test_default_post_turn_pipeline_uses_scheduler_post_mem_callback():
     scheduler.schedule_consolidation.assert_called_once()
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    worker.run.assert_awaited_once()
     assert pipeline._failures == 0
 
 
 @pytest.mark.asyncio
-async def test_default_post_turn_pipeline_prefers_engine_ingest_over_worker():
+async def test_default_post_turn_pipeline_uses_engine_ingest():
     scheduler = MagicMock()
-    worker = MagicMock()
-    worker.run = AsyncMock(return_value=None)
     engine = MagicMock()
     engine.ingest = AsyncMock(return_value=MagicMock())
     pipeline = DefaultPostTurnPipeline(
         scheduler=scheduler,
-        post_mem_worker=worker,
         engine=engine,
     )
 
@@ -180,23 +173,16 @@ async def test_default_post_turn_pipeline_prefers_engine_ingest_over_worker():
     assert request.source_kind == "conversation_turn"
     assert request.scope.session_key == "cli:1"
     assert request.metadata["source_ref"] == "cli:1@post_response"
-    worker.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_default_post_turn_pipeline_prefers_passive_engine_over_legacy_engine():
+async def test_default_post_turn_pipeline_uses_engine_only():
     scheduler = MagicMock()
-    worker = MagicMock()
-    worker.run = AsyncMock(return_value=None)
     engine = MagicMock()
     engine.ingest = AsyncMock(return_value=MagicMock())
-    passive_engine = MagicMock()
-    passive_engine.ingest = AsyncMock(return_value=None)
     pipeline = DefaultPostTurnPipeline(
         scheduler=scheduler,
-        post_mem_worker=worker,
         engine=engine,
-        passive_engine=passive_engine,
     )
 
     event = PostTurnEvent(
@@ -215,12 +201,10 @@ async def test_default_post_turn_pipeline_prefers_passive_engine_over_legacy_eng
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    passive_engine.ingest.assert_awaited_once()
-    request = passive_engine.ingest.await_args.args[0]
-    assert isinstance(request, IngestRequest)
+    engine.ingest.assert_awaited_once()
+    request = engine.ingest.await_args.args[0]
+    assert isinstance(request, MemoryIngestRequest)
     assert request.scope.session_key == "cli:1"
-    engine.ingest.assert_not_awaited()
-    worker.run.assert_not_awaited()
 
 
 def test_agent_loop_uses_custom_pipelines(tmp_path: Path):
