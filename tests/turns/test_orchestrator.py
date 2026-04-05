@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.core.types import RetrievalTrace
 from agent.looping.ports import ObservabilityServices, SessionServices
-from agent.looping.turn_types import RetrievalTrace
 from agent.turns.outbound import OutboundDispatch
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace

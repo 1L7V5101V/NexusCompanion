@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from agent.core.types import HistoryMessage
 from agent.core.runtime_support import TurnRunResult
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps, LLMConfig, MemoryConfig
-from agent.looping.turn_types import HistoryMessage
 from agent.looping.memory_gate import (
     _decide_history_route,
     _is_flow_execution_state,

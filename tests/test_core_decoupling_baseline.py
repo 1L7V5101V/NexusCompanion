@@ -19,8 +19,7 @@ Covers:
     After refactoring: same function, lives in agent/core/.
 
   Item 2b — history type conversion
-    Currently via HistoryMessage / to_tool_call_groups in agent/looping/turn_types.py.
-    After refactoring: same types, live in agent/core/types.py.
+    Canonical types live in agent/core/types.py.
 """
 
 from __future__ import annotations
@@ -255,13 +254,13 @@ def test_session_metadata_update_sets_last_turn_ts():
 
 def test_to_tool_call_groups_empty():
     """to_tool_call_groups([]) returns []."""
-    from agent.looping.turn_types import to_tool_call_groups
+    from agent.core.types import to_tool_call_groups
     assert to_tool_call_groups([]) == []
 
 
 def test_to_tool_call_groups_basic():
     """to_tool_call_groups converts raw chain dicts to ToolCallGroup objects."""
-    from agent.looping.turn_types import to_tool_call_groups, ToolCallGroup, ToolCall
+    from agent.core.types import to_tool_call_groups, ToolCallGroup, ToolCall
 
     raw = [
         {
@@ -285,7 +284,7 @@ def test_to_tool_call_groups_basic():
 
 def test_to_tool_call_groups_non_dict_arguments_coerced():
     """to_tool_call_groups coerces non-dict arguments to empty dict."""
-    from agent.looping.turn_types import to_tool_call_groups
+    from agent.core.types import to_tool_call_groups
 
     raw = [{"text": "", "calls": [{"call_id": "c1", "name": "x", "arguments": "bad", "result": ""}]}]
     groups = to_tool_call_groups(raw)
@@ -294,7 +293,7 @@ def test_to_tool_call_groups_non_dict_arguments_coerced():
 
 def test_history_message_fields():
     """HistoryMessage holds role, content, tools_used, tool_chain."""
-    from agent.looping.turn_types import HistoryMessage
+    from agent.core.types import HistoryMessage
 
     msg = HistoryMessage(role="user", content="hello", tools_used=["shell"])
     assert msg.role == "user"
@@ -303,16 +302,11 @@ def test_history_message_fields():
     assert msg.tool_chain == []
 
 
-def test_turn_types_is_pure_core_reexport():
-    """looping.turn_types must stay a thin shim over core.types."""
-    from agent.core import types as core_types
-    from agent.looping import turn_types
+def test_turn_types_shim_is_removed():
+    """looping.turn_types 已移除，核心类型统一从 agent.core.types 导入。"""
+    import importlib.util
 
-    assert turn_types.HistoryMessage is core_types.HistoryMessage
-    assert turn_types.ToolCall is core_types.ToolCall
-    assert turn_types.ToolCallGroup is core_types.ToolCallGroup
-    assert turn_types.RetrievalTrace is core_types.RetrievalTrace
-    assert turn_types.to_tool_call_groups is core_types.to_tool_call_groups
+    assert importlib.util.find_spec("agent.looping.turn_types") is None
 
 
 def test_core_boundary_modules_do_not_import_looping_turn_types():

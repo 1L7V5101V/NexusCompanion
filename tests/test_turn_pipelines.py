@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.core.types import ToolCall, ToolCallGroup
 from agent.core.runtime_support import TurnRunResult
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
-from agent.looping.turn_types import ToolCall, ToolCallGroup
 from agent.memory import MemoryStore
 from agent.postturn.default_pipeline import DefaultPostTurnPipeline
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.core.context_store import DefaultContextStore
-from agent.looping.turn_types import RetrievalTrace
+from agent.core.types import RetrievalTrace
 from agent.retrieval.protocol import RetrievalResult
 from bus.events import InboundMessage
 
