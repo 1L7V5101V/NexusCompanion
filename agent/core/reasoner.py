@@ -20,12 +20,7 @@ from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
 from agent.prompting import build_runtime_guard_message
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
-from agent.tool_hooks import (
-    ProcedureGuardHook,
-    ProcedureResultHintHook,
-    ToolExecutionRequest,
-    ToolExecutor,
-)
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
 
@@ -50,7 +45,6 @@ def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
 
 
 def _build_reflect_content(
-    pending_hints: list[str],
     visible_names: set[str] | None = None,
     always_on_names: set[str] | None = None,
 ) -> str:
@@ -69,20 +63,7 @@ def _build_reflect_content(
                 "不知道工具名 → tool_search(query=\"关键词\") 搜索。\n"
             )
 
-    # 2. 本轮没有 procedure hint 时，直接返回默认 reflect prompt。
-    if not pending_hints:
-        return tool_state_hint + _REFLECT_PROMPT
-
-    # 3. 有 hint 时，把 hint 和默认 reflect prompt 拼在一起。
-    combined = "\n".join(h for h in pending_hints if h.strip())
-    if not combined.strip():
-        return tool_state_hint + _REFLECT_PROMPT
-    return (
-        "【⚠️ 操作规范提醒 | 适用于本轮工具调用】\n"
-        f"{combined}\n\n---\n\n"
-        + tool_state_hint
-        + _REFLECT_PROMPT
-    )
+    return tool_state_hint + _REFLECT_PROMPT
 
 
 def _build_deferred_tools_hint(
@@ -187,7 +168,6 @@ class DefaultReasoner(Reasoner):
         llm_config: "LLMConfig",
         tools: "ToolRegistry",
         discovery: ToolDiscoveryState,
-        memory_port: "MemoryPort",
         *,
         tool_search_enabled: bool,
         memory_window: int,
@@ -198,7 +178,6 @@ class DefaultReasoner(Reasoner):
         self._llm_config = llm_config
         self._tools = tools
         self._discovery = discovery
-        self._memory_port = memory_port
         self._tool_search_enabled = tool_search_enabled
         self._memory_window = memory_window
         self._context = context
@@ -210,12 +189,7 @@ class DefaultReasoner(Reasoner):
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
-        self._tool_executor = ToolExecutor(
-            [
-                ProcedureGuardHook(memory_port),
-                ProcedureResultHintHook(memory_port),
-            ]
-        )
+        self._tool_executor = ToolExecutor()
 
     async def run_turn(
         self,
@@ -371,8 +345,6 @@ class DefaultReasoner(Reasoner):
         tool_chain: list[dict] = []
         last_tool_signature = ""
         repeat_count = 0
-        injected_proc_ids: set[str] = set()
-
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         if self._tool_search_enabled:
@@ -457,7 +429,6 @@ class DefaultReasoner(Reasoner):
 
                 # 6. 逐个执行本轮工具调用。
                 iter_calls: list[dict] = []
-                pending_hints: list[str] = []
                 for tool_call in response.tool_calls:
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
@@ -502,7 +473,6 @@ class DefaultReasoner(Reasoner):
                             tool_name=tool_call.name,
                             arguments=tool_call.arguments,
                             source="passive",
-                            hook_state={"injected_proc_ids": injected_proc_ids},
                         ),
                         self._tools.execute,
                     )
@@ -525,12 +495,7 @@ class DefaultReasoner(Reasoner):
                         tool_name=tool_call.name,
                     )
 
-                    # 6.3 post hook 只补 reflect hint，不改写工具结果。
-                    pending_hints.extend(
-                        msg for msg in exec_result.extra_messages if msg.strip()
-                    )
-
-                    # 6.4 tool_search 的结果会扩展下一轮可见工具。
+                    # 6.3 tool_search 的结果会扩展下一轮可见工具。
                     if (
                         exec_result.status == "success"
                         and tool_call.name == "tool_search"
@@ -581,7 +546,6 @@ class DefaultReasoner(Reasoner):
                 messages.append(
                     build_runtime_guard_message(
                         _build_reflect_content(
-                            pending_hints,
                             visible_names=visible_names,
                             always_on_names=self._tools.get_always_on_names()
                             if self._tool_search_enabled

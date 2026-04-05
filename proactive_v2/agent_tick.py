@@ -18,12 +18,7 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from agent.tool_hooks import (
-    ProcedureGuardHook,
-    ProcedureResultHintHook,
-    ToolExecutionRequest,
-    ToolExecutor,
-)
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from proactive_v2.config import ProactiveConfig
@@ -231,12 +226,7 @@ class AgentTick:
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
-        self._tool_executor = ToolExecutor(
-            [
-                ProcedureGuardHook(tool_deps.memory),
-                ProcedureResultHintHook(tool_deps.memory),
-            ]
-        )
+        self._tool_executor = ToolExecutor()
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:
@@ -637,17 +627,6 @@ class AgentTick:
             logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, exec_result.output)
             return False
         result = str(exec_result.output)
-        if exec_result.extra_messages:
-            body = "\n".join(
-                msg for msg in exec_result.extra_messages if str(msg).strip()
-            )
-            if body:
-                result = (
-                    "⚠️ 【操作规范提醒】以下规范适用于当前操作，必须遵守：\n"
-                    + body
-                    + "\n\n---\n\n"
-                    + result
-                )
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
         # 3. 把 assistant tool_call + tool result 都回写到 messages。
         #    下一轮模型就能看到上一轮工具做了什么、返回了什么。

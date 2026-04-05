@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 from agent.core.reasoner import DefaultReasoner
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.runtime_support import LLMServices
+from agent.core.types import ContextRenderResult
+from agent.core.types import ContextRequest
 from agent.core.types import ReasonerResult
 from agent.looping.ports import LLMConfig
 from agent.provider import ContentSafetyError, ContextLengthError
@@ -38,17 +40,27 @@ def _session():
 
 
 def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
+    def _render(request: ContextRequest) -> ContextRenderResult:
+        messages = list(request.history) + [{"role": "user"}]
+        return ContextRenderResult(
+            system_prompt="",
+            system_context={},
+            runtime_guard_context=_stub_runtime_guard_context(
+                preflight_prompt=request.preflight_prompt
+            ),
+            messages=messages,
+            debug_breakdown=[],
+        )
+
     return DefaultReasoner(
         llm=LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace()),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
         tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: []),
         discovery=discovery,
-        memory_port=SimpleNamespace(),
         tool_search_enabled=tool_search_enabled,
         memory_window=10,
         context=SimpleNamespace(
-            build_messages=lambda **kwargs: kwargs["history"] + [{"role": "user"}],
-            build_runtime_guard_context=_stub_runtime_guard_context,
+            render=_render,
         ),
         session_manager=SimpleNamespace(save_async=AsyncMock()),
     )
@@ -91,14 +103,22 @@ def test_reasoner_run_turn_context_length_all_fail_returns_fallback():
 def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history():
     calls: list[dict] = []
 
-    def _build_messages(**kwargs):
+    def _render(request: ContextRequest) -> ContextRenderResult:
         calls.append(
             {
-                "history_len": len(kwargs["history"]),
-                "disabled_sections": set(kwargs.get("disabled_sections") or set()),
+                "history_len": len(request.history),
+                "disabled_sections": set(request.disabled_sections or set()),
             }
         )
-        return kwargs["history"] + [{"role": "user"}]
+        return ContextRenderResult(
+            system_prompt="",
+            system_context={},
+            runtime_guard_context=_stub_runtime_guard_context(
+                preflight_prompt=request.preflight_prompt
+            ),
+            messages=list(request.history) + [{"role": "user"}],
+            debug_breakdown=[],
+        )
 
     discovery = ToolDiscoveryState()
     reasoner = DefaultReasoner(
@@ -106,12 +126,10 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
         tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: []),
         discovery=discovery,
-        memory_port=SimpleNamespace(),
         tool_search_enabled=False,
         memory_window=10,
         context=SimpleNamespace(
-            build_messages=_build_messages,
-            build_runtime_guard_context=_stub_runtime_guard_context,
+            render=_render,
         ),
         session_manager=SimpleNamespace(save_async=AsyncMock()),
     )

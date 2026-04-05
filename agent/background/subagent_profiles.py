@@ -10,7 +10,6 @@ from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool
 from agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from agent.tools.shell import ShellTool
-from core.memory.port import MemoryPort
 from core.net.http import HttpRequester
 
 PROFILE_RESEARCH = "research"
@@ -23,7 +22,6 @@ class SubagentRuntime:
     provider: LLMProvider
     model: str
     max_tokens: int
-    memory: MemoryPort | None = None
 
 
 @dataclass
@@ -42,7 +40,6 @@ class SubagentSpec:
             max_iterations=self.max_iterations,
             max_tokens=runtime.max_tokens,
             mandatory_exit_tools=self.mandatory_exit_tools,
-            memory=runtime.memory,
         )
 
 

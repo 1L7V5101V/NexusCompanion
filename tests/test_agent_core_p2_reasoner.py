@@ -60,7 +60,6 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=False,
         memory_window=40,
     )
@@ -99,7 +98,6 @@ def test_default_reasoner_unlocks_tool_search_visibility():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
         memory_window=40,
     )
@@ -131,7 +129,6 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
         memory_window=40,
     )
@@ -164,7 +161,6 @@ def test_default_reasoner_deferred_tool_direct_call_requires_select():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
         memory_window=40,
     )
@@ -191,7 +187,6 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=True,
         memory_window=40,
     )
@@ -221,7 +216,6 @@ def test_default_reasoner_run_turn_uses_context_render():
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
         tools=tools,
         discovery=ToolDiscoveryState(),
-        memory_port=cast(Any, type("_M", (), {"keyword_match_procedures": lambda self, _: []})()),
         tool_search_enabled=False,
         memory_window=40,
         context=cast(Any, SimpleNamespace(

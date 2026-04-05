@@ -50,7 +50,6 @@ class SpawnToolsetProvider(ToolsetProvider):
             model=deps.config.model,
             max_tokens=deps.config.max_tokens,
             fetch_requester=deps.http_resources.external_default,
-            memory=deps.memory_port,
         )
         if deps.config.spawn_enabled:
             registry.register(

@@ -207,7 +207,6 @@ class AgentLoop:
             llm_config=config.llm,
             tools=deps.tools,
             discovery=self._tool_discovery,
-            memory_port=self._memory_port,
             tool_search_enabled=self._tool_search_enabled,
             memory_window=self.memory_window,
             context=self._context,

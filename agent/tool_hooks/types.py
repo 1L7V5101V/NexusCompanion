@@ -19,7 +19,6 @@ class ToolExecutionRequest:
     channel: str = ""
     chat_id: str = ""
     request_text: str = ""
-    hook_state: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

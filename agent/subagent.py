@@ -17,15 +17,10 @@ SubAgent — 通用子 Agent
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import Any, Sequence
 
 from agent.provider import LLMProvider
-from agent.tool_hooks import (
-    ProcedureGuardHook,
-    ProcedureResultHintHook,
-    ToolExecutionRequest,
-    ToolExecutor,
-)
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
@@ -34,9 +29,6 @@ from agent.tool_runtime import (
 )
 from agent.tool_hooks.types import ToolExecutionResult
 from agent.tools.base import Tool, normalize_tool_result
-
-if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +122,6 @@ class SubAgent:
         max_iterations: int = 30,
         max_tokens: int = 8192,
         mandatory_exit_tools: Sequence[str] = (),
-        memory: "MemoryPort | None" = None,
     ) -> None:
         self._provider = provider
         self._model = model
@@ -138,19 +129,13 @@ class SubAgent:
         self._max_iterations = max_iterations
         self._max_tokens = max_tokens
         self._mandatory_exit_tools = list(mandatory_exit_tools)
-        self._memory = memory
         self.last_exit_reason: str = "idle"
         self.iterations_used: int = 0  # 实际使用的迭代次数
         self.tools_called: list[str] = []  # 实际调用的工具名称列表
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
-        self._tool_executor = ToolExecutor(
-            [
-                ProcedureGuardHook(memory),
-                ProcedureResultHintHook(memory),
-            ]
-        )
+        self._tool_executor = ToolExecutor()
 
     async def run(self, task: str) -> str:
         """执行任务并返回文本结果。
@@ -168,8 +153,6 @@ class SubAgent:
         messages.append({"role": "user", "content": task})
         last_tool_signature = ""
         repeat_count = 0
-        injected_proc_ids: set[str] = set()
-
         for iteration in range(self._max_iterations):
             self.iterations_used = iteration + 1
             try:
@@ -230,7 +213,6 @@ class SubAgent:
                     tc.id,
                     tc.name,
                     tc.arguments,
-                    injected_proc_ids=injected_proc_ids,
                 )
                 if (
                     exec_result.status == "success"
@@ -238,10 +220,6 @@ class SubAgent:
                 ):
                     self.tools_called.append(tc.name)
                 normalized = normalize_tool_result(exec_result.output)
-                normalized = self._apply_extra_messages_to_result(
-                    normalized,
-                    exec_result.extra_messages,
-                )
                 logger.info(
                     "[subagent] 工具结果 %s: %s",
                     tc.name,
@@ -368,13 +346,8 @@ class SubAgent:
                 tc.id,
                 tc.name,
                 tc.arguments,
-                injected_proc_ids=set(),
             )
             normalized = normalize_tool_result(exec_result.output)
-            normalized = self._apply_extra_messages_to_result(
-                normalized,
-                exec_result.extra_messages,
-            )
             logger.info(
                 "[subagent] mandatory_exit %s 结果: %s",
                 tc.name,
@@ -392,8 +365,6 @@ class SubAgent:
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        *,
-        injected_proc_ids: set[str],
     ):
         tool = self._tool_map.get(tool_name)
         if tool is None:
@@ -412,19 +383,6 @@ class SubAgent:
                 tool_name=tool_name,
                 arguments=arguments,
                 source="subagent",
-                hook_state={"injected_proc_ids": injected_proc_ids},
             ),
             _invoke,
         )
-
-    @staticmethod
-    def _apply_extra_messages_to_result(result, extra_messages: list[str]):
-        if not extra_messages:
-            return result
-        normalized = normalize_tool_result(result)
-        body = "\n".join(msg for msg in extra_messages if str(msg).strip())
-        if not body:
-            return normalized
-        prefix = "⚠️ 【操作规范提醒】以下规范适用于当前操作，必须遵守：\n"
-        normalized.text = prefix + body + "\n\n---\n\n" + normalized.text
-        return normalized
