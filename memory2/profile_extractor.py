@@ -41,23 +41,24 @@ class ProfileFactExtractor:
             existing_profile=existing_profile,
         )
 
-        # 2. 再调用 LLM；异常时 fail-open 返回空列表。
-        try:
-            response = await asyncio.wait_for(
-                self._llm_client.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    tools=[],
-                    model=self._model,
-                    max_tokens=self._max_tokens,
-                ),
-                timeout=self._timeout_s,
-            )
-        except Exception:
-            return []
+        facts = await self._extract_with_prompt(
+            prompt,
+            max_tokens=self._max_tokens,
+            timeout_s=self._timeout_s,
+        )
+        if facts:
+            return facts
 
-        # 3. 最后解析 XML 并做去重；乱码时同样返回空列表。
-        content = str(getattr(response, "content", response) or "")
-        return self._parse_facts(content)
+        # 高密度混合内容下，整段抽取可能过于保守；按 USER 子句做一次兜底。
+        clause_facts: list[ProfileFact] = []
+        for clause in self._split_user_clauses(conversation):
+            clause_items = await self.extract_from_exchange(
+                clause,
+                "",
+                existing_profile=existing_profile,
+            )
+            clause_facts.extend(clause_items)
+        return self._dedupe_facts(clause_facts)
 
     async def extract_from_exchange(
         self,
@@ -83,7 +84,7 @@ class ProfileFactExtractor:
                     model=self._model,
                     max_tokens=min(self._max_tokens, 200),
                 ),
-                timeout=min(self._timeout_s, 0.6),
+                timeout=min(self._timeout_s, 1.5),
             )
         except Exception:
             return []
@@ -92,6 +93,60 @@ class ProfileFactExtractor:
         facts = self._parse_facts(content)
         allowed = {"purchase", "status", "personal_fact"}
         return [fact for fact in facts if fact.category in allowed]
+
+    async def _extract_with_prompt(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        timeout_s: float,
+    ) -> list[ProfileFact]:
+        try:
+            response = await asyncio.wait_for(
+                self._llm_client.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    model=self._model,
+                    max_tokens=max_tokens,
+                ),
+                timeout=timeout_s,
+            )
+        except Exception:
+            return []
+        content = str(getattr(response, "content", response) or "")
+        return self._parse_facts(content)
+
+    @staticmethod
+    def _split_user_clauses(conversation: str) -> list[str]:
+        clauses: list[str] = []
+        seen: set[str] = set()
+        for line in str(conversation or "").splitlines():
+            match = re.search(r"\bUSER:\s*(.+)$", line.strip(), flags=re.IGNORECASE)
+            if not match:
+                continue
+            text = match.group(1).strip()
+            parts = re.split(r"[。！？；;.!?，,]\s*", text)
+            for part in parts:
+                clause = part.strip()
+                if len(clause) < 4:
+                    continue
+                if clause in seen:
+                    continue
+                seen.add(clause)
+                clauses.append(clause)
+        return clauses
+
+    @staticmethod
+    def _dedupe_facts(facts: list[ProfileFact]) -> list[ProfileFact]:
+        deduped: list[ProfileFact] = []
+        seen: set[tuple[str, str]] = set()
+        for fact in facts:
+            key = (str(fact.summary).strip(), str(fact.category).strip())
+            if not key[0] or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(fact)
+        return deduped
 
     @staticmethod
     def _build_prompt(*, conversation: str, existing_profile: str) -> str:
@@ -127,6 +182,7 @@ profile 的语义是：关于用户本人或其客观处境的事实。
 - summary 要简洁、可独立检索
 - 每条 summary 只表达一条完整事实，避免把多个事实揉成一条
 - summary 不要带时间戳；时间放到 happened_at
+- personal_fact 默认不写 happened_at。只有 purchase / status / decision 这类确实带时间语义的事实，才填写 happened_at
 - 每一件具体的事单独一条，绝对不要合并
   ✗ 错误："用户购买了多件商品"
   ✓ 正确：每件商品单独一条，写出具体名称/型号
@@ -270,6 +326,8 @@ ASSISTANT: {agent_response}
             happened_at = self._extract_tag(block, "happened_at") or None
             if not summary or category not in allowed:
                 continue
+            if category == "personal_fact":
+                happened_at = None
             key = (summary, category)
             if key in seen:
                 continue

@@ -135,6 +135,19 @@ async def test_happened_at_is_none_when_not_provided():
 
 
 @pytest.mark.asyncio
+async def test_personal_fact_discards_happened_at_even_if_model_outputs_it():
+    extractor = _make_extractor(
+        """
+<facts>
+<fact><summary>用户有一块 Fitbit 手表</summary><category>personal_fact</category><happened_at>2026-04-06</happened_at></fact>
+</facts>
+"""
+    )
+    facts = await extractor.extract("我有一块 Fitbit 手表")
+    assert facts[0].happened_at is None
+
+
+@pytest.mark.asyncio
 async def test_duplicate_facts_within_one_extraction_are_deduplicated():
     extractor = _make_extractor(
         """
