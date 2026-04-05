@@ -20,7 +20,7 @@ from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
 from agent.prompting import build_runtime_guard_message
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
-from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
 
@@ -189,7 +189,7 @@ class DefaultReasoner(Reasoner):
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
-        self._tool_executor = ToolExecutor()
+        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
 
     async def run_turn(
         self,

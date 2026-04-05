@@ -18,7 +18,7 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from proactive_v2.config import ProactiveConfig
@@ -226,7 +226,7 @@ class AgentTick:
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
-        self._tool_executor = ToolExecutor()
+        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:
