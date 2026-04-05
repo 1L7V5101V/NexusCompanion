@@ -20,6 +20,12 @@ from memory2.rule_schema import (
 
 logger = logging.getLogger(__name__)
 
+_ANCHOR_STOPWORDS = {
+    "用户", "长期记忆", "记忆", "memory", "md", "memorymd", "assistant",
+    "agent", "对话", "信息", "参考", "重要", "以后", "这次", "那个", "这个",
+    "比如", "例如", "示范", "场景", "正确", "错误", "例子",
+}
+
 
 class PostResponseMemoryWorker:
     """
@@ -535,6 +541,14 @@ class PostResponseMemoryWorker:
                     candidates=llm_items,
                     token_budget=token_budget,
                 )
+                llm_items = [
+                    item
+                    for item in llm_items
+                    if not PostResponseMemoryWorker._looks_like_example_leakage(
+                        str(item.get("summary", "") or ""),
+                        user_msg,
+                    )
+                ]
                 items = self._merge_extracted_items(fallback_items, llm_items)
                 log_fn = logger.info if items else logger.debug
                 log_fn(
@@ -617,6 +631,8 @@ class PostResponseMemoryWorker:
 
 默认答案是 []。提取门槛要高，宁可不提取，也不要把当前对话的局部信息误写成长期记忆。
 
+长期记忆的目标不是“存更多”，而是为未来协作保存少量、稳定、不可从当前代码或当前任务直接推导出的高价值事实。
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【核心判断标准】
 一条信息是否值得提取，只看一件事：
@@ -625,7 +641,36 @@ class PostResponseMemoryWorker:
 → 否 → 不是长期记忆，返回 []
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-【提取前必须完成三项检查，顺序执行，任一不通过即返回 []】
+【优先考虑值得保存的内容】
+- USER 明确提出的长期协作要求：以后怎么做、不要怎么做、先后顺序、沟通方式
+- USER 对一种不显然做法的确认：这次这样做是对的、以后继续保持
+- USER 稳定成立的偏好、厌恶、知识背景、职责边界
+
+【四类记忆的语义提醒】
+- procedure：以后 agent 该怎么做的规则。是“行为规则”，不是用户事实。
+- preference：用户希望怎样被服务、怎样被讲解、怎样被推荐。是“偏好”，不是用户身份事实。
+- profile：关于用户本人或其客观处境的事实，例如“家里有 10 套房”“爱好是弹钢琴”“有一块手表”。这类属于 profile，不在本阶段输出。
+- event：某时某刻发生过什么，例如某天买了什么、表带坏了、今天状态如何。这类属于 event，不在本阶段输出。
+
+区分 profile 和 preference：
+- “用户是什么/拥有什么/处在什么客观背景里” → profile
+- “用户希望你怎么服务他、怎么解释、怎么推荐更舒服” → preference
+
+【明确不值得保存的内容】
+- 代码模式、架构、文件路径、项目结构、git 历史
+- 调试方案、修 bug recipe、当前任务局部策略
+- 已经能从代码、仓库状态、现有文档直接推出的信息
+- assistant 为解释规则而给出的例子、类比、演示内容
+- 只是“看起来合理”但并非 USER 明确提供的结论
+
+【提取前必须完成四项检查，顺序执行，任一不通过即返回 []】
+
+▸ 检查 0 — 是否是“元讨论/举例说明”
+先判断这轮 USER 是在提供长期规则，还是在讨论“什么该记、怎么记、你是否理解、请举例说明”。
+  - 如果 USER 在要求 ASSISTANT 解释长期记忆标准、总结原则、证明理解、举例说明 → 这轮属于元讨论
+  - 元讨论场景下，只允许提取 USER 自己明确说出的长期规则/筛选标准
+  - ASSISTANT 为了说明概念而举出的任何例子、类比、假设场景、教学示范，一律不得提取
+  - 即使 ASSISTANT 的示例内容本身合理、未来有用，也不能因为“看起来像长期规则”就入库
 
 ▸ 检查 A — USER 原话锚点
 在 USER 消息里找到支撑这条记忆的直接原句（逐字存在，不是推断）。
@@ -717,6 +762,18 @@ ASSISTANT: 好，我来写一个 Python 脚本，用 requests 库来处理这个
 ×不能提取: "遇到此类问题应优先用Python脚本绕过"（临时方案不是长期规则）
 </example>
 
+<example id="drop_meta_discussion_example">
+场景: 用户在讨论"什么信息才值得进长期记忆"，并要求 assistant 举例证明理解
+USER: 我希望只有每轮对话里真正重要的参考信息才值得存入 memory.md，你举个例子我看看你理解没有
+ASSISTANT: 明白。比如智能家居架构应坚持纯本地化部署，拒绝云端依赖……
+
+检查0: USER 在讨论记忆标准，并要求举例说明，这是元讨论 ✓
+可提取的只有 USER 明确说出的筛选标准："真正重要的参考信息才值得存入 memory.md"
+ASSISTANT 后面的智能家居例子只是教学示范，不是 USER 新提供的长期规则
+→ [{{"summary": "每轮对话中真正重要的参考信息才值得存入 memory.md", "memory_type": "procedure"}}]
+×不能提取: "智能家居架构应坚持纯本地化部署"（assistant 示例）
+</example>
+
 <example id="keep_explicit_rule">
 场景: 用户明确要求 agent 以后的行为方式
 USER: 以后帮我查菜谱只给 20 分钟以内能做完的，我没时间搞复杂的
@@ -753,11 +810,31 @@ summary只能写USER说的，不得包含ASSISTANT延伸的"治愈系""休闲类
 ×不能写: "偏好治愈系或休闲类游戏"（USER没说过）
 </example>
 
+<example id="keep_preference_service_style">
+场景: 用户在表达被服务方式的偏好
+USER: 你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终
+ASSISTANT: 好的，我以后会尽量用贯穿式例子来解释复杂内容。
+
+检查A: USER 明确表达了自己希望如何被讲解 ✓
+这描述的是服务方式偏好，不是用户身份事实
+→ [{{"summary": "讲解内容时最好附带贯穿始终的例子", "memory_type": "preference"}}]
+</example>
+
+<example id="drop_profile_fact_from_this_stage">
+场景: 用户提供的是客观背景事实，而不是偏好或规则
+USER: 我家有 10 套房，我平时爱弹钢琴，而且我有一块 Fitbit 手表
+ASSISTANT: 明白了。
+
+这些信息属于 profile：用户本人或其客观处境的事实。
+本阶段只输出 procedure/preference，不输出 profile。
+→ []
+</example>
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【允许输出的两类记忆】
 
 procedure — agent 在未来类似场景下应遵守的长期执行规则
-  特征：面向 agent 行为、跨任务可复用、用户明确要求
+  特征：面向 agent 行为、跨任务可复用、来自 USER 的长期要求或被 USER 明确确认过的非显然做法
   句式：客观规则句，"查询 X 时应先 Y"
 
 preference — 用户跨 session 稳定成立的长期偏好或倾向
@@ -771,6 +848,10 @@ event（有时间性的具体事件）、profile（用户身份背景）
 【procedure 和 preference 的边界】
 有明确执行步骤或工具要求 → procedure
 只是方向性的偏好倾向 → preference（优先选 preference）
+
+【preference 和 profile 的边界】
+“用户喜欢怎样被服务/讲解/推荐” → preference
+“用户是什么样的人、有什么、处于什么客观背景” → profile（本阶段不输出）
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 【summary 写法约束】
@@ -819,6 +900,15 @@ ASSISTANT: {agent_response}
 默认答案是 []。
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【对候选列表，先做集合判断，再逐条判断】
+
+第零步 — 最小充分集合
+  □ 只保留最少但最有用的条目，不要把同一轮对话拆成一串近似重复 memory
+  □ 如果存在“上位原则/通用规则”和“例子/领域化实例”同时出现：
+    - 保留上位原则
+    - 丢弃只是为了说明原则而出现的例子或某个领域的展开版本
+  □ 如果两条候选表达的是同一原则，只保留更贴近 USER 原话、更通用、更可复用的那一条
+
 【对每条候选，依次做两步判断】
 
 第一步 — 入库资格审查（不通过 → 丢弃）
@@ -826,6 +916,9 @@ ASSISTANT: {agent_response}
     - 只对当前任务/事件/时间段成立 → 丢弃
     - ASSISTANT 给的建议被当成用户偏好 → 丢弃
     - 核心内容来自 ASSISTANT（解释/工具返回/顺势建议）而非 USER → 丢弃
+    - 如果这轮原对话是在讨论“什么该记/怎么记/你理解了吗/请举例说明”，则 ASSISTANT 的例子、类比、假设场景一律丢弃
+    - 如果内容本来就能从代码、架构、文件路径、当前仓库状态直接推出 → 丢弃
+    - 如果候选其实是在描述用户本人或其客观处境（身份、资产、爱好、持有物、背景事实），那是 profile，不属于本阶段，丢弃
 
 第二步 — Summary 忠实度核查（通过资格审查后执行）
   □ 逐句检查 summary 里的每个断言，在 USER 消息里能找到对应的原话吗？
@@ -859,6 +952,29 @@ ASSISTANT: 别忘了每隔一段时间起来活动下，喝点水，久坐对颈
 资格审查: USER只说了当前状态"在赶代码"，没有要求或授权任何规则。
 "每隔45分钟活动并补水"是ASSISTANT主动给出的健康提醒，不是USER提出的要求。
 USER未反驳 ≠ USER希望永久记录这条规则 → 丢弃
+→ []
+</example>
+
+<example id="finalize_drop_meta_example">
+USER: 我希望只有真正影响后续对话的重要参考信息才值得存入 memory.md，你举个例子我看看你理解没有
+ASSISTANT: 明白。比如智能家居架构要坚持纯本地化部署，拒绝云端依赖……
+候选1: procedure | 每轮对话中真正重要的参考信息才值得存入 memory.md
+候选2: procedure | 智能家居架构坚持纯本地化部署，拒绝云端依赖
+
+资格审查:
+  - 候选1 来自 USER 对长期记忆标准的明确要求，可以保留
+  - 候选2 来自 ASSISTANT 为了证明理解而举的例子，不是 USER 新提供的规则，必须丢弃
+→ [{{"summary": "每轮对话中真正重要的参考信息才值得存入 memory.md", "memory_type": "procedure"}}]
+</example>
+
+<example id="finalize_drop_profile_like_candidate">
+USER: 我家有 10 套房，我平时爱弹钢琴，而且我有一块 Fitbit 手表
+候选1: preference | 用户喜欢弹钢琴
+候选2: preference | 用户有一块 Fitbit 手表
+
+资格审查:
+  - 这些候选都在描述用户本人或其客观处境，不是在表达希望如何被服务
+  - 它们属于 profile，不属于本阶段的 procedure/preference
 → []
 </example>
 
@@ -968,6 +1084,91 @@ ASSISTANT: {agent_response}
                 rule_schema=normalized.get("rule_schema"),
             )
         return normalized
+
+    @staticmethod
+    def _has_user_anchor(summary: str, user_msg: str) -> bool:
+        """兜底检查：summary 至少要和 USER 原话有明显词面锚点，避免把 assistant 示例写成长记忆。"""
+        summary = str(summary or "").strip()
+        user_msg = str(user_msg or "").strip()
+        if not summary or not user_msg:
+            return False
+
+        summary_tokens = PostResponseMemoryWorker._anchor_tokens(summary)
+        user_tokens = PostResponseMemoryWorker._anchor_tokens(user_msg)
+        if not summary_tokens or not user_tokens:
+            return False
+
+        overlap = summary_tokens & user_tokens
+        if len(overlap) >= 2:
+            return True
+
+        # 单个长 token 也允许通过，避免误伤短句偏好。
+        return any(len(token) >= 4 for token in overlap)
+
+    @staticmethod
+    def _looks_like_example_leakage(summary: str, user_msg: str) -> bool:
+        """只拦明显来自 assistant 举例/扩写的候选，避免误伤抽象规则。"""
+        summary = str(summary or "").strip()
+        user_msg = str(user_msg or "").strip()
+        if not summary or not user_msg:
+            return True
+
+        if PostResponseMemoryWorker._has_user_anchor(summary, user_msg):
+            return False
+
+        summary_tokens = PostResponseMemoryWorker._anchor_tokens(summary)
+        user_tokens = PostResponseMemoryWorker._anchor_tokens(user_msg)
+        if not summary_tokens:
+            return True
+
+        if len(summary_tokens) <= 2:
+            return False
+
+        ascii_summary = {
+            token.lower()
+            for token in re.findall(r"[a-z0-9_]{2,}", summary, flags=re.I)
+            if token.lower() not in _ANCHOR_STOPWORDS
+        }
+        ascii_user = {
+            token.lower()
+            for token in re.findall(r"[a-z0-9_]{2,}", user_msg, flags=re.I)
+            if token.lower() not in _ANCHOR_STOPWORDS
+        }
+        if ascii_summary and not (ascii_summary & ascii_user):
+            return True
+
+        long_only_in_summary = {
+            token
+            for token in summary_tokens - user_tokens
+            if len(token) >= 4
+        }
+        return len(long_only_in_summary) >= 2
+
+    @staticmethod
+    def _anchor_tokens(text: str) -> set[str]:
+        normalized = PostResponseMemoryWorker._normalize_text(text)
+        if not normalized:
+            return set()
+
+        ascii_tokens = {
+            token.lower()
+            for token in re.findall(r"[a-z0-9_]{2,}", normalized, flags=re.I)
+            if token.lower() not in _ANCHOR_STOPWORDS
+        }
+
+        chinese_tokens: set[str] = set()
+        chinese_runs = re.findall(r"[\u4e00-\u9fff]{2,}", normalized)
+        for run in chinese_runs:
+            for size in (2, 3, 4):
+                if len(run) < size:
+                    continue
+                for idx in range(len(run) - size + 1):
+                    token = run[idx : idx + size]
+                    if token in _ANCHOR_STOPWORDS:
+                        continue
+                    chinese_tokens.add(token)
+
+        return ascii_tokens | chinese_tokens
 
     async def _save_item_direct(
         self,

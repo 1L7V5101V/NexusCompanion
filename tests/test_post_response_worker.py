@@ -817,6 +817,12 @@ def test_build_implicit_prompt_uses_four_memory_classes():
     assert '检查 A' in prompt
     assert '检查 B' in prompt
     assert '检查 C' in prompt
+    assert '优先考虑值得保存的内容' in prompt
+    assert '明确不值得保存的内容' in prompt
+    assert '代码模式、架构、文件路径、项目结构、git 历史' in prompt
+    assert '区分 profile 和 preference' in prompt
+    assert '“用户是什么/拥有什么/处在什么客观背景里” → profile' in prompt
+    assert '“用户希望你怎么服务他、怎么解释、怎么推荐更舒服” → preference' in prompt
     # 示例存在
     assert '<example' in prompt
     # 防止输出 event/profile 的说明存在
@@ -841,6 +847,9 @@ def test_build_finalize_prompt_is_user_first_and_temporal_conservative():
     assert "丢弃" in prompt
     # 忠实度核查存在
     assert "忠实度" in prompt
+    assert "最小充分集合" in prompt
+    assert "保留上位原则" in prompt
+    assert "那是 profile，不属于本阶段，丢弃" in prompt
     # 示例存在
     assert '<example' in prompt
 
@@ -914,6 +923,34 @@ def test_heuristic_drops_architecture_discussion_with_two_signals():
         "memory_type": "procedure",
     }
     assert PostResponseMemoryWorker._should_drop_by_heuristic(item) is True
+
+
+def test_has_user_anchor_keeps_rule_close_to_user_wording():
+    assert PostResponseMemoryWorker._has_user_anchor(
+        "每轮对话的重要参考信息才值得存入 memory.md，只有对后续对话有实际影响的上下文下沉才应被记录。",
+        "我希望你真正什么时候能修改memory.md 就是每轮我和你对话当中 他都是非常重要的参考信息 他才值得存入memory.md当中",
+    ) is True
+
+
+def test_has_user_anchor_drops_assistant_example_leakage():
+    assert PostResponseMemoryWorker._has_user_anchor(
+        "智能家居架构坚持纯本地化部署（Zigbee2MQTT + 本地 MQTT Broker），拒绝任何云端依赖。",
+        "我希望你真正什么时候能修改memory.md 就是每轮我和你对话当中 他都是非常重要的参考信息 他才值得存入memory.md当中 你能理解吗 你举个例子我看看你理解没有",
+    ) is False
+
+
+def test_example_leakage_filter_keeps_short_abstract_rule():
+    assert PostResponseMemoryWorker._looks_like_example_leakage(
+        "规则A",
+        "以后这样做",
+    ) is False
+
+
+def test_example_leakage_filter_drops_assistant_domain_example():
+    assert PostResponseMemoryWorker._looks_like_example_leakage(
+        "智能家居架构坚持纯本地化部署（Zigbee2MQTT + 本地 MQTT Broker），拒绝任何云端依赖。",
+        "我希望你真正什么时候能修改memory.md 就是每轮我和你对话当中 他都是非常重要的参考信息 他才值得存入memory.md当中 你能理解吗 你举个例子我看看你理解没有",
+    ) is True
 
 
 def test_heuristic_keeps_procedure_with_only_one_arch_signal():

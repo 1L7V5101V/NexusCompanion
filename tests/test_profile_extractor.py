@@ -214,6 +214,8 @@ async def test_build_prompt_includes_user_first_evidence_rule():
     assert "证据源规则" in captured[0]
     assert "ASSISTANT" in captured[0]
     assert "只有 USER 原话中明确陈述的事实才允许提取" in captured[0]
+    assert "这是 preference，不是 profile" in captured[0]
+    assert "<category>purchase|decision|status|personal_fact</category>" in captured[0]
 
 
 @pytest.mark.asyncio
@@ -224,6 +226,28 @@ async def test_build_prompt_forbids_engineering_process():
     assert captured
     assert "工程操作" in captured[0]
     assert "安装依赖" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_distinguishes_profile_from_preference():
+    extractor, captured = _capture_prompt()
+    await extractor.extract("测试对话内容")
+    assert captured
+    assert "我有一块 Fitbit 手表" in captured[0]
+    assert "讲内容时最好附带一个很棒的例子并贯穿始终" in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_extract_ignores_preference_category_even_if_model_outputs_it():
+    extractor = _make_extractor(
+        """
+<facts>
+<fact><summary>讲内容时最好附带一个很棒的例子并贯穿始终</summary><category>preference</category><happened_at></happened_at></fact>
+</facts>
+"""
+    )
+    facts = await extractor.extract("你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终。")
+    assert facts == []
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ Memory v2 检索器：查询 → top-k items + 格式化注入块
 
 from __future__ import annotations
 
+from datetime import datetime
 import json
 import logging
 
@@ -11,6 +12,15 @@ from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
+
+_LOW_CONFIDENCE_PHRASES = (
+    "未在对话中明确记录",
+    "无法凭记忆确认",
+    "没有记录",
+    "真的没有",
+    "未找到",
+    "不确定",
+)
 
 
 class Retriever:
@@ -207,15 +217,19 @@ class Retriever:
                 steps = extra.get("steps") or []
                 if steps:
                     step_text = "；".join(str(s) for s in steps)
-                    norms.append((item_id, f"- {summary}（步骤：{step_text}）"))
+                    norms.append(
+                        (
+                            item_id,
+                            f"- {summary}{_format_memory_meta(item, mtype)}（步骤：{step_text}）",
+                        )
+                    )
                 else:
-                    norms.append((item_id, f"- {summary}"))
+                    norms.append((item_id, f"- {summary}{_format_memory_meta(item, mtype)}"))
             elif mtype == "preference":
-                norms.append((item_id, f"- {summary}"))
+                norms.append((item_id, f"- {summary}{_format_memory_meta(item, mtype)}"))
             elif mtype in ("event", "profile"):
                 ts = f"[{happened_at}] " if happened_at else ""
-                src_tag = _format_source_tag(item.get("source_ref"))
-                events.append((item_id, f"- {ts}{summary}{src_tag}"))
+                events.append((item_id, f"- {ts}{summary}{_format_memory_meta(item, mtype)}"))
 
         return selected, forced, norms, events
 
@@ -300,3 +314,67 @@ def _format_source_tag(source_ref: str | None) -> str:
     shown = ids[:2]
     tag = ", ".join(shown)
     return f" (src: {tag})"
+
+
+def _format_memory_meta(item: dict, memory_type: str) -> str:
+    parts: list[str] = []
+    happened_at_raw = item.get("happened_at")
+    happened_at = _normalize_happened_at(happened_at_raw)
+    if happened_at:
+        parts.append(f"发生于: {happened_at}")
+        age = _format_relative_age(happened_at_raw)
+        if age:
+            parts.append(age)
+    source_ref = item.get("source_ref")
+    src_tag = _format_source_tag(source_ref)
+    if src_tag:
+        parts.append("证据: 可回源原文")
+        parts.append(src_tag.strip())
+    else:
+        parts.append("证据: 记忆摘要")
+    if memory_type == "preference" and _looks_low_confidence_memory(item.get("summary", "")):
+        parts.append("低置信线索: 不能单独证明历史细节")
+    if not parts:
+        return ""
+    return "（" + "；".join(parts) + "）"
+
+
+def _normalize_happened_at(raw: object) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return text
+    if dt.hour == 0 and dt.minute == 0 and dt.second == 0 and "T" not in text:
+        return dt.strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_relative_age(raw: object) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    dt: datetime | None = None
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(f"{text}T00:00:00")
+        except ValueError:
+            return ""
+    now = datetime.now(dt.tzinfo)
+    delta = now - dt
+    if delta.days >= 1:
+        return f"距今约 {delta.days} 天"
+    hours = max(0, int(delta.total_seconds() // 3600))
+    if hours >= 1:
+        return f"距今约 {hours} 小时"
+    minutes = max(0, int(delta.total_seconds() // 60))
+    return f"距今约 {minutes} 分钟"
+
+
+def _looks_low_confidence_memory(summary: object) -> bool:
+    text = str(summary or "")
+    return any(phrase in text for phrase in _LOW_CONFIDENCE_PHRASES)
