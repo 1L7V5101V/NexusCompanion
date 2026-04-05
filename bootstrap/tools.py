@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.config_models import Config
+from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
 from agent.core.context_store import DefaultContextStore
 from agent.looping.consolidation import ConsolidationService
@@ -46,6 +46,11 @@ from bootstrap.toolsets.protocol import ToolsetDeps
 from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
+)
+from bootstrap.wiring import (
+    resolve_context_factory,
+    resolve_memory_toolset_provider,
+    resolve_toolset_provider,
 )
 from bootstrap.providers import build_providers
 from bus.processing import ProcessingState
@@ -118,11 +123,12 @@ def build_registered_tools(
     from session.store import SessionStore
 
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
+    wiring = getattr(config, "wiring", WiringConfig())
     tools = tools or ToolRegistry()
     readonly_tools = build_readonly_tools(http_resources)
     store = session_store or SessionStore(workspace / "sessions.db")
     push_tool = MessagePushTool()
-    memory_result = MemoryToolsetProvider().register(
+    memory_result = resolve_memory_toolset_provider(wiring.memory).register(
         tools,
         ToolsetDeps(
             config=config,
@@ -144,50 +150,38 @@ def build_registered_tools(
     )
 
     # ── 第二阶段：注册工具（所有服务已就绪）──────────────────────────────────
-    CommonMetaToolsetProvider(readonly_tools).register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-            session_store=store,
-            push_tool=push_tool,
-        ),
-    )
-    FitbitToolsetProvider().register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-            http_resources=http_resources,
-        ),
-    )
-    SpawnToolsetProvider().register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            http_resources=http_resources,
-            bus=bus,
-            memory_port=memory_runtime.port,
-        ),
-    )
-    SchedulerToolsetProvider().register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-            scheduler=scheduler,
-        ),
-    )
-    mcp_result = McpToolsetProvider().register(
-        tools,
-        ToolsetDeps(
-            config=config,
-            workspace=workspace,
-        ),
-    )
-    mcp_registry = mcp_result.extras["mcp_registry"]
+    mcp_registry = None
+    for name in wiring.toolsets:
+        provider_obj = resolve_toolset_provider(
+            name,
+            readonly_tools=readonly_tools if name == "meta_common" else None,
+        )
+        result = provider_obj.register(
+            tools,
+            ToolsetDeps(
+                config=config,
+                workspace=workspace,
+                session_store=store,
+                push_tool=push_tool,
+                http_resources=http_resources,
+                provider=provider,
+                light_provider=light_provider,
+                bus=bus,
+                memory_port=memory_runtime.port,
+                scheduler=scheduler,
+                observe_writer=observe_writer,
+            ),
+        )
+        maybe_mcp = result.extras.get("mcp_registry")
+        if maybe_mcp is not None:
+            mcp_registry = maybe_mcp
+    if mcp_registry is None:
+        from agent.mcp.registry import McpServerRegistry
+
+        mcp_registry = McpServerRegistry(
+            config_path=workspace / "mcp_servers.json",
+            tool_registry=tools,
+        )
 
     return tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_process_manager, peer_poller
 
@@ -206,6 +200,7 @@ def _build_loop_deps(
     memory_runtime: MemoryRuntime,
     observe_writer: object | None,
 ) -> AgentLoopDeps:
+    wiring = getattr(config, "wiring", WiringConfig())
     llm_config = LLMConfig(
         model=config.model,
         light_model=config.light_model,
@@ -273,7 +268,9 @@ def _build_loop_deps(
             timeout_s=memory_config.hyde_timeout_ms / 1000.0,
         )
 
-    context = ContextBuilder(workspace, memory=memory_runtime.port)
+    context = resolve_context_factory(wiring.context)(
+        workspace, memory_runtime.port
+    )
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(
         port=memory_runtime.port,

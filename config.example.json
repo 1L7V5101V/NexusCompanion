@@ -65,6 +65,11 @@
     }
   },
   "tool_search_enabled": true,
+  "wiring": {
+    "context": "default",
+    "memory": "default",
+    "toolsets": ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
+  },
   "memory_optimizer_enabled": true,
   "memory_optimizer_interval_seconds": 3600,
   "memory_v2": {

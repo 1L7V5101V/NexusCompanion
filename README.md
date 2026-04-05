@@ -78,6 +78,35 @@ prepare -> execute -> commit
 
 ---
 
+## 2.5 Wiring 配置
+
+当前支持一层很轻的内建 wiring 选择：
+
+```text
+┌──────────────────────────────┐
+│ wiring                       │
+├──────────────────────────────┤
+│ context: default             │
+│ memory: default              │
+│ toolsets:                    │
+│   - meta_common              │
+│   - fitbit                   │
+│   - spawn                    │
+│   - schedule                 │
+│   - mcp                      │
+└──────────────────────────────┘
+```
+
+约定：
+
+- `context` / `memory` 目前只支持 `default`
+- `toolsets` 支持子集和顺序控制
+- `toolsets` 里不包含 `mcp` 时，runtime 仍会创建一个空的 `McpServerRegistry`
+  供启动和后续接入使用，只是不会预注册 `mcp_add/mcp_remove/mcp_list` 这组工具
+- 当前不支持外部插件发现；这里只是“按配置选内建实现”
+
+---
+
 ## 3. 大块抽象
 
 ### 3.1 AgentLoop

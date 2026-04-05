@@ -78,12 +78,20 @@ def test_build_registered_tools_uses_toolset_providers(monkeypatch, tmp_path: Pa
                 extras={"mcp_registry": object()},
             )
 
-    monkeypatch.setattr("bootstrap.tools.MemoryToolsetProvider", _MemoryProvider)
-    monkeypatch.setattr("bootstrap.tools.CommonMetaToolsetProvider", _MetaProvider)
-    monkeypatch.setattr("bootstrap.tools.FitbitToolsetProvider", _FitbitProvider)
-    monkeypatch.setattr("bootstrap.tools.SpawnToolsetProvider", _SpawnProvider)
-    monkeypatch.setattr("bootstrap.tools.SchedulerToolsetProvider", _ScheduleProvider)
-    monkeypatch.setattr("bootstrap.tools.McpToolsetProvider", _McpProvider)
+    monkeypatch.setattr(
+        "bootstrap.tools.resolve_memory_toolset_provider",
+        lambda name: _MemoryProvider(),
+    )
+    monkeypatch.setattr(
+        "bootstrap.tools.resolve_toolset_provider",
+        lambda name, readonly_tools=None: {
+            "meta_common": _MetaProvider(readonly_tools),
+            "fitbit": _FitbitProvider(),
+            "spawn": _SpawnProvider(),
+            "schedule": _ScheduleProvider(),
+            "mcp": _McpProvider(),
+        }[name],
+    )
     monkeypatch.setattr("bootstrap.tools.build_readonly_tools", lambda *_: {})
     monkeypatch.setattr(
         "bootstrap.tools.build_scheduler",

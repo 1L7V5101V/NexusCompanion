@@ -22,6 +22,7 @@ from agent.config_models import (
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
+    WiringConfig,
 )
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
@@ -76,6 +77,7 @@ def load_config(path: str | Path = "config.json") -> Config:
     proactive = _load_proactive_config(data)
     memory_v2 = _load_memory_v2_config(data)
     peer_agents = _load_peer_agents_config(data)
+    wiring = _load_wiring_config(data)
 
     return Config(
         provider=provider,
@@ -99,6 +101,7 @@ def load_config(path: str | Path = "config.json") -> Config:
         tool_search_enabled=bool(data.get("tool_search_enabled", False)),
         spawn_enabled=bool(data.get("spawn_enabled", True)),
         peer_agents=peer_agents,
+        wiring=wiring,
     )
 
 
@@ -206,6 +209,21 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
         )
         for pa in data.get("peer_agents", [])
     ]
+
+
+def _load_wiring_config(data: dict) -> WiringConfig:
+    raw = data.get("wiring", {}) or {}
+    toolsets = raw.get(
+        "toolsets",
+        ["meta_common", "fitbit", "spawn", "schedule", "mcp"],
+    )
+    if not isinstance(toolsets, list):
+        toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
+    return WiringConfig(
+        context=str(raw.get("context", "default") or "default"),
+        memory=str(raw.get("memory", "default") or "default"),
+        toolsets=[str(name) for name in toolsets if str(name).strip()],
+    )
 
 
 def _resolve(value: str) -> str:

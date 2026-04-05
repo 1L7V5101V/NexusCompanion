@@ -80,6 +80,21 @@ class PeerAgentConfig:
 
 
 @dataclass
+class WiringConfig:
+    context: str = "default"
+    memory: str = "default"
+    toolsets: list[str] = field(
+        default_factory=lambda: [
+            "meta_common",
+            "fitbit",
+            "spawn",
+            "schedule",
+            "mcp",
+        ]
+    )
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -101,6 +116,7 @@ class Config:
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
+    wiring: WiringConfig = field(default_factory=WiringConfig)
 
 
 __all__ = [
@@ -111,4 +127,5 @@ __all__ = [
     "QQChannelConfig",
     "QQGroupConfig",
     "TelegramChannelConfig",
+    "WiringConfig",
 ]
