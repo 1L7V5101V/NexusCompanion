@@ -209,7 +209,7 @@ async def test_consolidation_background_and_error_accounting(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_post_response_worker_extract_save_and_supersede_paths():
+async def test_post_response_worker_invalidation_paths():
     memorizer = SimpleNamespace(
         save_item=AsyncMock(return_value="new:1"),
         supersede_batch=MagicMock(),
@@ -223,12 +223,9 @@ async def test_post_response_worker_extract_save_and_supersede_paths():
         )
     )
     provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp('["topic"]')))
-    tagger = SimpleNamespace(tag=AsyncMock(return_value={"scope": "steam"}))
-    worker = PostResponseMemoryWorker(memorizer, retriever, provider, "lm", tagger=tagger)
+    worker = PostResponseMemoryWorker(memorizer, retriever, provider, "lm")
 
     assert worker._consume_budget(10, 3) == (True, 7)
-    assert worker._normalize_text(" A，B ") == "ab"
-    assert worker._merge_extracted_items([{"summary": "A"}], [{"summary": "a"}]) == [{"summary": "A"}]
     assert worker._collect_explicit_memorized(
         [{"calls": [{"name": "memorize", "arguments": {"summary": "规则A"}, "result": "已记住（new:AbCDef12_34567890）：规则A"}]}]
     ) == (["规则A"], {"AbCDef12_34567890"})
@@ -240,43 +237,9 @@ async def test_post_response_worker_extract_save_and_supersede_paths():
     ids, remain = await worker._check_invalidate("topic", [{"id": "x1", "summary": "旧规则"}], remain)
     assert ids == ["x1"]
 
-    provider.chat = AsyncMock(
-        side_effect=[
-            _Resp('[{"summary":"新规则","memory_type":"procedure","tool_requirement":null,"steps":[]}]'),
-            _Resp('[{"summary":"新规则","memory_type":"procedure","tool_requirement":null,"steps":[]}]'),
-        ]
-    )
-    items, remain = await worker._extract_implicit(
-        "以后这样做",
-        "ok",
-        [],
-        worker.TOKEN_BUDGET_PER_RUN,
-    )
-    assert items[0]["summary"] == "新规则"
-
-    provider.chat = AsyncMock(return_value=_Resp('["x1"]'))
-    remain = await worker._save_with_supersede(
-        {"summary": "新规则", "memory_type": "procedure", "tool_requirement": None, "steps": []},
-        "src",
-        token_budget=remain,
-    )
-    assert remain >= 0
-    memorizer.supersede_batch.assert_called_once_with(["x1"])
-    kwargs = memorizer.save_item.await_args.kwargs
-    assert kwargs["memory_type"] == "procedure"
-    assert kwargs["extra"]["trigger_tags"] == {"scope": "steam"}
-
-    provider.chat = AsyncMock(return_value=_Resp('["x1"]'))
-    superseded, remain = await worker._check_supersede(
-        "新规则",
-        [{"id": "x1", "summary": "旧规则"}],
-        200,
-    )
-    assert superseded == ["x1"]
-
 
 @pytest.mark.asyncio
-async def test_post_response_worker_fallback_and_preference_helpers():
+async def test_post_response_worker_budget_exhausted_skips_invalidation():
     memorizer = SimpleNamespace(save_item=AsyncMock(return_value="new:2"), supersede_batch=MagicMock())
     retriever = SimpleNamespace(retrieve=AsyncMock(side_effect=RuntimeError("boom")))
     provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp("bad json")))
@@ -286,46 +249,24 @@ async def test_post_response_worker_fallback_and_preference_helpers():
     assert topics == []
     assert remain == 0
 
-    items = await worker._dedupe_against_explicit(
-        [{"summary": "以后查 Steam 必须用 MCP", "memory_type": "procedure"}],
-        ["以后查 Steam 必须用 MCP 工具"],
-        {"x1"},
-    )
-    assert items == []
-
-    items = await worker._dedupe_against_explicit(
-        [{"summary": "回复结尾要主动追问用户最关心的点", "memory_type": "preference"}],
-        [],
-        set(),
-    )
-    assert len(items) == 1
-
 
 @pytest.mark.asyncio
-async def test_consolidation_profile_extractor_skips_memory_test_question():
-    class _ProfileClient:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
+async def test_consolidation_long_term_prompt_contains_conversation():
+    """consolidation 的合并长期记忆提取调用（第二次 LLM 调用）应包含窗口对话内容。"""
+    captured_prompts: list[str] = []
+    event_payload = json.dumps({
+        "history_entries": [
+            "[2026-03-17 15:07] 用户询问助手是否记得其开始佩戴 Fitbit 手环的具体时间。"
+        ],
+        "pending_items": [],
+    })
 
-        async def chat(self, *, messages, **kwargs):
-            prompt = str(messages[0]["content"])
-            self.prompts.append(prompt)
-            assert "你还记得我什么时候开始戴fitbit手环的吗" in prompt
-            assert "记忆测试句都不算事实披露" in prompt
-            return _Resp("<facts></facts>")
+    async def _capture_chat(*, messages, **kwargs):
+        captured_prompts.append(str(messages[-1]["content"]))
+        return _Resp(event_payload)
 
-    harness = _ConsolidationHarness(
-        json.dumps(
-            {
-                "history_entries": [
-                    "[2026-03-17 15:07] 用户询问助手是否记得其开始佩戴 Fitbit 手环的具体时间。"
-                ],
-                "pending_items": [],
-            }
-        )
-    )
-    profile_client = _ProfileClient()
-    harness.set_profile_extractor(ProfileFactExtractor(llm_client=profile_client))
+    harness = _ConsolidationHarness(event_payload)
+    harness.provider.chat = _capture_chat
     harness._memory_port.save_item = AsyncMock(return_value="new:profile-1")
     session = SimpleNamespace(
         key="telegram:fitbit",
@@ -359,9 +300,13 @@ async def test_consolidation_profile_extractor_skips_memory_test_question():
         await_vector_store=True,
     )
 
-    harness._memory_port.save_from_consolidation.assert_awaited_once()
+    # 两次 LLM 调用都发生了：event 提取 + 合并长期记忆提取
+    assert len(captured_prompts) == 2
+    # 合并长期记忆提取的 prompt 包含了对话原文
+    long_term_prompt = captured_prompts[1]
+    assert "fitbit" in long_term_prompt.lower()
+    # 由于 LLM 返回的是 event JSON 而非 profile/preference/procedure 格式，save_item 不会被调用
     harness._memory_port.save_item.assert_not_awaited()
-    assert profile_client.prompts
 
 @pytest.mark.asyncio
 async def test_fitbit_sleep_provider_and_bootstrap_paths(

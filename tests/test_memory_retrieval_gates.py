@@ -602,19 +602,20 @@ def test_retrieve_memory_block_no_second_retrieval_when_sufficient():
     assert retrieve_call_count <= 2
 
 
-def test_consolidate_memory_calls_profile_extractor_when_set():
+def test_consolidate_memory_runs_long_term_extraction_in_parallel():
+    """consolidation 触发两次并行 LLM 调用：event 提取 + 合并的 profile/preference/procedure 提取。"""
     memory_port = MagicMock()
     memory_port.read_long_term = MagicMock(return_value="MEMORY")
     memory_port.append_history_once = MagicMock(return_value=True)
     memory_port.append_pending_once = MagicMock(return_value=True)
     memory_port.save_from_consolidation = AsyncMock()
     memory_port.save_item = AsyncMock(return_value="new:profile-1")
-    profile_extractor = MagicMock()
-    profile_extractor.extract = AsyncMock(return_value=[])
     loop = _make_loop(
-        _Provider(['{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}']),
+        _Provider([
+            '{"history_entries":["[2026-03-15 10:00] 用户聊了 Zigbee 方案"],"pending_items":[]}',
+            '{"profile":[],"preference":[],"procedure":[]}',
+        ]),
         memory_port=memory_port,
-        profile_extractor=profile_extractor,
     )
     session = _DummySession("cli:1")
     session.messages = [
@@ -626,14 +627,9 @@ def test_consolidate_memory_calls_profile_extractor_when_set():
 
     asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))
 
-    profile_extractor.extract.assert_awaited_once()
-    extract_call = profile_extractor.extract.await_args
-    conversation_arg = (
-        extract_call.args[0]
-        if extract_call.args
-        else str(extract_call.kwargs.get("conversation", ""))
-    )
-    assert "Zigbee" in conversation_arg
+    # event 写入成功
+    memory_port.append_history_once.assert_called_once()
+    memory_port.save_from_consolidation.assert_awaited_once()
 
 
 def test_consolidate_memory_works_without_profile_extractor():

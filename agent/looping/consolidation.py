@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+import json_repair
+
 from agent.llm_json import load_json_object_loose
 
 logger = logging.getLogger("agent.loop")
@@ -193,6 +195,313 @@ class ConsolidationService:
         except Exception as e:
             logger.warning("profile fact extraction failed: %s", e)
 
+    @staticmethod
+    def _build_long_term_prompt(*, conversation: str, existing_profile: str) -> str:
+        return f"""你是长期记忆提取专家。从对话窗口中一次性提取三类长期记忆，返回 JSON。
+
+默认答案是所有数组为空。提取门槛要高，宁可不提取，也不要把临时信息写进长期记忆。
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【核心判断标准】
+把这条信息放进 6 个月后的一次全新对话，它还有用吗？
+→ 是 → 可能是长期记忆，继续检查
+→ 否 → 不是长期记忆，留空
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【三类记忆的语义】
+
+profile — 关于用户本人或其客观处境的事实
+  语义：身份背景、持有物、爱好、健康事实、长期状态、重要决定
+  允许 category：personal_fact / purchase / decision / status
+  要求：只有 USER 在对话中直接陈述自身的事实，才允许提取
+  禁止：用户提问、追问、反问、记忆测试句一律不算事实披露，绝对禁止反推
+    · "你还记得我什么时候开始戴 fitbit 手环的吗" → 返回空
+    · "你记得我住哪里吗" → 返回空
+    · "我之前是不是买过这个" → 返回空
+
+preference — 用户希望怎样被服务、怎样被讲解、怎样被推荐
+  语义：跨 session 稳定成立的偏好/厌恶/倾向，而非硬约束
+  来自 USER 明确表达
+
+procedure — agent 在未来类似场景下应遵守的长期执行规则
+  语义：面向 agent 的行为规则，跨任务可复用
+  来自 USER 的长期要求，或被 USER 明确确认过的非显然做法
+
+绝对不输出：event（有时间性的具体事件）
+
+区分三类：
+- "用户是什么/拥有什么/处在什么客观背景里" → profile
+- "用户希望 agent 怎么服务他、怎么讲解、怎么推荐" → preference
+- "agent 在某类请求下必须怎么做/用什么工具" → procedure（有明确执行步骤/工具要求）
+- 只是方向性偏好 → preference（优先选 preference）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【preference / procedure 提取前四项检查，顺序执行，任一不通过即不提取】
+
+▸ 检查 0 — 元讨论/举例说明
+先判断 USER 是在提供长期规则，还是在讨论"什么该记、怎么记、你是否理解、请举例说明"。
+  - 元讨论场景：只允许提取 USER 自己明确说出的长期规则/筛选标准
+  - ASSISTANT 为说明概念而举出的任何例子、类比、假设场景一律不得提取
+  - 即使 ASSISTANT 的示例内容本身合理、未来有用，也不能因"看起来像长期规则"就入库
+
+▸ 检查 A — USER 原话锚点
+在 USER 消息里找到支撑这条记忆的直接原句（逐字存在，不是推断）。
+  - 找不到 USER 的直接原句 → 不提取
+  - ASSISTANT 的解释、建议、工具返回的数据，不算 USER 原句
+  - USER 没有反驳 ASSISTANT ≠ USER 认同且希望长期记忆
+  - USER 消息是纯状态汇报（"复习中"/"在看书"/"工作中"等）→ 不提取
+
+▸ 检查 B — 时效性
+  - 涉及当前任务、当前时间段、当前情境（本次/今天/这个项目） → 不提取
+  - 只有明确跨 session 稳定成立，才继续
+
+▸ 检查 C — 来源方向
+  - 核心内容来自 ASSISTANT（解释/建议/工具结果） → 不提取
+  - ASSISTANT 主动给出建议，USER 没有明确说"以后都这样"/"记住这个" → 不提取
+  - "USER 没有反驳"不等于"USER 授权 AGENT 长期执行这条规则"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【profile 专用规则】
+
+仅允许以下 4 类 category：
+- purchase：用户购买 / 下单了什么
+- decision：用户明确拍板了什么方案 / 计划
+- status：用户某件事的状态变化（等待/完成/放弃/里程碑达成）
+- personal_fact：用户关于自身的事实性披露（身份/背景/持有物/爱好/习惯/经验背景）
+
+必须遵守：
+- 纯技术讨论、闲聊、打招呼不输出
+- 若 existing_profile 已有相同事实，不重复输出
+- summary 简洁、可独立检索；personal_fact 默认不填 happened_at
+- 每一件具体的事单独一条，绝对不合并
+  ✗ 错误："用户购买了多件商品"
+  ✓ 正确：每件商品单独一条，写出具体名称/型号
+- ASSISTANT 的回复只作背景参考，不作提取证据
+  即使 ASSISTANT 说"你之前买了 X""你是 XX 方向的学生"，也不得作为事实来源
+
+额外禁止：
+- 工程操作（安装/更新/配置工具/依赖）→ 这些是工程 event，不是 profile
+- 项目内讨论（架构决策/重构方案/代码评审）
+- 用户表达的观点/意见 → 必须是客观事实
+- 纯 event：例如"这周日去徒步""昨晚去了超市""明天要开会"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【示例】
+
+<example id="keep_profile_personal_fact">
+USER: 我在互联网公司做产品经理，今年30岁，住在上海，有一块 Fitbit 手表，爱好是弹钢琴。
+→ profile: [
+  {{"summary": "用户在互联网公司做产品经理", "category": "personal_fact"}},
+  {{"summary": "用户今年30岁", "category": "personal_fact"}},
+  {{"summary": "用户住在上海", "category": "personal_fact"}},
+  {{"summary": "用户有一块 Fitbit 手表", "category": "personal_fact"}},
+  {{"summary": "用户的爱好是弹钢琴", "category": "personal_fact"}}
+]
+</example>
+
+<example id="drop_profile_memory_test">
+USER: 你还记得我什么时候开始戴 fitbit 手环的吗
+→ profile: []（提问不是事实披露，绝对不反推）
+</example>
+
+<example id="profile_event_split">
+USER: 这周日朋友约我去徒步，我其实不常徒步，不知道该买什么装备。
+→ profile: [
+  {{"summary": "用户不常徒步", "category": "personal_fact"}},
+  {{"summary": "用户目前缺少徒步相关装备准备", "category": "personal_fact"}}
+]
+不提取："这周日去徒步"（是 event）
+</example>
+
+<example id="profile_not_preference">
+USER: 我家有 10 套房，我平时爱弹钢琴，而且我有一块 Fitbit 手表
+→ profile: [以上三条 personal_fact]
+→ preference/procedure: []
+（这些是用户身份事实，不是"用户希望被怎样服务"）
+</example>
+
+<example id="keep_explicit_rule">
+USER: 以后帮我查菜谱只给 20 分钟以内能做完的，我没时间搞复杂的
+检查A: "以后帮我查菜谱只给20分钟以内能做完的" ✓
+检查B: "以后"明确跨 session ✓
+检查C: 来自 USER 主动要求 ✓
+→ procedure: [{{"summary": "查询菜谱时只推荐 20 分钟内可完成的菜式"}}]
+</example>
+
+<example id="keep_multi_source_research">
+USER: 以后帮我查耳机先看 B 站评测和 Reddit 讨论，别只看官网参数
+→ procedure: [{{"summary": "查询耳机时先看 B 站评测和 Reddit 讨论，不只依赖官网参数"}}]
+</example>
+
+<example id="keep_preference_trimmed">
+USER: 我不喜欢这种悬疑风格的游戏，太压抑了
+ASSISTANT: 明白！你是偏好轻松明快风格的玩家，喜欢治愈系或休闲类游戏……
+→ preference: [{{"summary": "不喜欢悬疑压抑风格的游戏"}}]
+✗ 不能写："偏好治愈系或休闲类游戏"（USER 没说过，来自 ASSISTANT 延伸）
+</example>
+
+<example id="keep_preference_service_style">
+USER: 你给我讲内容的时候最好附带一个很棒的例子，并且最好贯穿始终
+→ preference: [{{"summary": "讲解内容时最好附带贯穿始终的例子"}}]
+（这是"希望被怎样讲解"，是 preference 不是 profile）
+</example>
+
+<example id="drop_situational">
+USER: 今晚几个同学来，想找个气氛好的日料店
+→ 全部为空（"今晚"是当前情境，不跨 session）
+✗ 不能提取："用户喜欢日料"（推断）
+</example>
+
+<example id="drop_knowledge">
+USER: TCP 和 UDP 的区别是什么
+ASSISTANT: TCP 是可靠传输协议，有拥塞控制和重传机制……
+→ 全部为空（USER 在提问，知识内容来自 ASSISTANT）
+✗ 不能提取："TCP 是可靠传输协议"
+</example>
+
+<example id="drop_assistant_proactive_advice">
+USER: 在赶代码
+ASSISTANT: 别忘了每隔一段时间起来活动下，喝点水，久坐对颈椎不好……
+→ 全部为空
+✗ 不能提取："每隔45分钟应起身活动并补水"（来自 ASSISTANT，USER 没有授权）
+关键判断：ASSISTANT 建议得再具体再合理，只要 USER 没有明确授权，就不是长期记忆
+</example>
+
+<example id="drop_meta_discussion_example">
+USER: 我希望只有每轮对话里真正重要的参考信息才值得存入 memory.md，你举个例子我看看你理解没有
+ASSISTANT: 明白。比如智能家居架构应坚持纯本地化部署，拒绝云端依赖……
+检查0: USER 在讨论记忆标准并要求举例，是元讨论
+可提取：USER 自己说出的筛选标准
+ASSISTANT 的智能家居举例只是教学示范，不是 USER 新提供的规则
+→ procedure: [{{"summary": "每轮对话中真正重要的参考信息才值得存入 memory.md"}}]
+✗ 不能提取："智能家居架构坚持纯本地化部署"
+</example>
+
+<example id="drop_workaround">
+USER: 那就直接写个脚本绕过去吧
+→ 全部为空（当前任务临时策略，不跨 session）
+✗ 不能提取："遇到此类问题应优先用 Python 脚本绕过"
+</example>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【summary 写法约束】
+- 只包含 USER 原话中直接出现的内容，不能加推断或延伸
+- summary 语气不得强于 USER 原话（"不太喜欢" ≠ "强烈反感且要求永久避免"）
+- summary 脱离对话也能独立成立，不含"这次""今天""当前"等时间锚
+- 不能只是原话碎片，必须是完整句
+- profile：每条 summary 只表达一条完整事实，绝对不合并
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【当前已有 profile（用于 profile 查重）】
+{existing_profile or "（空）"}
+
+【待处理对话】
+{conversation}
+
+只返回合法 JSON，不要 markdown 代码块：
+{{
+  "profile": [
+    {{"summary": "...", "category": "personal_fact|purchase|decision|status", "happened_at": null}}
+  ],
+  "preference": [
+    {{"summary": "..."}}
+  ],
+  "procedure": [
+    {{"summary": "...", "tool_requirement": null, "steps": [], "rule_schema": {{"required_tools": [], "forbidden_tools": [], "mentioned_tools": []}}}}
+  ]
+}}"""
+
+    async def _extract_implicit_long_term(
+        self,
+        *,
+        conversation: str,
+        existing_profile: str = "",
+    ) -> dict | None:
+        """窗口级隐式长期记忆 LLM 提取（只提取，不写库），与 event 并行运行。
+        返回原始 dict（含 profile/preference/procedure），失败返回 None。
+        写库由调用方在 event 路径确认成功后统一执行，确保幂等。
+        """
+        try:
+            prompt = self._build_long_term_prompt(
+                conversation=conversation,
+                existing_profile=existing_profile,
+            )
+            resp = await self._provider.chat(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+                model=self._model,
+                max_tokens=600,
+            )
+            text = (resp.content or "").strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+            result = json_repair.loads(text)
+            if not isinstance(result, dict):
+                return None
+            return result
+        except Exception as e:
+            logger.warning("consolidation long_term extraction failed: %s", e)
+            return None
+
+    async def _save_implicit_long_term(
+        self,
+        result: dict,
+        *,
+        source_ref: str,
+        scope_channel: str,
+        scope_chat_id: str,
+    ) -> None:
+        """将已提取的隐式长期记忆写入向量库。仅在 event 路径确认成功后调用。"""
+        # profile
+        for item in (result.get("profile") or []):
+            if not isinstance(item, dict):
+                continue
+            summary = (item.get("summary") or "").strip()
+            if not summary:
+                continue
+            category = (item.get("category") or "personal_fact").strip()
+            happened_at = item.get("happened_at") or None
+            await self._memory_port.save_item_with_supersede(
+                summary=summary,
+                memory_type="profile",
+                extra={
+                    "category": category,
+                    "scope_channel": scope_channel,
+                    "scope_chat_id": scope_chat_id,
+                },
+                source_ref=f"{source_ref}#profile",
+                happened_at=happened_at,
+            )
+            logger.info("consolidation long_term saved: type=profile %r", summary[:60])
+
+        # preference + procedure
+        for mtype in ("preference", "procedure"):
+            for item in (result.get(mtype) or []):
+                if not isinstance(item, dict):
+                    continue
+                summary = (item.get("summary") or "").strip()
+                if not summary:
+                    continue
+                extra: dict = {
+                    "tool_requirement": item.get("tool_requirement"),
+                    "steps": item.get("steps") or [],
+                    "scope_channel": scope_channel,
+                    "scope_chat_id": scope_chat_id,
+                }
+                if mtype == "procedure":
+                    rule_schema = item.get("rule_schema")
+                    if rule_schema and isinstance(rule_schema, dict):
+                        extra["rule_schema"] = rule_schema
+                await self._memory_port.save_item_with_supersede(
+                    summary=summary,
+                    memory_type=mtype,
+                    extra=extra,
+                    source_ref=f"{source_ref}#implicit",
+                )
+                logger.info(
+                    "consolidation long_term saved: type=%s %r", mtype, summary[:60]
+                )
+
     async def consolidate(
         self,
         session,
@@ -255,6 +564,19 @@ class ConsolidationService:
         )
         recent_history_block = "\n".join(
             f"- {entry}" for entry in recent_history_entries
+        )
+
+        # scope 信息提前取出，隐式提取任务需要用
+        scope_channel = getattr(session, "_channel", "")
+        scope_chat_id = getattr(session, "_chat_id", "")
+
+        # 隐式长期记忆提取（procedure/preference/profile）与 event 提取并行启动。
+        # 只并行提取（不写库），等 event 路径确认 JSON 合法后再统一写库，确保幂等。
+        implicit_task: asyncio.Task[dict | None] = asyncio.create_task(
+            self._extract_implicit_long_term(
+                conversation=conversation,
+                existing_profile=current_memory or "",
+            )
         )
 
         prompt = f"""你是记忆提取代理（Memory Extraction Agent）。从对话中精确提取结构化信息，返回 JSON。
@@ -351,6 +673,8 @@ class ConsolidationService:
                 logger.warning(
                     "Memory consolidation: LLM returned empty response, skipping"
                 )
+                implicit_task.cancel()
+                await asyncio.gather(implicit_task, return_exceptions=True)
                 return
             result = _parse_consolidation_payload(text)
             if result is None:
@@ -358,6 +682,8 @@ class ConsolidationService:
                     "Memory consolidation: unexpected response type, skipping. Response: %r",
                     text[:200],
                 )
+                implicit_task.cancel()
+                await asyncio.gather(implicit_task, return_exceptions=True)
                 return
 
             # 4. 先处理 history_entries / pending_items 这两类文本产物。
@@ -395,8 +721,6 @@ class ConsolidationService:
                     )
 
             # 5. 再把 history_entries 写入向量记忆，供后续 retrieval 使用。
-            scope_channel = getattr(session, "_channel", "")
-            scope_chat_id = getattr(session, "_chat_id", "")
             save_tasks: list[asyncio.Task] = []
             for entry in history_entries:
                 entry_source_ref = _build_entry_source_ref(source_ref, entry)
@@ -418,21 +742,17 @@ class ConsolidationService:
                     len(history_entries),
                 )
 
-            # 6. 最后按需补做 profile facts 提取，这条链和 history_entries 分开。
-            profile_task = None
-            if self._profile_extractor and conversation.strip():
-                profile_task = asyncio.create_task(
-                    self._extract_and_save_profile_facts(
-                        extractor=self._profile_extractor,
-                        conversation=conversation,
-                        existing_profile=current_memory or "",
-                        source_ref=source_ref,
-                        scope_channel=scope_channel,
-                        scope_chat_id=scope_chat_id,
-                    )
+            # 6. 等待隐式提取完成（仅 LLM 调用，无写库），然后统一写库。
+            # event 路径走到这里说明 JSON 合法，两侧提取均已成功后才提交，保证幂等。
+            # 进程在此之前崩溃，last_consolidated 不更新，下次重跑同窗口。
+            implicit_result = await implicit_task
+            if implicit_result:
+                await self._save_implicit_long_term(
+                    implicit_result,
+                    source_ref=source_ref,
+                    scope_channel=scope_channel,
+                    scope_chat_id=scope_chat_id,
                 )
-            if await_vector_store and profile_task is not None:
-                await profile_task
 
             # 7. 更新 session.last_consolidated，表示这批旧消息已经被归档过。
             if archive_all:

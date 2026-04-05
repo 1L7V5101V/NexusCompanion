@@ -46,12 +46,15 @@ class Memorizer:
         merge_threshold: float = 0.70,
         supersede_threshold: float = 0.90,
     ) -> str:
-        """显式写入路径（memorize 工具专用）：先 supersede 高相似旧条目，再写入新条目。
+        """先 supersede 高相似旧条目，再写入新条目。
 
-        与 save_item 的区别：额外做一次向量相似度搜索，对 procedure / preference 类型
-        自动退休相似度 >= supersede_threshold 的已有条目，避免同类信息积累重复记录。
+        - procedure / preference：退休相似度 >= supersede_threshold 的旧条目；
+          procedure 额外尝试 merge 同工具要求的近似条目。
+        - profile（status / purchase 类别）：退休相同 category 中相似度 >= supersede_threshold
+          的旧条目，防止同类状态事实堆积。
         """
         embedding = await self._embedder.embed(summary)
+
         if memory_type in ("procedure", "preference"):
             similar = self._store.vector_search(
                 query_vec=embedding,
@@ -86,6 +89,28 @@ class Memorizer:
                     "memorizer save_with_supersede: superseded %d %s items: %s",
                     len(supersede_ids), memory_type, supersede_ids,
                 )
+
+        elif memory_type == "profile":
+            category = str((extra or {}).get("category") or "")
+            if category in ("status", "purchase"):
+                similar = self._store.vector_search(
+                    query_vec=embedding,
+                    top_k=5,
+                    memory_types=["profile"],
+                    score_threshold=supersede_threshold,
+                )
+                same_cat = [
+                    item for item in similar
+                    if (item.get("extra_json") or {}).get("category") == category
+                ]
+                if same_cat:
+                    supersede_ids = [item["id"] for item in same_cat]
+                    self._store.mark_superseded_batch(supersede_ids)
+                    logger.info(
+                        "memorizer save_with_supersede: superseded %d profile/%s items: %s",
+                        len(supersede_ids), category, supersede_ids,
+                    )
+
         return self._store.upsert_item(
             memory_type=memory_type,
             summary=summary,

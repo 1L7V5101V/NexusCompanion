@@ -25,11 +25,9 @@ def build_memory_runtime(
     from agent.tools.memorize import MemorizeTool
     from agent.tools.filesystem import EditFileTool, WriteFileTool
     from core.memory.port import DefaultMemoryPort
-    from memory2.dedup_decider import DedupDecider
     from memory2.embedder import Embedder
     from memory2.memorizer import Memorizer
     from memory2.procedure_tagger import ProcedureTagger
-    from memory2.profile_extractor import ProfileFactExtractor
     from memory2.retriever import Retriever
     from memory2.store import MemoryStore2
 
@@ -93,34 +91,12 @@ def build_memory_runtime(
         ],
     )
 
-    dedup_decider = None
-    if config.memory_v2.dedup_enabled:
-        dedup_decider = DedupDecider(
-            store=mem2_store,
-            embedder=embedder,
-            provider=light_provider or provider,
-            model=config.light_model or config.model,
-            similarity_threshold=config.memory_v2.dedup_similarity_threshold,
-            batch_dedup_threshold=config.memory_v2.batch_dedup_threshold,
-        )
-
     post_mem_worker = PostResponseMemoryWorker(
         memorizer=memorizer,
         retriever=retriever,
         light_provider=light_provider or provider,
         light_model=config.light_model or config.model,
-        tagger=tagger,
-        profile_extractor=(
-            ProfileFactExtractor(
-                llm_client=light_provider or provider,
-                model=config.light_model or config.model,
-            )
-            if config.memory_v2.profile_extraction_enabled
-            else None
-        ),
-        profile_supersede_enabled=config.memory_v2.profile_supersede_enabled,
         observe_writer=observe_writer,
-        dedup_decider=dedup_decider,
     )
     from bootstrap.wiring import MemoryEngineBuildDeps, resolve_memory_engine_builder
 
