@@ -19,12 +19,13 @@ from agent.looping.constants import (
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
 from agent.prompting import build_runtime_guard_message
 from agent.provider import ContentSafetyError, ContextLengthError
-from agent.procedure_hint import (
-    _match_procedure_items,
-    build_intercept_hint,
-    build_procedure_hint,
-)
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
+from agent.tool_hooks import (
+    ProcedureGuardHook,
+    ProcedureResultHintHook,
+    ToolExecutionRequest,
+    ToolExecutor,
+)
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
 
@@ -208,6 +209,12 @@ class DefaultReasoner(Reasoner):
         _ts = _get("tool_search") if callable(_get) else None
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
+        )
+        self._tool_executor = ToolExecutor(
+            [
+                ProcedureGuardHook(memory_port),
+                ProcedureResultHintHook(memory_port),
+            ]
         )
 
     async def run_turn(
@@ -478,45 +485,7 @@ class DefaultReasoner(Reasoner):
                         )
                         continue
 
-                    # 6.2 真实执行前，先做 procedure intercept 判断。
-                    all_items = _match_procedure_items(
-                        memory=self._memory_port,
-                        tool_name=tool_call.name,
-                        tool_arguments=tool_call.arguments,
-                        logger=logger,
-                    )
-                    intercept_items = [
-                        item
-                        for item in all_items
-                        if bool(item.get("intercept", False))
-                        and str(item.get("id", "")) not in injected_proc_ids
-                    ]
-                    if intercept_items:
-                        logger.info(
-                            "[流程拦截] 工具 '%s' 被 procedure 拦截，注入%d条规范，跳过执行",
-                            tool_call.name,
-                            len(intercept_items),
-                        )
-                        result = build_intercept_hint(intercept_items, tool_call.name)
-                        injected_proc_ids.update(
-                            str(item.get("id", "")) for item in intercept_items
-                        )
-                        append_tool_result(
-                            messages,
-                            tool_call_id=tool_call.id,
-                            content=result,
-                        )
-                        iter_calls.append(
-                            {
-                                "call_id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": tool_call.arguments,
-                                "result": result,
-                            }
-                        )
-                        continue
-
-                    # 6.3 工具未被拦截时，真正执行工具并回填结果。
+                    # 6.2 通过统一执行器跑 pre/post hooks + 真实工具。
                     # For tool_search: pass visible_names explicitly via
                     # set_excluded_names() instead of the old ContextVar channel.
                     if (
@@ -525,13 +494,21 @@ class DefaultReasoner(Reasoner):
                         and self._tool_search_tool is not None
                     ):
                         self._tool_search_tool.set_excluded_names(visible_names)
-                    tools_used.append(tool_call.name)
                     _args_preview = _log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
-                    result = await self._tools.execute(
-                        tool_call.name,
-                        tool_call.arguments,
+                    exec_result = await self._tool_executor.execute(
+                        ToolExecutionRequest(
+                            call_id=tool_call.id,
+                            tool_name=tool_call.name,
+                            arguments=tool_call.arguments,
+                            source="passive",
+                            hook_state={"injected_proc_ids": injected_proc_ids},
+                        ),
+                        self._tools.execute,
                     )
+                    if exec_result.status == "success":
+                        tools_used.append(tool_call.name)
+                    result = exec_result.output
                     normalized = normalize_tool_result(result)
                     _result_preview = _log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")
@@ -548,23 +525,17 @@ class DefaultReasoner(Reasoner):
                         tool_name=tool_call.name,
                     )
 
-                    # 6.4 工具执行完后，再补充 procedure hint。
-                    hint_items = [
-                        item
-                        for item in all_items
-                        if not bool(item.get("intercept", False))
-                    ]
-                    raw_hint, new_ids = build_procedure_hint(
-                        hint_items,
-                        injected_proc_ids,
+                    # 6.3 post hook 只补 reflect hint，不改写工具结果。
+                    pending_hints.extend(
+                        msg for msg in exec_result.extra_messages if msg.strip()
                     )
-                    if new_ids:
-                        injected_proc_ids.update(new_ids)
-                        if raw_hint:
-                            pending_hints.append(raw_hint.split("\n", 1)[1])
 
-                    # 6.5 tool_search 的结果会扩展下一轮可见工具。
-                    if tool_call.name == "tool_search" and visible_names is not None:
+                    # 6.4 tool_search 的结果会扩展下一轮可见工具。
+                    if (
+                        exec_result.status == "success"
+                        and tool_call.name == "tool_search"
+                        and visible_names is not None
+                    ):
                         _newly_unlocked = self._discovery.unlock_from_result(normalized.text)
                         _newly_unlocked -= visible_names  # keep only genuinely new ones
                         if _newly_unlocked:
@@ -576,7 +547,31 @@ class DefaultReasoner(Reasoner):
                         {
                             "call_id": tool_call.id,
                             "name": tool_call.name,
+                            "status": exec_result.status,
                             "arguments": tool_call.arguments,
+                            "final_arguments": exec_result.final_arguments,
+                            "pre_hook_trace": [
+                                {
+                                    "hook_name": item.hook_name,
+                                    "event": item.event,
+                                    "matched": item.matched,
+                                    "decision": item.decision,
+                                    "reason": item.reason,
+                                    "extra_message": item.extra_message,
+                                }
+                                for item in exec_result.pre_hook_trace
+                            ],
+                            "post_hook_trace": [
+                                {
+                                    "hook_name": item.hook_name,
+                                    "event": item.event,
+                                    "matched": item.matched,
+                                    "decision": item.decision,
+                                    "reason": item.reason,
+                                    "extra_message": item.extra_message,
+                                }
+                                for item in exec_result.post_hook_trace
+                            ],
                             "result": normalized.preview(),
                         }
                     )

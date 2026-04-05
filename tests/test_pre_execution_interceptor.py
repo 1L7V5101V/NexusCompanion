@@ -130,6 +130,32 @@ def test_intercept_result_contains_not_executed_label(tmp_path: Path):
     assert "执行拦截" in tool_message["content"]
 
 
+def test_intercept_result_keeps_denied_status_in_tool_chain(tmp_path: Path):
+    tool = _DummyTool()
+    provider = _FakeProvider(
+        [
+            LLMResponse(
+                content="",
+                tool_calls=[
+                    ToolCall("c1", "web_fetch", {"url": "https://www.bilibili.com/video/BV1"})
+                ],
+            ),
+            LLMResponse(content="done", tool_calls=[]),
+        ]
+    )
+    memory = _HintMemory(
+        [[{"id": "p1", "summary": "B站链接必须改用 yt-dlp", "intercept": True}]]
+    )
+    loop = _make_loop(tmp_path, provider, tool, memory)
+
+    _, _, tool_chain, _, _ = asyncio.run(loop._run_agent_loop([{"role": "user", "content": "test"}]))
+
+    first_call = tool_chain[0]["calls"][0]
+    assert first_call["status"] == "denied"
+    assert first_call["arguments"] == {"url": "https://www.bilibili.com/video/BV1"}
+    assert first_call["final_arguments"] == {"url": "https://www.bilibili.com/video/BV1"}
+
+
 def test_non_intercept_procedure_still_executes(tmp_path: Path):
     tool = _DummyTool()
     provider = _FakeProvider(

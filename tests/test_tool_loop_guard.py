@@ -344,6 +344,26 @@ def test_subagent_dedupes_repeated_procedure_hint_items():
     assert "【操作规范提醒】" not in second_round_tool_messages[1]["content"]
 
 
+def test_subagent_unknown_tool_not_recorded_in_tools_called():
+    provider = _FakeProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("s1", "ghost_tool", {"x": 1})]),
+            LLMResponse(content="done", tool_calls=[]),
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider),
+        model="m",
+        tools=[],
+        max_iterations=10,
+    )
+
+    result = asyncio.run(subagent.run("do work"))
+
+    assert result == "done"
+    assert subagent.tools_called == []
+
+
 def test_extract_action_tokens_includes_web_fetch_host_and_path_tokens():
     tokens = extract_action_tokens(
         "web_fetch",

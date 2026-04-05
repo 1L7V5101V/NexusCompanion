@@ -20,13 +20,19 @@ import logging
 from typing import TYPE_CHECKING, Any, Sequence
 
 from agent.provider import LLMProvider
-from agent.procedure_hint import prepend_procedure_hint
+from agent.tool_hooks import (
+    ProcedureGuardHook,
+    ProcedureResultHintHook,
+    ToolExecutionRequest,
+    ToolExecutor,
+)
 from agent.tool_runtime import (
     append_assistant_tool_calls,
     append_tool_result,
     prepare_toolset,
     tool_call_signature,
 )
+from agent.tool_hooks.types import ToolExecutionResult
 from agent.tools.base import Tool, normalize_tool_result
 
 if TYPE_CHECKING:
@@ -139,6 +145,12 @@ class SubAgent:
         prepared = prepare_toolset(tools)
         self._tool_map: dict[str, Tool] = prepared.tool_map
         self._tool_schemas: list[dict[str, Any]] = prepared.schemas
+        self._tool_executor = ToolExecutor(
+            [
+                ProcedureGuardHook(memory),
+                ProcedureResultHintHook(memory),
+            ]
+        )
 
     async def run(self, task: str) -> str:
         """执行任务并返回文本结果。
@@ -209,39 +221,32 @@ class SubAgent:
 
             # 执行工具
             for tc in response.tool_calls:
-                tool = self._tool_map.get(tc.name)
-                if tool:
-                    # 记录实际调用的工具
-                    if tc.name not in self.tools_called:
-                        self.tools_called.append(tc.name)
-                    logger.info(
-                        "[subagent] 调用工具 %s args=%s",
-                        tc.name,
-                        str(tc.arguments)[:120],
-                    )
-                    try:
-                        result = await tool.execute(**tc.arguments)
-                    except Exception as e:
-                        result = f"工具执行出错: {e}"
-                    normalized = normalize_tool_result(result)
-                    result_text, new_ids = prepend_procedure_hint(
-                        memory=self._memory,
-                        tool_name=tc.name,
-                        tool_arguments=tc.arguments,
-                        result=normalized.text,
-                        injected_ids=injected_proc_ids,
-                        logger=logger,
-                    )
-                    normalized.text = result_text
-                    if new_ids:
-                        injected_proc_ids.update(new_ids)
-                    logger.info(
-                        "[subagent] 工具结果 %s: %s",
-                        tc.name,
-                        normalized.preview()[:120],
-                    )
-                else:
-                    normalized = normalize_tool_result(f"未知工具: {tc.name}")
+                logger.info(
+                    "[subagent] 调用工具 %s args=%s",
+                    tc.name,
+                    str(tc.arguments)[:120],
+                )
+                exec_result = await self._execute_tool_call(
+                    tc.id,
+                    tc.name,
+                    tc.arguments,
+                    injected_proc_ids=injected_proc_ids,
+                )
+                if (
+                    exec_result.status == "success"
+                    and tc.name not in self.tools_called
+                ):
+                    self.tools_called.append(tc.name)
+                normalized = normalize_tool_result(exec_result.output)
+                normalized = self._apply_extra_messages_to_result(
+                    normalized,
+                    exec_result.extra_messages,
+                )
+                logger.info(
+                    "[subagent] 工具结果 %s: %s",
+                    tc.name,
+                    normalized.preview()[:120],
+                )
                 # 兜底截断：防止超长结果撑爆 LLM 上下文
                 if len(normalized.text) > _MAX_TOOL_RESULT_CHARS:
                     original_len = len(normalized.text)
@@ -359,23 +364,67 @@ class SubAgent:
                 content=response.content,
                 tool_calls=[tc],
             )
-            tool = self._tool_map.get(tc.name)
-            if tool:
-                try:
-                    result = await tool.execute(**tc.arguments)
-                except Exception as e:
-                    result = f"工具执行出错: {e}"
-                normalized = normalize_tool_result(result)
-                logger.info(
-                    "[subagent] mandatory_exit %s 结果: %s",
-                    tc.name,
-                    normalized.preview()[:120],
-                )
-            else:
-                normalized = normalize_tool_result(f"未知工具: {tc.name}")
+            exec_result = await self._execute_tool_call(
+                tc.id,
+                tc.name,
+                tc.arguments,
+                injected_proc_ids=set(),
+            )
+            normalized = normalize_tool_result(exec_result.output)
+            normalized = self._apply_extra_messages_to_result(
+                normalized,
+                exec_result.extra_messages,
+            )
+            logger.info(
+                "[subagent] mandatory_exit %s 结果: %s",
+                tc.name,
+                normalized.preview()[:120],
+            )
             append_tool_result(
                 messages,
                 tool_call_id=tc.id,
                 content=normalized,
                 tool_name=tc.name,
             )
+
+    async def _execute_tool_call(
+        self,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        injected_proc_ids: set[str],
+    ):
+        tool = self._tool_map.get(tool_name)
+        if tool is None:
+            return ToolExecutionResult(
+                status="error",
+                output=f"未知工具: {tool_name}",
+                final_arguments=dict(arguments),
+            )
+
+        async def _invoke(name: str, kwargs: dict[str, Any]):
+            return await tool.execute(**kwargs)
+
+        return await self._tool_executor.execute(
+            ToolExecutionRequest(
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                source="subagent",
+                hook_state={"injected_proc_ids": injected_proc_ids},
+            ),
+            _invoke,
+        )
+
+    @staticmethod
+    def _apply_extra_messages_to_result(result, extra_messages: list[str]):
+        if not extra_messages:
+            return result
+        normalized = normalize_tool_result(result)
+        body = "\n".join(msg for msg in extra_messages if str(msg).strip())
+        if not body:
+            return normalized
+        prefix = "⚠️ 【操作规范提醒】以下规范适用于当前操作，必须遵守：\n"
+        normalized.text = prefix + body + "\n\n---\n\n" + normalized.text
+        return normalized

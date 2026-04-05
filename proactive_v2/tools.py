@@ -340,9 +340,7 @@ def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
 
 # ── execute 分发 ──────────────────────────────────────────────────────────
 
-async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
-    ctx.steps_taken += 1
-
+async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
     if tool_name == "get_alert_events":
         return await _get_alert_events(ctx, args)
 
@@ -377,3 +375,8 @@ async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolD
         return _finish_turn(ctx, args)
 
     raise ValueError(f"unknown tool: {tool_name!r}")
+
+
+async def execute(tool_name: str, args: dict, ctx: AgentTickContext, deps: ToolDeps) -> str:
+    ctx.steps_taken += 1
+    return await dispatch(tool_name, args, ctx, deps)

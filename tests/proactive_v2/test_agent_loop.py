@@ -25,6 +25,16 @@ from proactive_v2.tools import ToolDeps
 from tests.proactive_v2.conftest import FakeLLM, cfg_with, make_agent_tick
 
 
+class _HintMemory:
+    def __init__(self, items: list[dict]):
+        self._items = list(items)
+        self.calls: list[list[str]] = []
+
+    def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict]:
+        self.calls.append(list(action_tokens))
+        return list(self._items)
+
+
 # ── max_steps 保护 ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -90,6 +100,56 @@ async def test_loop_with_no_llm_fn_executes_nothing():
     tick = make_agent_tick(llm_fn=None)
     await tick.tick()
     assert tick.last_ctx.steps_taken == 0
+
+
+@pytest.mark.asyncio
+async def test_proactive_procedure_intercept_appends_tool_message_and_counts_step():
+    llm = FakeLLM([
+        ("get_recent_chat", {}),
+        ("finish_turn", {"decision": "skip", "reason": "no_content"}),
+    ])
+    memory = _HintMemory(
+        [{"id": "p1", "summary": "最近聊天必须先看摘要", "intercept": True}]
+    )
+    tick = make_agent_tick(
+        llm_fn=llm,
+        tool_deps=ToolDeps(
+            recent_chat_fn=AsyncMock(return_value=[]),
+            memory=memory,
+        ),
+    )
+    await tick.tick()
+
+    assert tick.last_ctx.steps_taken == 2
+    msgs = llm.calls[1]
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "工具未执行" in tool_msgs[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_proactive_procedure_hint_is_visible_to_next_round():
+    llm = FakeLLM([
+        ("get_recent_chat", {}),
+        ("finish_turn", {"decision": "skip", "reason": "no_content"}),
+    ])
+    memory = _HintMemory(
+        [{"id": "p1", "summary": "最近聊天只看最近 5 条，不要拉太多"}]
+    )
+    tick = make_agent_tick(
+        llm_fn=llm,
+        tool_deps=ToolDeps(
+            recent_chat_fn=AsyncMock(return_value=[]),
+            memory=memory,
+        ),
+    )
+    await tick.tick()
+
+    msgs = llm.calls[1]
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1
+    assert "【操作规范提醒】" in tool_msgs[0]["content"]
+    assert "最近 5 条" in tool_msgs[0]["content"]
 
 
 # ── 终止工具立即结束 loop ─────────────────────────────────────────────────

@@ -18,6 +18,12 @@ from hashlib import sha1
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+from agent.tool_hooks import (
+    ProcedureGuardHook,
+    ProcedureResultHintHook,
+    ToolExecutionRequest,
+    ToolExecutor,
+)
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from proactive_v2.config import ProactiveConfig
@@ -28,7 +34,7 @@ from proactive_v2.contracts import (
 )
 from proactive_v2.context import AgentTickContext
 from proactive_v2.gateway import DataGateway, GatewayDeps, GatewayResult
-from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, execute
+from proactive_v2.tools import TOOL_SCHEMAS, ToolDeps, dispatch, execute
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +231,12 @@ class AgentTick:
         self._llm_fn = llm_fn
         self._rng = rng if rng is not None else _random_module.Random()
         self._recent_proactive_fn = recent_proactive_fn
+        self._tool_executor = ToolExecutor(
+            [
+                ProcedureGuardHook(tool_deps.memory),
+                ProcedureResultHintHook(tool_deps.memory),
+            ]
+        )
         self.last_ctx: AgentTickContext | None = None  # 供测试检查
 
     async def tick(self) -> float | None:
@@ -610,12 +622,32 @@ class AgentTick:
             tool_name,
             arg_summary,
         )
-        try:
-            # 2. 真正执行 proactive_v2.tools.execute() 里的工具实现。
-            result = await execute(tool_name, tool_args, ctx, self._tool_deps)
-        except ValueError as e:
-            logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, e)
+        ctx.steps_taken += 1
+        exec_result = await self._tool_executor.execute(
+            ToolExecutionRequest(
+                call_id=str(tool_call.get("id") or f"call_{ctx.steps_taken}"),
+                tool_name=tool_name,
+                arguments=tool_args,
+                source="proactive",
+                session_key=self._session_key,
+            ),
+            lambda name, args: dispatch(name, args, ctx, self._tool_deps),
+        )
+        if exec_result.status == "error":
+            logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, exec_result.output)
             return False
+        result = str(exec_result.output)
+        if exec_result.extra_messages:
+            body = "\n".join(
+                msg for msg in exec_result.extra_messages if str(msg).strip()
+            )
+            if body:
+                result = (
+                    "⚠️ 【操作规范提醒】以下规范适用于当前操作，必须遵守：\n"
+                    + body
+                    + "\n\n---\n\n"
+                    + result
+                )
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
         # 3. 把 assistant tool_call + tool result 都回写到 messages。
         #    下一轮模型就能看到上一轮工具做了什么、返回了什么。
