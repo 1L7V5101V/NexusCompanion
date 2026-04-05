@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
-from agent.looping.turn_types import ToolCallGroup
+from agent.core.types import ToolCallGroup
 
 
 @dataclass

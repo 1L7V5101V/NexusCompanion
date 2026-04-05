@@ -25,6 +25,7 @@ Covers:
 
 from __future__ import annotations
 
+import inspect
 import json
 import pytest
 from types import SimpleNamespace
@@ -300,3 +301,26 @@ def test_history_message_fields():
     assert msg.content == "hello"
     assert msg.tools_used == ["shell"]
     assert msg.tool_chain == []
+
+
+def test_turn_types_is_pure_core_reexport():
+    """looping.turn_types must stay a thin shim over core.types."""
+    from agent.core import types as core_types
+    from agent.looping import turn_types
+
+    assert turn_types.HistoryMessage is core_types.HistoryMessage
+    assert turn_types.ToolCall is core_types.ToolCall
+    assert turn_types.ToolCallGroup is core_types.ToolCallGroup
+    assert turn_types.RetrievalTrace is core_types.RetrievalTrace
+    assert turn_types.to_tool_call_groups is core_types.to_tool_call_groups
+
+
+def test_core_boundary_modules_do_not_import_looping_turn_types():
+    """Canonical core/retrieval/postturn contracts must not depend on looping.turn_types."""
+    from agent.core import context_store
+    from agent.postturn import protocol as postturn_protocol
+    from agent.retrieval import protocol as retrieval_protocol
+
+    assert "agent.looping.turn_types" not in inspect.getsource(context_store)
+    assert "agent.looping.turn_types" not in inspect.getsource(retrieval_protocol)
+    assert "agent.looping.turn_types" not in inspect.getsource(postturn_protocol)

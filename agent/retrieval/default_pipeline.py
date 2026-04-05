@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agent.core.types import HistoryMessage, RetrievalTrace
 from agent.looping.memory_gate import (
     _decide_history_route,
     _format_gate_history,
@@ -14,7 +15,6 @@ from agent.looping.memory_gate import (
     _trace_route_reason,
 )
 from agent.looping.ports import LLMServices, MemoryConfig, MemoryServices
-from agent.looping.turn_types import HistoryMessage, RetrievalTrace
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
     RetrievalRequest,

@@ -6,8 +6,8 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from agent.core.types import to_tool_call_groups
 from agent.looping.memory_gate import _update_session_runtime_metadata
-from agent.looping.turn_types import to_tool_call_groups
 from agent.memes.decorator import MemeDecorator
 from agent.postturn.protocol import PostTurnEvent
 from agent.turns.outbound import OutboundDispatch, OutboundPort

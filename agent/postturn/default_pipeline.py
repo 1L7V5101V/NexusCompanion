@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from agent.looping.turn_types import ToolCallGroup
-
-logger = logging.getLogger("agent.postturn")
+from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline
 from memory2.post_response_worker import PostResponseMemoryWorker
+
+logger = logging.getLogger("agent.postturn")
 
 class DefaultPostTurnPipeline(PostTurnPipeline):
     def __init__(

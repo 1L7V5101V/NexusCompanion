@@ -7,8 +7,12 @@ import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from agent.core.types import ChatMessage, ContextBundle
-from agent.looping.turn_types import HistoryMessage, to_tool_call_groups
+from agent.core.types import (
+    ChatMessage,
+    ContextBundle,
+    HistoryMessage,
+    to_tool_call_groups,
+)
 from agent.postturn.protocol import PostTurnEvent
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch

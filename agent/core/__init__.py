@@ -16,10 +16,10 @@ from agent.core.types import (
     ChatMessage,
     ContextBundle,
     InboundMessage,
+    LLMToolCall as ToolCall,
     LLMResponse,
     OutboundMessage,
     ReasonerResult,
-    ToolCall,
     TurnRecord,
 )
 

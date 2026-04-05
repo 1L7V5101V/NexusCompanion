@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ReasonerResult, ToolCall
+from agent.core.types import LLMToolCall, ReasonerResult
 from agent.looping.constants import (
     _INCOMPLETE_SUMMARY_PROMPT,
     _PRE_FLIGHT_PROMPT,
@@ -680,12 +680,12 @@ class DefaultReasoner(Reasoner):
         thinking: str | None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
-        invocations: list[ToolCall] = []
+        invocations: list[LLMToolCall] = []
         for group in tool_chain:
             for call in group.get("calls") or []:
                 args = call.get("arguments")
                 invocations.append(
-                    ToolCall(
+                    LLMToolCall(
                         id=str(call.get("call_id", "") or ""),
                         name=str(call.get("name", "") or ""),
                         arguments=args if isinstance(args, dict) else {},
