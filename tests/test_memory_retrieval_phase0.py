@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from bootstrap import app as bootstrap_app
+from bootstrap.proactive import build_proactive_runtime
 from agent.config import Config
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
@@ -21,6 +22,7 @@ from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.update_now import UpdateNowTool
 from agent.tools.registry import ToolRegistry
+from bootstrap.tools import _build_loop_deps
 from core.memory.port import DefaultMemoryPort
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
@@ -265,6 +267,81 @@ async def test_build_memory_runtime_v2_enabled_returns_worker_and_port(tmp_path:
         await runtime.aclose()
     finally:
         await http_resources.aclose()
+
+
+def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
+    config = Config(
+        provider="openai",
+        model="test-model",
+        api_key="test-key",
+        system_prompt="test system prompt",
+    )
+    memory_port = MagicMock()
+    profile_maint = MagicMock()
+    memory_engine = MagicMock()
+    post_mem_worker = MagicMock()
+    runtime = MemoryRuntime(
+        port=cast(Any, memory_port),
+        engine=cast(Any, memory_engine),
+        profile_maint=cast(Any, profile_maint),
+        post_response_worker=post_mem_worker,
+    )
+
+    deps = _build_loop_deps(
+        config=config,
+        workspace=tmp_path,
+        bus=MagicMock(),
+        provider=cast(Any, _FakeProvider()),
+        light_provider=None,
+        tools=ToolRegistry(),
+        session_manager=MagicMock(),
+        presence=MagicMock(),
+        processing_state=MagicMock(),
+        memory_runtime=runtime,
+        observe_writer=None,
+    )
+
+    assert deps.memory_services.engine is memory_engine
+    assert deps.post_turn_pipeline._engine is memory_engine
+    assert deps.consolidation_service._memory_port is memory_port
+    assert deps.consolidation_service._profile_maint is profile_maint
+
+
+def test_phase0_proactive_runtime_keeps_memory_port_entrypoint(tmp_path: Path):
+    config = Config(
+        provider="openai",
+        model="test-model",
+        api_key="test-key",
+        system_prompt="test system prompt",
+    )
+    config.proactive.enabled = True
+    memory_store = MagicMock()
+    session_manager = SimpleNamespace(workspace=tmp_path)
+    agent_loop = SimpleNamespace(
+        workspace=tmp_path,
+        processing_state=SimpleNamespace(is_busy=MagicMock(return_value=False)),
+    )
+
+    tasks, proactive_loop = build_proactive_runtime(
+        config,
+        tmp_path,
+        session_manager=session_manager,
+        provider=cast(Any, _FakeProvider()),
+        light_provider=None,
+        push_tool=MagicMock(),
+        memory_store=memory_store,
+        presence=MagicMock(),
+        agent_loop=agent_loop,
+        observe_writer=None,
+    )
+
+    assert len(tasks) == 1
+    assert proactive_loop is not None
+    assert proactive_loop._memory is memory_store
+    for task in tasks:
+        close = getattr(task, "close", None)
+        if callable(close):
+            close()
 
 
 @pytest.mark.asyncio

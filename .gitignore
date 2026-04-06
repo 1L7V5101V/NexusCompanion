@@ -20,7 +20,7 @@ plugins/
 /plugins
 data/
 /data
-memory/
+/memory/
 
 # IDE
 .idea/

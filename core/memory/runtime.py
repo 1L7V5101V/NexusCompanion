@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.profile import ProfileMaintenanceStore, ProfileReader
+    from core.memory.runtime_facade import MemoryRuntimeFacade
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class MemoryRuntime:
 
     port: "MemoryPort"
     engine: "MemoryEngine | None" = None
+    facade: "MemoryRuntimeFacade | None" = None
     profile_reader: "ProfileReader | None" = None
     profile_maint: "ProfileMaintenanceStore | None" = None
     post_response_worker: PostResponseMemoryWorker | None = None

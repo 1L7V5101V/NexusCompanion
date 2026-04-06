@@ -57,6 +57,41 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
     assert result.trace["profile"] == EngineProfile.RICH_MEMORY_ENGINE.value
 
 
+async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
+    retriever = SimpleNamespace(
+        retrieve=AsyncMock(
+            return_value=[
+                {
+                    "id": "e1",
+                    "summary": "用户昨天提过 FitBit",
+                    "score": 0.81,
+                    "source_ref": "telegram:1@seed",
+                    "memory_type": "event",
+                    "extra_json": {"origin": "test"},
+                }
+            ]
+        ),
+        build_injection_block=lambda items: ("历史块", ["e1"]),
+    )
+    engine = DefaultMemoryEngine(retriever=retriever)
+
+    result = await engine.retrieve(
+        MemoryEngineRetrieveRequest(
+            query="Fitbit 型号",
+            scope=MemoryScope(session_key="telegram:1"),
+            mode="episodic",
+            hints={"memory_types": ["event"], "require_scope_match": True},
+            top_k=2,
+        )
+    )
+
+    assert result.text_block == "历史块"
+    assert result.trace["mode"] == "episodic"
+    assert result.raw["items"][0]["id"] == "e1"
+    assert result.hits[0].id == "e1"
+    assert result.hits[0].injected is True
+
+
 async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     retriever = SimpleNamespace(
         retrieve=AsyncMock(return_value=[]),
@@ -428,6 +463,7 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
     )
 
     assert runtime.engine is not None
+    assert runtime.facade is not None
     assert runtime.engine.describe().name == "custom"
     assert "retriever" in captured
     assert "memorizer" in captured

@@ -6,6 +6,7 @@ from agent.config_models import Config
 from agent.provider import LLMProvider
 from agent.tools.meta import register_memory_meta_tools
 from agent.tools.registry import ToolRegistry
+from core.memory.default_runtime_facade import DefaultMemoryRuntimeFacade
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -39,8 +40,13 @@ def build_memory_runtime(
             edit_file_tool=EditFileTool(),
         )
         port = DefaultMemoryPort(store)
+        facade = DefaultMemoryRuntimeFacade(
+            port=port,
+            profile_maint=port,
+        )
         return MemoryRuntime(
             port=port,
+            facade=facade,
             profile_reader=port,
             profile_maint=port,
         )
@@ -123,10 +129,16 @@ def build_memory_runtime(
         write_file_tool=WriteFileTool(),
         edit_file_tool=EditFileTool(),
     )
+    facade = DefaultMemoryRuntimeFacade(
+        port=port,
+        engine=engine,
+        profile_maint=port,
+    )
 
     return MemoryRuntime(
         port=port,
         engine=engine,
+        facade=facade,
         profile_reader=port,
         profile_maint=port,
         post_response_worker=post_mem_worker,
