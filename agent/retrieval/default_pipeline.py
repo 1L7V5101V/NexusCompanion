@@ -25,6 +25,7 @@ from core.memory.engine import (
     MemoryEngineRetrieveResult,
     MemoryScope,
 )
+from core.memory.default_runtime_facade import DefaultRetrievalSemantics
 from core.memory.runtime_facade import ContextRetrievalRequest, ContextRetrievalResult
 from memory2.query_rewriter import GateDecision
 
@@ -49,19 +50,17 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
         self._llm = llm
         self._workspace = workspace
         self._light_model = light_model
-        self._gate_resolver = _GateResolver(
+        self._fallback_retriever = DefaultRetrievalSemantics(
             memory=memory,
             config=memory_config,
             llm=llm,
+            workspace=workspace,
             light_model=light_model,
         )
-        self._episodic_retriever = _EpisodicRetriever(memory=memory, config=memory_config)
-        self._finalizer = _MemoryRetrievalFinalizer(
+        _bind_facade_retrieval_semantics(
             memory=memory,
-            config=memory_config,
-            workspace=workspace,
+            retriever=self._fallback_retriever.retrieve_context,
         )
-        _bind_facade_context_retriever(memory=memory, pipeline=self)
 
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
         context_result = await _retrieve_context_with_facade(
@@ -79,39 +78,13 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
             legacy_retriever=self._retrieve_context_via_legacy_pipeline,
         )
         block = context_result.text_block
-        rag_trace = context_result.raw.get("rag_trace")
-        if rag_trace is None:
-            return RetrievalResult(block=block)
-        trace = RetrievalTrace(
-            gate_type=rag_trace.gate_type,
-            route_decision=rag_trace.route_decision,
-            rewritten_query=rag_trace.query,
-            injected_count=sum(
-                1 for item in (rag_trace.items or []) if bool(getattr(item, "injected", False))
-            ),
-            raw=rag_trace,
-        )
+        trace = _build_retrieval_trace(context_result)
         return RetrievalResult(block=block, trace=trace)
 
     async def _retrieve_context_via_legacy_pipeline(
         self, request: ContextRetrievalRequest
     ) -> ContextRetrievalResult:
-        block, rag_trace = await _retrieve_memory_block_impl(
-            message=request.message,
-            session_key=request.session_key,
-            channel=request.channel,
-            chat_id=request.chat_id,
-            history=request.history,
-            session_metadata=request.session_metadata,
-            gate_resolver=self._gate_resolver,
-            episodic_retriever=self._episodic_retriever,
-            finalizer=self._finalizer,
-        )
-        return ContextRetrievalResult(
-            text_block=block,
-            trace={"source": "retrieval_pipeline", "mode": "legacy_callback"},
-            raw={"rag_trace": rag_trace},
-        )
+        return await self._fallback_retriever.retrieve_context(request)
 
 
 class _GateResolver:
@@ -150,15 +123,15 @@ class _GateResolver:
         )
 
 
-def _bind_facade_context_retriever(
+def _bind_facade_retrieval_semantics(
     *,
     memory: MemoryServices,
-    pipeline: DefaultMemoryRetrievalPipeline,
+    retriever,
 ) -> None:
     facade = memory.facade
     if facade is None:
         return
-    facade.bind_context_retriever(pipeline._retrieve_context_via_legacy_pipeline)
+    facade.bind_retrieval_semantics(retriever)
 
 
 async def _retrieve_context_with_facade(
@@ -171,6 +144,31 @@ async def _retrieve_context_with_facade(
     if facade is None:
         return await legacy_retriever(request)
     return await facade.retrieve_context(request)
+
+
+def _build_retrieval_trace(
+    context_result: ContextRetrievalResult,
+) -> RetrievalTrace | None:
+    rag_trace = context_result.raw.get("rag_trace")
+    if rag_trace is not None:
+        return RetrievalTrace(
+            gate_type=rag_trace.gate_type,
+            route_decision=rag_trace.route_decision,
+            rewritten_query=rag_trace.query,
+            injected_count=sum(
+                1 for item in (rag_trace.items or []) if bool(getattr(item, "injected", False))
+            ),
+            raw=rag_trace,
+        )
+    if not context_result.trace and not context_result.injected_item_ids and not context_result.text_block:
+        return None
+    return RetrievalTrace(
+        gate_type=str(context_result.trace.get("gate_type") or "") or None,
+        route_decision=str(context_result.trace.get("route_decision") or "") or None,
+        rewritten_query=str(context_result.raw.get("rewritten_query") or "") or None,
+        injected_count=len(context_result.injected_item_ids),
+        raw=context_result.trace or None,
+    )
 
 
 class _EpisodicRetriever:
@@ -347,97 +345,6 @@ class _MemoryRetrievalFinalizer:
             fallback_reason="retrieve_exception",
             error=str(error),
         )
-
-
-async def _retrieve_memory_block_impl(
-    *,
-    message: str,
-    session_key: str,
-    channel: str,
-    chat_id: str,
-    history: list[HistoryMessage],
-    session_metadata: dict[str, object],
-    gate_resolver: _GateResolver,
-    episodic_retriever: _EpisodicRetriever,
-    finalizer: _MemoryRetrievalFinalizer,
-) -> tuple[str, RagTrace | None]:
-    retrieved_block = ""
-    rag_trace: RagTrace | None = None
-    gate_type = "history_route"
-    sufficiency_trace: dict[str, object] = _empty_sufficiency_state()
-    try:
-        # 1. 先从近期对话里整理出 gate / HyDE 需要的轻量上下文。
-        main_history = _to_history_dicts(history[-gate_resolver.memory_window :])
-        recent_turns = _format_gate_history(main_history, max_turns=3)
-        hyde_context = _build_hyde_context(main_history)
-
-        # 2. 再做检索门控：
-        #    - 产出 route_decision / rewritten_query
-        #    - 同时拿到 procedure/preference 记忆命中
-        gate_result, p_items, p_result = await gate_resolver.resolve(
-            message=message,
-            session_metadata=session_metadata,
-            recent_turns=recent_turns,
-        )
-        gate_type = str(gate_result["gate_type"])
-        rewritten_query = str(gate_result["episodic_query"])
-        route_decision = str(gate_result["route_decision"])
-        route_ms = int(gate_result["route_latency_ms"])
-        fallback_reason = str(gate_result["fallback_reason"])
-        history_memory_types = list(gate_result["history_memory_types"])
-        gate_latency_ms = {"route": route_ms}
-
-        # 3. 如果 gate 允许，再补查 episodic memory（event / profile）。
-        h_items, h_scope_mode, hyde_hypothesis, selected_items, retrieved_block, injected_item_ids = (
-            await episodic_retriever.retrieve(
-                message=message,
-                session_key=session_key,
-                channel=channel,
-                chat_id=chat_id,
-                recent_turns=recent_turns,
-                route_decision=route_decision,
-                rewritten_query=rewritten_query,
-                history_memory_types=history_memory_types,
-                procedure_items=p_items,
-                procedure_result=p_result,
-                hyde_context=hyde_context,
-                sufficiency_trace=sufficiency_trace,
-            )
-        )
-
-        # 4. 最后统一做 trace / injected block 收尾，返回给上层拼进 system prompt。
-        rag_trace = finalizer.finalize(
-            session_key=session_key,
-            message=message,
-            channel=channel,
-            chat_id=chat_id,
-            gate_type=gate_type,
-            route_decision=route_decision,
-            rewritten_query=rewritten_query,
-            route_ms=route_ms,
-            fallback_reason=fallback_reason,
-            gate_latency_ms=gate_latency_ms,
-            p_items=p_items,
-            h_items=h_items,
-            h_scope_mode=h_scope_mode,
-            hyde_hypothesis=hyde_hypothesis,
-            selected_items=selected_items,
-            retrieved_block=retrieved_block,
-            injected_item_ids=injected_item_ids,
-            sufficiency_trace=sufficiency_trace,
-        )
-    except Exception as e:
-        logger.warning("memory2 retrieve 失败，跳过: %s", e)
-        rag_trace = finalizer.trace_exception(
-            session_key=session_key,
-            message=message,
-            channel=channel,
-            chat_id=chat_id,
-            gate_type=gate_type,
-            sufficiency_trace=sufficiency_trace,
-            error=e,
-        )
-    return retrieved_block, rag_trace
 
 
 def _to_history_dicts(history: list[HistoryMessage]) -> list[dict]:

@@ -269,6 +269,19 @@ def test_default_runtime_facade_binds_context_retriever():
     assert facade._context_retriever is retriever
 
 
+def test_default_runtime_facade_binds_retrieval_semantics():
+    facade = DefaultMemoryRuntimeFacade(
+        port=MagicMock(),
+        engine=None,
+        profile_maint=MagicMock(),
+    )
+    retriever = AsyncMock()
+
+    facade.bind_retrieval_semantics(retriever)
+
+    assert facade._retrieval_semantics is retriever
+
+
 def test_default_runtime_facade_reads_file_side_context_from_profile_maint():
     profile_maint = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEMORY"),
