@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from agent.provider import LLMProvider
     from core.memory.port import MemoryPort
     from core.memory.profile import ProfileMaintenanceStore
+    from core.memory.runtime_facade import MemoryRuntimeFacade
     from memory2.profile_extractor import ProfileFactExtractor
     from session.manager import SessionManager
 
@@ -854,6 +855,7 @@ class ConsolidationRuntime:
         session_manager: "SessionManager",
         scheduler: "TurnScheduler",
         consolidation: ConsolidationService,
+        facade: "MemoryRuntimeFacade | None" = None,
         memory_window: int,
         consolidation_min_new_messages: int = 10,
         wait_timeout_s: float,
@@ -861,6 +863,7 @@ class ConsolidationRuntime:
         self._session_manager = session_manager
         self._scheduler = scheduler
         self._consolidation = consolidation
+        self._facade = facade
         self._memory_window = memory_window
         self._consolidation_min_new_messages = max(
             1, int(consolidation_min_new_messages)
@@ -874,6 +877,13 @@ class ConsolidationRuntime:
         archive_all: bool = False,
         await_vector_store: bool = False,
     ) -> None:
+        if self._facade is not None:
+            await self._facade.run_consolidation(
+                session,
+                archive_all=archive_all,
+                await_vector_store=await_vector_store,
+            )
+            return
         await self._consolidation.consolidate(
             session,
             archive_all=archive_all,

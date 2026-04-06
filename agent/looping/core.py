@@ -224,6 +224,14 @@ class AgentLoop:
             consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
             profile_extractor=deps.profile_extractor,
         )
+        if callable(getattr(memory_svc.facade, "bind_consolidation_runner", None)):
+            memory_svc.facade.bind_consolidation_runner(
+                lambda session, archive_all, await_vector_store: consolidation_service.consolidate(
+                    session,
+                    archive_all=archive_all,
+                    await_vector_store=await_vector_store,
+                )
+            )
         self._scheduler = deps.scheduler or TurnScheduler(
             post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
@@ -234,6 +242,7 @@ class AgentLoop:
             session_manager=self.session_manager,
             scheduler=self._scheduler,
             consolidation=consolidation_service,
+            facade=memory_svc.facade,
             memory_window=self.memory_window,
             consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
             wait_timeout_s=self._CONSOLIDATION_WAIT_S,

@@ -225,6 +225,26 @@ async def test_default_runtime_facade_remember_explicit_delegates_to_engine():
     engine.remember.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_default_runtime_facade_run_consolidation_delegates_to_runner():
+    runner = AsyncMock()
+    facade = DefaultMemoryRuntimeFacade(
+        port=MagicMock(),
+        engine=None,
+        profile_maint=MagicMock(),
+        consolidation_runner=runner,
+    )
+    session = object()
+
+    await facade.run_consolidation(
+        session,
+        archive_all=True,
+        await_vector_store=True,
+    )
+
+    runner.assert_awaited_once_with(session, True, True)
+
+
 def test_default_runtime_facade_reads_file_side_context_from_profile_maint():
     profile_maint = SimpleNamespace(
         read_long_term=MagicMock(return_value="MEMORY"),
