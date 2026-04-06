@@ -16,6 +16,7 @@ TDD — Phase 5: proactive_v2/agent_tick.py — Agent Loop
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -363,7 +364,9 @@ async def test_context_data_fn_called_only_once_in_loop():
 async def test_recall_memory_in_loop():
     from unittest.mock import MagicMock
     memory = MagicMock()
-    memory.retrieve_related.return_value = [{"text": "用户喜欢 RPG"}]
+    memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(hits=[{"text": "用户喜欢 RPG"}])
+    )
     llm = FakeLLM([
         ("recall_memory", {"query": "RPG games"}),
         ("finish_turn", {"decision": "reply", "content": "RPG 推荐", "evidence": []}),
@@ -374,7 +377,7 @@ async def test_recall_memory_in_loop():
     )
     await tick.tick()
     assert tick.last_ctx.terminal_action == "reply"
-    memory.retrieve_related.assert_called_once()
+    memory.retrieve_interest_block.assert_awaited_once()
 
 
 # ── user_busy skip 路径 ───────────────────────────────────────────────────

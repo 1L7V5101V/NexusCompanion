@@ -199,7 +199,12 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
 ):
     profile_maint = MagicMock(name="profile_maint")
     port = MagicMock(name="port")
-    memory_runtime = SimpleNamespace(profile_maint=profile_maint, port=port)
+    memory_runtime = SimpleNamespace(
+        facade=MagicMock(),
+        profile_maint=profile_maint,
+        port=port,
+        aclose=AsyncMock(),
+    )
     core = SimpleNamespace(
         loop=SimpleNamespace(run=lambda: "loop-task"),
         bus=SimpleNamespace(dispatch_outbound=lambda: "bus-task"),

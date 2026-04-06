@@ -13,7 +13,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.runtime_facade import MemoryRuntimeFacade
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class Sensor:
         cfg: Any,
         sessions: SessionManager,
         state: ProactiveStateStore,
-        memory: "MemoryPort | None",
+        memory: "MemoryRuntimeFacade | None",
         presence: PresenceStore | None,
         rng: Any,
         fitbit: Any | None = None,
@@ -71,10 +71,7 @@ class Sensor:
         if not self._memory:
             return ""
         try:
-            read_long_term_context = getattr(self._memory, "read_long_term_context", None)
-            if callable(read_long_term_context):
-                return str(read_long_term_context() or "").strip()
-            return self._memory.read_long_term().strip()
+            return str(self._memory.read_long_term_context() or "").strip()
         except Exception:
             return ""
 

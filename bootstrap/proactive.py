@@ -15,6 +15,7 @@ from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from core.memory.profile import MemoryOptimizerStore, ProfileMaintenanceStore
+    from core.memory.runtime_facade import MemoryRuntimeFacade
 
 
 def build_proactive_runtime(
@@ -25,7 +26,7 @@ def build_proactive_runtime(
     provider: LLMProvider,
     light_provider: LLMProvider | None,
     push_tool: MessagePushTool,
-    memory_store: "MemoryPort | None",
+    memory_store: "MemoryRuntimeFacade | None",
     presence: PresenceStore,
     agent_loop: AgentLoop,
     observe_writer=None,

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from core.memory.port import MemoryPort
+    from core.memory.runtime_facade import MemoryRuntimeFacade
 
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.provider import LLMProvider
@@ -67,7 +67,7 @@ class ProactiveLoop:
         max_tokens: int = 1024,
         state_store: ProactiveStateStore | None = None,
         state_path: Path | None = None,
-        memory_store: "MemoryPort | None" = None,
+        memory_store: "MemoryRuntimeFacade | None" = None,
         presence: PresenceStore | None = None,
         rng: _random_module.Random | None = None,
         light_provider: LLMProvider | None = None,
@@ -411,11 +411,7 @@ class ProactiveLoop:
         if not self._memory:
             return []
         try:
-            read_long_term_context = getattr(self._memory, "read_long_term_context", None)
-            if callable(read_long_term_context):
-                raw = str(read_long_term_context() or "").strip()
-            else:
-                raw = self._memory.read_long_term().strip()
+            raw = str(self._memory.read_long_term_context() or "").strip()
             return sample_memory_chunks(raw, n=n)
         except Exception as e:
             logger.warning("[proactive] 随机记忆抽取失败: %s", e)

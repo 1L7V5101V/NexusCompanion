@@ -21,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
 from agent.turns.orchestrator import TurnOrchestrator
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
+from core.memory.runtime_facade import MemoryRuntimeFacade
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.contracts import (
     normalize_alert,
@@ -41,23 +42,15 @@ _POST_GUARD_ACK_TTL = 24   # delivery/message dedupe hit → 24h
 _DISCARDED_ACK_TTL = 720   # mark_not_interesting → 720h
 
 
-def _read_long_term_text(memory: Any) -> str:
-    read_long_term_context = getattr(memory, "read_long_term_context", None)
-    if callable(read_long_term_context):
-        return str(read_long_term_context() or "")
-    read_long_term = getattr(memory, "read_long_term", None)
-    if callable(read_long_term):
-        return str(read_long_term() or "")
+def _read_long_term_text(memory: MemoryRuntimeFacade | None) -> str:
+    if memory is not None:
+        return str(memory.read_long_term_context() or "")
     return ""
 
 
-def _read_self_text(memory: Any) -> str:
-    read_self_context = getattr(memory, "read_self_context", None)
-    if callable(read_self_context):
-        return str(read_self_context() or "")
-    read_self = getattr(memory, "read_self", None)
-    if callable(read_self):
-        return str(read_self() or "")
+def _read_self_text(memory: MemoryRuntimeFacade | None) -> str:
+    if memory is not None:
+        return str(memory.read_self() or "")
     return ""
 
 

@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any
 
 from proactive_v2.context import AgentTickContext
@@ -30,7 +29,7 @@ class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
     web_search_tool: Any = None         # WebSearchTool（可选）
-    memory: Any = None                  # MemoryPort instance
+    memory: Any = None                  # MemoryRuntimeFacade instance
     recent_chat_fn: Any = None          # async (n) -> list[dict]
     ack_fn: Any = None                  # async (compound_key: str, ttl_hours: int) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None
@@ -185,27 +184,17 @@ async def _retrieve_interest_hits(*, memory, query: str) -> list[dict]:
     if memory is None:
         return []
 
-    retrieve_interest_block = getattr(memory, "retrieve_interest_block", None)
-    if callable(retrieve_interest_block):
-        result = retrieve_interest_block(
-            SimpleNamespace(
-                query=query,
-                top_k=2,
-                scope=SimpleNamespace(session_key="", channel="", chat_id=""),
-            )
-        )
-        if asyncio.iscoroutine(result):
-            result = await result
-            return list(getattr(result, "hits", None) or [])
+    from core.memory.runtime_facade import InterestRetrievalRequest
 
-    retrieved = memory.retrieve_related(
-        query,
-        memory_types=["preference", "profile"],
-        top_k=2,
+    result = memory.retrieve_interest_block(
+        InterestRetrievalRequest(
+            query=query,
+            top_k=2,
+        )
     )
-    if asyncio.iscoroutine(retrieved):
-        retrieved = await retrieved
-    return list(retrieved or [])
+    if asyncio.iscoroutine(result):
+        result = await result
+    return list(getattr(result, "hits", None) or [])
 
 
 def _valid_content_ids(ctx: AgentTickContext) -> set[str]:

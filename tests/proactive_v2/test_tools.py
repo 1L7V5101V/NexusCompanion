@@ -250,7 +250,7 @@ async def test_web_search_without_tool_returns_error():
 @pytest.mark.asyncio
 async def test_recall_memory_empty_hits():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = []
+    fake_memory.retrieve_interest_block = AsyncMock(return_value=SimpleNamespace(hits=[]))
     result = json.loads(await _recall_memory(
         ctx=AgentTickContext(),
         args={"query": "game news"},
@@ -262,10 +262,14 @@ async def test_recall_memory_empty_hits():
 @pytest.mark.asyncio
 async def test_recall_memory_joins_texts():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = [
-        {"text": "用户喜欢 RPG"},
-        {"text": "不喜欢 PvP"},
-    ]
+    fake_memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(
+            hits=[
+                {"text": "用户喜欢 RPG"},
+                {"text": "不喜欢 PvP"},
+            ]
+        )
+    )
     result = json.loads(await _recall_memory(
         ctx=AgentTickContext(),
         args={"query": "game"},
@@ -279,10 +283,14 @@ async def test_recall_memory_joins_texts():
 @pytest.mark.asyncio
 async def test_recall_memory_skips_empty_text():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = [
-        {"text": ""},
-        {"text": "有效记忆"},
-    ]
+    fake_memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(
+            hits=[
+                {"text": ""},
+                {"text": "有效记忆"},
+            ]
+        )
+    )
     result = json.loads(await _recall_memory(
         ctx=AgentTickContext(),
         args={"query": "test"},
@@ -293,14 +301,13 @@ async def test_recall_memory_skips_empty_text():
 
 
 @pytest.mark.asyncio
-async def test_recall_memory_uses_preference_and_profile_types():
+async def test_recall_memory_passes_query_to_facade_interest_request():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = []
+    fake_memory.retrieve_interest_block = AsyncMock(return_value=SimpleNamespace(hits=[]))
     await _recall_memory(ctx=AgentTickContext(), args={"query": "q"}, memory=fake_memory)
-    call_kwargs = fake_memory.retrieve_related.call_args
-    memory_types = call_kwargs[1].get("memory_types") or call_kwargs[0][1]
-    assert "preference" in memory_types
-    assert "profile" in memory_types
+    request = fake_memory.retrieve_interest_block.await_args.args[0]
+    assert request.query == "q"
+    assert request.top_k == 2
 
 
 @pytest.mark.asyncio
@@ -329,10 +336,14 @@ async def test_recall_memory_prefers_facade_interest_block():
 @pytest.mark.asyncio
 async def test_recall_memory_separator_between_hits():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = [
-        {"text": "A"},
-        {"text": "B"},
-    ]
+    fake_memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(
+            hits=[
+                {"text": "A"},
+                {"text": "B"},
+            ]
+        )
+    )
     result = json.loads(await _recall_memory(
         ctx=AgentTickContext(), args={"query": "q"}, memory=fake_memory
     ))
@@ -620,7 +631,9 @@ async def test_execute_web_search_uses_tool_from_deps():
 @pytest.mark.asyncio
 async def test_execute_recall_memory_uses_memory_from_deps():
     fake_memory = MagicMock()
-    fake_memory.retrieve_related.return_value = [{"text": "pref"}]
+    fake_memory.retrieve_interest_block = AsyncMock(
+        return_value=SimpleNamespace(hits=[{"text": "pref"}])
+    )
     ctx = AgentTickContext()
     deps = ToolDeps(memory=fake_memory)
     raw = await execute("recall_memory", {"query": "test"}, ctx, deps)
