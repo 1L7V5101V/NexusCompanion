@@ -302,6 +302,7 @@ def test_phase0_loop_wiring_keeps_split_memory_entrypoints(tmp_path: Path):
     )
 
     assert deps.memory_services.engine is memory_engine
+    assert deps.memory_services.facade is runtime.facade
     assert deps.post_turn_pipeline._engine is memory_engine
     assert deps.consolidation_service._memory_port is memory_port
     assert deps.consolidation_service._profile_maint is profile_maint

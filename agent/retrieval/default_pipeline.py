@@ -25,6 +25,7 @@ from core.memory.engine import (
     MemoryEngineRetrieveResult,
     MemoryScope,
 )
+from core.memory.runtime_facade import ContextRetrievalRequest, ContextRetrievalResult
 from memory2.query_rewriter import GateDecision
 
 if TYPE_CHECKING:
@@ -60,19 +61,25 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
             config=memory_config,
             workspace=workspace,
         )
+        _bind_facade_context_retriever(memory=memory, pipeline=self)
 
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
-        block, rag_trace = await _retrieve_memory_block_impl(
-            message=request.message,
-            session_key=request.session_key,
-            channel=request.channel,
-            chat_id=request.chat_id,
-            history=request.history,
-            session_metadata=request.session_metadata,
-            gate_resolver=self._gate_resolver,
-            episodic_retriever=self._episodic_retriever,
-            finalizer=self._finalizer,
+        context_result = await _retrieve_context_with_facade(
+            memory=self._memory,
+            request=ContextRetrievalRequest(
+                message=request.message,
+                session_key=request.session_key,
+                channel=request.channel,
+                chat_id=request.chat_id,
+                history=request.history,
+                session_metadata=request.session_metadata,
+                timestamp=request.timestamp,
+                extra=dict(request.extra or {}),
+            ),
+            legacy_retriever=self._retrieve_context_via_legacy_pipeline,
         )
+        block = context_result.text_block
+        rag_trace = context_result.raw.get("rag_trace")
         if rag_trace is None:
             return RetrievalResult(block=block)
         trace = RetrievalTrace(
@@ -85,6 +92,26 @@ class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
             raw=rag_trace,
         )
         return RetrievalResult(block=block, trace=trace)
+
+    async def _retrieve_context_via_legacy_pipeline(
+        self, request: ContextRetrievalRequest
+    ) -> ContextRetrievalResult:
+        block, rag_trace = await _retrieve_memory_block_impl(
+            message=request.message,
+            session_key=request.session_key,
+            channel=request.channel,
+            chat_id=request.chat_id,
+            history=request.history,
+            session_metadata=request.session_metadata,
+            gate_resolver=self._gate_resolver,
+            episodic_retriever=self._episodic_retriever,
+            finalizer=self._finalizer,
+        )
+        return ContextRetrievalResult(
+            text_block=block,
+            trace={"source": "retrieval_pipeline", "mode": "legacy_callback"},
+            raw={"rag_trace": rag_trace},
+        )
 
 
 class _GateResolver:
@@ -121,6 +148,29 @@ class _GateResolver:
             llm=self._llm,
             light_model=self._light_model,
         )
+
+
+def _bind_facade_context_retriever(
+    *,
+    memory: MemoryServices,
+    pipeline: DefaultMemoryRetrievalPipeline,
+) -> None:
+    facade = getattr(memory, "facade", None)
+    binder = getattr(facade, "bind_context_retriever", None)
+    if callable(binder):
+        binder(pipeline._retrieve_context_via_legacy_pipeline)
+
+
+async def _retrieve_context_with_facade(
+    *,
+    memory: MemoryServices,
+    request: ContextRetrievalRequest,
+    legacy_retriever,
+) -> ContextRetrievalResult:
+    facade = getattr(memory, "facade", None)
+    if facade is None:
+        return await legacy_retriever(request)
+    return await facade.retrieve_context(request)
 
 
 class _EpisodicRetriever:

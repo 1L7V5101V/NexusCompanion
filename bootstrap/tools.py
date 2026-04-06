@@ -274,9 +274,11 @@ def _build_loop_deps(
         workspace, getattr(memory_runtime, "profile_reader", None) or memory_runtime.port
     )
     memory_engine = getattr(memory_runtime, "engine", None)
+    memory_facade = getattr(memory_runtime, "facade", None)
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(
         engine=memory_engine,
+        facade=memory_facade,
         query_rewriter=query_rewriter,
         hyde_enhancer=hyde_enhancer,
         sufficiency_checker=sufficiency_checker,

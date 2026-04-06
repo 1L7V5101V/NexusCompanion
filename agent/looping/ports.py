@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
     from core.memory.port import MemoryPort
     from core.memory.runtime import MemoryRuntime
+    from core.memory.runtime_facade import MemoryRuntimeFacade
     from memory2.hyde_enhancer import HyDEEnhancer
     from memory2.post_response_worker import PostResponseMemoryWorker
     from memory2.profile_extractor import ProfileFactExtractor
@@ -71,6 +72,7 @@ class LLMServices:
 @dataclass
 class MemoryServices:
     engine: MemoryEngine | None = None
+    facade: MemoryRuntimeFacade | None = None
     query_rewriter: QueryRewriter | None = None
     hyde_enhancer: HyDEEnhancer | None = None
     sufficiency_checker: SufficiencyChecker | None = None

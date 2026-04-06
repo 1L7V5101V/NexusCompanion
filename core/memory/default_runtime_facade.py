@@ -49,6 +49,9 @@ class DefaultMemoryRuntimeFacade:
         self._consolidation_runner = consolidation_runner
         self._interest_retriever = interest_retriever
 
+    def bind_context_retriever(self, retriever: ContextRetriever) -> None:
+        self._context_retriever = retriever
+
     async def ingest_post_turn(self, event: PostTurnEvent) -> MemoryIngestResult:
         # 1. 先保证 post-turn 入口和旧 pipeline 一样只依赖 engine。
         if self._engine is None:

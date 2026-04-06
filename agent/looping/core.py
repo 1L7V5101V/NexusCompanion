@@ -175,6 +175,7 @@ class AgentLoop:
         llm_svc = self._llm_services
         memory_svc = deps.memory_services or MemoryServices(
             engine=getattr(deps.memory_runtime, "engine", None),
+            facade=getattr(deps.memory_runtime, "facade", None),
             query_rewriter=deps.query_rewriter,
             hyde_enhancer=hyde_enhancer,
             sufficiency_checker=deps.sufficiency_checker,
