@@ -9,15 +9,13 @@ from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRequest, LLMToolCall, ReasonerResult
 from agent.looping.constants import (
     _INCOMPLETE_SUMMARY_PROMPT,
-    _PRE_FLIGHT_PROMPT,
-    _REFLECT_PROMPT,
     _SUMMARY_MAX_TOKENS,
     _SAFETY_RETRY_RATIOS,
     _TOOL_LOOP_REPEAT_LIMIT,
     _tool_call_signature,
 )
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS
-from agent.prompting import build_runtime_guard_message
+from agent.prompting import build_turn_injection_message
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
@@ -44,26 +42,20 @@ def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
 
 
 
-def _build_reflect_content(
+def _build_loop_state_hint(
     visible_names: set[str] | None = None,
     always_on_names: set[str] | None = None,
 ) -> str:
-    # 1. 先根据当前 tool visibility 生成动态提示。
-    tool_state_hint = ""
-    if visible_names is not None and always_on_names is not None:
-        unlocked_extra = visible_names - always_on_names - {"tool_search"}
-        if unlocked_extra:
-            tool_state_hint = (
-                f"【当前会话已额外解锁工具: {', '.join(sorted(unlocked_extra))}】\n"
-            )
-        else:
-            tool_state_hint = (
-                "【当前仅 always-on 工具可见】\n"
-                "若需其他工具：已知工具名 → tool_search(query=\"select:工具名\") 加载；"
-                "不知道工具名 → tool_search(query=\"关键词\") 搜索。\n"
-            )
+    if visible_names is None or always_on_names is None:
+        return "【当前工具状态】tool_search 未开启，本轮按现有工具继续。"
 
-    return tool_state_hint + _REFLECT_PROMPT
+    unlocked_extra = visible_names - always_on_names - {"tool_search"}
+    visible_text = ", ".join(sorted(unlocked_extra)) if unlocked_extra else "仅 always-on"
+    return (
+        f"【当前工具状态】已解锁: {visible_text}\n"
+        "未知工具: tool_search(query=\"关键词\") 搜索\n"
+        "已知工具名但未加载: tool_search(query=\"select:工具名\")"
+    )
 
 
 def _build_deferred_tools_hint(
@@ -98,30 +90,17 @@ def _build_deferred_tools_hint(
     return "\n".join(lines) + "\n\n"
 
 
-def build_preflight_prompt(
+# ─── Turn Injection（首轮前注入，非空才追加）─────────────────────────────────
+# 仅当 tool_search 开启且存在 deferred 工具时，附上目录提示；否则返回空串不注入。
+def build_turn_injection_prompt(
     *,
-    request_time: datetime | None,
     tools: "ToolRegistry",
     tool_search_enabled: bool,
     visible_names: set[str] | None,
 ) -> str:
-    # 1. 先生成时间锚点。
-    anchor = DefaultReasoner.format_request_time_anchor(request_time)
-
-    # 2. 再按需拼接 deferred 工具目录提示。
-    deferred_hint = (
-        _build_deferred_tools_hint(tools, visible=visible_names)
-        if tool_search_enabled
-        else ""
-    )
-
-    # 3. 最后输出本轮 preflight runtime guard。
-    return (
-        f"【本轮时间锚点】{anchor}\n"
-        "所有时间相关判断必须与该锚点一致；无法验证时必须明确不确定。\n\n"
-        + deferred_hint
-        + _PRE_FLIGHT_PROMPT
-    )
+    if not tool_search_enabled:
+        return ""
+    return _build_deferred_tools_hint(tools, visible=visible_names)
 
 
 class Reasoner(ABC):
@@ -144,9 +123,9 @@ class Reasoner(ABC):
         *,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
-        preflight_injected: bool = False,
+        preflight_injected: bool = True,
     ) -> ReasonerResult:
-        """执行多轮 tool loop，并返回本轮结果。"""
+        """执行多轮 tool loop，并返回本轮结果。调用方负责提前注入 turn injection。"""
 
     @abstractmethod
     async def run_turn(
@@ -184,8 +163,7 @@ class DefaultReasoner(Reasoner):
         self._session_manager = session_manager
         # Direct reference to ToolSearchTool so we can pass excluded_names
         # explicitly instead of routing through the ContextVar side-channel.
-        _get = getattr(tools, "get_tool", None)
-        _ts = _get("tool_search") if callable(_get) else None
+        _ts = tools.get_tool("tool_search")
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
@@ -235,8 +213,7 @@ class DefaultReasoner(Reasoner):
                 source_history,
                 plan["history_window"],
             )
-            preflight_prompt = build_preflight_prompt(
-                request_time=msg.timestamp,
+            turn_injection_prompt = build_turn_injection_prompt(
                 tools=self._tools,
                 tool_search_enabled=self._tool_search_enabled,
                 visible_names=preloaded if self._tool_search_enabled else None,
@@ -252,7 +229,7 @@ class DefaultReasoner(Reasoner):
                     message_timestamp=msg.timestamp,
                     retrieved_memory_block=retrieved_memory_block,
                     disabled_sections=plan["disabled_sections"],
-                    preflight_prompt=preflight_prompt,
+                    turn_injection_prompt=turn_injection_prompt,
                 )
             ).messages
             try:
@@ -337,7 +314,7 @@ class DefaultReasoner(Reasoner):
         *,
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
-        preflight_injected: bool = False,
+        preflight_injected: bool = True,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。
         messages = initial_messages
@@ -357,19 +334,6 @@ class DefaultReasoner(Reasoner):
                 len(preloaded_tools or set()),
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
-
-        # 3. 如果 assembled input 里还没塞 preflight，就在这里补进去。
-        if not preflight_injected:
-            messages = messages + [
-                build_runtime_guard_message(
-                    build_preflight_prompt(
-                        request_time=request_time,
-                        tools=self._tools,
-                        tool_search_enabled=self._tool_search_enabled,
-                        visible_names=visible_names,
-                    )
-                )
-            ]
 
         for iteration in range(self._llm_config.max_iterations):
             # 4. 调用 LLM，带上当前可见工具 schema。
@@ -541,11 +505,11 @@ class DefaultReasoner(Reasoner):
                         }
                     )
 
-                # 7. 本轮工具执行完后，追加 reflect prompt，继续下一轮。
+                # 7. 本轮工具执行完后，注入 Loop State（3行，每轮工具后更新已解锁工具列表）。
                 tool_chain.append({"text": response.content, "calls": iter_calls})
                 messages.append(
-                    build_runtime_guard_message(
-                        _build_reflect_content(
+                    build_turn_injection_message(
+                        _build_loop_state_hint(
                             visible_names=visible_names,
                             always_on_names=self._tools.get_always_on_names()
                             if self._tool_search_enabled
@@ -610,7 +574,7 @@ class DefaultReasoner(Reasoner):
         # 2. 先尝试让模型给一段中文收尾总结。
         try:
             response = await self._llm.provider.chat(
-                messages=messages + [build_runtime_guard_message(summary_prompt)],
+                messages=messages + [build_turn_injection_message(summary_prompt)],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),

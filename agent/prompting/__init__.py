@@ -4,8 +4,7 @@ from agent.prompting.assembler import (
     PromptSectionMeta,
     PromptSectionRender,
     SectionCache,
-    build_runtime_guard_message,
-    build_system_context_message,
+    build_turn_injection_message,
 )
 from agent.prompting.budget import ContextTrimPlan, DEFAULT_CONTEXT_TRIM_PLANS
 
@@ -17,6 +16,5 @@ __all__ = [
     "PromptSectionMeta",
     "PromptSectionRender",
     "SectionCache",
-    "build_runtime_guard_message",
-    "build_system_context_message",
+    "build_turn_injection_message",
 ]

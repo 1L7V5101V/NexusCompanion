@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Protocol
 from agent.memes.catalog import MemeCatalog
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
+    build_agent_behavior_rules_prompt,
+    build_agent_session_context_prompt,
     build_agent_static_identity_prompt,
     build_skills_catalog_prompt,
 )
@@ -26,6 +28,8 @@ class TurnContext:
     memory: "ProfileReader"
     skills: "SkillsLoader"
     skill_names: list[str]
+    channel: str | None
+    chat_id: str | None
     message_timestamp: datetime | None
     retrieved_memory_block: str
 
@@ -40,12 +44,38 @@ class PromptBlock(Protocol):
     def cache_signature(self, ctx: TurnContext) -> str | None: ...
 
 
+# ─── Prompt Block 渲染顺序（priority 升序 = system prompt 拼接顺序）────────────
+#  10 IdentityPromptBlock      → 工作区路径 + 文件索引         (static, cacheable)
+#  15 BehaviorRulesPromptBlock → 行为规范 + 历史检索协议        (static, cacheable)
+#  20 MemoryBlockPromptBlock   → 本轮语义检索注入              (dynamic)
+#  30 LongTermMemoryPromptBlock→ 长期 profile                 (dynamic)
+#  40 SelfModelPromptBlock     → SELF.md                     (dynamic)
+#  50 SessionContextPromptBlock→ 当前时间 + 环境 + channel     (dynamic)
+#  60 ActiveSkillsPromptBlock  → active skill 内容            (dynamic)
+#  65 MemesPromptBlock         → meme catalog                 (dynamic)
+#  70 SkillsCatalogPromptBlock → 技能目录                     (static, cacheable)
+# ─────────────────────────────────────────────────────────────────────────────
 class IdentityPromptBlock:
     priority = 10
     label = "identity"
     is_static = True
 
     def __init__(self, render_fn=build_agent_static_identity_prompt) -> None:
+        self._render_fn = render_fn
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        return self._render_fn(workspace=ctx.workspace)
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        return str(ctx.workspace.expanduser().resolve())
+
+
+class BehaviorRulesPromptBlock:
+    priority = 15
+    label = "behavior_rules"
+    is_static = True
+
+    def __init__(self, render_fn=build_agent_behavior_rules_prompt) -> None:
         self._render_fn = render_fn
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
@@ -74,11 +104,7 @@ class LongTermMemoryPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        reader = getattr(ctx.memory, "read_profile", None)
-        if callable(reader):
-            memory = reader()
-        else:
-            memory = ctx.memory.get_memory_context()
+        memory = ctx.memory.read_profile()
         return str(memory).strip() if memory else None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
@@ -95,6 +121,25 @@ class SelfModelPromptBlock:
         if not self_content:
             return None
         return f"## Nexus 自我认知\n\n{self_content}"
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        return None
+
+
+class SessionContextPromptBlock:
+    priority = 50
+    label = "session_context"
+    is_static = False
+
+    def __init__(self, render_fn=build_agent_session_context_prompt) -> None:
+        self._render_fn = render_fn
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        return self._render_fn(
+            message_timestamp=ctx.message_timestamp,
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+        )
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None

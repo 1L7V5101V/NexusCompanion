@@ -30,8 +30,7 @@ class PromptSectionMeta:
 class AssembledTurnInput:
     system_sections: list[PromptSectionRender] = field(default_factory=list)
     system_prompt: str = ""
-    system_context: dict[str, str] = field(default_factory=dict)
-    runtime_guard_context: dict[str, str] = field(default_factory=dict)
+    turn_injection_context: dict[str, str] = field(default_factory=dict)
     messages: list[dict[str, Any]] = field(default_factory=list)
     debug_breakdown: list[PromptSectionMeta] = field(default_factory=list)
 
@@ -47,11 +46,7 @@ class SectionCache:
         self._data[(scope, section_name, signature)] = content
 
 
-def build_system_context_message(content: str) -> dict[str, str]:
-    return {"role": "system", "content": content}
-
-
-def build_runtime_guard_message(content: str) -> dict[str, str]:
+def build_turn_injection_message(content: str) -> dict[str, str]:
     return {"role": "system", "content": content}
 
 
@@ -71,36 +66,31 @@ class PromptAssembler:
         message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
-        runtime_guard_context: dict[str, str] | None = None,
+        turn_injection_context: dict[str, str] | None = None,
     ) -> AssembledTurnInput:
-        # assembler 负责把“主 prompt + side context + runtime guard + message envelope”
+        # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
         built = self._context_builder._build_system_prompt_result(
             skill_names=skill_names,
+            channel=channel,
+            chat_id=chat_id,
             message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
             disabled_sections=disabled_sections,
         )
-        system_context = self._context_builder.build_system_context(
-            channel=channel,
-            chat_id=chat_id,
-            message_timestamp=message_timestamp,
-        )
-        runtime_context = runtime_guard_context or {}
+        injection_context = turn_injection_context or {}
         messages = self._context_builder._envelope_builder.build(
             history=history,
             current_message=current_message,
             system_prompt=built.system_prompt,
-            system_context=system_context,
-            runtime_guard_context=runtime_context,
+            turn_injection_context=injection_context,
             channel=channel,
             media=media,
         )
         return AssembledTurnInput(
             system_sections=built.system_sections,
             system_prompt=built.system_prompt,
-            system_context=system_context,
-            runtime_guard_context=runtime_context,
+            turn_injection_context=injection_context,
             messages=messages,
             debug_breakdown=built.debug_breakdown,
         )

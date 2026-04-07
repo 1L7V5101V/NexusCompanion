@@ -8,11 +8,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 from agent.core.types import ContextRenderResult, ContextRequest
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
+    BehaviorRulesPromptBlock,
     IdentityPromptBlock,
     LongTermMemoryPromptBlock,
     MemesPromptBlock,
     MemoryBlockPromptBlock,
     SelfModelPromptBlock,
+    SessionContextPromptBlock,
     SkillsCatalogPromptBlock,
     SystemPromptBuildResult,
     SystemPromptBuilder,
@@ -22,15 +24,11 @@ from agent.memes.catalog import MemeCatalog
 from agent.prompting import (
     PromptAssembler,
     PromptSectionMeta,
-    build_runtime_guard_message,
-    build_system_context_message,
+    build_turn_injection_message,
 )
 from agent.skills import SkillsLoader
 from prompts.agent import (
-    build_agent_environment_prompt,
-    build_agent_request_time_prompt,
     build_agent_static_identity_prompt,
-    build_current_session_prompt,
     build_skills_catalog_prompt,
     build_telegram_rendering_prompt,
 )
@@ -64,8 +62,7 @@ class MessageEnvelopeBuilder:
         history: list[dict[str, Any]],
         current_message: str,
         system_prompt: str,
-        system_context: dict[str, str] | None,
-        runtime_guard_context: dict[str, str] | None,
+        turn_injection_context: dict[str, str] | None,
         channel: str | None,
         media: list[str] | None,
     ) -> list[dict[str, Any]]:
@@ -75,14 +72,11 @@ class MessageEnvelopeBuilder:
             if policy is not None:
                 prompt = policy.augment_system_prompt(prompt)
 
-        # 顺序是有意设计的：system prompt -> side context -> runtime guard -> history -> 当前用户消息。
+        # 顺序是有意设计的：system prompt -> turn injection -> history -> 当前用户消息。
         messages: list[dict[str, Any]] = [{"role": "system", "content": prompt}]
-        for text in (system_context or {}).values():
+        for text in (turn_injection_context or {}).values():
             if text.strip():
-                messages.append(build_system_context_message(text))
-        for text in (runtime_guard_context or {}).values():
-            if text.strip():
-                messages.append(build_runtime_guard_message(text))
+                messages.append(build_turn_injection_message(text))
         messages.extend(history)
         messages.append(
             {
@@ -131,9 +125,11 @@ class ContextBuilder:
         self._system_prompt_builder = SystemPromptBuilder(
             [
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
+                BehaviorRulesPromptBlock(),
                 MemoryBlockPromptBlock(),
                 LongTermMemoryPromptBlock(),
                 SelfModelPromptBlock(),
+                SessionContextPromptBlock(),
                 ActiveSkillsPromptBlock(),
                 MemesPromptBlock(MemeCatalog(workspace / "memes")),
                 SkillsCatalogPromptBlock(render_fn=build_skills_catalog_prompt),
@@ -145,8 +141,7 @@ class ContextBuilder:
         self._assembler = PromptAssembler(self)
         self._last_debug_breakdown: list[PromptSectionMeta] = []
         self._last_assembled_contexts: dict[str, dict[str, str]] = {
-            "system_context": {},
-            "runtime_guard_context": {},
+            "turn_injection_context": {},
         }
 
     @property
@@ -156,47 +151,23 @@ class ContextBuilder:
     @property
     def last_assembled_contexts(self) -> dict[str, dict[str, str]]:
         return {
-            "system_context": dict(self._last_assembled_contexts["system_context"]),
-            "runtime_guard_context": dict(
-                self._last_assembled_contexts["runtime_guard_context"]
+            "turn_injection_context": dict(
+                self._last_assembled_contexts["turn_injection_context"]
             ),
         }
 
-    def build_system_context(
+    def build_turn_injection_context(
         self,
         *,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        message_timestamp: "datetime | None" = None,
+        turn_injection_prompt: str | None = None,
     ) -> dict[str, str]:
-        # 这里只放“本轮系统事实”，避免把 request_time / session 之类的易变信息塞回主 prompt。
-        context = {
-            "request_time": build_agent_request_time_prompt(
-                message_timestamp=message_timestamp
-            ),
-            "environment": build_agent_environment_prompt(),
-        }
-        if channel and chat_id:
-            context["current_session"] = build_current_session_prompt(
-                channel=channel,
-                chat_id=chat_id,
-            ).strip()
-        return context
-
-    def build_runtime_guard_context(
-        self,
-        *,
-        preflight_prompt: str | None = None,
-    ) -> dict[str, str]:
-        # runtime guard 和 system_context 同样用 system role，
-        # 但语义上是“本轮约束”，由调用方按 turn 动态注入。
-        if not preflight_prompt:
+        if not turn_injection_prompt:
             return {}
-        return {"preflight": preflight_prompt}
+        return {"turn_injection": turn_injection_prompt}
 
     def render(self, request: ContextRequest) -> ContextRenderResult:
-        runtime_guard_context = self.build_runtime_guard_context(
-            preflight_prompt=request.preflight_prompt
+        turn_injection_context = self.build_turn_injection_context(
+            turn_injection_prompt=request.turn_injection_prompt
         )
         assembled = self._assembler.assemble(
             history=request.history,
@@ -208,17 +179,15 @@ class ContextBuilder:
             message_timestamp=request.message_timestamp,
             retrieved_memory_block=request.retrieved_memory_block,
             disabled_sections=request.disabled_sections,
-            runtime_guard_context=runtime_guard_context,
+            turn_injection_context=turn_injection_context,
         )
         self._last_debug_breakdown = assembled.debug_breakdown
         self._last_assembled_contexts = {
-            "system_context": dict(assembled.system_context),
-            "runtime_guard_context": dict(assembled.runtime_guard_context),
+            "turn_injection_context": dict(assembled.turn_injection_context),
         }
         return ContextRenderResult(
             system_prompt=assembled.system_prompt,
-            system_context=dict(assembled.system_context),
-            runtime_guard_context=dict(assembled.runtime_guard_context),
+            turn_injection_context=dict(assembled.turn_injection_context),
             messages=list(assembled.messages),
             debug_breakdown=list(assembled.debug_breakdown),
         )
@@ -226,6 +195,8 @@ class ContextBuilder:
     def _build_system_prompt_result(
         self,
         skill_names: list[str] | None = None,
+        channel: str | None = None,
+        chat_id: str | None = None,
         message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
@@ -235,6 +206,8 @@ class ContextBuilder:
             memory=self.memory,
             skills=self.skills,
             skill_names=skill_names or [],
+            channel=channel,
+            chat_id=chat_id,
             message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
         )
@@ -253,90 +226,3 @@ class ContextBuilder:
             )
         return built
 
-    def build_system_prompt(
-        self,
-        skill_names: list[str] | None = None,
-        message_timestamp: "datetime | None" = None,
-        retrieved_memory_block: str = "",
-        disabled_sections: set[str] | None = None,
-    ) -> str:
-        return self.render(
-            ContextRequest(
-                history=[],
-                current_message="",
-                skill_names=skill_names,
-                message_timestamp=message_timestamp,
-                retrieved_memory_block=retrieved_memory_block,
-                disabled_sections=disabled_sections,
-            )
-        ).system_prompt
-
-    def build_messages(
-        self,
-        history: list[dict[str, Any]],
-        current_message: str,
-        media: list[str] | None = None,
-        skill_names: list[str] | None = None,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        message_timestamp: "datetime | None" = None,
-        retrieved_memory_block: str = "",
-        disabled_sections: set[str] | None = None,
-        runtime_guard_context: dict[str, str] | None = None,
-    ) -> list[dict[str, Any]]:
-        preflight_prompt = None
-        if runtime_guard_context:
-            preflight_prompt = runtime_guard_context.get("preflight")
-        return self.render(
-            ContextRequest(
-                history=history,
-                current_message=current_message,
-                media=media,
-                skill_names=skill_names,
-                channel=channel,
-                chat_id=chat_id,
-                message_timestamp=message_timestamp,
-                retrieved_memory_block=retrieved_memory_block,
-                disabled_sections=disabled_sections,
-                preflight_prompt=preflight_prompt,
-            )
-        ).messages
-
-    def _build_user_content(
-        self, text: str, media: list[str] | None
-    ) -> str | list[dict[str, Any]]:
-        return self._envelope_builder._build_user_content(text, media)
-
-    def add_tool_result(
-        self,
-        messages: list[dict[str, Any]],
-        tool_call_id: str,
-        tool_name: str,
-        result: str,
-    ) -> list[dict[str, Any]]:
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_name,
-                "content": result,
-            }
-        )
-        return messages
-
-    def add_assistant_message(
-        self,
-        messages: list[dict[str, Any]],
-        content: str | None,
-        tool_calls: list[dict[str, Any]] | None = None,
-        reasoning_content: str | None = None,
-    ) -> list[dict[str, Any]]:
-        msg: dict[str, Any] = {"role": "assistant"}
-        if content:
-            msg["content"] = content
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-        if reasoning_content:
-            msg["reasoning_content"] = reasoning_content
-        messages.append(msg)
-        return messages

@@ -71,11 +71,7 @@ def test_default_reasoner_runs_tool_loop_and_returns_reasoner_result():
     assert result.invocations[0].name == "dummy"
     assert result.metadata["visible_names"] is None
     first_messages = provider.calls[0]["messages"]
-    assert any("本轮时间锚点" in str(m.get("content", "")) for m in first_messages)
-    assert any(
-        m.get("role") == "system" and "本轮时间锚点" in str(m.get("content", ""))
-        for m in first_messages
-    )
+    assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 
 
 def test_default_reasoner_unlocks_tool_search_visibility():
@@ -111,6 +107,10 @@ def test_default_reasoner_unlocks_tool_search_visibility():
 
 
 def test_default_reasoner_preflight_includes_deferred_tool_names():
+    """调用方（如 _run_agent_loop）负责注入 deferred tools hint；run() 本身不再自动注入。"""
+    from agent.core.reasoner import build_turn_injection_prompt
+    from agent.prompting import build_turn_injection_message
+
     provider = _Provider(
         [
             LLMResponse(content="", tool_calls=[ToolCall("c1", "dummy", {})]),
@@ -133,13 +133,23 @@ def test_default_reasoner_preflight_includes_deferred_tool_names():
         memory_window=40,
     )
 
-    asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+    # 调用方负责在调用 run() 前注入 hint。
+    hint = build_turn_injection_prompt(
+        tools=tools,
+        tool_search_enabled=True,
+        visible_names=tools.get_always_on_names(),
+    )
+    initial_messages = [
+        {"role": "user", "content": "hi"},
+        build_turn_injection_message(hint),
+    ]
+    asyncio.run(reasoner.run(initial_messages))
 
     first_messages = provider.calls[0]["messages"]
     preflight = next(
         str(m.get("content", ""))
         for m in first_messages
-        if "本轮时间锚点" in str(m.get("content", ""))
+        if "未加载工具目录" in str(m.get("content", ""))
     )
     assert "未加载工具目录" in preflight
     assert "mcp_github__list_commits" in preflight
@@ -199,12 +209,7 @@ def test_default_reasoner_preloaded_tool_not_in_deferred_list():
     )
 
     first_messages = provider.calls[0]["messages"]
-    preflight = next(
-        str(m.get("content", ""))
-        for m in first_messages
-        if "本轮时间锚点" in str(m.get("content", ""))
-    )
-    assert "schedule" not in preflight
+    assert not any("未加载工具目录" in str(m.get("content", "")) for m in first_messages)
 
 
 def test_default_reasoner_run_turn_uses_context_render():
@@ -223,7 +228,7 @@ def test_default_reasoner_run_turn_uses_context_render():
                 messages=[{"role": "user", "content": request.current_message}],
             ),
             build_messages=lambda **_: (_ for _ in ()).throw(AssertionError("legacy build_messages should not be used")),
-            build_runtime_guard_context=lambda **_: (_ for _ in ()).throw(AssertionError("legacy runtime_guard should not be used")),
+            build_turn_injection_context=lambda **_: (_ for _ in ()).throw(AssertionError("legacy turn_injection should not be used")),
         )),
         session_manager=cast(Any, SimpleNamespace(save_async=lambda *_args, **_kwargs: None)),
     )

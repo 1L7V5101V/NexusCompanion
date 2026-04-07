@@ -44,7 +44,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
         session_manager=SimpleNamespace(get_or_create=MagicMock(return_value=session))
     )
     context = SimpleNamespace(
-        build_messages=MagicMock(return_value=[{"role": "system", "content": "prompt"}])
+        render=MagicMock(return_value=SimpleNamespace(messages=[{"role": "system", "content": "prompt"}]))
     )
     context_store = SimpleNamespace(
         commit=AsyncMock(
@@ -93,7 +93,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     assert out.content == "spawn done"
     session_svc.session_manager.get_or_create.assert_called_once_with("scheduler:job-1")
     tools.set_context.assert_called_once_with(channel="telegram", chat_id="123")
-    context.build_messages.assert_called_once()
+    context.render.assert_called_once()
     run_agent_loop_fn.assert_awaited_once()
     context_store.commit.assert_awaited_once()
     runner._agent_core.process.assert_not_awaited()

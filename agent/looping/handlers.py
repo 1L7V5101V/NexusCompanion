@@ -71,13 +71,16 @@ async def process_spawn_completion_event(
 
     # 2. 再调用主模型生成用户可见回复。
     tools.set_context(channel=msg.channel, chat_id=msg.chat_id)
-    initial_messages = context.build_messages(
-        history=session.get_history(max_messages=memory_window),
-        current_message=current_message,
-        channel=msg.channel,
-        chat_id=msg.chat_id,
-        message_timestamp=msg.timestamp,
-    )
+    from agent.core.types import ContextRequest
+    initial_messages = context.render(
+        ContextRequest(
+            history=session.get_history(max_messages=memory_window),
+            current_message=current_message,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            message_timestamp=msg.timestamp,
+        )
+    ).messages
     final_content, tools_used, tool_chain, _, _thinking = await run_agent_loop_fn(
         initial_messages,
         request_time=msg.timestamp,

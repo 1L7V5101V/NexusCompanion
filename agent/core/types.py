@@ -85,14 +85,13 @@ class ContextRequest:
     message_timestamp: datetime | None = None
     retrieved_memory_block: str = ""
     disabled_sections: set[str] | None = None
-    preflight_prompt: str | None = None
+    turn_injection_prompt: str | None = None
 
 
 @dataclass
 class ContextRenderResult:
     system_prompt: str
-    system_context: dict[str, str] = field(default_factory=dict)
-    runtime_guard_context: dict[str, str] = field(default_factory=dict)
+    turn_injection_context: dict[str, str] = field(default_factory=dict)
     messages: list[dict[str, Any]] = field(default_factory=list)
     debug_breakdown: list[Any] = field(default_factory=list)
 

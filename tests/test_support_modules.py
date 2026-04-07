@@ -353,7 +353,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             return "skill summary"
 
     class _Memory:
-        def get_memory_context(self) -> str:
+        def read_profile(self) -> str:
             return "memory block"
 
         def read_self(self) -> str:
@@ -362,15 +362,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
-    )
-    monkeypatch.setattr(
-        "agent.context.build_agent_request_time_prompt", lambda **_: "request time"
-    )
-    monkeypatch.setattr(
-        "agent.context.build_agent_environment_prompt", lambda: "environment"
-    )
-    monkeypatch.setattr(
-        "agent.context.build_current_session_prompt", lambda **_: "\nsession prompt"
     )
     monkeypatch.setattr(
         "agent.context.build_telegram_rendering_prompt", lambda: "\ntelegram prompt"
@@ -386,60 +377,65 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     )
     image = tmp_path / "a.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    now = datetime.now(timezone.utc)
 
     builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
-    prompt = builder.build_system_prompt(
-        skill_names=["extra"],
-        message_timestamp=datetime.now(timezone.utc),
-        retrieved_memory_block="retrieved",
+    result = builder.render(
+        ContextRequest(
+            history=[],
+            current_message="",
+            skill_names=["extra"],
+            message_timestamp=now,
+            retrieved_memory_block="retrieved",
+        )
     )
+    prompt = result.system_prompt
     assert "identity" in prompt
+    assert "## 行为规范" in prompt
     assert "retrieved" in prompt
     assert "memory block" in prompt
     assert "Nexus 自我认知" in prompt
+    assert "request_time=" in prompt
+    assert "## 环境" in prompt
     assert "# Memes" in prompt
     assert "<meme:shy>" in prompt
     assert "catalog:skill summary" in prompt
     assert [item.name for item in builder.last_debug_breakdown][:1] == ["identity"]
 
-    prompt2 = builder.build_system_prompt(
-        skill_names=["extra"],
-        message_timestamp=datetime.now(timezone.utc),
-        retrieved_memory_block="retrieved",
+    result2 = builder.render(
+        ContextRequest(
+            history=[],
+            current_message="",
+            skill_names=["extra"],
+            message_timestamp=now,
+            retrieved_memory_block="retrieved",
+        )
     )
-    assert prompt2
+    assert result2.system_prompt
     identity_meta = next(
         item for item in builder.last_debug_breakdown if item.name == "identity"
     )
     assert identity_meta.cache_hit is True
 
-    messages = builder.build_messages(
-        history=[{"role": "assistant", "content": "hi"}],
-        current_message="hello",
-        media=["https://img", str(image), str(tmp_path / "bad.txt")],
-        skill_names=["extra"],
-        channel="telegram",
-        chat_id="42",
-    )
+    messages = builder.render(
+        ContextRequest(
+            history=[{"role": "assistant", "content": "hi"}],
+            current_message="hello",
+            media=["https://img", str(image), str(tmp_path / "bad.txt")],
+            skill_names=["extra"],
+            channel="telegram",
+            chat_id="42",
+        )
+    ).messages
     assert messages[0]["role"] == "system"
-    assert "session prompt" not in messages[0]["content"]
-    assert messages[1]["role"] == "system"
-    assert "request time" in messages[1]["content"]
-    assert messages[2]["role"] == "system"
-    assert "environment" in messages[2]["content"]
-    assert messages[3]["role"] == "system"
-    assert "session prompt" in messages[3]["content"]
+    assert "request_time=" in messages[0]["content"]
+    assert "## 环境" in messages[0]["content"]
+    assert "## Current Session" in messages[0]["content"]
     assert messages[-1]["role"] == "user"
     assert len(messages[-1]["content"]) == 3
-    assert builder.last_assembled_contexts["system_context"]["request_time"] == "request time"
-    assert builder.last_assembled_contexts["system_context"]["environment"] == "environment"
-    assert builder.last_assembled_contexts["system_context"]["current_session"] == "session prompt"
-    msgs = builder.add_tool_result([], "call-1", "dummy", "ok")
-    assert msgs[-1]["role"] == "tool"
-    msgs = builder.add_assistant_message(msgs, None, [{"id": "1"}], "thinking")
-    assert msgs[-1]["tool_calls"] == [{"id": "1"}]
-    assert msgs[-1]["reasoning_content"] == "thinking"
+    assert builder.last_assembled_contexts["turn_injection_context"] == {}
 
+    turn_injection = builder.build_turn_injection_context(turn_injection_prompt="pref")
     render_result = builder.render(
         ContextRequest(
             history=[{"role": "assistant", "content": "hi"}],
@@ -448,31 +444,13 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             skill_names=["extra"],
             channel="telegram",
             chat_id="42",
-            preflight_prompt="pref",
+            message_timestamp=now,
+            turn_injection_prompt="pref",
         )
     )
-    legacy_runtime = builder.build_runtime_guard_context(preflight_prompt="pref")
-    legacy_messages = builder.build_messages(
-        history=[{"role": "assistant", "content": "hi"}],
-        current_message="hello",
-        media=["https://img", str(image), str(tmp_path / "bad.txt")],
-        skill_names=["extra"],
-        channel="telegram",
-        chat_id="42",
-        runtime_guard_context=legacy_runtime,
-    )
-    legacy_prompt = builder.build_system_prompt(
-        skill_names=["extra"],
-        retrieved_memory_block="",
-    )
-    assert render_result.system_prompt == legacy_prompt
-    assert render_result.runtime_guard_context == legacy_runtime
-    assert render_result.messages == legacy_messages
-    assert render_result.system_context == {
-        "request_time": "request time",
-        "environment": "environment",
-        "current_session": "session prompt",
-    }
+    assert render_result.system_prompt
+    assert render_result.turn_injection_context == turn_injection
+    assert render_result.messages
 
 
 @pytest.mark.asyncio

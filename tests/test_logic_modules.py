@@ -192,7 +192,7 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
         compute_interruptibility=lambda **kwargs: (0.5, {"x": 1}),
     )
     loop._rng = None
-    loop._memory = SimpleNamespace(read_long_term=lambda: "remember", get_memory_context=lambda: "ctx")
+    loop._memory = SimpleNamespace(read_long_term_context=lambda: "remember", get_memory_context=lambda: "ctx")
     loop._sessions = SimpleNamespace(workspace=tmp_path)
     (tmp_path / "AGENTS.md").write_text("guide", encoding="utf-8")
     loop._sender = SimpleNamespace(send=AsyncMock(return_value=True))

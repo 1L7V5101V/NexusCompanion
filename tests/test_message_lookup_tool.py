@@ -1,9 +1,10 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
-from agent.looping.constants import _PRE_FLIGHT_PROMPT, _REFLECT_PROMPT
+from prompts.agent import build_agent_behavior_rules_prompt
 from session.manager import SessionManager
 from session.store import SessionStore
 
@@ -271,9 +272,8 @@ def test_message_lookup_tools_require_fetch_for_evidence():
 
 
 def test_history_fact_guard_requires_fetch_after_search_preview():
-    assert "search_messages" in _PRE_FLIGHT_PROMPT
-    assert "fetch_messages" in _PRE_FLIGHT_PROMPT
-    assert "source_ref" in _PRE_FLIGHT_PROMPT
-    assert "search_messages" in _REFLECT_PROMPT
-    assert "fetch_messages" in _REFLECT_PROMPT
-    assert "preview" in _REFLECT_PROMPT
+    prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
+    assert "search_messages" in prompt
+    assert "fetch_messages" in prompt
+    assert "source_ref" in prompt
+    assert "预览" in prompt

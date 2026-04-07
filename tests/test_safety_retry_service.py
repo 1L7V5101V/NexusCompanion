@@ -14,10 +14,12 @@ from agent.looping.ports import LLMConfig
 from agent.provider import ContentSafetyError, ContextLengthError
 
 
-def _stub_runtime_guard_context(*, preflight_prompt: str | None = None) -> dict[str, str]:
-    if not preflight_prompt:
+def _stub_turn_injection_context(
+    *, turn_injection_prompt: str | None = None
+) -> dict[str, str]:
+    if not turn_injection_prompt:
         return {}
-    return {"preflight": preflight_prompt}
+    return {"turn_injection": turn_injection_prompt}
 
 
 def _msg():
@@ -44,9 +46,8 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
         messages = list(request.history) + [{"role": "user"}]
         return ContextRenderResult(
             system_prompt="",
-            system_context={},
-            runtime_guard_context=_stub_runtime_guard_context(
-                preflight_prompt=request.preflight_prompt
+            turn_injection_context=_stub_turn_injection_context(
+                turn_injection_prompt=request.turn_injection_prompt
             ),
             messages=messages,
             debug_breakdown=[],
@@ -55,7 +56,7 @@ def _make_reasoner(*, discovery: ToolDiscoveryState, tool_search_enabled: bool):
     return DefaultReasoner(
         llm=LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace()),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: []),
+        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None),
         discovery=discovery,
         tool_search_enabled=tool_search_enabled,
         memory_window=10,
@@ -112,9 +113,8 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
         )
         return ContextRenderResult(
             system_prompt="",
-            system_context={},
-            runtime_guard_context=_stub_runtime_guard_context(
-                preflight_prompt=request.preflight_prompt
+            turn_injection_context=_stub_turn_injection_context(
+                turn_injection_prompt=request.turn_injection_prompt
             ),
             messages=list(request.history) + [{"role": "user"}],
             debug_breakdown=[],
@@ -124,7 +124,7 @@ def test_reasoner_run_turn_context_length_trims_dynamic_sections_before_history(
     reasoner = DefaultReasoner(
         llm=LLMServices(provider=SimpleNamespace(chat=AsyncMock()), light_provider=SimpleNamespace()),
         llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=256),
-        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: []),
+        tools=SimpleNamespace(get_always_on_names=lambda: {"always"}, get_schemas=lambda names=None: [], get_tool=lambda name: None),
         discovery=discovery,
         tool_search_enabled=False,
         memory_window=10,

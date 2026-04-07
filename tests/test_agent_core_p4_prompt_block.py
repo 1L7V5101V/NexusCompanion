@@ -13,7 +13,7 @@ from agent.core.prompt_block import (
 
 
 class _Memory:
-    def get_memory_context(self) -> str:
+    def read_profile(self) -> str:
         return "memory block"
 
     def read_self(self) -> str:
@@ -43,6 +43,8 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
         memory=_Memory(),
         skills=_Skills(),
         skill_names=[],
+        channel=None,
+        chat_id=None,
         message_timestamp=datetime(2026, 4, 4, 21, 0, 0),
         retrieved_memory_block="retrieved",
     )
@@ -67,6 +69,8 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
         memory=_Memory(),
         skills=_Skills(),
         skill_names=[],
+        channel=None,
+        chat_id=None,
         message_timestamp=None,
         retrieved_memory_block="retrieved",
     )
