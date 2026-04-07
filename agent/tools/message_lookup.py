@@ -15,9 +15,10 @@ _MAX_PREVIEW_LINES = 50
 class FetchMessagesTool(Tool):
     name = "fetch_messages"
     description = (
-        "按消息 ID 精确拉取原始对话内容。"
-        "当 search_messages 返回了 source_ref，或记忆注入块中的条目附带 (src: ...) 标记时，必须优先用此工具获取原文，而非继续猜测。"
-        "只要你准备基于某条历史消息下结论、引用细节、回答时间线、金额、是否发生过，就先调用 fetch_messages 拉原文再答。"
+        "根据消息 ID 或 source_ref 读取原始历史消息原文与上下文。\n"
+        "这是 recall_memory / search_messages / 记忆注入三条路里唯一可以直接作为最终证据的工具。\n"
+        "何时必须调用：回答依赖具体时间、原话、金额、配置值、是否发生过——只要结论需要事实支撑，就在回复前调用此工具。\n"
+        "recall_memory 或 search_messages 拿到 source_ref 后，若答案依赖原文细节，直接用 fetch_messages(source_ref) 取证，不要猜。\n"
         "支持 context 参数扩展前后文，适合还原完整上下文片段。"
     )
     parameters = {
@@ -66,10 +67,11 @@ class FetchMessagesTool(Tool):
 class SearchMessagesTool(Tool):
     name = "search_messages"
     description = (
-        "按关键词搜索最相关的历史消息预览。"
-        "它只返回分页后的消息摘要，不返回完整原文。"
-        "每条结果都带 source_ref；只要搜索命中了候选消息，下一步就必须用 fetch_messages(source_ref) 回源查看原文。"
-        "不要直接把 search_messages 的预览当成完整证据，更不要只靠预览就回答历史事实、时间、金额、是否发生过。"
+        "对原始历史消息做 grep 式搜索，返回命中候选消息的预览和 source_ref。\n"
+        "适合查找某个词、句子、文件名、报错、命令、配置项曾出现在哪些消息里——它是文本定位工具。\n"
+        "不是记忆检索工具：不负责总结偏好、判断做没做过、回答历史事实。这些问题先用 recall_memory。\n"
+        "命中后若需确认上下文或以结果作为证据，必须继续 fetch_messages(source_ref)，预览不能直接作证。\n"
+        "recall_memory 返回的摘要读起来像[询问行为]而非[事件本身]时，可同步用此工具补一路 grep 交叉验证。"
     )
     parameters = {
         "type": "object",
@@ -130,7 +132,8 @@ class SearchMessagesTool(Tool):
             limit=limit,
             offset=offset,
         )
-        messages = [_build_search_preview(message) for message in matched]
+        terms = [t for t in term.split() if t]
+        messages = [_build_search_preview(message, terms) for message in matched]
         next_offset = offset + len(messages)
         has_more = next_offset < total
         if not has_more:
@@ -149,21 +152,27 @@ class SearchMessagesTool(Tool):
         )
 
 
-def _build_search_preview(message: dict[str, Any]) -> dict[str, Any]:
+def _build_search_preview(message: dict[str, Any], query_terms: list[str] | None = None) -> dict[str, Any]:
     content = str(message.get("content", "") or "")
     preview, line_count, truncated = _preview_lines(content, max_lines=_MAX_PREVIEW_LINES)
-    return {
+    matched_terms = (
+        [t for t in query_terms if t.lower() in content.lower()]
+        if query_terms else []
+    )
+    result = {
         "id": str(message.get("id", "") or ""),
         "source_ref": str(message.get("id", "") or ""),
         "session_key": str(message.get("session_key", "") or ""),
         "seq": int(message.get("seq", 0) or 0),
         "role": str(message.get("role", "") or ""),
         "timestamp": str(message.get("timestamp", "") or ""),
+        "matched_terms": matched_terms,
         "preview": preview,
         "preview_line_count": min(line_count, _MAX_PREVIEW_LINES),
         "total_line_count": line_count,
         "truncated": truncated,
     }
+    return result
 
 
 def _preview_lines(content: str, *, max_lines: int) -> tuple[str, int, bool]:

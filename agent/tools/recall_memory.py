@@ -36,16 +36,16 @@ _VECTOR_TOP_K = 15
 class RecallMemoryTool(Tool):
     name = "recall_memory"
     description = (
-        "主动检索记忆数据库，返回最相关的 event / profile / preference / procedure 条目。\n"
-        "【何时用】：用户询问过去发生的事、以往的偏好、历史操作、是否做过某事时，"
-        "应在 search_messages 之前先调用此工具——记忆条目是已提炼的结构化事实，"
-        "比原始对话文本更精准。\n"
-        "【HyDE 用法】：query 应写成假设这条记忆存在会描述什么的陈述句，\n"
-        "  ✓ 好：'用户重构了 nexus agent 的记忆模块'\n"
-        "  ✓ 好：'用户在三月对 nexus 进行了架构重构'\n"
-        "  ✗ 差：'我们有做过重构吗'\n"
-        "每条结果带 source_ref，可用 fetch_messages(source_ref) 回溯当时的原始对话。\n"
-        "不要直接把 summary 当铁证——它是提炼过的摘要，原文细节请用 fetch_messages 确认。"
+        "检索长期记忆中的提炼事实、偏好、流程与历史事件线索（L1 记忆线索层）。\n"
+        "用户问'你还记得吗''以前做过吗''偏好是什么''通常怎么做'时，默认先调用此工具。\n"
+        "它返回的是记忆摘要，不是原文证据，不能单独作为回复依据。\n"
+        "【使用流程】召回后先评估结果是否足以回答用户问题：\n"
+        "  - 相关且有 source_ref → fetch_messages(source_refs) 取原文，基于原文作答\n"
+        "  - 结果为空 / 无 source_ref / 与问题不符 / 全是元对话噪声 → 改用 search_messages 关键词补搜，再 fetch\n"
+        "禁止跳过此工具直接用 search_messages；禁止只凭摘要作答，不去 fetch 原文。\n"
+        "query 写成陈述句效果更好：\n"
+        "  ✓ '用户在三月完成了 nexus 运行时架构重构'\n"
+        "  ✗ '我们有做过重构吗'"
     )
     parameters = {
         "type": "object",
