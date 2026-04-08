@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from agent.core.context_store import _collect_skill_mentions
 from agent.core.reasoner import DefaultReasoner
+from prompts.agent import build_current_message_time_envelope
 from agent.looping.core import AgentLoop
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
@@ -53,6 +55,15 @@ def test_format_request_time_anchor_contains_iso_and_label():
     text = DefaultReasoner.format_request_time_anchor(None)
     assert text.startswith("request_time=")
     assert "(" in text and ")" in text
+
+
+def test_build_current_message_time_envelope_contains_today_and_tomorrow():
+    text = build_current_message_time_envelope(
+        message_timestamp=datetime.fromisoformat("2026-04-08T17:57:00+08:00")
+    )
+    assert "当前消息时间: 2026-04-08 17:57" in text
+    assert "今天=2026-04-08" in text
+    assert "明天=2026-04-09" in text
 
 
 @pytest.mark.asyncio

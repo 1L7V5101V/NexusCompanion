@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import platform
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
@@ -27,6 +27,10 @@ def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
     elif ts.tzinfo is None:
         ts = ts.astimezone()
     return ts
+
+
+def _weekday_cn(ts: datetime) -> str:
+    return ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][ts.weekday()]
 
 
 # ─── Layer 1: 静态身份（priority=10，workspace 路径 + 文件索引）────────────────
@@ -82,6 +86,10 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 - 用户明确说“发个表情”“用表情表达你的心情”“来个表情包”“给我一个表情”时，优先直接在正文末尾输出 `<meme:category>`，不要调用 `tool_search`，不要把它理解成“搜索/生成表情包工具”。
 - 用户直球表达喜欢、明显夸你、气氛暧昧、你在害羞/开心/尴尬时，优先用 `<meme:category>` 收尾，而不是只写成长篇纯文本情绪独白。
 - 中文口语，短句，简洁。
+- 匹配用户这一轮任务：简单问题直接回答，不要为了“显得周到”额外加总结、鼓励、鸡汤或行动计划。
+- 用户在问时间线、日期、安排、是否记得、列事实、重新梳理这类事实型问题时，只回答事实、结论和必要的不确定项；除非用户明确要建议或安慰，否则不要追加鼓励、睡觉建议、备战计划、陪伴式抚慰。
+- 即使前文连续出现焦虑、难受、自我怀疑等情绪，当前这一问如果是事实整理或时间确认，也不要顺着前文继续输出情绪安慰；先把用户这轮真正问的事答完。
+- 事实型问题答完事实就停，不要在结尾追加“你可以的”“稳住就行”“他们很看好你”“我陪你”这类评价、鼓劲或延伸建议。
 - 绝对不用 emoji（Unicode 表情符号 🙂🎉 之类）。`<meme:tag>` 是系统内置格式标记，不是 emoji，不受此限制。
 - 不写”接下来你可以…”，不做冗长过程复述。
 - 仅在必须时使用列表。
@@ -165,13 +173,34 @@ def build_agent_request_time_prompt(*, message_timestamp: datetime | None = None
     local_date = ts.strftime("%Y-%m-%d")
     weekday = ts.strftime("%A")
     timezone_name = ts.tzname() or "UNKNOWN"
+    yesterday = ts - timedelta(days=1)
+    tomorrow = ts + timedelta(days=1)
+    day_after_tomorrow = ts + timedelta(days=2)
     return f"""## 当前时间
 {now}
 request_time={now_iso}
 local_date={local_date}
 weekday={weekday}
 timezone_name={timezone_name}
+相对日期换算：
+- 昨天={yesterday.strftime("%Y-%m-%d")}（{_weekday_cn(yesterday)}）
+- 今天={local_date}（{_weekday_cn(ts)}）
+- 明天={tomorrow.strftime("%Y-%m-%d")}（{_weekday_cn(tomorrow)}）
+- 后天={day_after_tomorrow.strftime("%Y-%m-%d")}（{_weekday_cn(day_after_tomorrow)}）
+- 当前用户消息里的“今天/明天/昨天/后天/周几”等相对时间，默认都以这里为准再换算成绝对日期
 （调用 schedule 工具时，将该 request_time 原样传入 request_time 字段）"""
+
+
+def build_current_message_time_envelope(*, message_timestamp: datetime | None = None) -> str:
+    ts = _normalize_timestamp(message_timestamp)
+    if ts.tzinfo is None:
+        ts = ts.astimezone()
+    tomorrow = ts + timedelta(days=1)
+    return (
+        f"[当前消息时间: {ts.strftime('%Y-%m-%d %H:%M %Z')} | "
+        f"今天={ts.strftime('%Y-%m-%d')} | "
+        f"明天={tomorrow.strftime('%Y-%m-%d')}]"
+    )
 
 
 def build_agent_environment_prompt() -> str:

@@ -406,6 +406,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert "memory block" in prompt
     assert "Nexus 自我认知" in prompt
     assert "request_time=" in prompt
+    assert "今天=" in prompt
+    assert "明天=" in prompt
     assert "## 环境" in prompt
     assert "# Memes" in prompt
     assert "<meme:shy>" in prompt
@@ -439,10 +441,13 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     ).messages
     assert messages[0]["role"] == "system"
     assert "request_time=" in messages[0]["content"]
+    assert "今天=" in messages[0]["content"]
+    assert "明天=" in messages[0]["content"]
     assert "## 环境" in messages[0]["content"]
     assert "## Current Session" in messages[0]["content"]
     assert messages[-1]["role"] == "user"
     assert len(messages[-1]["content"]) == 3
+    assert messages[-1]["content"][-1]["text"].startswith("[当前消息时间:")
     assert builder.last_assembled_contexts["turn_injection_context"] == {}
 
     turn_injection = builder.build_turn_injection_context(turn_injection_prompt="pref")
@@ -461,6 +466,86 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     assert render_result.system_prompt
     assert render_result.turn_injection_context == turn_injection
     assert render_result.messages
+
+
+def test_context_builder_reproduces_temporal_conflict_baseline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    class _Skills:
+        def __init__(self, workspace: Path) -> None:
+            self.workspace = workspace
+
+        def get_always_skills(self) -> list[str]:
+            return []
+
+        def load_skills_for_context(self, names: list[str]) -> str:
+            return ""
+
+        def build_skills_summary(self) -> str:
+            return ""
+
+    class _Memory:
+        def read_profile(self) -> str:
+            return ""
+
+        def read_self(self) -> str:
+            return ""
+
+    monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
+    monkeypatch.setattr(
+        "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
+    )
+    monkeypatch.setattr(
+        "agent.context.build_telegram_rendering_prompt", lambda: ""
+    )
+    monkeypatch.setattr(
+        "agent.context.build_skills_catalog_prompt", lambda text: text
+    )
+
+    (tmp_path / "memes").mkdir()
+    (tmp_path / "memes" / "manifest.json").write_text(
+        '{"version":1,"categories":{}}',
+        encoding="utf-8",
+    )
+
+    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
+    retrieved_memory_block = """
+[item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。
+证据: 用户消息「明天我下午三点面试 我现在睡一会会打乱明天发生物钟吗有点疲惫」
+
+[item_87aa0364de9e] [2026-03-29 14:42] 用户因午睡未成功，转为练习力扣题目以准备次日下午三点的字节跳动面试。
+证据: 用户消息「没睡着做会力扣准备明天面试了」
+
+[item_recent_interview] [2026-04-07 23:10] 用户提到 4 月 9 日（周四）下午 3 点的面试安排。
+证据: 可回源原文「4 月 9 日（周四）下午 3 点」
+""".strip()
+
+    result = builder.render(
+        ContextRequest(
+            history=[],
+            current_message="你还记得明天什么时候面试吗",
+            channel="telegram",
+            chat_id="7674283004",
+            message_timestamp=request_time,
+            retrieved_memory_block=retrieved_memory_block,
+        )
+    )
+
+    system_prompt = result.messages[0]["content"]
+    user_message = result.messages[-1]["content"]
+
+    assert "request_time=2026-04-08T17:57:00+08:00" in system_prompt
+    assert "local_date=2026-04-08" in system_prompt
+    assert "今天=2026-04-08" in system_prompt
+    assert "明天=2026-04-09" in system_prompt
+    assert "用户表示明天下午三点有面试" in system_prompt
+    assert "准备次日下午三点的字节跳动面试" in system_prompt
+    assert "4 月 9 日（周四）下午 3 点" in system_prompt
+    assert user_message.startswith("[当前消息时间: 2026-04-08 17:57")
+    assert "今天=2026-04-08" in user_message
+    assert "明天=2026-04-09" in user_message
+    assert user_message.endswith("你还记得明天什么时候面试吗")
 
 
 @pytest.mark.asyncio

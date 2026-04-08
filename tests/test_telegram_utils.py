@@ -78,6 +78,17 @@ def test_render_telegram_preview_html_supports_links_strike_and_spoiler():
     assert "<tg-spoiler>隐藏</tg-spoiler>" in html
 
 
+def test_render_telegram_preview_html_keeps_spacing_compact():
+    html = render_telegram_preview_html(
+        "花月哥哥，我在。\n\n### 呼吸\n\n1. 吸气\n\n1. 呼气\n\n> 慢一点"
+    )
+    assert "<b>呼吸</b>" in html
+    assert "• 吸气" in html
+    assert "• 呼气" in html
+    assert "<blockquote>慢一点</blockquote>" in html
+    assert "\n\n\n" not in html
+
+
 @pytest.mark.asyncio
 async def test_stream_message_falls_back_to_plain_text_on_html_parse_error():
     bot = BotStub()

@@ -85,6 +85,7 @@ class PromptAssembler:
             system_prompt=built.system_prompt,
             turn_injection_context=injection_context,
             channel=channel,
+            message_timestamp=message_timestamp,
             media=media,
         )
         return AssembledTurnInput(

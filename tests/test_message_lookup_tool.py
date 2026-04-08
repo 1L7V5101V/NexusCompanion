@@ -326,3 +326,13 @@ def test_memory_correction_protocol_covers_soft_corrections_and_forget_memory():
     assert "若用户这轮是在纠正你，而你本轮没有调用 `forget_memory`" in prompt
     assert "在拿到 fetch_messages 结果前，禁止直接调用 `forget_memory`" in prompt
     assert "调用了 `forget_memory` 却没有先调用 `fetch_messages`" in prompt
+
+
+def test_behavior_rules_force_fact_questions_to_answer_directly():
+    prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
+    assert "简单问题直接回答" in prompt
+    assert "时间线、日期、安排、是否记得、列事实、重新梳理" in prompt
+    assert "不要追加鼓励、睡觉建议、备战计划、陪伴式抚慰" in prompt
+    assert "当前这一问如果是事实整理或时间确认，也不要顺着前文继续输出情绪安慰" in prompt
+    assert "事实型问题答完事实就停" in prompt
+    assert "稳住就行" in prompt

@@ -29,6 +29,7 @@ from agent.prompting import (
 from agent.skills import SkillsLoader
 from prompts.agent import (
     build_agent_static_identity_prompt,
+    build_current_message_time_envelope,
     build_skills_catalog_prompt,
     build_telegram_rendering_prompt,
 )
@@ -64,6 +65,7 @@ class MessageEnvelopeBuilder:
         system_prompt: str,
         turn_injection_context: dict[str, str] | None,
         channel: str | None,
+        message_timestamp: datetime | None,
         media: list[str] | None,
     ) -> list[dict[str, Any]]:
         prompt = system_prompt
@@ -81,14 +83,23 @@ class MessageEnvelopeBuilder:
         messages.append(
             {
                 "role": "user",
-                "content": self._build_user_content(current_message, media),
+                "content": self._build_user_content(
+                    current_message,
+                    media,
+                    message_timestamp=message_timestamp,
+                ),
             }
         )
         return messages
 
     def _build_user_content(
-        self, text: str, media: list[str] | None
+        self,
+        text: str,
+        media: list[str] | None,
+        *,
+        message_timestamp: datetime | None = None,
     ) -> str | list[dict[str, Any]]:
+        text = self._stamp_current_message(text, message_timestamp=message_timestamp)
         if not media:
             return text
 
@@ -115,6 +126,20 @@ class MessageEnvelopeBuilder:
         if not images:
             return text
         return images + [{"type": "text", "text": text}]
+
+    def _stamp_current_message(
+        self,
+        text: str,
+        *,
+        message_timestamp: datetime | None = None,
+    ) -> str:
+        stripped = text.lstrip()
+        if not stripped:
+            return text
+        if stripped.startswith("[当前消息时间:"):
+            return text
+        stamp = build_current_message_time_envelope(message_timestamp=message_timestamp)
+        return f"{stamp}\n{text}"
 
 
 class ContextBuilder:
@@ -225,4 +250,3 @@ class ContextBuilder:
                 ),
             )
         return built
-
