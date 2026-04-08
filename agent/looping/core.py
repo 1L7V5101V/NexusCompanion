@@ -114,6 +114,11 @@ class AgentLoop:
             hyde_enhancer=hyde_enhancer,
         )
 
+    def set_stream_sink_factory(self, factory) -> None:
+        setter = getattr(self._reasoner, "set_stream_sink_factory", None)
+        if callable(setter):
+            setter(factory)
+
     def _resolve_memory_runtime(
         self,
         deps: AgentLoopDeps,

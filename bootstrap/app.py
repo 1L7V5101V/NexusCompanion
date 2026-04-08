@@ -125,6 +125,14 @@ class AppRuntime:
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
             )
+            if self.tg_channel is not None:
+                self.agent_loop.set_stream_sink_factory(
+                    lambda msg: (
+                        self.tg_channel.create_stream_sender(msg.chat_id)
+                        if getattr(msg, "channel", "") == "telegram"
+                        else None
+                    )
+                )
 
             self.tasks = [
                 self.agent_loop.run(),

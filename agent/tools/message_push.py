@@ -53,17 +53,21 @@ class MessagePushTool(Tool):
         self,
         channel: str,
         text: Callable[[str, str], Awaitable[None]] | None = None,
+        stream_text: Callable[[str, str], Awaitable[None]] | None = None,
         file: Callable[[str, str, str | None], Awaitable[None]] | None = None,
         image: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> None:
         """注册渠道的各类 sender。
         - text(chat_id, message)
+        - stream_text(chat_id, message)
         - file(chat_id, file_path, name=None)
         - image(chat_id, image_path_or_url)
         """
         self._senders[channel] = {}
         if text:
             self._senders[channel]["text"] = text
+        if stream_text:
+            self._senders[channel]["stream_text"] = stream_text
         if file:
             self._senders[channel]["file"] = file
         if image:
@@ -89,7 +93,8 @@ class MessagePushTool(Tool):
         results = []
         try:
             if message and "text" in senders:
-                await senders["text"](chat_id, message)
+                sender_name = "stream_text" if "stream_text" in senders else "text"
+                await senders[sender_name](chat_id, message)
                 preview = message[:60] + "..." if len(message) > 60 else message
                 logger.info(f"[message_push] {channel}:{chat_id} ← text: {preview!r}")
                 results.append("文本已发送")

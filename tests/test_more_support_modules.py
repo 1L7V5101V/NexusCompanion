@@ -51,6 +51,19 @@ class _FakeClient:
         return response
 
 
+class _FakeStream:
+    def __init__(self, chunks: list[object]) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
+
+
 @pytest.mark.asyncio
 async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     fake = _FakeClient(
@@ -103,6 +116,49 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(RuntimeError):
         await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
+
+
+@pytest.mark.asyncio
+async def test_provider_chat_stream_parses_content_reasoning_and_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    stream = _FakeStream(
+        [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="你", reasoning_content="想", tool_calls=[])
+                    )
+                ]
+            ),
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(content="好", reasoning_content="法", tool_calls=[])
+                    )
+                ]
+            ),
+        ]
+    )
+    fake = _FakeClient([stream])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    deltas: list[str] = []
+    provider = LLMProvider(api_key="k")
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[],
+        model="m",
+        max_tokens=10,
+        on_content_delta=lambda chunk: _collect_delta(deltas, chunk),
+    )
+    assert result.content == "你好"
+    assert result.thinking == "想法"
+    assert deltas == ["你", "好"]
+    assert fake.calls[0]["stream"] is True
+
+
+async def _collect_delta(bucket: list[str], chunk: str) -> None:
+    bucket.append(chunk)
 
 
 @pytest.mark.asyncio

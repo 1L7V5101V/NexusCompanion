@@ -114,6 +114,7 @@ async def process_spawn_completion_event(
         tools_used=tools_used,
         tool_chain=tool_chain,
         thinking=None,
+        streamed_reply=False,
         retrieval_raw=None,
         context_retry={},
         dispatch_outbound=True,

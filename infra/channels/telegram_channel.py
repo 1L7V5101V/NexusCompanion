@@ -15,7 +15,12 @@ from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
-from infra.channels.telegram_utils import send_markdown, send_thinking_block
+from infra.channels.telegram_utils import (
+    TelegramStreamMessage,
+    send_markdown,
+    send_stream_markdown,
+    send_thinking_block,
+)
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -57,6 +62,7 @@ class TelegramChannel:
         bus.subscribe_outbound(_CHANNEL, self._on_response)
         self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
+        self._active_streams: dict[str, TelegramStreamMessage] = {}
 
     @property
     def bot(self):
@@ -325,6 +331,27 @@ class TelegramChannel:
         """发送文本消息（供 MessagePushTool 调用）"""
         await send_markdown(self._app.bot, self._resolve_chat_id(chat_id), message)
 
+    async def send_stream(self, chat_id: str, message: str) -> None:
+        """发送流式文本消息（私聊优先 draft，其他场景降级普通发送）"""
+        await send_stream_markdown(
+            self._app.bot,
+            self._resolve_chat_id(chat_id),
+            message,
+        )
+
+    def create_stream_sender(self, chat_id: str):
+        cid = int(self._resolve_chat_id(chat_id))
+        if cid <= 0:
+            return None
+        key = str(cid)
+        stream = TelegramStreamMessage(self._app.bot, cid)
+        self._active_streams[key] = stream
+
+        async def _push(delta: str) -> None:
+            await stream.push_delta(delta)
+
+        return _push
+
     async def send_file(
         self,
         chat_id: str,
@@ -354,7 +381,14 @@ class TelegramChannel:
         if msg.thinking:
             await send_thinking_block(self._app.bot, msg.chat_id, msg.thinking)
         if msg.content.strip():
-            await send_markdown(self._app.bot, msg.chat_id, msg.content)
+            if (msg.metadata or {}).get("streamed_reply"):
+                stream = self._active_streams.pop(str(msg.chat_id), None)
+                if stream is not None:
+                    await stream.finalize(msg.content)
+                else:
+                    await send_markdown(self._app.bot, msg.chat_id, msg.content)
+            else:
+                await send_stream_markdown(self._app.bot, msg.chat_id, msg.content)
         for image in (msg.media or []):
             try:
                 await self.send_image(str(msg.chat_id), image)

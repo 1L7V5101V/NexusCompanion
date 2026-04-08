@@ -115,6 +115,7 @@ class ReasonerResult:
     reply: str
     invocations: list[LLMToolCall] = field(default_factory=list)
     thinking: str | None = None
+    streamed: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

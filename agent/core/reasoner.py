@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import ContextRequest, LLMToolCall, ReasonerResult
@@ -124,6 +124,7 @@ class Reasoner(ABC):
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> ReasonerResult:
         """执行多轮 tool loop，并返回本轮结果。调用方负责提前注入 turn injection。"""
 
@@ -168,6 +169,13 @@ class DefaultReasoner(Reasoner):
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
         self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._stream_sink_factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None = None
+
+    def set_stream_sink_factory(
+        self,
+        factory: Callable[[object], Callable[[str], Awaitable[None]] | None] | None,
+    ) -> None:
+        self._stream_sink_factory = factory
 
     async def run_turn(
         self,
@@ -198,6 +206,9 @@ class DefaultReasoner(Reasoner):
                 "[tool_search] LRU preloaded=%s",
                 sorted(preloaded) if preloaded else "[]",
             )
+        stream_sink = (
+            self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
+        )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
         attempts = self._build_attempt_plans(total_history)
@@ -238,6 +249,7 @@ class DefaultReasoner(Reasoner):
                     request_time=msg.timestamp,
                     preloaded_tools=preloaded,
                     preflight_injected=True,
+                    on_content_delta=stream_sink,
                 )
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tool_chain = list(result.metadata.get("tool_chain") or [])
@@ -272,6 +284,7 @@ class DefaultReasoner(Reasoner):
                     tools_used=tools_used,
                     tool_chain=tool_chain,
                     thinking=result.thinking,
+                    streamed=result.streamed,
                     context_retry=retry_trace,
                 )
             except ContentSafetyError:
@@ -315,6 +328,7 @@ class DefaultReasoner(Reasoner):
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹、循环检测状态。
         messages = initial_messages
@@ -324,6 +338,7 @@ class DefaultReasoner(Reasoner):
         repeat_count = 0
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
+        streamed = False
         if self._tool_search_enabled:
             always_on = self._tools.get_always_on_names()
             visible_names = always_on | (preloaded_tools or set())
@@ -348,7 +363,10 @@ class DefaultReasoner(Reasoner):
                 model=self._llm_config.model,
                 max_tokens=self._llm_config.max_tokens,
                 tool_choice="auto",
+                on_content_delta=on_content_delta,
             )
+            if on_content_delta is not None and response.content:
+                streamed = True
 
             # 5. 模型返回 tool_calls 时，进入工具执行分支。
             if response.tool_calls:
@@ -383,6 +401,7 @@ class DefaultReasoner(Reasoner):
                         tool_chain=tool_chain,
                         visible_names=visible_names,
                         thinking=None,
+                        streamed=False,
                     )
 
                 append_assistant_tool_calls(
@@ -533,6 +552,7 @@ class DefaultReasoner(Reasoner):
                 tool_chain=tool_chain,
                 visible_names=visible_names,
                 thinking=response.thinking,
+                streamed=streamed,
             )
 
         # 9. 达到最大迭代次数后，生成不完整进展总结。
@@ -553,6 +573,7 @@ class DefaultReasoner(Reasoner):
             tool_chain=tool_chain,
             visible_names=visible_names,
             thinking=None,
+            streamed=False,
         )
 
     async def _summarize_incomplete_progress(
@@ -600,6 +621,7 @@ class DefaultReasoner(Reasoner):
         tool_chain: list[dict],
         visible_names: set[str] | None,
         thinking: str | None,
+        streamed: bool,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -626,6 +648,7 @@ class DefaultReasoner(Reasoner):
             reply=reply,
             invocations=invocations,
             thinking=thinking,
+            streamed=streamed,
             metadata=metadata,
         )
 

@@ -109,6 +109,7 @@ class TurnRunResult:
     tools_used: list[str] = field(default_factory=list)
     tool_chain: list[dict] = field(default_factory=list)
     thinking: str | None = None
+    streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict)
 
 

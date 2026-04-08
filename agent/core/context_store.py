@@ -63,6 +63,7 @@ class ContextStore(ABC):
         tools_used: list[str],
         tool_chain: list[dict],
         thinking: str | None,
+        streamed_reply: bool,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
         post_turn_actions: list[object] | None = None,
@@ -145,6 +146,7 @@ class DefaultContextStore(ContextStore):
         tools_used: list[str],
         tool_chain: list[dict],
         thinking: str | None,
+        streamed_reply: bool,
         retrieval_raw: object | None,
         context_retry: dict[str, object],
         post_turn_actions: list[object] | None = None,
@@ -234,6 +236,7 @@ class DefaultContextStore(ContextStore):
                 "tools_used": tools_used,
                 "tool_chain": tool_chain,
                 "context_retry": context_retry,
+                "streamed_reply": streamed_reply,
             },
         )
         if dispatch_outbound:

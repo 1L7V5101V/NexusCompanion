@@ -38,7 +38,8 @@ if "telegram" not in sys.modules:
     telegram_error_stub = types.ModuleType("telegram.error")
 
     class Bot:
-        pass
+        async def edit_message_text(self, *args, **kwargs):
+            return True
 
     class MessageEntity:
         def __init__(self, *, type, offset, length):

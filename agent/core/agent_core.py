@@ -101,6 +101,7 @@ class AgentCore:
             tools_used=turn_result.tools_used,
             tool_chain=turn_result.tool_chain,
             thinking=turn_result.thinking,
+            streamed_reply=turn_result.streamed,
             retrieval_raw=context_bundle.retrieval_trace_raw,
             context_retry=turn_result.context_retry,
             dispatch_outbound=dispatch_outbound,

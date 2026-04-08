@@ -38,6 +38,7 @@ async def start_channels(
         push_tool.register_channel(
             "telegram",
             text=tg_channel.send,
+            stream_text=tg_channel.send_stream,
             file=tg_channel.send_file,
             image=tg_channel.send_image,
         )

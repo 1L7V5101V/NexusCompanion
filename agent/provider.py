@@ -10,6 +10,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 from openai import AsyncOpenAI
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
@@ -79,6 +80,7 @@ class LLMProvider:
         model: str,
         max_tokens: int,
         tool_choice: str | dict = "auto",
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
         # 系统提示作为第一条消息（若 messages 已自带 system 消息则不再重复添加）
         already_has_system = messages and messages[0].get("role") == "system"
@@ -93,6 +95,9 @@ class LLMProvider:
             kwargs["tool_choice"] = tool_choice
         if self._extra_body:
             kwargs["extra_body"] = self._extra_body
+
+        if on_content_delta is not None:
+            return await self._chat_streaming(kwargs, on_content_delta)
 
         resp = await self._create_with_retry(kwargs)
         msg = resp.choices[0].message
@@ -110,6 +115,67 @@ class LLMProvider:
 
         raw = msg.content
         thinking: str | None = None
+        if raw:
+            m = _THINK_RE.search(raw)
+            if m:
+                thinking = m.group(1).strip()
+                raw = _THINK_RE.sub("", raw).strip() or None
+        return LLMResponse(content=raw, tool_calls=tool_calls, thinking=thinking)
+
+    async def _chat_streaming(
+        self,
+        kwargs: dict[str, Any],
+        on_content_delta: Callable[[str], Awaitable[None]],
+    ) -> LLMResponse:
+        stream = await self._create_with_retry({**kwargs, "stream": True})
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_call_chunks: dict[int, dict[str, str]] = {}
+        tool_call_seen = False
+
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+
+            reasoning_piece = _get_field(delta, "reasoning_content")
+            if isinstance(reasoning_piece, str) and reasoning_piece:
+                reasoning_parts.append(reasoning_piece)
+
+            for tc in _iter_tool_call_deltas(delta):
+                tool_call_seen = True
+                slot = tool_call_chunks.setdefault(tc["index"], {})
+                if tc["id"]:
+                    slot["id"] = slot.get("id", "") + tc["id"]
+                if tc["name"]:
+                    slot["name"] = slot.get("name", "") + tc["name"]
+                if tc["arguments"]:
+                    slot["arguments"] = slot.get("arguments", "") + tc["arguments"]
+
+            content_piece = _get_field(delta, "content")
+            if isinstance(content_piece, str) and content_piece:
+                content_parts.append(content_piece)
+                if not tool_call_seen:
+                    await on_content_delta(content_piece)
+
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(tool_call_chunks):
+            item = tool_call_chunks[idx]
+            raw_args = item.get("arguments", "") or "{}"
+            tool_calls.append(
+                ToolCall(
+                    id=item.get("id", ""),
+                    name=item.get("name", ""),
+                    arguments=json.loads(raw_args),
+                )
+            )
+
+        raw = "".join(content_parts).strip() or None
+        thinking = "".join(reasoning_parts).strip() or None
         if raw:
             m = _THINK_RE.search(raw)
             if m:
@@ -177,3 +243,36 @@ class LLMProvider:
             "too many requests",
         )
         return any(k in text for k in keywords)
+
+
+def _get_field(delta: Any, name: str) -> Any:
+    if isinstance(delta, dict):
+        return delta.get(name)
+    return getattr(delta, name, None)
+
+
+def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
+    raw_items = _get_field(delta, "tool_calls") or []
+    result: list[dict[str, str | int]] = []
+    for idx, item in enumerate(raw_items):
+        if isinstance(item, dict):
+            function = item.get("function") or {}
+            result.append(
+                {
+                    "index": int(item.get("index", idx)),
+                    "id": str(item.get("id", "") or ""),
+                    "name": str(function.get("name", "") or ""),
+                    "arguments": str(function.get("arguments", "") or ""),
+                }
+            )
+            continue
+        function = getattr(item, "function", None)
+        result.append(
+            {
+                "index": int(getattr(item, "index", idx)),
+                "id": str(getattr(item, "id", "") or ""),
+                "name": str(getattr(function, "name", "") or ""),
+                "arguments": str(getattr(function, "arguments", "") or ""),
+            }
+        )
+    return result

@@ -156,7 +156,8 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
         ALL_TYPES = ["message"]
 
     class Bot:
-        pass
+        async def edit_message_text(self, *args, **kwargs):
+            return True
 
     class MessageEntity:
         def __init__(self, *, type, offset, length):
@@ -223,7 +224,8 @@ def _import_telegram_channel(monkeypatch: pytest.MonkeyPatch):
         def __init__(self, token):
             self.token = token
             self.bot = SimpleNamespace(
-                send_message=AsyncMock(),
+                send_message=AsyncMock(return_value=SimpleNamespace(message_id=99)),
+                edit_message_text=AsyncMock(),
                 send_document=AsyncMock(),
                 send_photo=AsyncMock(),
                 send_chat_action=AsyncMock(),
@@ -470,6 +472,7 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     session_manager = _SessionManager()
     channel = mod.TelegramChannel("token", bus, session_manager, allow_from=["1", "Alice"])
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
+    monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     await channel.start()
     assert len(channel._app.handlers) == 3
     assert bus.outbound[0][0] == "telegram"
@@ -550,13 +553,33 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         channel._resolve_chat_id("@missing")
 
     await channel.send("123", "hi")
+    await channel.send_stream("123", "stream hi")
     sample = tmp_path / "doc.txt"
     sample.write_text("x", encoding="utf-8")
     await channel.send_file("123", str(sample), name="doc.txt", caption="cap")
     await channel.send_image("123", "https://example.com/img.jpg")
     await channel.send_image("123", str(sample))
     await channel._on_response(OutboundMessage(channel="telegram", chat_id="123", content="pong"))
-    assert mod.send_markdown.await_count == 2
+    assert mod.send_markdown.await_count == 1
+    assert mod.send_stream_markdown.await_count == 2
+    sender = channel.create_stream_sender("123")
+    assert sender is not None
+    await sender("流式片段")
+    await sender("继续补充一大段内容继续补充一大段内容继续补充一大段内容继续补充一大段内容")
+    assert channel._app.bot.send_message.await_count >= 1
+    channel.user_map["group"] = "-1001"
+    assert channel.create_stream_sender("@group") is None
+    await channel._on_response(
+        OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="final",
+            metadata={"streamed_reply": True},
+        )
+    )
+    assert channel._app.bot.edit_message_text.await_count >= 1
+    assert mod.send_markdown.await_count == 1
+    assert mod.send_stream_markdown.await_count == 2
 
     channel._app.bot.send_chat_action = AsyncMock(side_effect=[mod.TimedOut("x"), mod.NetworkError("x"), None])
     monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock(return_value=None))

@@ -90,6 +90,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         tools_used=["noop"],
         tool_chain=[{"text": "", "calls": []}],
         thinking="思考",
+        streamed_reply=True,
         retrieval_raw={"route": "RETRIEVE"},
         context_retry={"selected_plan": "full"},
         post_turn_actions=[post_turn_action],
@@ -99,6 +100,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert out.media == ["/tmp/meme.png"]
     assert out.metadata["req_id"] == "r1"
     assert out.metadata["tools_used"] == ["noop"]
+    assert out.metadata["streamed_reply"] is True
     presence.record_user_message.assert_called_once_with("telegram:123")
     session_manager.append_messages.assert_awaited_once()
     assert len(writer.events) == 2
