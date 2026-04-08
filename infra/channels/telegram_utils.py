@@ -13,7 +13,7 @@ import logging
 import re
 
 from telegram import Bot, MessageEntity as TgEntity
-from telegram.error import NetworkError, RetryAfter, TimedOut
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegramify_markdown.converter import convert_with_segments
 from telegramify_markdown.entity import MessageEntity, split_entities
 
@@ -213,6 +213,7 @@ class TelegramStreamMessage:
         self._message_id: int | None = None
         self._buffer = ""
         self._last_sent_text = ""
+        self._last_preview_text = ""
         self._last_sent_at = 0.0
 
     async def push_delta(self, delta: str, *, force: bool = False) -> None:
@@ -243,36 +244,32 @@ class TelegramStreamMessage:
     async def _push_text(self, text: str) -> None:
         if text == self._last_sent_text:
             return
-        html_text = render_telegram_preview_html(text)
+        preview_text = text if len(text) <= 4096 else text[:4096]
+        if preview_text == self._last_preview_text:
+            self._last_sent_text = text
+            return
+        html_text = render_telegram_preview_html(preview_text)
         if self._message_id is None:
             sent = await _send_with_retry_result(
-                lambda: _send_preview_message(self._bot, self._chat_id, html_text, text),
+                lambda: _send_preview_message(
+                    self._bot, self._chat_id, html_text, preview_text
+                ),
                 label="send_message(stream_start)",
             )
             self._message_id = int(getattr(sent, "message_id", 0) or 0) or None
-        elif len(text) <= 4096:
-            await _send_with_retry(
-                lambda: _edit_preview_message(
-                    self._bot,
-                    self._chat_id,
-                    self._message_id,
-                    html_text,
-                    text,
-                ),
-                label="edit_message_text(stream)",
-            )
         else:
             await _send_with_retry(
                 lambda: _edit_preview_message(
                     self._bot,
                     self._chat_id,
                     self._message_id,
-                    render_telegram_preview_html(text[:4096]),
-                    text[:4096],
+                    html_text,
+                    preview_text,
                 ),
-                label="edit_message_text(stream_truncated)",
+                label="edit_message_text(stream)",
             )
         self._last_sent_text = text
+        self._last_preview_text = preview_text
 
 
 async def _send_with_retry_result(
@@ -363,6 +360,18 @@ async def _edit_preview_message(
             text=html_text,
             parse_mode="HTML",
         )
+    except BadRequest as e:
+        if _is_telegram_message_not_modified_error(e):
+            logger.debug("[telegram] preview edit skipped: %s", e)
+            return
+        if not _is_telegram_html_parse_error(e):
+            raise
+        logger.warning("[telegram] preview edit HTML 解析失败，降级纯文本: %s", e)
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=plain_text,
+        )
     except Exception as e:
         if not _is_telegram_html_parse_error(e):
             raise
@@ -376,6 +385,10 @@ async def _edit_preview_message(
 
 def _is_telegram_html_parse_error(err: Exception) -> bool:
     return bool(_PARSE_ERR_RE.search(str(err)))
+
+
+def _is_telegram_message_not_modified_error(err: Exception) -> bool:
+    return "message is not modified" in str(err).lower()
 
 
 def render_telegram_preview_html(text: str) -> str:

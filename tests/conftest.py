@@ -55,11 +55,15 @@ if "telegram" not in sys.modules:
     class NetworkError(Exception):
         pass
 
+    class BadRequest(Exception):
+        pass
+
     class TimedOut(Exception):
         pass
 
     telegram_stub.Bot = Bot
     telegram_stub.MessageEntity = MessageEntity
+    telegram_error_stub.BadRequest = BadRequest
     telegram_error_stub.RetryAfter = RetryAfter
     telegram_error_stub.NetworkError = NetworkError
     telegram_error_stub.TimedOut = TimedOut

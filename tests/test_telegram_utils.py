@@ -105,3 +105,39 @@ async def test_stream_message_falls_back_to_plain_text_on_html_parse_error():
 
     assert bot.messages[0]["parse_mode"] == "HTML"
     assert bot.edits[-1]["text"] == "**hello**\n\n- a\n- b"
+
+
+@pytest.mark.asyncio
+async def test_stream_message_ignores_message_not_modified_error():
+    bot = BotStub()
+
+    class MessageNotModifiedError(Exception):
+        pass
+
+    async def unchanged_edit_message_text(**kwargs):
+        raise MessageNotModifiedError(
+            "Message is not modified: specified new message content and reply markup "
+            "are exactly the same as a current content and reply markup of the message"
+        )
+
+    bot.edit_message_text = unchanged_edit_message_text
+    stream = TelegramStreamMessage(bot, 123)
+
+    await stream.push_delta("hello")
+    await stream.finalize("hello")
+
+    assert len(bot.messages) == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_message_skips_duplicate_truncated_preview():
+    bot = BotStub()
+    stream = TelegramStreamMessage(bot, 123)
+    first = "a" * 4096 + "X"
+    second = "a" * 4096 + "Y"
+
+    await stream.push_delta(first, force=True)
+    await stream.finalize(second)
+
+    assert len(bot.messages) == 1
+    assert bot.edits == []

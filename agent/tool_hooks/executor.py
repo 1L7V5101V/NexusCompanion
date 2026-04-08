@@ -30,12 +30,23 @@ class ToolExecutor:
         request: ToolExecutionRequest,
         invoker: ToolInvoker,
     ) -> ToolExecutionResult:
+        """执行单次工具调用。
+
+        request 描述“这次想调用什么工具、带什么参数”；
+        invoker 是真实执行入口（通常是 ToolRegistry.execute）。
+
+        固定流程：
+        1. pre hooks：匹配、改参、必要时拒绝
+        2. invoker：用最终参数执行真实工具
+        3. post hooks：记录成功或错误后的附加信息与 trace
+        """
         current_arguments = dict(request.arguments)
         extra_messages: list[str] = []
         pre_trace: list[HookTraceItem] = []
         post_trace: list[HookTraceItem] = []
 
         try:
+            # pre_hook 是唯一允许改输入/直接 deny 的阶段。
             denied_reason, current_arguments = await self._run_pre_hooks(
                 request=request,
                 current_arguments=current_arguments,
@@ -63,10 +74,12 @@ class ToolExecutor:
             )
 
         try:
+            # 这里才进入真实工具执行；hook 本身不直接替代工具实现。
             output = await invoker(request.tool_name, final_arguments)
         except Exception as exc:
             error_text = str(exc)
             try:
+                # 工具自身报错后，允许 post_tool_error 做记录型处理。
                 await self._run_post_hooks(
                     HookContext(
                         event="post_tool_error",
@@ -96,6 +109,7 @@ class ToolExecutor:
             )
 
         try:
+            # post_tool_use 只做观察和补充信息，不回写执行参数。
             await self._run_post_hooks(
                 HookContext(
                     event="post_tool_use",

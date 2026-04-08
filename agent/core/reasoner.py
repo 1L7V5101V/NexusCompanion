@@ -450,6 +450,8 @@ class DefaultReasoner(Reasoner):
                         self._tool_search_tool.set_excluded_names(visible_names)
                     _args_preview = _log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
+                    # 工具调用统一先过 ToolExecutor：
+                    # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
@@ -457,6 +459,8 @@ class DefaultReasoner(Reasoner):
                             arguments=tool_call.arguments,
                             source="passive",
                         ),
+                        # 真实工具执行入口仍是 ToolRegistry.execute；
+                        # hook 只负责拦截与记录，不替代 registry。
                         self._tools.execute,
                     )
                     if exec_result.status == "success":
@@ -491,6 +495,8 @@ class DefaultReasoner(Reasoner):
                             logger.info("[工具解锁] tool_search 新解锁: %s", sorted(_newly_unlocked))
                         else:
                             logger.info("[工具解锁] tool_search 未解锁新工具")
+                    # tool_chain 持久化的是“执行后的事实”：
+                    # 最终参数、hook trace、结果预览，供后续回放与 session 复原。
                     iter_calls.append(
                         {
                             "call_id": tool_call.id,
