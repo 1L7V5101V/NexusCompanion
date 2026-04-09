@@ -57,7 +57,7 @@ class InterestRetrievalResult:
 
 
 ContextRetriever = Callable[[ContextRetrievalRequest], Awaitable[ContextRetrievalResult]]
-ConsolidationRunner = Callable[[object, bool, bool], Awaitable[None]]
+ConsolidationRunner = Callable[[object, bool], Awaitable[None]]
 
 
 @runtime_checkable
@@ -79,7 +79,6 @@ class MemoryRuntimeFacade(Protocol):
         session: object,
         *,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None: ...
 
     async def retrieve_interest_block(

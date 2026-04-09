@@ -48,7 +48,6 @@ class LLMConfig:
 @dataclass
 class MemoryConfig:
     window: int = 40
-    consolidation_min_new_messages: int = 10
     top_k_procedure: int = 4
     top_k_history: int = 8
     route_intention_enabled: bool = False
@@ -57,6 +56,16 @@ class MemoryConfig:
     gate_max_tokens: int = 96
     hyde_enabled: bool = False
     hyde_timeout_ms: int = 2000
+
+    @property
+    def keep_count(self) -> int:
+        """上下文携带条数，也是 consolidation 后 session 保留条数。= window / 2。"""
+        return max(1, self.window // 2)
+
+    @property
+    def consolidation_min_new_messages(self) -> int:
+        """归档触发阈值：keep_count 的一半，最少 5 条。"""
+        return max(5, self.keep_count // 2)
 
 
 # ── 服务对象分组（仅放对象，不放配置参数）──────────────────────────────────────
@@ -145,15 +154,12 @@ class TurnScheduler:
         self,
         post_mem_worker: PostResponseMemoryWorker | None,
         consolidation_runner: ConsolidationRunner,
-        memory_window: int,
-        consolidation_min_new_messages: int = 10,
+        keep_count: int,
     ) -> None:
         self._post_mem_worker = post_mem_worker
         self._consolidation_runner = consolidation_runner
-        self._memory_window = memory_window
-        self._consolidation_min_new_messages = max(
-            1, int(consolidation_min_new_messages)
-        )
+        self._keep_count = keep_count
+        self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._consolidating: set[str] = set()
 
     def is_consolidating(self, key: str) -> bool:
@@ -171,8 +177,7 @@ class TurnScheduler:
     def schedule_consolidation(self, session: SessionLike, key: str) -> None:
         """Fire-and-forget consolidation; deduplicates by key."""
         # 1. 只有累计足够多新旧消息可归档，且当前 session 没在 consolidate 中，才起后台任务。
-        keep_count = self._memory_window // 2
-        ready_count = len(session.messages) - keep_count - int(
+        ready_count = len(session.messages) - self._keep_count - int(
             getattr(session, "last_consolidated", 0)
         )
         if (

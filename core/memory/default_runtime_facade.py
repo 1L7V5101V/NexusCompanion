@@ -161,12 +161,11 @@ class DefaultMemoryRuntimeFacade:
         session: object,
         *,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None:
         # 1. consolidation 在 phase 1 还不迁 owner，只提供统一入口。
         if self._consolidation_runner is None:
             raise RuntimeError("consolidation_runner unavailable")
-        await self._consolidation_runner(session, archive_all, await_vector_store)
+        await self._consolidation_runner(session, archive_all)
 
     async def retrieve_interest_block(
         self, request: InterestRetrievalRequest

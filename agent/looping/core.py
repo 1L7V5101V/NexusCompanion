@@ -214,7 +214,7 @@ class AgentLoop:
             tools=deps.tools,
             discovery=self._tool_discovery,
             tool_search_enabled=self._tool_search_enabled,
-            memory_window=self.memory_window,
+            memory_window=config.memory.keep_count,
             context=self._context,
             session_manager=self.session_manager,
         )
@@ -225,31 +225,27 @@ class AgentLoop:
             ),
             provider=deps.provider,
             model=config.llm.model,
-            memory_window=self.memory_window,
-            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
+            keep_count=config.memory.keep_count,
             profile_extractor=deps.profile_extractor,
         )
         if memory_svc.facade is not None:
             memory_svc.facade.bind_consolidation_runner(
-                lambda session, archive_all, await_vector_store: consolidation_service.consolidate(
+                lambda session, archive_all: consolidation_service.consolidate(
                     session,
                     archive_all=archive_all,
-                    await_vector_store=await_vector_store,
                 )
             )
         self._scheduler = deps.scheduler or TurnScheduler(
             post_mem_worker=post_mem_worker,
             consolidation_runner=self._consolidate_and_save,
-            memory_window=config.memory.window,
-            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
+            keep_count=config.memory.keep_count,
         )
         self._consolidation_runtime = ConsolidationRuntime(
             session_manager=self.session_manager,
             scheduler=self._scheduler,
             consolidation=consolidation_service,
             facade=memory_svc.facade,
-            memory_window=self.memory_window,
-            consolidation_min_new_messages=config.memory.consolidation_min_new_messages,
+            keep_count=config.memory.keep_count,
             wait_timeout_s=self._CONSOLIDATION_WAIT_S,
         )
 
@@ -292,7 +288,7 @@ class AgentLoop:
                 context=self._context,
                 context_store=passive_context_store,
                 tools=deps.tools,
-                memory_window=config.memory.window,
+                memory_window=config.memory.keep_count,
                 run_agent_loop_fn=self._run_agent_loop,
             )
         )
@@ -452,12 +448,10 @@ class AgentLoop:
         self,
         session,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None:
         await self._consolidation_runtime.consolidate_memory(
             session,
             archive_all=archive_all,
-            await_vector_store=await_vector_store,
         )
 
     async def trigger_memory_consolidation(

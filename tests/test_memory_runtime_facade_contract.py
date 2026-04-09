@@ -250,10 +250,9 @@ async def test_default_runtime_facade_run_consolidation_delegates_to_runner():
     await facade.run_consolidation(
         session,
         archive_all=True,
-        await_vector_store=True,
     )
 
-    runner.assert_awaited_once_with(session, True, True)
+    runner.assert_awaited_once_with(session, True)
 
 
 def test_default_runtime_facade_binds_context_retriever():

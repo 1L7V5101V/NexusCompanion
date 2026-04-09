@@ -210,7 +210,6 @@ def _build_loop_deps(
     )
     memory_config = MemoryConfig(
         window=config.memory_window,
-        consolidation_min_new_messages=config.memory_consolidation_min_new_messages,
         top_k_procedure=config.memory_v2.top_k_procedure,
         top_k_history=config.memory_v2.top_k_history,
         route_intention_enabled=config.memory_v2.route_intention_enabled,
@@ -222,7 +221,6 @@ def _build_loop_deps(
     )
     resolved_memory_config = MemoryConfig(
         window=memory_config.window,
-        consolidation_min_new_messages=memory_config.consolidation_min_new_messages,
         top_k_procedure=min(3, max(1, int(memory_config.top_k_procedure))),
         top_k_history=max(1, int(memory_config.top_k_history)),
         route_intention_enabled=memory_config.route_intention_enabled,
@@ -290,15 +288,14 @@ def _build_loop_deps(
         profile_maint=getattr(memory_runtime, "profile_maint", None) or memory_runtime.port,
         provider=provider,
         model=config.model,
-        memory_window=memory_config.window,
+        keep_count=memory_config.keep_count,
         profile_extractor=profile_extractor,
     )
     if memory_facade is not None:
         memory_facade.bind_consolidation_runner(
-            lambda session, archive_all, await_vector_store: consolidation.consolidate(
+            lambda session, archive_all: consolidation.consolidate(
                 session,
                 archive_all=archive_all,
-                await_vector_store=await_vector_store,
             )
         )
 
@@ -313,7 +310,7 @@ def _build_loop_deps(
     turn_scheduler = TurnScheduler(
         post_mem_worker=memory_runtime.post_response_worker,
         consolidation_runner=_consolidate_and_save,
-        memory_window=memory_config.window,
+        keep_count=memory_config.keep_count,
     )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
@@ -402,7 +399,6 @@ def build_core_runtime(
             ),
             memory=MemoryConfig(
                 window=config.memory_window,
-                consolidation_min_new_messages=config.memory_consolidation_min_new_messages,
                 top_k_procedure=config.memory_v2.top_k_procedure,
                 top_k_history=config.memory_v2.top_k_history,
                 route_intention_enabled=config.memory_v2.route_intention_enabled,

@@ -43,7 +43,7 @@ def test_consolidation_service_archive_all_and_profile_extract():
         memory_port=memory,
         provider=provider,
         model="m",
-        memory_window=40,
+        keep_count=20,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -56,7 +56,7 @@ def test_consolidation_service_archive_all_and_profile_extract():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True, await_vector_store=True))
+    asyncio.run(service.consolidate(session, archive_all=True))
 
     memory.append_history_once.assert_called_once()
     memory.save_from_consolidation.assert_awaited_once()
@@ -95,7 +95,7 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
         profile_maint=profile_maint,
         provider=provider,
         model="m",
-        memory_window=40,
+        keep_count=20,
         profile_extractor=None,
     )
     session = SimpleNamespace(
@@ -109,7 +109,7 @@ def test_consolidation_service_uses_profile_maint_for_file_side_io():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True, await_vector_store=True))
+    asyncio.run(service.consolidate(session, archive_all=True))
 
     profile_maint.read_long_term.assert_called_once()
     profile_maint.append_history_once.assert_called_once()
@@ -153,7 +153,7 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
         memory_port=memory,
         provider=provider,
         model="m",
-        memory_window=40,
+        keep_count=20,
     )
     session = SimpleNamespace(
         key="cli:1",
@@ -166,7 +166,7 @@ def test_consolidation_event_failure_does_not_write_implicit_long_term():
         _chat_id="1",
     )
 
-    asyncio.run(service.consolidate(session, archive_all=True, await_vector_store=True))
+    asyncio.run(service.consolidate(session, archive_all=True))
 
     # event 失败 → last_consolidated 不推进，隐式结果不写库
     assert session.last_consolidated == 0

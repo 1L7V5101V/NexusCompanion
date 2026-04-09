@@ -19,7 +19,7 @@ async def test_consolidation_runtime_prefers_facade_run_consolidation():
         scheduler=MagicMock(),
         consolidation=MagicMock(),
         facade=facade,
-        memory_window=40,
+        keep_count=20,
         wait_timeout_s=1.0,
     )
     session = object()
@@ -27,13 +27,11 @@ async def test_consolidation_runtime_prefers_facade_run_consolidation():
     await runtime.consolidate_memory(
         session,
         archive_all=True,
-        await_vector_store=True,
     )
 
     facade.run_consolidation.assert_awaited_once_with(
         session,
         archive_all=True,
-        await_vector_store=True,
     )
 
 
@@ -64,8 +62,7 @@ async def test_turn_scheduler_runner_can_go_through_facade():
     scheduler = TurnScheduler(
         post_mem_worker=None,
         consolidation_runner=runner,
-        memory_window=40,
-        consolidation_min_new_messages=10,
+        keep_count=20,
     )
 
     await scheduler._run_consolidation_bg(session, "telegram:1")

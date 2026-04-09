@@ -47,13 +47,13 @@ class _ConsolidationHarness:
             memory_port=self._memory_port,
             provider=self.provider,
             model="lm",
-            memory_window=4,
+            keep_count=2,
             profile_extractor=None,
         )
         self._scheduler = TurnScheduler(
             post_mem_worker=None,
             consolidation_runner=self._consolidate_and_save,
-            memory_window=4,
+            keep_count=2,
         )
 
     def set_profile_extractor(self, extractor) -> None:
@@ -61,7 +61,7 @@ class _ConsolidationHarness:
             memory_port=self._memory_port,
             provider=self.provider,
             model="lm",
-            memory_window=4,
+            keep_count=2,
             profile_extractor=extractor,
         )
 
@@ -69,12 +69,10 @@ class _ConsolidationHarness:
         self,
         session,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None:
         await self._consolidation.consolidate(
             session,
             archive_all=archive_all,
-            await_vector_store=await_vector_store,
         )
 
     async def _consolidate_and_save(self, session: object) -> None:
@@ -114,13 +112,13 @@ async def test_consolidation_helpers(
     )
     assert _select_consolidation_window(
         session,
-        memory_window=10,
+        keep_count=5,
         consolidation_min_new_messages=10,
         archive_all=False,
     ) is None
     window = _select_consolidation_window(
         session,
-        memory_window=4,
+        keep_count=2,
         consolidation_min_new_messages=10,
         archive_all=True,
     )
@@ -132,13 +130,13 @@ async def test_consolidation_helpers(
     )
     assert _select_consolidation_window(
         enough_messages_session,
-        memory_window=10,
+        keep_count=5,
         consolidation_min_new_messages=10,
         archive_all=False,
     ) is not None
     assert _select_consolidation_window(
         enough_messages_session,
-        memory_window=10,
+        keep_count=5,
         consolidation_min_new_messages=12,
         archive_all=False,
     ) is None
@@ -195,7 +193,6 @@ async def test_consolidation_helpers(
     await awaited._consolidate_memory(
         awaited_session,
         archive_all=True,
-        await_vector_store=True,
     )
     assert awaited._memory_port.save_from_consolidation.await_count == 1
     assert scheduled and all(task.done() for task in scheduled)
@@ -241,8 +238,7 @@ async def test_turn_scheduler_requires_min_ready_messages_before_consolidation()
     scheduler = TurnScheduler(
         post_mem_worker=None,
         consolidation_runner=runner,
-        memory_window=40,
-        consolidation_min_new_messages=10,
+        keep_count=20,
     )
     session = SimpleNamespace(
         messages=[{"role": "user", "content": "u"}] * 29,
@@ -347,7 +343,6 @@ async def test_consolidation_long_term_prompt_contains_conversation():
     await harness._consolidate_memory(
         session,
         archive_all=True,
-        await_vector_store=True,
     )
 
     # 两次 LLM 调用都发生了：event 提取 + 合并长期记忆提取

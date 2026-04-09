@@ -70,7 +70,7 @@ class ConsolidationWindow:
 def _select_consolidation_window(
     session,
     *,
-    memory_window: int,
+    keep_count: int,
     consolidation_min_new_messages: int,
     archive_all: bool,
 ) -> ConsolidationWindow | None:
@@ -82,7 +82,6 @@ def _select_consolidation_window(
             consolidate_up_to=total_messages,
         )
 
-    keep_count = memory_window // 2
     if total_messages <= keep_count:
         return None
     if total_messages - session.last_consolidated <= 0:
@@ -149,18 +148,15 @@ class ConsolidationService:
         profile_maint: "ProfileMaintenanceStore | None" = None,
         provider: "LLMProvider",
         model: str,
-        memory_window: int,
-        consolidation_min_new_messages: int = 10,
+        keep_count: int,
         profile_extractor: "ProfileFactExtractor | None" = None,
     ) -> None:
         self._memory_port = memory_port
         self._profile_maint = profile_maint or memory_port
         self._provider = provider
         self._model = model
-        self._memory_window = memory_window
-        self._consolidation_min_new_messages = max(
-            1, int(consolidation_min_new_messages)
-        )
+        self._keep_count = keep_count
+        self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._profile_extractor = profile_extractor
 
     async def _extract_and_save_profile_facts(
@@ -528,14 +524,13 @@ USER: 那就直接写个脚本绕过去吧
         self,
         session,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None:
         memory = self._memory_port
         profile_maint = self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
             session,
-            memory_window=self._memory_window,
+            keep_count=self._keep_count,
             consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
         )
@@ -546,16 +541,15 @@ USER: 那就直接写个脚本绕过去吧
             )
         else:
             if window is None:
-                keep_count = self._memory_window // 2
                 ready_count = (
-                    len(session.messages) - keep_count - session.last_consolidated
+                    len(session.messages) - self._keep_count - session.last_consolidated
                 )
-                if len(session.messages) <= keep_count:
+                if len(session.messages) <= self._keep_count:
                     logger.debug(
                         "Session %s: No consolidation needed (messages=%d, keep=%d)",
                         session.key,
                         len(session.messages),
-                        keep_count,
+                        self._keep_count,
                     )
                 else:
                     logger.debug(
@@ -757,21 +751,19 @@ USER: 那就直接写个脚本绕过去吧
                     )
 
             # 5. 再把 history_entries 写入向量记忆，供后续 retrieval 使用。
-            save_tasks: list[asyncio.Task] = []
-            for entry in history_entries:
-                entry_source_ref = _build_entry_source_ref(source_ref, entry)
-                task = asyncio.create_task(
-                    self._memory_port.save_from_consolidation(
-                        history_entry=entry,
-                        behavior_updates=[],
-                        source_ref=entry_source_ref,
-                        scope_channel=scope_channel,
-                        scope_chat_id=scope_chat_id,
-                    )
+            # 必须等所有写库完成后再推进 last_consolidated，防止进程崩溃导致丢数。
+            save_coros = [
+                self._memory_port.save_from_consolidation(
+                    history_entry=entry,
+                    behavior_updates=[],
+                    source_ref=_build_entry_source_ref(source_ref, entry),
+                    scope_channel=scope_channel,
+                    scope_chat_id=scope_chat_id,
                 )
-                save_tasks.append(task)
-            if await_vector_store and save_tasks:
-                await asyncio.gather(*save_tasks)
+                for entry in history_entries
+            ]
+            if save_coros:
+                await asyncio.gather(*save_coros)
             if history_entries:
                 logger.info(
                     "Memory consolidation: saved %d history entries to vector store",
@@ -856,18 +848,15 @@ class ConsolidationRuntime:
         scheduler: "TurnScheduler",
         consolidation: ConsolidationService,
         facade: "MemoryRuntimeFacade | None" = None,
-        memory_window: int,
-        consolidation_min_new_messages: int = 10,
+        keep_count: int,
         wait_timeout_s: float,
     ) -> None:
         self._session_manager = session_manager
         self._scheduler = scheduler
         self._consolidation = consolidation
         self._facade = facade
-        self._memory_window = memory_window
-        self._consolidation_min_new_messages = max(
-            1, int(consolidation_min_new_messages)
-        )
+        self._keep_count = keep_count
+        self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._wait_timeout_s = wait_timeout_s
 
     async def consolidate_memory(
@@ -875,19 +864,16 @@ class ConsolidationRuntime:
         session,
         *,
         archive_all: bool = False,
-        await_vector_store: bool = False,
     ) -> None:
         if self._facade is not None:
             await self._facade.run_consolidation(
                 session,
                 archive_all=archive_all,
-                await_vector_store=await_vector_store,
             )
             return
         await self._consolidation.consolidate(
             session,
             archive_all=archive_all,
-            await_vector_store=await_vector_store,
         )
 
     async def trigger_memory_consolidation(
@@ -901,7 +887,7 @@ class ConsolidationRuntime:
         session = self._session_manager.get_or_create(session_key)
         window = _select_consolidation_window(
             session,
-            memory_window=self._memory_window,
+            keep_count=self._keep_count,
             consolidation_min_new_messages=self._consolidation_min_new_messages,
             archive_all=archive_all,
         )
@@ -914,7 +900,7 @@ class ConsolidationRuntime:
             session = self._session_manager.get_or_create(session_key)
             window = _select_consolidation_window(
                 session,
-                memory_window=self._memory_window,
+                keep_count=self._keep_count,
                 consolidation_min_new_messages=self._consolidation_min_new_messages,
                 archive_all=archive_all,
             )
@@ -929,7 +915,6 @@ class ConsolidationRuntime:
             await runner(
                 session,
                 archive_all=archive_all,
-                await_vector_store=True,
             )
             await self._session_manager.save_async(session)
             return True

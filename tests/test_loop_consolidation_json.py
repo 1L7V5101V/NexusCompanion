@@ -32,7 +32,7 @@ def test_select_consolidation_window_uses_half_window_tail_keep():
 
     window = _select_consolidation_window(
         session,
-        memory_window=6,
+        keep_count=3,
         consolidation_min_new_messages=5,
         archive_all=False,
     )

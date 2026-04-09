@@ -625,7 +625,7 @@ def test_consolidate_memory_runs_long_term_extraction_in_parallel():
     session._channel = "cli"
     session._chat_id = "1"
 
-    asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))
+    asyncio.run(loop._consolidate_memory(session, archive_all=True))
 
     # event 写入成功
     memory_port.append_history_once.assert_called_once()
@@ -652,4 +652,4 @@ def test_consolidate_memory_works_without_profile_extractor():
     session._channel = "cli"
     session._chat_id = "1"
 
-    asyncio.run(loop._consolidate_memory(session, archive_all=True, await_vector_store=True))
+    asyncio.run(loop._consolidate_memory(session, archive_all=True))

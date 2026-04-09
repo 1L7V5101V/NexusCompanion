@@ -84,7 +84,6 @@ async def test_trigger_memory_consolidation_uses_real_entrypoint(tmp_path: Path)
     loop._consolidate_memory.assert_awaited_once_with(
         session,
         archive_all=False,
-        await_vector_store=True,
     )
     loop.session_manager.save_async.assert_awaited_once_with(session)
 
