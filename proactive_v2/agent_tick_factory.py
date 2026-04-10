@@ -9,7 +9,9 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
+from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
+from agent.tools.web_search import WebSearchTool
 from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 from agent.turns.orchestrator import TurnOrchestrator
 from proactive_v2 import mcp_sources
@@ -48,6 +50,7 @@ class AgentTickDeps:
     rng: Any
     workspace_context_fn: Callable[[], str]
     observe_writer: Any | None
+    shared_tools: ToolRegistry | None = None
     turn_orchestrator: TurnOrchestrator | None = None
     pool: McpClientPool | None = None
 
@@ -271,10 +274,9 @@ class AgentTickFactory:
                 drift_dir=drift_dir,
                 store=store,
                 memory=self._deps.memory,
-                recent_chat_fn=self._build_recent_chat_fn(),
-                web_fetch_tool=tool_deps.web_fetch_tool,
-                max_chars=tool_deps.max_chars,
+                shared_tools=self._deps.shared_tools,
                 send_message_fn=self._build_drift_send_message_fn(),
+                max_web_fetch_chars=tool_deps.max_chars,
             ),
             max_steps=getattr(self._deps.cfg, "drift_max_steps", 20),
         )

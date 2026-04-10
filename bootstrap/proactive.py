@@ -59,6 +59,7 @@ def build_proactive_runtime(
             agent_loop.processing_state.is_busy if agent_loop.processing_state else None
         ),
         observe_writer=observe_writer,
+        shared_tools=getattr(agent_loop, "tools", None),
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

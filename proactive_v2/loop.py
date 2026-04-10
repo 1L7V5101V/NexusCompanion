@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.provider import LLMProvider
 from agent.tools.message_push import MessagePushTool
+from agent.tools.registry import ToolRegistry
 from agent.turns.outbound import PushToolOutboundPort
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from core.common.strategy_trace import build_strategy_trace_envelope
@@ -74,6 +75,7 @@ class ProactiveLoop:
         light_model: str = "",
         passive_busy_fn: Callable[[str], bool] | None = None,
         observe_writer=None,
+        shared_tools: ToolRegistry | None = None,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -89,6 +91,7 @@ class ProactiveLoop:
         self._light_model = light_model or (config.model or model)
         self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
+        self._shared_tools = shared_tools
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -184,6 +187,7 @@ class ProactiveLoop:
                 rng=self._rng,
                 workspace_context_fn=self._read_workspace_proactive_context,
                 observe_writer=self._observe_writer,
+                shared_tools=self._shared_tools,
                 pool=self._mcp_pool,
             )
         ).build()

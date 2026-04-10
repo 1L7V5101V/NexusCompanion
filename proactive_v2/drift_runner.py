@@ -11,11 +11,10 @@ from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExe
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_state import DriftStateStore, SkillMeta
 from proactive_v2.drift_tools import (
-    DRIFT_TOOL_SCHEMAS,
     FORCED_FINISH_PROMPT,
     FORCED_WRITE_PROMPT,
     DriftToolDeps,
-    dispatch,
+    build_drift_tool_registry,
 )
 
 
@@ -51,6 +50,9 @@ class DriftRunner:
         ctx.drift_finished = False
         ctx.drift_message_sent = False
 
+        tools = build_drift_tool_registry(ctx=ctx, deps=self.tool_deps)
+        all_schemas = tools.get_schemas()
+
         messages: list[dict] = [
             {"role": "system", "content": self._build_system_prompt(skills)}
         ]
@@ -59,7 +61,7 @@ class DriftRunner:
 
         while steps < self.max_steps and not ctx.drift_finished:
             tool_choice: str | dict = "required"
-            schemas = list(DRIFT_TOOL_SCHEMAS)
+            schemas = list(all_schemas)
 
             if steps == self.max_steps - 3 and not warned:
                 warned = True
@@ -76,10 +78,11 @@ class DriftRunner:
             elif steps == self.max_steps - 2:
                 logger.info("[drift] forced write at step=%d", steps)
                 messages[0] = {"role": "system", "content": FORCED_WRITE_PROMPT}
-                tool_choice = {
-                    "type": "function",
-                    "function": {"name": "writefile"},
-                }
+                schemas = [
+                    s for s in schemas
+                    if s["function"]["name"] in {"write_file", "edit_file"}
+                ]
+                tool_choice = "required"
             elif steps == self.max_steps - 1:
                 logger.info("[drift] forced finish at step=%d", steps)
                 messages[0] = {"role": "system", "content": FORCED_FINISH_PROMPT}
@@ -89,13 +92,13 @@ class DriftRunner:
                 }
 
             if ctx.drift_message_sent:
-                allowed_after_send = {"writefile", "finish_drift"}
+                allowed_after_send = {"write_file", "edit_file", "finish_drift"}
                 schemas = [
                     s for s in schemas
                     if s["function"]["name"] in allowed_after_send
                 ]
                 logger.info(
-                    "[drift] send_message already used, restricting schema to writefile/finish_drift"
+                    "[drift] send_message already used, restricting schema to write_file/edit_file/finish_drift"
                 )
 
             tool_call = await llm_fn(messages, schemas, tool_choice)
@@ -120,7 +123,7 @@ class DriftRunner:
                     source="proactive",
                     session_key=ctx.session_key,
                 ),
-                lambda name, args: dispatch(name, args, ctx, self.tool_deps),
+                tools.execute,
             )
             if result.status == "error":
                 logger.warning("[drift] tool executor error at step=%d: %s", steps, result.output)
@@ -191,18 +194,18 @@ class DriftRunner:
             f"【最近的 Drift 记录】\n{recent_block}\n\n"
             f"【全局备注】\n{drift_note}\n\n"
             "【执行规则】\n"
-            "1. 自主选择一个 skill，readfile 读它的 SKILL.md 了解细节。\n"
+            "1. 自主选择一个 skill，read_file 读它的 SKILL.md 了解细节。\n"
             "   标准路径格式是 skills/<skill_name>/...，例如 skills/explore-curiosity/SKILL.md。\n"
-            "2. readfile 读该 skill 的 working files 了解当前进度。\n"
+            "2. read_file 读该 skill 的 working files 了解当前进度。\n"
             "   working file 也优先使用 skills/<skill_name>/... 或 drift 工作区下的绝对路径。\n"
             "3. 执行任务。\n"
-            "4. 有价值的发现必须立即 writefile，不要积累到最后再写。\n"
+            "4. 有价值的发现必须立即 write_file 或 edit_file，不要积累到最后再写。\n"
             "5. 单次 run 最多只能 send_message 一次。\n"
-            "6. send_message 成功后不要再调用 get_recent_chat / recall_memory / web_fetch，"
-            "后续只允许 writefile 和 finish_drift 收尾。\n"
+            "6. send_message 成功后不要再调用 recall_memory / web_fetch / web_search，"
+            "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
             "7. 执行结束前必须调用 finish_drift 保存状态。\n\n"
             "【可用工具】\n"
-            "readfile, writefile, recall_memory, web_fetch, get_recent_chat, send_message, finish_drift"
+            "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, send_message, finish_drift"
         )
 
     @staticmethod

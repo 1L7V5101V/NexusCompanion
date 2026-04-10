@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.tools.base import Tool
+from agent.tools.registry import ToolRegistry
 from agent.looping.ports import ObservabilityServices, SessionServices
 from agent.turns.orchestrator import TurnOrchestrator, TurnOrchestratorDeps
 from agent.turns.outbound import OutboundDispatch
@@ -16,7 +18,7 @@ from proactive_v2.agent_tick import AgentTick
 from proactive_v2.context import AgentTickContext
 from proactive_v2.drift_runner import DriftRunner
 from proactive_v2.drift_state import DriftStateStore
-from proactive_v2.drift_tools import DRIFT_TOOL_SCHEMAS, DriftToolDeps, dispatch
+from proactive_v2.drift_tools import DriftToolDeps, build_drift_tool_registry
 from proactive_v2.agent_tick_factory import AgentTickDeps, AgentTickFactory
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.mcp_sources import McpClientPool
@@ -40,69 +42,175 @@ def _write_skill(root: Path, name: str = "explore-curiosity") -> Path:
     return skill_dir
 
 
+class _DummyTool(Tool):
+    def __init__(self, name: str):
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def description(self) -> str:
+        return self._name
+
+    @property
+    def parameters(self) -> dict:
+        return {"type": "object", "properties": {}, "required": []}
+
+    async def execute(self, **kwargs):
+        return json.dumps({"ok": True}, ensure_ascii=False)
+
+
+def _build_shared_tools() -> ToolRegistry:
+    reg = ToolRegistry()
+    reg.register(_DummyTool("recall_memory"))
+    reg.register(_DummyTool("web_fetch"))
+    reg.register(_DummyTool("web_search"))
+    return reg
+
+
+class _FakeWebFetchTool(Tool):
+    @property
+    def name(self) -> str:
+        return "web_fetch"
+
+    @property
+    def description(self) -> str:
+        return "web_fetch"
+
+    @property
+    def parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        }
+
+    async def execute(self, **kwargs):
+        return json.dumps(
+            {"text": "x" * 20, "length": 20, "format": "text"},
+            ensure_ascii=False,
+        )
+
+
+async def _exec_drift_tool(
+    tmp_path: Path,
+    ctx: AgentTickContext,
+    tool_name: str,
+    args: dict,
+    *,
+    store: DriftStateStore | None = None,
+    send_message_fn=None,
+):
+    resolved_store = store or DriftStateStore(tmp_path)
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=resolved_store,
+            shared_tools=_build_shared_tools(),
+            send_message_fn=send_message_fn,
+        ),
+    )
+    return await reg.execute(tool_name, args)
+
+
 def test_drift_tool_schemas_include_reused_tools():
-    names = {schema["function"]["name"] for schema in DRIFT_TOOL_SCHEMAS}
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    names = {
+        schema["function"]["name"]
+        for schema in build_drift_tool_registry(
+            ctx=ctx,
+            deps=DriftToolDeps(
+                drift_dir=Path("."),
+                store=DriftStateStore(Path(".")),
+                shared_tools=_build_shared_tools(),
+            ),
+        ).get_schemas()
+    }
     assert "recall_memory" in names
     assert "web_fetch" in names
-    assert "get_recent_chat" in names
+    assert "read_file" in names
+    assert "edit_file" in names
+    assert "get_recent_chat" not in names
+
+
+@pytest.mark.asyncio
+async def test_drift_web_fetch_keeps_drift_level_truncation(tmp_path: Path):
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    shared = ToolRegistry()
+    shared.register(_DummyTool("recall_memory"))
+    shared.register(_FakeWebFetchTool())
+    shared.register(_DummyTool("web_search"))
+    reg = build_drift_tool_registry(
+        ctx=ctx,
+        deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=DriftStateStore(tmp_path),
+            shared_tools=shared,
+            max_web_fetch_chars=8,
+        ),
+    )
+    raw = await reg.execute("web_fetch", {"url": "https://example.com"})
+    payload = json.loads(raw)
+    assert payload["text"] == "x" * 8
+    assert payload["length"] == 8
+    assert payload["truncated"] is True
 
 
 @pytest.mark.asyncio
 async def test_drift_readfile_rejects_outside_path(tmp_path: Path):
-    store = DriftStateStore(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    deps = DriftToolDeps(drift_dir=tmp_path, store=store)
-    raw = await dispatch("readfile", {"path": "../x.txt"}, ctx, deps)
-    assert json.loads(raw)["error"] == "path outside drift directory"
+    raw = await _exec_drift_tool(tmp_path, ctx, "read_file", {"path": "../x.txt"})
+    assert "超出允许目录" in str(raw)
 
 
 @pytest.mark.asyncio
 async def test_drift_readfile_accepts_skill_shorthand_path(tmp_path: Path):
     _write_skill(tmp_path)
-    store = DriftStateStore(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    deps = DriftToolDeps(drift_dir=tmp_path, store=store)
-    raw = await dispatch("readfile", {"path": "explore-curiosity/SKILL.md"}, ctx, deps)
-    assert "test skill" in json.loads(raw)["content"]
+    raw = await _exec_drift_tool(
+        tmp_path, ctx, "read_file", {"path": "skills/explore-curiosity/SKILL.md"}
+    )
+    assert "test skill" in str(raw)
 
 
 @pytest.mark.asyncio
 async def test_drift_readfile_accepts_absolute_path_inside_drift_dir(tmp_path: Path):
     skill_dir = _write_skill(tmp_path)
-    store = DriftStateStore(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    deps = DriftToolDeps(drift_dir=tmp_path, store=store)
-    raw = await dispatch("readfile", {"path": str(skill_dir / "SKILL.md")}, ctx, deps)
-    assert "test skill" in json.loads(raw)["content"]
+    raw = await _exec_drift_tool(
+        tmp_path, ctx, "read_file", {"path": str(skill_dir / "SKILL.md")}
+    )
+    assert "test skill" in str(raw)
 
 
 @pytest.mark.asyncio
 async def test_finish_drift_rejects_unknown_skill(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    deps = DriftToolDeps(drift_dir=tmp_path, store=store)
-    raw = await dispatch(
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
         "finish_drift",
         {"skill_used": "missing", "one_line": "x", "next": "y"},
-        ctx,
-        deps,
+        store=store,
     )
     assert json.loads(raw)["error"] == "unknown skill: missing"
 
 
 @pytest.mark.asyncio
 async def test_drift_writefile_returns_json_error_on_directory_target(tmp_path: Path):
-    store = DriftStateStore(tmp_path)
-    skill_dir = _write_skill(tmp_path)
+    _write_skill(tmp_path)
     ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
-    deps = DriftToolDeps(drift_dir=tmp_path, store=store)
-    raw = await dispatch(
-        "writefile",
-        {"path": "skills/explore-curiosity", "content": "x"},
+    raw = await _exec_drift_tool(
+        tmp_path,
         ctx,
-        deps,
+        "write_file",
+        {"path": "skills/explore-curiosity", "content": "x"},
     )
-    assert "writefile failed:" in json.loads(raw)["error"]
+    assert "写入文件失败" in str(raw)
 
 
 def test_drift_state_store_scan_skills_reads_frontmatter(tmp_path: Path):
@@ -119,7 +227,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("readfile", {"path": "skills/explore-curiosity/SKILL.md"}),
+            ("read_file", {"path": "skills/explore-curiosity/SKILL.md"}),
             (
                 "finish_drift",
                 {
@@ -136,7 +244,7 @@ async def test_drift_runner_runs_and_finishes(tmp_path: Path):
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
             store=store,
-            recent_chat_fn=AsyncMock(return_value=[]),
+            shared_tools=_build_shared_tools(),
         ),
         max_steps=5,
     )
@@ -163,7 +271,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
         tool_deps=DriftToolDeps(
             drift_dir=tmp_path,
             store=store,
-            recent_chat_fn=AsyncMock(return_value=[]),
+            shared_tools=_build_shared_tools(),
             send_message_fn=AsyncMock(return_value=True),
         ),
         max_steps=5,
@@ -172,9 +280,48 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
     await runner.run(ctx, llm)
     second_names = {schema["function"]["name"] for schema in llm.calls[1][0:1]} if False else None
     assert llm.calls
-    # 第二次 llm 调用的 schemas 只能由 DriftRunner 约束为 writefile/finish_drift；
+    # 第二次 llm 调用的 schemas 只能由 DriftRunner 约束为 write_file/edit_file/finish_drift；
     # FakeLLM 不记录 schemas，这里用行为结果兜底：send 后仍正常 finish。
     assert ctx.drift_finished is True
+
+
+@pytest.mark.asyncio
+async def test_drift_runner_forced_write_allows_write_file_or_edit_file(tmp_path: Path):
+    _write_skill(tmp_path)
+    store = DriftStateStore(tmp_path)
+    captured: list[tuple[list[str], str | dict]] = []
+
+    async def llm(messages: list[dict], schemas: list[dict], tool_choice: str | dict = "auto"):
+        captured.append(([s["function"]["name"] for s in schemas], tool_choice))
+        step = len(captured)
+        if step == 1:
+            return {"name": "read_file", "input": {"path": "skills/explore-curiosity/SKILL.md"}}
+        if step == 2:
+            return {"name": "edit_file", "input": {"path": "skills/explore-curiosity/SKILL.md", "old_text": "test skill\n", "new_text": "updated\n"}}
+        if step == 3:
+            return {
+                "name": "finish_drift",
+                "input": {
+                    "skill_used": "explore-curiosity",
+                    "one_line": "updated",
+                    "next": "continue",
+                },
+            }
+        return None
+
+    runner = DriftRunner(
+        store=store,
+        tool_deps=DriftToolDeps(
+            drift_dir=tmp_path,
+            store=store,
+            shared_tools=_build_shared_tools(),
+        ),
+        max_steps=3,
+    )
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc), session_key="s")
+    await runner.run(ctx, llm)
+    assert captured[1][1] == "required"
+    assert set(captured[1][0]) == {"write_file", "edit_file"}
 
 
 @pytest.mark.asyncio
@@ -184,7 +331,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("readfile", {"path": "skills/explore-curiosity/SKILL.md"}),
+            ("read_file", {"path": "skills/explore-curiosity/SKILL.md"}),
             (
                 "finish_drift",
                 {
@@ -211,7 +358,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
             tool_deps=DriftToolDeps(
                 drift_dir=tmp_path,
                 store=DriftStateStore(tmp_path),
-                recent_chat_fn=AsyncMock(return_value=[]),
+                shared_tools=_build_shared_tools(),
             ),
             max_steps=5,
         ),
@@ -331,7 +478,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
             tool_deps=DriftToolDeps(
                 drift_dir=tmp_path,
                 store=DriftStateStore(tmp_path),
-                recent_chat_fn=AsyncMock(return_value=[]),
+                shared_tools=_build_shared_tools(),
                 send_message_fn=send_message,
             ),
             max_steps=5,
@@ -420,6 +567,7 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
         rng=SimpleNamespace(),
         workspace_context_fn=lambda: "",
         observe_writer=None,
+        shared_tools=_build_shared_tools(),
         turn_orchestrator=orchestrator,
         pool=McpClientPool(),
     )
