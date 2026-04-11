@@ -142,3 +142,168 @@ def test_spo2_uses_spo2_time_and_deduplicates_same_sample():
 
     day = engine._daily["2099-01-01"]
     assert day["night_spo2"] == pytest.approx([89.95])
+
+
+def test_stale_sleep_spo2_does_not_trigger_cardio_respiratory_strain():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    for minute in range(30):
+        engine.ingest_row(
+            {
+                "poll_time": f"2099-01-01 10:{minute:02d}:00",
+                "state": "awake",
+                "heart_rate": 88.0,
+                "data_lag_min": 5,
+                "signals": {"zero_steps_count": 20},
+            }
+        )
+
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-02 07:00:00",
+            "state": "sleeping",
+            "data_lag_min": 1,
+            "signals": {"zero_steps_count": 20},
+        }
+    )
+    engine.ingest_row(
+        {
+            "poll_time": "2099-01-02 08:00:00",
+            "state": "awake",
+            "data_lag_min": 1,
+            "signals": {"zero_steps_count": 20},
+        }
+    )
+
+    late_rows = [
+        {
+            "poll_time": "2099-01-02 19:20:00",
+            "state": "awake",
+            "heart_rate": 109.0,
+            "spo2": 80.9,
+            "spo2_time": "10:48:00",
+            "spo2_lag_min": 512,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:25:00",
+            "state": "awake",
+            "heart_rate": 113.5,
+            "spo2": 80.9,
+            "spo2_time": "10:48:00",
+            "spo2_lag_min": 517,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+    ]
+
+    events = []
+    for row in late_rows:
+        events.extend(engine.ingest_row(row))
+
+    assert not any(e.type == "cardio_respiratory_strain" for e in events)
+
+
+def test_acute_cardio_stress_113_only_emits_medium():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    for minute in range(30):
+        engine.ingest_row(
+            {
+                "poll_time": f"2099-01-01 10:{minute:02d}:00",
+                "state": "awake",
+                "heart_rate": 88.0,
+                "data_lag_min": 5,
+                "signals": {"zero_steps_count": 20},
+            }
+        )
+
+    rows = [
+        {
+            "poll_time": "2099-01-02 19:15:00",
+            "state": "awake",
+            "heart_rate": 109.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:20:00",
+            "state": "awake",
+            "heart_rate": 111.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:25:00",
+            "state": "awake",
+            "heart_rate": 113.5,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+    ]
+
+    events = []
+    for row in rows:
+        events.extend(engine.ingest_row(row))
+
+    acute_events = [e for e in events if e.type == "acute_cardio_stress"]
+    assert len(acute_events) == 1
+    assert acute_events[0].severity == "medium"
+
+
+def test_acute_cardio_stress_120_for_20_min_emits_high():
+    mod = _import_health_event_v2()
+    engine = mod.HealthEventV2Engine()
+
+    for minute in range(30):
+        engine.ingest_row(
+            {
+                "poll_time": f"2099-01-01 10:{minute:02d}:00",
+                "state": "awake",
+                "heart_rate": 88.0,
+                "data_lag_min": 5,
+                "signals": {"zero_steps_count": 20},
+            }
+        )
+
+    rows = [
+        {
+            "poll_time": "2099-01-02 19:10:00",
+            "state": "awake",
+            "heart_rate": 120.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:15:00",
+            "state": "awake",
+            "heart_rate": 121.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:20:00",
+            "state": "awake",
+            "heart_rate": 122.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+        {
+            "poll_time": "2099-01-02 19:25:00",
+            "state": "awake",
+            "heart_rate": 123.0,
+            "data_lag_min": 5,
+            "signals": {"zero_steps_count": 20},
+        },
+    ]
+
+    events = []
+    for row in rows:
+        events.extend(engine.ingest_row(row))
+
+    acute_events = [e for e in events if e.type == "acute_cardio_stress"]
+    assert len(acute_events) == 1
+    assert acute_events[0].severity == "high"
