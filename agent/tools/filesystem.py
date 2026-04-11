@@ -2,6 +2,7 @@
 
 import base64
 import asyncio
+import builtins
 import difflib
 import io
 import logging
@@ -14,47 +15,6 @@ from agent.tools.base import Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 _FILE_MUTATION_LOCKS: dict[str, asyncio.Lock] = {}
-
-
-def _read_xlsx(file_path: Path) -> str:
-    import openpyxl
-
-    wb = openpyxl.load_workbook(file_path, data_only=True)
-    parts = []
-    for sheet in wb.sheetnames:
-        ws = wb[sheet]
-        parts.append(f"## Sheet: {sheet}")
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) if c is not None else "" for c in row]
-            if any(cells):
-                parts.append("\t".join(cells))
-    text = "\n".join(parts)
-    if len(text) > _XLSX_MAX_CHARS:
-        text = (
-            text[:_XLSX_MAX_CHARS]
-            + f"\n\n[已截断：表格内容过长，仅返回前 {_XLSX_MAX_CHARS} 字符]"
-        )
-    return text
-
-
-def _read_xls(file_path: Path) -> str:
-    import xlrd
-
-    wb = xlrd.open_workbook(str(file_path))
-    parts = []
-    for sheet in wb.sheets():
-        parts.append(f"## Sheet: {sheet.name}")
-        for row_idx in range(sheet.nrows):
-            cells = [str(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
-            parts.append("\t".join(cells))
-    text = "\n".join(parts)
-    if len(text) > _XLSX_MAX_CHARS:
-        text = (
-            text[:_XLSX_MAX_CHARS]
-            + f"\n\n[已截断：表格内容过长，仅返回前 {_XLSX_MAX_CHARS} 字符]"
-        )
-    return text
-
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     """解析路径（展开 ~ 并取绝对路径），可选限制在允许目录内。
@@ -133,18 +93,29 @@ async def _run_with_file_mutation_lock(file_path: Path, fn: Any) -> Any:
     return result
 
 
-_READ_MAX_CHARS = 10_000  # 默认单次最多返回 10K 字符，大文件须分页读取
-_XLSX_MAX_CHARS = 30_000  # xlsx/xls 表格内容上限（表格行通常比代码行长）
-_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_READ_MAX_LINES = 400
+_READ_MAX_BYTES = 10_000
 _IMAGE_MAX_EDGE = 1568
 _IMAGE_TARGET_B64_LEN = 8_000_000
 _IMAGE_MIN_QUALITY = 45
+_READ_PROBE_BYTES = 4096
+_SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/bmp",
+    "image/webp",
+}
 
 
-def _encode_image_for_model(file_path: Path) -> tuple[str, str, bool]:
+def _encode_image_for_model(
+    file_path: Path, detected_mime: str | None = None
+) -> tuple[str, str, bool]:
     raw = file_path.read_bytes()
     raw_b64 = base64.b64encode(raw).decode()
-    mime, _ = mimetypes.guess_type(file_path.name)
+    mime = detected_mime
+    if mime is None:
+        mime, _ = mimetypes.guess_type(file_path.name)
     if mime and mime.startswith("image/") and len(raw_b64) <= _IMAGE_TARGET_B64_LEN:
         return mime, raw_b64, False
 
@@ -183,8 +154,8 @@ def _encode_image_for_model(file_path: Path) -> tuple[str, str, bool]:
     return "image/jpeg", base64.b64encode(chosen).decode(), True
 
 
-def _read_image(file_path: Path) -> ToolResult:
-    mime, b64, compressed = _encode_image_for_model(file_path)
+def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult:
+    mime, b64, compressed = _encode_image_for_model(file_path, detected_mime)
     note = "，已自动压缩" if compressed else ""
     return ToolResult(
         text=f"[已读取图片文件 {file_path.name}{note}，图片内容已提供给多模态模型]",
@@ -195,6 +166,105 @@ def _read_image(file_path: Path) -> ToolResult:
             }
         ],
     )
+
+
+def _detect_image_mime_from_header(head: bytes, file_name: str) -> str | None:
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if head.startswith(b"BM"):
+        return "image/bmp"
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "image/webp"
+    mime, _ = mimetypes.guess_type(file_name)
+    if mime in _SUPPORTED_IMAGE_MIME_TYPES:
+        return mime
+    return None
+
+
+def _looks_binary(head: bytes) -> bool:
+    if not head:
+        return False
+    if b"\x00" in head:
+        return True
+    allowed = set(b"\t\n\r\f\b")
+    suspicious = 0
+    for byte in head:
+        if byte in allowed:
+            continue
+        if 32 <= byte <= 126:
+            continue
+        if byte >= 128:
+            continue
+        suspicious += 1
+    return suspicious / max(len(head), 1) > 0.3
+
+
+def _decode_line(raw: bytes) -> tuple[str, bool]:
+    try:
+        return raw.decode("utf-8"), False
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace"), True
+
+
+def _scan_text_file(
+    file_path: Path, offset: int, limit: int | None
+) -> tuple[list[str], int, int, bool]:
+    sliced_lines: list[str] = []
+    total_lines = 0
+    total_bytes = 0
+    had_decode_errors = False
+
+    with builtins.open(file_path, "rb") as fh:
+        while True:
+            raw_line = fh.readline()
+            if raw_line == b"":
+                break
+            total_lines += 1
+            total_bytes += len(raw_line)
+            decoded_line, line_had_error = _decode_line(raw_line)
+            had_decode_errors = had_decode_errors or line_had_error
+            line_idx = total_lines - 1
+            if line_idx < offset:
+                continue
+            if limit is not None and len(sliced_lines) >= limit:
+                continue
+            sliced_lines.append(decoded_line)
+
+    return sliced_lines, total_lines, total_bytes, had_decode_errors
+
+
+def _truncate_numbered_lines(
+    raw_lines: list[str],
+    numbered_lines: list[str],
+) -> tuple[str, bool, str | None, bool, int, int]:
+    if not numbered_lines:
+        return "", False, None, False, 0, 0
+
+    first_line_bytes = len(raw_lines[0].encode("utf-8"))
+    if first_line_bytes > _READ_MAX_BYTES:
+        return "", True, "first_line_bytes", True, 0, 0
+
+    parts: list[str] = []
+    used_bytes = 0
+    truncated_by: str | None = None
+    output_lines = 0
+    for idx, line in enumerate(numbered_lines):
+        line_bytes = len(line.encode("utf-8"))
+        if idx >= _READ_MAX_LINES:
+            truncated_by = "lines"
+            break
+        if used_bytes + line_bytes > _READ_MAX_BYTES:
+            truncated_by = "bytes"
+            break
+        parts.append(line)
+        used_bytes += line_bytes
+        output_lines += 1
+
+    return "".join(parts), truncated_by is not None, truncated_by, False, output_lines, used_bytes
 
 
 class ReadFileTool(Tool):
@@ -211,10 +281,10 @@ class ReadFileTool(Tool):
     def description(self) -> str:
         return (
             "读取文件内容。文本文件输出带行号格式（如 '     1→内容'），便于 edit_file 精确定位；"
-            "Excel 文件（.xlsx/.xls）返回表格文本，不带行号；"
-            "图片文件会直接提供给多模态模型查看。\n"
-            "默认每次最多 10K 字符；大文件须用 limit 分页，不要依赖字符截断后的自动续读。\n\n"
+            "支持的栅格图片会直接提供给多模态模型查看。\n"
+            "文本读取默认受 400 行和 10KB 双重上限保护；大文件须用 limit 分页，不要依赖自动截断后的续读。\n\n"
             "推荐策略：先 limit=50 预览文件结构，再按需读取目标行段（offset=N limit=M）。\n"
+            "明显二进制文件不会按文本硬解码，会提示改用 shell 查看。\n"
             "并行读取：可在同一次响应中同时读取多个文件，无需逐一等待。\n"
             "参数说明：offset=跳过的行数（0-based），limit=读取行数；二者仅对文本文件生效。"
         )
@@ -255,49 +325,62 @@ class ReadFileTool(Tool):
             if not file_path.is_file():
                 return f"错误：路径不是文件：{path}"
 
-            suffix = file_path.suffix.lower()
-            if suffix in _IMAGE_SUFFIXES:
-                return _read_image(file_path)
-            if suffix == ".xlsx":
-                return _read_xlsx(file_path)
-            if suffix == ".xls":
-                return _read_xls(file_path)
+            with builtins.open(file_path, "rb") as fh:
+                head = fh.read(_READ_PROBE_BYTES)
+            image_mime = _detect_image_mime_from_header(head, file_path.name)
+            if image_mime:
+                return _read_image(file_path, image_mime)
+            if _looks_binary(head):
+                return (
+                    f"错误：{path} 看起来是二进制文件，read_file 仅适合文本和图片。"
+                    "建议改用 shell 搭配 file/xxd/strings 查看。"
+                )
 
-            lines = file_path.read_text(encoding="utf-8").splitlines(keepends=True)
-            total_lines = len(lines)
-
-            # 按行分页
-            sliced = lines[offset:] if limit is None else lines[offset : offset + limit]
+            sliced, total_lines, total_bytes, had_decode_errors = _scan_text_file(
+                file_path, offset, limit
+            )
 
             # 带行号输出（1-based 显示值，从 offset+1 开始）
-            numbered_lines = []
-            for i, line in enumerate(sliced, start=offset + 1):
-                numbered_lines.append(f"{i:6}\u2192{line}")
-            text = "".join(numbered_lines)
-
-            # 字符上限截断（回退到完整行边界，避免截断行中间）
-            truncated_by_chars = False
-            if len(text) > _READ_MAX_CHARS:
-                truncated_text = text[:_READ_MAX_CHARS]
-                last_newline = truncated_text.rfind("\n")
-                if last_newline > 0:
-                    truncated_text = truncated_text[: last_newline + 1]
-                text = truncated_text
-                truncated_by_chars = True
+            numbered_lines = [
+                f"{i:6}\u2192{line}" for i, line in enumerate(sliced, start=offset + 1)
+            ]
+            (
+                text,
+                truncated,
+                truncated_by,
+                first_line_too_long,
+                output_lines,
+                output_bytes,
+            ) = _truncate_numbered_lines(
+                sliced,
+                numbered_lines
+            )
 
             suffix_note = ""
             end_line = offset + len(sliced)
-            if truncated_by_chars:
+            if first_line_too_long:
                 suffix_note = (
-                    f"\n\n[已截断：文件共 {total_lines} 行，内容过长。"
-                    f"建议用 limit=N 分段读取，例如 offset=0 limit=100。]"
+                    "\n\n[已截断：首行超过 10KB，直接返回半行价值很低。"
+                    "建议缩小读取范围，或改用 shell 查看局部字节内容。]"
+                )
+            elif truncated:
+                reason = "行数超限" if truncated_by == "lines" else "字节数超限"
+                suffix_note = (
+                    f"\n\n[已截断：文件共 {total_lines} 行 / {total_bytes} 字节，"
+                    f"本次返回 {output_lines} 行 / {output_bytes} 字节，因{reason}只返回前一部分。"
+                    f"建议用 limit=N 分段读取，例如 offset={offset} limit=100。]"
                 )
             elif offset > 0 or limit is not None:
                 suffix_note = (
-                    f"\n\n[第 {offset + 1}–{end_line} 行 / 共 {total_lines} 行]"
+                    f"\n\n[第 {offset + 1}–{end_line} 行 / 共 {total_lines} 行 / {total_bytes} 字节]"
                 )
             elif total_lines > len(sliced):
-                suffix_note = f"\n\n[共 {total_lines} 行]"
+                suffix_note = f"\n\n[共 {total_lines} 行 / {total_bytes} 字节]"
+
+            if had_decode_errors:
+                suffix_note += (
+                    "\n\n[提示：文件不是标准 UTF-8，已用替代字符显示无法解码的字节。]"
+                )
 
             return text + suffix_note
         except PermissionError as e:

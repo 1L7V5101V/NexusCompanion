@@ -16,9 +16,9 @@ from agent.tools.filesystem import (
     ReadFileTool,
     WriteFileTool,
     _IMAGE_TARGET_B64_LEN,
+    _READ_MAX_BYTES,
+    _READ_MAX_LINES,
     _FILE_MUTATION_LOCKS,
-    _read_xls,
-    _read_xlsx,
     _resolve_path,
     _run_with_file_mutation_lock,
 )
@@ -69,34 +69,6 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(PermissionError):
         _resolve_path("../x", base)
 
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "openpyxl",
-        SimpleNamespace(
-            load_workbook=lambda *args, **kwargs: type(
-                "_WB",
-                (),
-                {
-                    "sheetnames": ["S1"],
-                    "__getitem__": lambda self, name: SimpleNamespace(
-                        iter_rows=lambda values_only=True: [(1, 2), (None, None)]
-                    ),
-                },
-            )()
-        ),
-    )
-    monkeypatch.setitem(
-        __import__("sys").modules,
-        "xlrd",
-        SimpleNamespace(
-            open_workbook=lambda *args, **kwargs: SimpleNamespace(
-                sheets=lambda: [SimpleNamespace(name="S1", nrows=1, ncols=2, cell_value=lambda r, c: f"{r}-{c}")]
-            )
-        ),
-    )
-    assert "Sheet" in _read_xlsx(base / "a.xlsx")
-    assert "0-0" in _read_xls(base / "a.xls")
-
     reader = ReadFileTool(base)
     content = await reader.execute("a.txt", offset=1, limit=1)
     assert "line2" in content
@@ -113,6 +85,20 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert image_result.content_blocks[0]["image_url"]["url"].startswith(
         "data:image/png;base64,"
     )
+
+    weird_image = base / "image.bin"
+    weird_image.write_bytes(b"\x89PNG\r\n\x1a\nrest")
+    weird_image_result = await reader.execute("image.bin")
+    assert isinstance(weird_image_result, ToolResult)
+    assert weird_image_result.content_blocks[0]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+    svg = base / "icon.svg"
+    svg.write_text("<svg><rect width='10' height='10'/></svg>\n", encoding="utf-8")
+    svg_result = await reader.execute("icon.svg")
+    assert isinstance(svg_result, str)
+    assert "<svg>" in svg_result
 
     from PIL import Image
 
@@ -132,14 +118,61 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     assert "     2\u2192line2" in full_content
     assert "     3\u2192line3" in full_content
 
-    # 验证字符截断后提示语包含 limit 分页引导（改动九，决策 D）
+    # 验证字节截断后提示语包含 limit 分页引导
     from agent.tools import filesystem as _fs_mod
-    orig_max = _fs_mod._READ_MAX_CHARS
-    _fs_mod._READ_MAX_CHARS = 10  # 强制触发截断
+    orig_max_bytes = _fs_mod._READ_MAX_BYTES
+    _fs_mod._READ_MAX_BYTES = 25  # 强制触发普通字节截断，但不触发首行超长分支
     truncated = await reader.execute("a.txt")
-    _fs_mod._READ_MAX_CHARS = orig_max
+    _fs_mod._READ_MAX_BYTES = orig_max_bytes
     assert "limit=N" in truncated, "截断提示应引导用户用 limit=N 分页，而非 offset 续读"
+    assert "字节数超限" in truncated
+    assert "本次返回" in truncated
+    assert "字节" in truncated
     assert "offset=0 limit=100" in truncated
+
+    orig_max_lines = _fs_mod._READ_MAX_LINES
+    _fs_mod._READ_MAX_LINES = 2
+    truncated_lines = await reader.execute("a.txt")
+    _fs_mod._READ_MAX_LINES = orig_max_lines
+    assert "行数超限" in truncated_lines
+    assert "本次返回" in truncated_lines
+
+    long_line = base / "long_line.txt"
+    long_line.write_text("x" * (_READ_MAX_BYTES + 1), encoding="utf-8")
+    long_line_result = await reader.execute("long_line.txt")
+    assert "首行超过 10KB" in long_line_result
+
+    boundary = base / "boundary.txt"
+    boundary.write_text("x" * (_READ_MAX_BYTES - 1), encoding="utf-8")
+    boundary_result = await reader.execute("boundary.txt")
+    assert "首行超过 10KB" not in boundary_result
+    assert "字节数超限" in boundary_result
+
+    bad_utf8 = base / "bad.txt"
+    bad_utf8.write_bytes(b"ok\xffoops\n")
+    bad_utf8_result = await reader.execute("bad.txt")
+    assert "替代字符" in bad_utf8_result
+    assert "oops" in bad_utf8_result
+
+    binary = base / "data.dat"
+    binary.write_bytes(b"\x00\x01\x02\x03hello")
+    binary_result = await reader.execute("data.dat")
+    assert "二进制文件" in binary_result
+    assert "xxd" in binary_result
+
+    text_no_read_bytes = base / "stream.txt"
+    text_no_read_bytes.write_text("alpha\nbeta\n", encoding="utf-8")
+    orig_read_bytes = Path.read_bytes
+
+    def _guard_read_bytes(self: Path):
+        if self == text_no_read_bytes:
+            raise AssertionError("text path should stream via open(), not Path.read_bytes()")
+        return orig_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _guard_read_bytes)
+    streamed = await reader.execute("stream.txt")
+    assert "alpha" in streamed
+    monkeypatch.setattr(Path, "read_bytes", orig_read_bytes)
 
     writer = WriteFileTool(base)
     result = await writer.execute("b.txt", "hello")
