@@ -12,7 +12,7 @@ import pytest
 
 from agent.core.runtime_support import ToolDiscoveryState, TurnRunResult
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
-from agent.tools.shell import ShellTool, _truncate, _validate_network_command
+from agent.tools.shell import ShellTool, _MAX_OUTPUT, _truncate, _validate_network_command
 from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
@@ -94,9 +94,14 @@ async def test_reasoner_wrapper_shell_and_task_note_cover_branches(tmp_path: Pat
     assert "上传/写文件" in _validate_network_command("curl -o out http://x.com")
     assert _validate_network_command("echo hi") is None
     assert "禁止访问内网" in _validate_network_command("curl http://127.0.0.1")
-    assert "省略" in _truncate("a" * 31000)
+    truncated = _truncate("HEAD\n" + ("a" * 31000) + "\nTAIL")
+    assert truncated["truncated"] is True
+    assert truncated["strategy"] == "tail"
+    assert "HEAD" not in truncated["text"]
+    assert "TAIL" in truncated["text"]
+    assert len(truncated["text"]) <= _MAX_OUTPUT
 
-    async def _run(command: str, timeout: int, cwd=None):
+    async def _run(command: str, timeout: int, cwd=None, env=None, on_data=None):
         return "out", "err", 2, False
 
     with pytest.MonkeyPatch.context() as mp:

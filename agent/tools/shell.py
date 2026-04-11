@@ -15,10 +15,11 @@ import os
 import signal
 import shlex
 import ipaddress
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 import time
-from typing import Any
+from typing import Any, Callable
 
 from agent.tools.base import Tool
 
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 60  # 秒（OpenCode 默认 1 分钟）
 _MAX_TIMEOUT = 600  # 秒（OpenCode 最大 10 分钟）
 _MAX_OUTPUT = 30_000  # 字符（与 OpenCode MaxOutputLength 一致）
+_STREAM_CHUNK_SIZE = 4096
 
 # 禁止命令（对应 OpenCode bannedCommands）
 _BANNED = frozenset(
@@ -100,10 +102,12 @@ class ShellTool(Tool):
         allow_network: bool = True,
         working_dir: Path | None = None,
         restricted_dir: Path | None = None,
+        spawn_hook: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self._allow_network = allow_network
         self._working_dir = working_dir
         self._restricted_dir = restricted_dir.resolve() if restricted_dir else None
+        self._spawn_hook = spawn_hook
 
     @property
     def description(self) -> str:
@@ -150,9 +154,30 @@ class ShellTool(Tool):
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
+        on_data = kwargs.get("_on_data")
 
         if not command:
             return _err("命令不能为空")
+        cwd = self._working_dir
+        env = os.environ.copy()
+        if self._spawn_hook is not None:
+            hooked = self._spawn_hook(
+                {
+                    "command": command,
+                    "cwd": str(cwd) if cwd is not None else None,
+                    "env": env,
+                }
+            )
+            command = str(hooked.get("command", command)).strip()
+            cwd_val = hooked.get("cwd")
+            cwd = None if cwd_val in (None, "") else Path(str(cwd_val))
+            env_val = hooked.get("env")
+            if isinstance(env_val, dict):
+                env = {str(k): str(v) for k, v in env_val.items()}
+
+        if self._restricted_dir is not None and cwd is None:
+            cwd = self._restricted_dir
+
         logger.info("shell [%s]: %s", description, command[:120])
 
         # 禁止命令检查（对应 OpenCode bannedCommands 逻辑）
@@ -163,6 +188,7 @@ class ShellTool(Tool):
             command,
             allow_network=self._allow_network,
             restricted_dir=self._restricted_dir,
+            cwd=cwd,
         )
         if cmd_err:
             return _err(cmd_err)
@@ -171,27 +197,38 @@ class ShellTool(Tool):
         stdout, stderr, exit_code, interrupted = await _run(
             command,
             timeout,
-            cwd=self._working_dir,
+            cwd=cwd,
+            env=env,
+            on_data=on_data if callable(on_data) else None,
         )
         duration_ms = int(time.monotonic() * 1000) - start_ms
 
-        stdout = _truncate(stdout)
-        stderr = _truncate(stderr)
-
         # 合并输出（对应 OpenCode hasBothOutputs 逻辑）
-        parts = []
+        full_parts = []
         if stdout:
-            parts.append(stdout)
+            full_parts.append(stdout)
         if stderr:
             if stdout:
-                parts.append("")  # 两段之间空一行
-            parts.append(stderr)
+                full_parts.append("")  # 两段之间空一行
+            full_parts.append(stderr)
         if interrupted:
-            parts.append("命令在完成前被中止")
+            full_parts.append("命令在完成前被中止")
         elif exit_code != 0:
-            parts.append(f"Exit code {exit_code}")
+            full_parts.append(f"Exit code {exit_code}")
 
-        output = "\n".join(parts) if parts else "（无输出）"
+        full_output = "\n".join(full_parts) if full_parts else "（无输出）"
+        output_meta = _truncate(full_output)
+        full_output_path = (
+            _write_full_output(full_output) if output_meta["truncated"] else None
+        )
+        truncation = None
+        if output_meta["truncated"]:
+            truncation = {
+                "strategy": output_meta["strategy"],
+                "full_length": output_meta["full_length"],
+                "returned_length": output_meta["returned_length"],
+                "omitted_lines": output_meta["omitted_lines"],
+            }
 
         return json.dumps(
             {
@@ -199,7 +236,9 @@ class ShellTool(Tool):
                 "exit_code": exit_code,
                 "interrupted": interrupted,
                 "duration_ms": duration_ms,
-                "output": output,
+                "output": output_meta["text"],
+                "truncation": truncation,
+                "full_output_path": full_output_path,
             },
             ensure_ascii=False,
         )
@@ -216,11 +255,14 @@ async def _run(
     command: str,
     timeout: int,
     cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    on_data: Callable[[str], None] | None = None,
 ) -> tuple[str, str, int, bool]:
     """执行命令，并发读取 stdout/stderr，返回 (stdout, stderr, exit_code, interrupted)"""
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(cwd) if cwd is not None else None,
+        env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # 独立 process group，便于 killpg 杀整棵进程树
@@ -233,41 +275,88 @@ async def _run(
         except (ProcessLookupError, PermissionError):
             pass  # 进程已退出或无权限
 
+    async def _pump(stream, chunks: list[str]) -> None:
+        if stream is None:
+            return
+        while True:
+            data = await stream.read(_STREAM_CHUNK_SIZE)
+            if not data:
+                break
+            text = data.decode(errors="replace")
+            chunks.append(text)
+            if on_data is not None:
+                on_data(text)
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_task = asyncio.create_task(_pump(proc.stdout, stdout_chunks))
+    stderr_task = asyncio.create_task(_pump(proc.stderr, stderr_chunks))
+
+    async def _wait_proc() -> int:
+        if hasattr(proc, "wait"):
+            return await proc.wait()
+        await proc.communicate()
+        return proc.returncode or 0
+
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        await asyncio.wait_for(_wait_proc(), timeout=timeout)
+        await asyncio.gather(stdout_task, stderr_task)
         return (
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
+            "".join(stdout_chunks),
+            "".join(stderr_chunks),
             proc.returncode or 0,
             False,
         )
     except asyncio.TimeoutError:
         _kill_tree()
-        stdout_b, stderr_b = await proc.communicate()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         return (
-            stdout_b.decode(errors="replace"),
-            stderr_b.decode(errors="replace"),
+            "".join(stdout_chunks),
+            "".join(stderr_chunks),
             -1,
             True,
         )
     except asyncio.CancelledError:
         _kill_tree()
-        await proc.communicate()
+        stdout_task.cancel()
+        stderr_task.cancel()
+        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         raise
 
 
-def _truncate(content: str) -> str:
-    """超过阈值时首尾各取一半，中间注明省略行数（对应 OpenCode truncateOutput）"""
+def _truncate(content: str) -> dict[str, Any]:
+    """超过阈值时优先保留尾部，便于看到命令结果与错误摘要。"""
     if len(content) <= _MAX_OUTPUT:
-        return content
-    half = _MAX_OUTPUT // 2
-    middle = content[half : len(content) - half]
-    skipped_lines = middle.count("\n") + 1
-    return (
-        f"{content[:half]}\n\n"
-        f"... [{skipped_lines} 行已省略] ...\n\n"
-        f"{content[len(content) - half:]}"
-    )
+        return {
+            "text": content,
+            "truncated": False,
+            "strategy": "tail",
+            "full_length": len(content),
+            "returned_length": len(content),
+            "omitted_lines": 0,
+        }
+
+    omitted = content[: len(content) - _MAX_OUTPUT]
+    omitted_lines = omitted.count("\n")
+    prefix = f"... [{omitted_lines} 行已省略] ...\n\n"
+    tail_budget = max(0, _MAX_OUTPUT - len(prefix))
+    tail = content[-tail_budget:] if tail_budget > 0 else ""
+    text = prefix + tail
+    return {
+        "text": text,
+        "truncated": True,
+        "strategy": "tail",
+        "full_length": len(content),
+        "returned_length": len(text),
+        "omitted_lines": omitted_lines,
+    }
+
+
+def _write_full_output(content: str) -> str:
+    fd, path = tempfile.mkstemp(prefix="akasic-shell-", suffix=".log")
+    os.close(fd)
+    Path(path).write_text(content, encoding="utf-8")
+    return path
 
 
 def _validate_command(
@@ -275,6 +364,7 @@ def _validate_command(
     *,
     allow_network: bool,
     restricted_dir: Path | None,
+    cwd: Path | None = None,
 ) -> str | None:
     try:
         tokens = shlex.split(command, posix=True)
@@ -288,6 +378,9 @@ def _validate_command(
         return "当前 shell 配置禁止网络访问"
 
     if restricted_dir is not None:
+        cwd_err = _validate_restricted_cwd(cwd, restricted_dir)
+        if cwd_err:
+            return cwd_err
         restricted_err = _validate_restricted_command(tokens, restricted_dir)
         if restricted_err:
             return restricted_err
@@ -367,6 +460,18 @@ def _validate_restricted_command(tokens: list[str], restricted_dir: Path) -> str
         err = _validate_restricted_token(token, restricted_dir)
         if err:
             return err
+    return None
+
+
+def _validate_restricted_cwd(cwd: Path | None, restricted_dir: Path) -> str | None:
+    if cwd is None:
+        return None
+    try:
+        resolved = cwd.resolve()
+    except OSError:
+        resolved = cwd
+    if resolved != restricted_dir and restricted_dir not in resolved.parents:
+        return f"受限 shell 禁止使用任务目录外工作目录：{cwd}"
     return None
 
 
