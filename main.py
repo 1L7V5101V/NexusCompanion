@@ -39,7 +39,7 @@ async def serve(
     config = Config.load(config_path)
     runtime = build_app_runtime(
         config,
-        workspace=workspace or (Path.home() / ".akasic" / "workspace"),
+        workspace=workspace or (Path.home() / ".nexus" / "workspace"),
     )
     await runtime.run()
 
@@ -57,7 +57,7 @@ if __name__ == "__main__":
         workspace = Path(args[idx + 1])
 
     if "init" in args:
-        target_workspace = workspace or (Path.home() / ".akasic" / "workspace")
+        target_workspace = workspace or (Path.home() / ".nexus" / "workspace")
         try:
             run_init(
                 config_path=Path(config_path),

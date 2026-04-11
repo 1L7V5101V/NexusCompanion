@@ -29,7 +29,7 @@ class QQChannelConfig:
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
-    socket: str = "/tmp/akasic.sock"
+    socket: str = "/tmp/nexus.sock"
 
 
 @dataclass

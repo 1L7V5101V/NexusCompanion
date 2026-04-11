@@ -1,7 +1,7 @@
 """
 proactive/mcp_sources.py — 从 MCP server 拉取 ProactiveEvent 的通用客户端。
 
-读取 ~/.akasic/workspace/proactive_sources.json 中的配置，
+读取 ~/.nexus/workspace/proactive_sources.json 中的配置，
 动态调用各 MCP server 的 get_tool / ack_tool。
 
 使用项目自带的 agent.mcp.client.McpClient，无需额外依赖。
@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SOURCES_CONFIG = Path.home() / ".akasic/workspace/proactive_sources.json"
-_MCP_SERVERS_CONFIG = Path.home() / ".akasic/workspace/mcp_servers.json"
+_SOURCES_CONFIG = Path.home() / ".nexus/workspace/proactive_sources.json"
+_MCP_SERVERS_CONFIG = Path.home() / ".nexus/workspace/mcp_servers.json"
 
 
 # ---------------------------------------------------------------------------

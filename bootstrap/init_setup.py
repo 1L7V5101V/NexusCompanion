@@ -13,7 +13,7 @@ from session.store import SessionStore
 
 _DEFAULT_PROVIDER = "openai"
 _DEFAULT_MODEL = "gpt-4o-mini"
-_DEFAULT_WORKSPACE = Path.home() / ".akasic" / "workspace"
+_DEFAULT_WORKSPACE = Path.home() / ".nexus" / "workspace"
 _DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 _NOW_TEMPLATE = "## 近期进行中\n\n## 待确认事项\n"
 _MARKDOWN_DEFAULTS = {

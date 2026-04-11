@@ -212,4 +212,4 @@ class AppRuntime:
 
 
 def build_app_runtime(config: Config, workspace: Path | None = None) -> AppRuntime:
-    return AppRuntime(config, workspace or (Path.home() / ".akasic" / "workspace"))
+    return AppRuntime(config, workspace or (Path.home() / ".nexus" / "workspace"))

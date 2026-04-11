@@ -34,7 +34,7 @@ _PRESETS: dict[str, str] = {
 }
 
 # CLI channel 默认 Unix socket 路径
-DEFAULT_SOCKET = "/tmp/akasic.sock"
+DEFAULT_SOCKET = "/tmp/nexus.sock"
 
 _DEPRECATED_MEMORY_V2_KEYS: dict[str, str] = {
     "retrieve_top_k": "请改用 memory_v2.top_k_history。",
@@ -236,7 +236,7 @@ def _resolve(value: str) -> str:
     # 若仍是未展开的占位符，尝试从 workspace/memory/<VAR_NAME> 文件读取
     m = re.fullmatch(r"\$\{(\w+)\}", resolved)
     if m:
-        key_file = Path.home() / ".akasic" / "workspace" / "memory" / m.group(1)
+        key_file = Path.home() / ".nexus" / "workspace" / "memory" / m.group(1)
         if key_file.exists():
             resolved = key_file.read_text(encoding="utf-8").strip()
     return resolved

@@ -264,7 +264,7 @@ class AgentTickFactory:
         default_dir = (
             Path(state_path).parent / "drift"
             if state_path is not None
-            else Path.home() / ".akasic" / "workspace" / "drift"
+            else Path.home() / ".nexus" / "workspace" / "drift"
         )
         drift_dir = Path(getattr(self._deps.cfg, "drift_dir", "") or default_dir).expanduser()
         store = DriftStateStore(drift_dir)

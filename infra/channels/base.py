@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from session.manager import SessionManager
 
-_DEFAULT_UPLOAD_DIR = Path.home() / ".akasic" / "workspace" / "uploads"
+_DEFAULT_UPLOAD_DIR = Path.home() / ".nexus" / "workspace" / "uploads"
 
 
 class AttachmentStore:
@@ -24,7 +24,7 @@ class AttachmentStore:
                 return self.root
         except Exception:
             pass
-        fallback = Path("/tmp/akasic_uploads")
+        fallback = Path("/tmp/nexus_uploads")
         fallback.mkdir(parents=True, exist_ok=True)
         if os.access(fallback, os.W_OK):
             return fallback
@@ -46,7 +46,7 @@ class AttachmentStore:
             path.write_bytes(data)
             return path
         except Exception:
-            fallback = Path("/tmp/akasic_uploads")
+            fallback = Path("/tmp/nexus_uploads")
             fallback.mkdir(parents=True, exist_ok=True)
             alt = fallback / f"{prefix}{uuid4().hex}{suffix}"
             alt.write_bytes(data)

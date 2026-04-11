@@ -35,7 +35,7 @@ from core.net.http import HttpRequester, RequestBudget, get_default_http_request
 from session.manager import SessionManager
 
 # NcatBot 运行时产物（plugins、logs）放到用户目录，不污染项目目录
-_NCATBOT_DIR = Path.home() / ".akasic" / "ncatbot"
+_NCATBOT_DIR = Path.home() / ".nexus" / "ncatbot"
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ class QQChannel:
         ncatbot_config.skip_ncatbot_install_check = True
         ncatbot_config.napcat.remote_mode = True
         ncatbot_config.enable_webui_interaction = False
-        # 运行时产物重定向到 ~/.akasic/ncatbot/，不污染项目目录
+        # 运行时产物重定向到 ~/.nexus/ncatbot/，不污染项目目录
         _NCATBOT_DIR.mkdir(parents=True, exist_ok=True)
         (_NCATBOT_DIR / "plugins").mkdir(exist_ok=True)
         ncatbot_config.plugin.plugins_dir = str(_NCATBOT_DIR / "plugins")

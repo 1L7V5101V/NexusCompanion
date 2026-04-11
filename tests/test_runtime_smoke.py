@@ -44,7 +44,7 @@ def _write_config(path: Path, socket_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path):
     config_path = tmp_path / "config.json"
-    socket_path = tmp_path / "akasic.sock"
+    socket_path = tmp_path / "nexus.sock"
     _write_config(config_path, socket_path)
 
     original_build_core_runtime = bootstrap_app.build_core_runtime
