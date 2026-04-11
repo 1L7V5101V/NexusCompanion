@@ -8,7 +8,7 @@ SubAgent — 通用子 Agent
     agent = SubAgent(
         provider=provider,
         model="deepseek-chat",
-        tools=[WebSearchTool(), WebFetchTool(), NotifyOwnerTool(...)],
+        tools=[WebSearchTool(), WebFetchTool()],
         system_prompt="你是后台研究助手...",
     )
     result = await agent.run("调研最新的 agent 相关论文，总结后发给我")
@@ -40,13 +40,12 @@ _REFLECT_PROMPT = (
 _REFLECT_PROMPT_WARN = (
     "根据上述工具结果，决定下一步操作。\n"
     "⚠️ 步骤预算剩余 {remaining} 步，请优先完成核心目标，跳过非必要步骤。\n"
-    "尽快用 task_note 记录当前进度，以防步骤耗尽时能断点续接。\n"
-    "若任务已完成，调用 notify_owner 汇报结果后输出最终结果；若需要继续，继续调用工具。\n"
+    "若任务已完成，直接输出最终结果；若需要继续，继续调用工具。\n"
     "禁止把工具调用失败的原因写进最终回复，遇到失败时换个方式或跳过该步骤。"
 )
 _REFLECT_PROMPT_LAST = (
     "⚠️ 步骤预算将在下一步耗尽。请立即优先完成核心目标，"
-    "系统随后会强制调用 task_note / notify_owner 进行收尾。"
+    "下一步将进入强制收尾。"
 )
 _CLEANUP_PROMPT = (
     "步骤预算已耗尽，进入强制收尾阶段。\n"

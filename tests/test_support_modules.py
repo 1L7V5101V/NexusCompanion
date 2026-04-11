@@ -15,7 +15,6 @@ from agent.context import ContextBuilder, ContextRequest
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
 from agent.tools.message_push import MessagePushTool
-from agent.tools.notify_owner import NotifyOwnerTool
 from agent.tools.registry import ToolMeta, ToolRegistry
 from agent.tools.web_search import WebSearchTool
 from bus.events import InboundMessage, OutboundMessage
@@ -113,23 +112,9 @@ async def test_message_push_tool_covers_success_failure_and_fallbacks():
 
 
 @pytest.mark.asyncio
-async def test_notify_owner_tool_and_memorize_tool_cover_branches(
+async def test_memorize_tool_cover_branches(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    push = AsyncMock()
-    push.execute = AsyncMock(return_value="ok")
-    notify = NotifyOwnerTool(push, "telegram", "42")
-    assert await notify.execute("  hi  ") == "ok"
-    push.execute.assert_awaited_once_with(
-        channel="telegram", chat_id="42", message="hi"
-    )
-
-    assert "跳过发送" in await NotifyOwnerTool(push, "", "").execute("hi")
-    assert "消息内容为空" in await notify.execute("   ")
-
-    push.execute = AsyncMock(side_effect=RuntimeError("nope"))
-    assert "发送失败" in await notify.execute("hi")
-
     memorizer = MagicMock()
     memorizer.save_item_with_supersede = AsyncMock(return_value="new:mem-1")
 

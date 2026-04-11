@@ -124,13 +124,12 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
 
     _update_session_runtime_metadata(
         session,
-        tools_used=["web_search", "task_note", "update_now"],
+        tools_used=["web_search", "update_now"],
         tool_chain=[{"calls": [{"name": "a"}, {"name": "b"}]}],
     )
 
     assert session.metadata["last_turn_tool_calls_count"] == 2
     assert session.metadata["last_turn_had_task_tool"] is True
-    assert "task_note" in session.metadata["recent_task_tools"]
     assert "update_now" in session.metadata["recent_task_tools"]
     assert isinstance(session.metadata.get("last_turn_ts"), str)
 
@@ -170,7 +169,7 @@ async def test_memorize_tool_uses_engine_remember_without_scope():
     result = await tool.execute(
         summary="以后先查工具状态",
         memory_type="procedure",
-        tool_requirement="task_note",
+        tool_requirement="update_now",
         steps=["先查", "再执行"],
     )
 
@@ -179,7 +178,7 @@ async def test_memorize_tool_uses_engine_remember_without_scope():
     assert request.summary == "以后先查工具状态"
     assert request.memory_type == "procedure"
     assert request.raw_extra == {
-        "tool_requirement": "task_note",
+        "tool_requirement": "update_now",
         "steps": ["先查", "再执行"],
     }
     assert "已记住" in result
@@ -196,7 +195,7 @@ async def test_memorize_tool_uses_engine_remember():
     result = await tool.execute(
         summary="以后先查工具状态",
         memory_type="procedure",
-        tool_requirement="task_note",
+        tool_requirement="update_now",
         steps=["先查", "再执行"],
         channel="cli",
         chat_id="1",
@@ -484,7 +483,7 @@ def test_retriever_internal_select_for_injection_keeps_protected_procedure():
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "task_note"},
+            "extra_json": {"tool_requirement": "update_now"},
         },
         {"id": "e1", "memory_type": "event", "score": 0.75, "summary": "普通历史"},
     ]
@@ -513,7 +512,7 @@ def test_retriever_internal_select_for_injection_can_drop_protected_when_guard_d
             "memory_type": "procedure",
             "score": 0.42,
             "summary": "必须先查工具状态",
-            "extra_json": {"tool_requirement": "task_note"},
+            "extra_json": {"tool_requirement": "update_now"},
         },
     ]
 

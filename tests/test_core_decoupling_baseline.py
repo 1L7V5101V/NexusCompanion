@@ -189,17 +189,17 @@ def test_session_metadata_update_counts_tool_calls():
 
 
 def test_session_metadata_update_tracks_task_tools():
-    """_update_session_runtime_metadata tracks task tools (task_note, update_now) specifically."""
+    """_update_session_runtime_metadata tracks task tools specifically."""
     from agent.looping.memory_gate import _update_session_runtime_metadata
 
     session = _make_session()
     _update_session_runtime_metadata(
         session,
-        tools_used=["shell", "task_note"],
-        tool_chain=[{"calls": [{"name": "shell"}, {"name": "task_note"}]}],
+        tools_used=["shell", "update_now"],
+        tool_chain=[{"calls": [{"name": "shell"}, {"name": "update_now"}]}],
     )
     assert session.metadata["last_turn_had_task_tool"] is True
-    assert "task_note" in session.metadata["recent_task_tools"]
+    assert "update_now" in session.metadata["recent_task_tools"]
 
 
 def test_session_metadata_update_no_task_tools():
@@ -221,7 +221,7 @@ def test_session_metadata_update_task_tools_turns_rolling_window():
     from agent.looping.memory_gate import _update_session_runtime_metadata
 
     session = _make_session()
-    _update_session_runtime_metadata(session, tools_used=["task_note"], tool_chain=[])
+    _update_session_runtime_metadata(session, tools_used=["update_now"], tool_chain=[])
     _update_session_runtime_metadata(session, tools_used=["update_now"], tool_chain=[])
     _update_session_runtime_metadata(session, tools_used=["shell"], tool_chain=[])
     turns = session.metadata["_task_tools_turns"]
@@ -233,10 +233,10 @@ def test_session_metadata_update_recent_task_tools_dedup():
     from agent.looping.memory_gate import _update_session_runtime_metadata
 
     session = _make_session()
-    _update_session_runtime_metadata(session, tools_used=["task_note"], tool_chain=[])
-    _update_session_runtime_metadata(session, tools_used=["task_note"], tool_chain=[])
+    _update_session_runtime_metadata(session, tools_used=["update_now"], tool_chain=[])
+    _update_session_runtime_metadata(session, tools_used=["update_now"], tool_chain=[])
     recent = session.metadata["recent_task_tools"]
-    assert recent.count("task_note") == 1, "task_note must not be duplicated in recent_task_tools"
+    assert recent.count("update_now") == 1, "update_now must not be duplicated in recent_task_tools"
 
 
 def test_session_metadata_update_sets_last_turn_ts():

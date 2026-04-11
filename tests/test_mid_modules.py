@@ -13,7 +13,6 @@ import pytest
 from agent.core.runtime_support import ToolDiscoveryState, TurnRunResult
 from agent.provider import ContentSafetyError, ContextLengthError, LLMResponse
 from agent.tools.shell import ShellTool, _MAX_OUTPUT, _truncate, _validate_network_command
-from agent.tools.task_note import TaskDoneTool, TaskNoteTool, TaskRecallTool
 from agent.tools.web_fetch import WebFetchTool, _to_markdown, _to_text, _validate_url_target
 from memory2.procedure_tagger import ProcedureTagger, _validate
 from memory2.store import MemoryStore2
@@ -43,7 +42,7 @@ class _ReasonerHarness:
 
 
 @pytest.mark.asyncio
-async def test_reasoner_wrapper_shell_and_task_note_cover_branches(tmp_path: Path):
+async def test_reasoner_wrapper_and_shell_cover_branches(tmp_path: Path):
     msg = SimpleNamespace(
         content="hello",
         media=[],
@@ -110,18 +109,6 @@ async def test_reasoner_wrapper_shell_and_task_note_cover_branches(tmp_path: Pat
     assert result["exit_code"] == 2
     assert "Exit code 2" in result["output"]
 
-    note = TaskNoteTool(tmp_path / "task.db")
-    recall = TaskRecallTool(tmp_path / "task.db")
-    done = TaskDoneTool(tmp_path / "task-dir")
-    assert "不能为空" in await note.execute(namespace="", key="a", value="b")
-    assert json.loads(await note.execute(namespace="n1", key="k1", value="v1"))["ok"]
-    assert json.loads(await recall.execute(namespace="n1", key="k1"))["found"] is True
-    assert json.loads(await recall.execute(namespace="n1"))["count"] == 1
-    assert json.loads(await recall.execute(namespace="n2"))["count"] == 0
-    assert json.loads(await done.execute(summary="done"))["done"] is True
-
-
-@pytest.mark.asyncio
 async def test_web_fetch_procedure_tagger_and_store_cover_core_paths(tmp_path: Path):
     class _Resp:
         def __init__(self, *, status=200, headers=None, content=b"", encoding="utf-8", url="https://x"):

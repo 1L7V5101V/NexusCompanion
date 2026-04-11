@@ -97,7 +97,7 @@ def _shared_http_resources():
 
 
 class _ExitTool(Tool):
-    def __init__(self, name: str = "task_note") -> None:
+    def __init__(self, name: str = "update_now") -> None:
         self._name = name
         self.called = 0
 
@@ -469,7 +469,7 @@ def test_agent_loop_summary_path_keeps_tool_chain_closed(tmp_path):
 
 def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
     tool = _DummyTool("dummy")
-    exit_tool = _ExitTool("task_note")
+    exit_tool = _ExitTool("update_now")
     provider = _StrictProvider(
         [
             LLMResponse(content="", tool_calls=[ToolCall("s1", "dummy", {"x": 1})]),
@@ -477,7 +477,7 @@ def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
             LLMResponse(content="", tool_calls=[ToolCall("s3", "dummy", {"x": 1})]),
             LLMResponse(
                 content="",
-                tool_calls=[ToolCall("e1", "task_note", {"note": "checkpoint"})],
+                tool_calls=[ToolCall("e1", "update_now", {"note": "checkpoint"})],
             ),
             LLMResponse(content="当前进度已记录", tool_calls=[]),
         ]
@@ -487,7 +487,7 @@ def test_subagent_loop_path_runs_mandatory_exit_with_closed_chain():
         model="m",
         tools=[tool, exit_tool],
         max_iterations=10,
-        mandatory_exit_tools=["task_note"],
+        mandatory_exit_tools=["update_now"],
     )
 
     result = asyncio.run(subagent.run("do work"))
