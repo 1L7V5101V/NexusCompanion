@@ -9,13 +9,16 @@ import asyncio
 import json
 import logging
 import re
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from openai import AsyncOpenAI
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 logger = logging.getLogger(__name__)
+_LAST_PAYLOAD_PATH = Path(tempfile.gettempdir()) / "nexus-last-llm-payload.json"
 
 # 安全审查错误码（各厂商）
 _SAFETY_ERROR_CODES = {
@@ -28,6 +31,7 @@ _CONTEXT_LENGTH_KEYWORDS = (
     "range of input length",  # DashScope / Qwen
     "context_length_exceeded",  # OpenAI
     "maximum context length",  # OpenAI
+    "context window exceeds limit",  # MiniMax
     "string too long",  # 通用
     "reduce the length",  # 通用
     "too many tokens",  # 通用
@@ -68,6 +72,7 @@ class LLMProvider:
         max_retries: int = 1,
     ) -> None:
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._base_url = base_url or ""
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._request_timeout_s = max(1.0, float(request_timeout_s))
@@ -89,12 +94,18 @@ class LLMProvider:
             if self._system and not already_has_system
             else messages
         )
+        full_messages = _merge_leading_system_messages(full_messages)
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
         if self._extra_body:
             kwargs["extra_body"] = self._extra_body
+
+        _LAST_PAYLOAD_PATH.write_text(
+            json.dumps(kwargs, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
 
         if on_content_delta is not None:
             return await self._chat_streaming(kwargs, on_content_delta)
@@ -193,6 +204,16 @@ class LLMProvider:
                 )
             except Exception as e:
                 last_err = e
+                logger.warning(
+                    "[llm.error] model=%s stream=%s base_url=%s tools=%d extra_body_keys=%s "
+                    "err=%s",
+                    kwargs.get("model"),
+                    bool(kwargs.get("stream")),
+                    self._base_url,
+                    len(kwargs.get("tools") or []),
+                    sorted((kwargs.get("extra_body") or {}).keys()),
+                    e,
+                )
                 if self._is_safety_error(e):
                     raise ContentSafetyError(str(e)) from e
                 if self._is_context_length_error(e):
@@ -276,3 +297,58 @@ def _iter_tool_call_deltas(delta: Any) -> list[dict[str, str | int]]:
             }
         )
     return result
+
+
+def _summarize_roles(messages: list[dict]) -> str:
+    roles = [str(msg.get("role", "?")) for msg in messages]
+    if len(roles) <= 12:
+        return ",".join(roles)
+    head = ",".join(roles[:6])
+    tail = ",".join(roles[-3:])
+    return f"{head},...,{tail}"
+
+
+def _summarize_message_shapes(messages: list[dict]) -> str:
+    shapes: list[str] = []
+    for msg in messages[:8]:
+        keys = sorted(k for k in msg.keys() if k != "content")
+        content = msg.get("content")
+        if isinstance(content, str):
+            content_kind = "str"
+        elif isinstance(content, list):
+            content_kind = "list"
+        elif content is None:
+            content_kind = "none"
+        else:
+            content_kind = type(content).__name__
+        role = str(msg.get("role", "?"))
+        extra = ",".join(keys) if keys else "-"
+        shapes.append(f"{role}[content={content_kind};keys={extra}]")
+    if len(messages) > 8:
+        shapes.append("...")
+    return " | ".join(shapes)
+
+
+def _summarize_tool_names(tools: list[dict]) -> str:
+    names = [
+        str((tool.get("function") or {}).get("name", "?"))
+        for tool in tools[:8]
+    ]
+    if len(tools) > 8:
+        names.append("...")
+    return ",".join(names)
+
+
+def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    system_contents: list[str] = []
+    idx = 0
+    while idx < len(messages) and messages[idx].get("role") == "system":
+        content = messages[idx].get("content")
+        if isinstance(content, str) and content:
+            system_contents.append(content)
+        idx += 1
+    if system_contents:
+        merged.append({"role": "system", "content": "\n\n".join(system_contents)})
+    merged.extend(messages[idx:])
+    return merged if merged else list(messages)

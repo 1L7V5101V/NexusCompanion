@@ -571,7 +571,6 @@ class AgentLoop:
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         from agent.core.reasoner import build_turn_injection_prompt
-        from agent.prompting import build_turn_injection_message
 
         # 1. 补充 deferred tools hint（与 run_turn 路径保持一致）。
         visible = preloaded_tools if self._tool_search_enabled else None
@@ -581,7 +580,7 @@ class AgentLoop:
             visible_names=visible,
         )
         if hint:
-            initial_messages = initial_messages + [build_turn_injection_message(hint)]
+            initial_messages = initial_messages + [{"role": "user", "content": hint}]
 
         # 2. 内部事件链统一直接走新 Reasoner。
         result = await self._reasoner.run(

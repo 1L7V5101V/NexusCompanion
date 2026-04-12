@@ -98,6 +98,10 @@ def _build_deferred_tools_hint(
     return "\n".join(lines) + "\n\n"
 
 
+def _build_runtime_hint_message(content: str) -> dict[str, str]:
+    return {"role": "user", "content": content}
+
+
 # ─── Turn Injection（首轮前注入，非空才追加）─────────────────────────────────
 # 仅当 tool_search 开启且存在 deferred 工具时，附上目录提示；否则返回空串不注入。
 def build_turn_injection_prompt(
@@ -574,7 +578,7 @@ class DefaultReasoner(Reasoner):
                         }
                     )
                 messages.append(
-                    build_turn_injection_message(
+                    _build_runtime_hint_message(
                         _build_loop_state_hint(
                             visible_names=visible_names,
                             always_on_names=self._tools.get_always_on_names()
@@ -653,7 +657,7 @@ class DefaultReasoner(Reasoner):
         # 2. 先尝试让模型给一段中文收尾总结。
         try:
             response = await self._llm.provider.chat(
-                messages=messages + [build_turn_injection_message(summary_prompt)],
+                messages=messages + [_build_runtime_hint_message(summary_prompt)],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),

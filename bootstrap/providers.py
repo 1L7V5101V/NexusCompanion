@@ -8,11 +8,15 @@ _LIGHT_PROVIDER_TIMEOUT_S = 180.0
 
 
 def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
+    main_extra = _sanitize_extra_body(
+        base_url=config.base_url,
+        extra_body=config.extra_body,
+    )
     provider = LLMProvider(
         api_key=config.api_key,
         base_url=config.base_url,
         system_prompt=config.system_prompt,
-        extra_body=config.extra_body,
+        extra_body=main_extra,
         request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
     )
 
@@ -24,6 +28,10 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
             if "googleapis.com" in light_url or "generativelanguage" in light_url
             else {"enable_thinking": False}
         )
+        light_extra = _sanitize_extra_body(
+            base_url=light_url,
+            extra_body=light_extra,
+        )
         light_provider = LLMProvider(
             api_key=config.light_api_key or config.api_key,
             base_url=config.light_base_url or config.base_url,
@@ -33,3 +41,11 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
         )
 
     return provider, light_provider
+
+
+def _sanitize_extra_body(base_url: str | None, extra_body: dict | None) -> dict:
+    cleaned = dict(extra_body or {})
+    url = (base_url or "").lower()
+    if "minimaxi.com" in url:
+        cleaned.pop("enable_thinking", None)
+    return cleaned
