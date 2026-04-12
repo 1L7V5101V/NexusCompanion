@@ -95,6 +95,7 @@ class LLMProvider:
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
+        full_messages = _normalize_chat_messages(full_messages)
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
             kwargs["tools"] = tools
@@ -352,3 +353,29 @@ def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
         merged.append({"role": "system", "content": "\n\n".join(system_contents)})
     merged.extend(messages[idx:])
     return merged if merged else list(messages)
+
+
+def _normalize_chat_messages(messages: list[dict]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        item = dict(msg)
+        role = str(item.get("role", "") or "")
+        content = item.get("content")
+
+        if role == "assistant" and item.get("tool_calls"):
+            if content is None or (isinstance(content, str) and not content.strip()):
+                tool_calls = item.get("tool_calls") or []
+                first = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+                function = first.get("function") if isinstance(first, dict) else {}
+                tool_name = ""
+                if isinstance(function, dict):
+                    tool_name = str(function.get("name", "") or "")
+                item["content"] = (
+                    f"调用工具 {tool_name}" if tool_name else "调用工具"
+                )
+        elif role in {"user", "assistant", "tool"}:
+            if content is None:
+                item["content"] = ""
+
+        normalized.append(item)
+    return normalized

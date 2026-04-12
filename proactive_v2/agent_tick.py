@@ -566,7 +566,15 @@ class AgentTick:
 
         # 3. 构造本轮 proactive 专用 system prompt，把预取数据一次性注入给模型。
         system_msg = {"role": "system", "content": self._build_system_prompt(ctx, gw_result)}
-        messages: list[dict] = [system_msg]
+        kickoff_msg = {
+            "role": "user",
+            "content": (
+                "开始本轮 proactive 处理。"
+                "请基于上面的候选内容和规则，必须通过工具逐步完成分类，"
+                "最后调用 finish_turn 收尾。"
+            ),
+        }
+        messages: list[dict] = [system_msg, kickoff_msg]
 
         # 4. 主 loop：每轮强制要求模型返回一个 tool call。
         #    直到 finish_turn 写入 terminal_action，或达到步数上限。
@@ -715,7 +723,7 @@ class AgentTick:
         messages.append(
             {
                 "role": "assistant",
-                "content": None,
+                "content": f"调用工具 {tool_name}",
                 "tool_calls": [
                     {
                         "id": tool_call_id,

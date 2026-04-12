@@ -12,7 +12,7 @@ from typing import Any
 from session.store import SessionStore
 
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
-_RECENT_TOOL_ROUNDS = 3
+_RECENT_TOOL_ROUNDS = 1
 _CLEARED = "[已清除]"
 _INFERENCE_TAG = "[以下为推演内容，本轮未调用工具，不可作为事实依据]\n"
 

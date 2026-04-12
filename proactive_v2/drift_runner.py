@@ -283,7 +283,7 @@ class DriftRunner:
         messages.append(
             {
                 "role": "assistant",
-                "content": None,
+                "content": f"调用工具 {tool_name}",
                 "tool_calls": [
                     {
                         "id": tool_call_id,
