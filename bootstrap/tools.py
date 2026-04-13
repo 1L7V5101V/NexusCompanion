@@ -289,6 +289,8 @@ def _build_loop_deps(
         model=config.model,
         keep_count=memory_config.keep_count,
         profile_extractor=profile_extractor,
+        recent_context_provider=light or provider,
+        recent_context_model=config.light_model or config.model,
     )
     if memory_facade is not None:
         memory_facade.bind_consolidation_runner(
@@ -321,6 +323,9 @@ def _build_loop_deps(
     post_turn_pipeline = DefaultPostTurnPipeline(
         scheduler=turn_scheduler,
         engine=memory_engine,
+        recent_context_refresher=lambda event: consolidation.refresh_recent_turns(
+            session=event.session,
+        ),
     )
     passive_meme_decorator = MemeDecorator(MemeCatalog(workspace / "memes"))
     return AgentLoopDeps(

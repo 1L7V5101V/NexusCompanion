@@ -301,6 +301,8 @@ class AgentLoop:
             model=config.llm.model,
             keep_count=config.memory.keep_count,
             profile_extractor=deps.profile_extractor,
+            recent_context_provider=deps.light_provider or deps.provider,
+            recent_context_model=config.llm.light_model or config.llm.model,
         )
         if memory_svc.facade is not None:
             memory_svc.facade.bind_consolidation_runner(
@@ -335,6 +337,9 @@ class AgentLoop:
         post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
             scheduler=self._scheduler,
             engine=memory_svc.engine,
+            recent_context_refresher=lambda event: consolidation_service.refresh_recent_turns(
+                session=event.session,
+            ),
         )
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(

@@ -59,6 +59,8 @@ class MemoryPort(Protocol):
     def update_now_ongoing(
         self, add: list[str], remove_keywords: list[str]
     ) -> None: ...
+    def read_recent_context(self) -> str: ...
+    def write_recent_context(self, content: str) -> None: ...
 
     # ── v1: pending facts buffer (PENDING.md) ─────────────────────
     def read_pending(self) -> str: ...
@@ -195,6 +197,18 @@ class DefaultMemoryPort:
 
     def update_now_ongoing(self, add: list[str], remove_keywords: list[str]) -> None:
         self._store.update_now_ongoing(add, remove_keywords)
+
+    def read_recent_context(self) -> str:
+        if hasattr(self._store, "read_recent_context"):
+            try:
+                return self._store.read_recent_context()
+            except Exception:
+                return ""
+        return ""
+
+    def write_recent_context(self, content: str) -> None:
+        if hasattr(self._store, "write_recent_context"):
+            self._store.write_recent_context(content)
 
     # ── v1: pending facts buffer ───────────────────────────────────
 

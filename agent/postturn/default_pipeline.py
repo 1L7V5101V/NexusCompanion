@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
@@ -20,14 +20,30 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
         self,
         scheduler: TurnScheduler,
         engine: "MemoryEngine | None",
+        recent_context_refresher: Callable[[PostTurnEvent], Awaitable[None]] | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._engine = engine
+        self._recent_context_refresher = recent_context_refresher
         self._failures: int = 0
+        self._recent_context_queues: dict[str, deque[PostTurnEvent]] = {}
+        self._recent_context_tasks: dict[str, asyncio.Task] = {}
         self._post_mem_queues: dict[str, deque[PostTurnEvent]] = {}
         self._post_mem_tasks: dict[str, asyncio.Task] = {}
 
     def schedule(self, event: PostTurnEvent) -> None:
+        if self._recent_context_refresher is not None:
+            queue = self._recent_context_queues.setdefault(event.session_key, deque())
+            queue.append(event)
+            if event.session_key not in self._recent_context_tasks:
+                task = asyncio.create_task(
+                    self._run_recent_context_queue(event.session_key),
+                    name=f"recent_context:{event.session_key}",
+                )
+                self._recent_context_tasks[event.session_key] = task
+                task.add_done_callback(
+                    lambda t: self._on_recent_context_done(t, event.session_key)
+                )
         # 1. 回复一落库就先尝试挂起 consolidation；是否真的执行由 scheduler 决定。
         self._scheduler.schedule_consolidation(event.session, event.session_key)
         if bool((event.extra or {}).get("skip_post_memory")):
@@ -115,6 +131,43 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
                 "post_mem failed session=%s failures=%d err=%s",
                 key, self._failures, exc,
             )
+
+    async def _run_recent_context_queue(self, session_key: str) -> None:
+        try:
+            while True:
+                queue = self._recent_context_queues.get(session_key)
+                if not queue:
+                    return
+                event = queue.popleft()
+                if self._recent_context_refresher is None:
+                    continue
+                await self._recent_context_refresher(event)
+        finally:
+            self._recent_context_tasks.pop(session_key, None)
+            queue = self._recent_context_queues.get(session_key)
+            if queue:
+                task = asyncio.create_task(
+                    self._run_recent_context_queue(session_key),
+                    name=f"recent_context:{session_key}",
+                )
+                self._recent_context_tasks[session_key] = task
+                task.add_done_callback(
+                    lambda t: self._on_recent_context_done(t, session_key)
+                )
+            else:
+                self._recent_context_queues.pop(session_key, None)
+
+    def _on_recent_context_done(self, task: asyncio.Task, key: str) -> None:
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            logger.info("recent_context refresh cancelled: %s", key)
+            return
+        except Exception as e:
+            logger.warning("recent_context inspect failed session=%s err=%s", key, e)
+            return
+        if exc is not None:
+            logger.warning("recent_context refresh failed: session=%s err=%s", key, exc)
 
 
 def _tool_group_to_dict(group: ToolCallGroup) -> dict:

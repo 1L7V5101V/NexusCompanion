@@ -220,6 +220,95 @@ async def test_default_post_turn_pipeline_uses_engine_only():
 
 
 @pytest.mark.asyncio
+async def test_default_post_turn_pipeline_refreshes_recent_context_immediately():
+    scheduler = MagicMock()
+    refresher = AsyncMock()
+    pipeline = DefaultPostTurnPipeline(
+        scheduler=scheduler,
+        engine=None,
+        recent_context_refresher=refresher,
+    )
+
+    event = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="hello",
+        assistant_response="ok",
+        tools_used=[],
+        tool_chain=[],
+        session=MagicMock(),
+        timestamp=datetime.now(),
+    )
+
+    pipeline.schedule(event)
+    await asyncio.sleep(0)
+
+    refresher.assert_awaited_once_with(event)
+    scheduler.schedule_consolidation.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_default_post_turn_pipeline_serializes_same_session_recent_context_refresh():
+    scheduler = MagicMock()
+    active = 0
+    max_active = 0
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _refresh(event: PostTurnEvent):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if event.user_message == "a":
+            first_started.set()
+            await release_first.wait()
+        active -= 1
+
+    pipeline = DefaultPostTurnPipeline(
+        scheduler=scheduler,
+        engine=None,
+        recent_context_refresher=_refresh,
+    )
+    session = MagicMock()
+    event_a = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="a",
+        assistant_response="ok-a",
+        tools_used=[],
+        tool_chain=[],
+        session=session,
+        timestamp=datetime.now(),
+    )
+    event_b = PostTurnEvent(
+        session_key="cli:1",
+        channel="cli",
+        chat_id="1",
+        user_message="b",
+        assistant_response="ok-b",
+        tools_used=[],
+        tool_chain=[],
+        session=session,
+        timestamp=datetime.now(),
+    )
+
+    pipeline.schedule(event_a)
+    await first_started.wait()
+    pipeline.schedule(event_b)
+    await asyncio.sleep(0)
+
+    assert max_active == 1
+
+    release_first.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
 async def test_default_post_turn_pipeline_serializes_same_session_post_mem():
     scheduler = MagicMock()
     started: list[str] = []

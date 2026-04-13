@@ -190,6 +190,7 @@ class DriftRunner:
         self, skills: list[SkillMeta], connected_servers: set[str] | None = None,
     ) -> str:
         memory_text = ""
+        recent_context_text = ""
         if self.tool_deps.memory is not None:
             try:
                 raw = str(self.tool_deps.memory.read_long_term_context() or "").strip()
@@ -197,6 +198,12 @@ class DriftRunner:
                     memory_text = raw
             except Exception:
                 memory_text = ""
+            try:
+                rc = str(self.tool_deps.memory.read_recent_context() or "").strip()
+                if rc:
+                    recent_context_text = rc
+            except Exception:
+                pass
 
         lines = []
         for skill in skills[:8]:
@@ -245,6 +252,7 @@ class DriftRunner:
             "你可以自主决定做一件有意义的事。\n\n"
             f"【Drift 工作区绝对路径】\n{self.store.drift_dir}\n\n"
             f"【用户长期记忆】\n{memory_text}\n\n"
+            f"【近期交互上下文】\n{recent_context_text or '（空）'}\n\n"
             f"【可用 Drift Skills】\n{skill_block}\n\n"
             f"【最近的 Drift 记录】\n{recent_block}\n\n"
             f"【全局备注】\n{drift_note}\n\n"

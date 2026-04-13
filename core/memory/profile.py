@@ -11,6 +11,8 @@ class ProfileReader(Protocol):
 
     def read_now(self) -> str: ...
 
+    def read_recent_context(self) -> str: ...
+
 
 @runtime_checkable
 class ProfileMaintenanceStore(Protocol):
@@ -53,6 +55,10 @@ class ProfileMaintenanceStore(Protocol):
     ) -> bool: ...
 
     def read_history(self, max_chars: int = 0) -> str: ...
+
+    def read_recent_context(self) -> str: ...
+
+    def write_recent_context(self, content: str) -> None: ...
 
     def update_now_ongoing(
         self,

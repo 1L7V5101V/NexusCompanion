@@ -24,6 +24,7 @@ _MARKDOWN_DEFAULTS = {
     "NOW.md": _NOW_TEMPLATE,
     "HISTORY.md": "",
     "PENDING.md": "",
+    "RECENT_CONTEXT.md": "",
 }
 _PROACTIVE_STATE_DEFAULT = {
     "version": 5,

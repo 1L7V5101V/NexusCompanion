@@ -320,6 +320,7 @@ class AgentTick:
 
         memory_block = ""
         self_block = ""
+        recent_context_block = ""
         if self._tool_deps.memory is not None:
             try:
                 raw = _read_long_term_text(self._tool_deps.memory).strip()
@@ -331,6 +332,12 @@ class AgentTick:
                 self_content = _read_self_text(self._tool_deps.memory).strip()
                 if self_content:
                     self_block = f"## Nexus 自我认知\n\n{self_content}\n\n"
+            except Exception:
+                pass
+            try:
+                rc = str(self._tool_deps.memory.read_recent_context() or "").strip()
+                if rc:
+                    recent_context_block = "【近期交互上下文】\n" + rc + "\n\n"
             except Exception:
                 pass
 
@@ -365,6 +372,7 @@ class AgentTick:
             f"{context_block}"
             f"{workspace_context_block}"
             f"{memory_block}\n"
+            f"{recent_context_block}"
             f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
             "【你的任务】\n"
             "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 finish_turn(decision=reply)，evidence 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"

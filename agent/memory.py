@@ -21,12 +21,14 @@ class MemoryStore:
     - PENDING.md  : incremental facts extracted during conversations
     - NOW.md      : short-term state (ongoing tasks, schedule, open questions)
     - HISTORY.md  : grep-searchable event log, permanent append
+    - RECENT_CONTEXT.md : compacted recent context snapshot for proactive/drift
     """
 
     def __init__(self, workspace: Path):
         self.memory_dir = ensure_dir(workspace / "memory")
         self.memory_file = self.memory_dir / "MEMORY.md"
         self.history_file = self.memory_dir / "HISTORY.md"
+        self.recent_context_file = self.memory_dir / "RECENT_CONTEXT.md"
         self.pending_file = self.memory_dir / "PENDING.md"
         self.self_file = self.memory_dir / "SELF.md"
         self.now_file = self.memory_dir / "NOW.md"
@@ -81,6 +83,16 @@ class MemoryStore:
         if max_chars > 0 and len(text) > max_chars:
             return text[-max_chars:]
         return text
+
+    # ── RECENT_CONTEXT.md (compacted recent context) ──────────────
+
+    def read_recent_context(self) -> str:
+        if self.recent_context_file.exists():
+            return self.recent_context_file.read_text(encoding="utf-8")
+        return ""
+
+    def write_recent_context(self, content: str) -> None:
+        self.recent_context_file.write_text(content, encoding="utf-8")
 
     # ── SELF.md (Nexus self-model) ──────────────────────────────
 

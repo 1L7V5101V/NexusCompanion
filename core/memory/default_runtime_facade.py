@@ -210,6 +210,11 @@ class DefaultMemoryRuntimeFacade:
         # 1. consolidation 侧仍依赖 history 文件，这里只是收一个稳定入口。
         return str(self._profile_maint.read_history(max_chars=max_chars) or "")
 
+    def read_recent_context(self) -> str:
+        if hasattr(self._profile_maint, "read_recent_context"):
+            return str(self._profile_maint.read_recent_context() or "")
+        return ""
+
 
 class DefaultRetrievalSemantics:
     def __init__(
