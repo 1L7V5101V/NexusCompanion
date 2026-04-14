@@ -10,6 +10,7 @@ from agent.core.prompt_block import (
     SystemPromptBuilder,
     TurnContext,
 )
+from prompts.agent import build_agent_static_identity_prompt
 
 
 class _Memory:
@@ -79,3 +80,10 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
 
     assert built.system_prompt == "identity"
     assert [item.name for item in built.system_sections] == ["identity"]
+
+
+def test_static_identity_prompt_is_not_hardcoded_to_specific_user(tmp_path: Path):
+    prompt = build_agent_static_identity_prompt(workspace=tmp_path)
+
+    assert "花月的长期 AI 伙伴" not in prompt
+    assert "用户的长期 AI 伙伴" in prompt

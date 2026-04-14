@@ -30,7 +30,7 @@ class FetchMessagesTool(Tool):
             "ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "消息 ID 列表，格式如 'telegram:7674283004:495'",
+                "description": "消息 ID 列表，格式如 'telegram:<chat_id>:<message_id>'",
             },
             "source_ref": {
                 "type": "string",
@@ -135,7 +135,7 @@ class SearchMessagesTool(Tool):
             "query": {"type": "string", "description": "搜索关键词或短语"},
             "session_key": {
                 "type": "string",
-                "description": "限定 session，如 'telegram:7674283004'（可选）",
+                "description": "限定 session，如 'telegram:<chat_id>'（可选）",
             },
             "role": {
                 "type": "string",

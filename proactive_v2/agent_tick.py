@@ -365,7 +365,7 @@ class AgentTick:
             f"{NEXUS_IDENTITY}\n\n"
             f"{PERSONALITY_RULES}\n\n"
             f"{self_block}"
-            "你现在处于主动推送决策模式：判断现在是否该给花月发一条消息，以及发什么。\n"
+            "你现在处于主动推送决策模式：判断现在是否该给用户发一条消息，以及发什么。\n"
             "数据已预取完毕，基于下方数据直接决策。\n\n"
             f"{alert_block}"
             f"{content_block}"

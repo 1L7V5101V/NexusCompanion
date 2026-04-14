@@ -295,7 +295,7 @@ class Retriever:
 
 def _format_source_tag(source_ref: str | None) -> str:
     """从 source_ref（格式如 '["id1","id2"]#h:abc' 或 'channel@seq1-seq2#tag'）中提取消息 ID，
-    返回供注入块附加的短标记，如 ' (src: telegram:7674283004:1087)'。
+    返回供注入块附加的短标记，如 ' (src: telegram:<chat_id>:<message_id>)'。
     最多显示 2 个 ID，保持注入文本简洁。
     """
     if not source_ref:
