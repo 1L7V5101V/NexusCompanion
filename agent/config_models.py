@@ -62,6 +62,11 @@ class MemoryV2Config:
 
 
 @dataclass
+class FitbitIntegrationConfig:
+    enabled: bool = False
+
+
+@dataclass
 class PeerAgentConfig:
     name: str
     base_url: str
@@ -108,6 +113,7 @@ class Config:
     light_api_key: str = ""
     light_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
+    fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
@@ -117,6 +123,7 @@ class Config:
 __all__ = [
     "ChannelsConfig",
     "Config",
+    "FitbitIntegrationConfig",
     "MemoryV2Config",
     "PeerAgentConfig",
     "QQChannelConfig",

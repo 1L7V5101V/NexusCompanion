@@ -76,9 +76,8 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=False,
-            fitbit_enabled=False,
-            fitbit_monitor_path="",
         ),
+        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",

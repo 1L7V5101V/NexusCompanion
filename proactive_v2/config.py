@@ -15,14 +15,6 @@ class ProactiveConfig:
     default_chat_id: str = ""
     model: str = ""
 
-    # 功能开关
-    fitbit_enabled: bool = False
-
-    # Fitbit 配置
-    fitbit_url: str = "http://127.0.0.1:18765"
-    fitbit_poll_seconds: int = 300
-    fitbit_monitor_path: str = ""
-
     # Feed Poller 配置
     feed_poller_interval_seconds: int = 150
 

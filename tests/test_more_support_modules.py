@@ -409,9 +409,8 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=False,
-            fitbit_enabled=False,
-            fitbit_monitor_path="",
         ),
+        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",
@@ -454,10 +453,8 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
     cfg = SimpleNamespace(
         proactive=SimpleNamespace(
             enabled=True,
-            fitbit_enabled=True,
-            fitbit_monitor_path="/tmp/fitbit.json",
-            fitbit_url="http://fitbit",
         ),
+        fitbit=SimpleNamespace(enabled=True),
         memory_optimizer_enabled=True,
         memory_optimizer_interval_seconds=7200,
         model="m",
@@ -475,7 +472,14 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         presence=MagicMock(),
         agent_loop=SimpleNamespace(processing_state=SimpleNamespace(is_busy=lambda: False)),
     )
-    assert tasks == ["loop-task", ("fitbit-task", "/tmp/fitbit.json", "http://fitbit")]
+    assert tasks == [
+        "loop-task",
+        (
+            "fitbit-task",
+            Path(__file__).resolve().parents[1] / "scripts" / "fitbit-monitor",
+            "http://127.0.0.1:18765",
+        ),
+    ]
     assert loop is proactive_loop
     mem_tasks = build_memory_optimizer_task(
         cfg,

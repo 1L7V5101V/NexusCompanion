@@ -84,6 +84,37 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
     assert cfg.channels.socket == "/tmp/dev-akasic.sock"
 
 
+def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "provider": "openai",
+                    "main": {
+                        "model": "m",
+                        "api_key": "k",
+                    },
+                },
+                "agent": {
+                    "system_prompt": "s",
+                },
+                "integrations": {
+                    "fitbit": {
+                        "enabled": True,
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.fitbit.enabled is True
+
+
 def test_build_registered_tools_respects_toolset_order_and_subset(monkeypatch, tmp_path: Path):
     calls: list[str] = []
 

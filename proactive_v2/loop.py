@@ -76,6 +76,9 @@ class ProactiveLoop:
         passive_busy_fn: Callable[[str], bool] | None = None,
         observe_writer=None,
         shared_tools: ToolRegistry | None = None,
+        fitbit_enabled: bool = False,
+        fitbit_url: str = "http://127.0.0.1:18765",
+        fitbit_poll_interval: int = 300,
     ) -> None:
         self._sessions = session_manager
         self._provider = provider
@@ -92,6 +95,9 @@ class ProactiveLoop:
         self._observe_writer = observe_writer
         self._passive_busy_fn = passive_busy_fn
         self._shared_tools = shared_tools
+        self._fitbit_enabled = bool(fitbit_enabled)
+        self._fitbit_url = str(fitbit_url or "http://127.0.0.1:18765")
+        self._fitbit_poll_interval = max(1, int(fitbit_poll_interval))
         self._workspace_context_mtime_ns: int | None = None
         self._workspace_context_text: str = ""
         self._init_runtime_state(config)
@@ -113,13 +119,13 @@ class ProactiveLoop:
         return ProactiveStateStore(state_path or Path("proactive_state.json"))
 
     def _build_fitbit_provider(self):
-        if not getattr(self._cfg, "fitbit_enabled", False):
+        if not self._fitbit_enabled:
             return None
         from proactive_v2.fitbit_sleep import FitbitSleepProvider
 
         return FitbitSleepProvider(
-            url=self._cfg.fitbit_url,
-            poll_interval=self._cfg.fitbit_poll_seconds,
+            url=self._fitbit_url,
+            poll_interval=self._fitbit_poll_interval,
             sleeping_modifier=self._cfg.sleep_modifier_sleeping,
         )
 

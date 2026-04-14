@@ -14,13 +14,11 @@ from proactive_v2.sensor import Sensor
 def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
     proactive_cfg = ProactiveConfig()
     proactive_cfg.enabled = True
-    proactive_cfg.fitbit_enabled = False
-    proactive_cfg.fitbit_monitor_path = ""
-    proactive_cfg.fitbit_url = ""
     proactive_cfg.default_channel = "telegram"
     proactive_cfg.default_chat_id = "1"
     cfg = SimpleNamespace(
         proactive=proactive_cfg,
+        fitbit=SimpleNamespace(enabled=False),
         memory_optimizer_enabled=False,
         memory_optimizer_interval_seconds=3600,
         model="m",

@@ -195,12 +195,6 @@
     "feed": {
       "poll_interval_seconds": 150
     },
-    "fitbit": {
-      "enabled": false,
-      "url": "http://127.0.0.1:18765",
-      "poll_seconds": 300,
-      "monitor_path": ""
-    },
     "agent": {
       "model": "",
       "max_steps": 20,
@@ -217,11 +211,8 @@
     }
   },
   "integrations": {
-    "fitbit_monitor": {
-      "fitbit": {
-        "client_id": "23V3JZ",
-        "client_secret": "REPLACE_WITH_YOUR_FITBIT_CLIENT_SECRET"
-      }
+    "fitbit": {
+      "enabled": false
     }
   }
 }

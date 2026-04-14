@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from agent.config_models import (
     ChannelsConfig,
     Config,
+    FitbitIntegrationConfig,
     MemoryV2Config,
     PeerAgentConfig,
     QQChannelConfig,
@@ -83,6 +84,7 @@ def load_config(path: str | Path = "config.json") -> Config:
     proactive = _load_proactive_config(data)
     memory_v2 = _load_memory_v2_config(data)
     peer_agents = _load_peer_agents_config(data)
+    fitbit = _load_fitbit_config(data)
     wiring = _load_wiring_config(data)
 
     return Config(
@@ -124,6 +126,7 @@ def load_config(path: str | Path = "config.json") -> Config:
             llm_fast.get("base_url") or data.get("light_base_url", "")
         ),
         memory_v2=memory_v2,
+        fitbit=fitbit,
         tool_search_enabled=bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
         ),
@@ -295,6 +298,14 @@ def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
         )
         for pa in peer_agents
     ]
+
+
+def _load_fitbit_config(data: dict) -> FitbitIntegrationConfig:
+    integrations = _as_dict(data.get("integrations"))
+    fitbit = _as_dict(integrations.get("fitbit"))
+    return FitbitIntegrationConfig(
+        enabled=bool(fitbit.get("enabled", False)),
+    )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

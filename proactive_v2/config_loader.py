@@ -114,7 +114,6 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         "profiles",
         "target",
         "feed",
-        "fitbit",
         "agent",
         "drift",
         "default_channel",
@@ -124,10 +123,6 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
         "features",
         "overrides",
         "feed_poller_interval_seconds",
-        # Fitbit（独立子系统）
-        "fitbit_url",
-        "fitbit_poll_seconds",
-        "fitbit_monitor_path",
         # v2 Agent Tick（独立子系统）
         "agent_tick",
     }
@@ -142,12 +137,11 @@ def _check_forbidden_keys(p: dict[str, Any]) -> None:
 
 
 def _validate_feature_keys(features: dict[str, Any]) -> None:
-    allowed = {"fitbit_enabled"}
-    forbidden = set(features.keys()) - allowed
+    forbidden = set(features.keys())
     if forbidden:
         raise ProactiveConfigError(
             f"proactive.features 出现非法键: {', '.join(sorted(forbidden))}。"
-            f"允许键: {', '.join(sorted(allowed))}"
+            "当前已无允许键。"
         )
 
 
@@ -286,16 +280,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
     # 功能开关
     features = p.get("features", {})
     _validate_feature_keys(features)
-    fitbit = p.get("fitbit", {}) or {}
-    if not isinstance(fitbit, dict):
-        raise ProactiveConfigError("proactive.fitbit 必须是字典")
-    fitbit_enabled = fitbit.get("enabled", features.get("fitbit_enabled", False))
-    # Fitbit 配置
-    fitbit_url = fitbit.get("url", p.get("fitbit_url", "http://127.0.0.1:18765"))
-    fitbit_poll_seconds = fitbit.get("poll_seconds", p.get("fitbit_poll_seconds", 300))
-    fitbit_monitor_path = fitbit.get("monitor_path", p.get("fitbit_monitor_path", ""))
-
-    # Feed Poller 配置
     feed = p.get("feed", {}) or {}
     if not isinstance(feed, dict):
         raise ProactiveConfigError("proactive.feed 必须是字典")
@@ -334,14 +318,9 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         "profiles",
         "target",
         "feed",
-        "fitbit",
         "agent",
         "drift",
         "model",
-        "fitbit_enabled",
-        "fitbit_url",
-        "fitbit_poll_seconds",
-        "fitbit_monitor_path",
         "feed_poller_interval_seconds",
     }
     for key in explicit_keys:
@@ -353,10 +332,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
         default_channel=default_channel,
         default_chat_id=default_chat_id,
         model=model,
-        fitbit_enabled=fitbit_enabled,
-        fitbit_url=fitbit_url,
-        fitbit_poll_seconds=fitbit_poll_seconds,
-        fitbit_monitor_path=fitbit_monitor_path,
         feed_poller_interval_seconds=feed_poller_interval_seconds,
         **final_config,
     )

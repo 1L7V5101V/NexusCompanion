@@ -12,11 +12,13 @@ from bootstrap.toolsets.protocol import (
 )
 from core.net.http import SharedHttpResources
 
+_FITBIT_DEFAULT_URL = "http://127.0.0.1:18765"
+
 
 class FitbitToolsetProvider(ToolsetProvider):
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
         before = set(registry._tools.keys())
-        if not getattr(deps.config.proactive, "fitbit_enabled", False):
+        if not getattr(deps.config.fitbit, "enabled", False):
             return build_registration_result(
                 registry=registry,
                 source_name="fitbit",
@@ -25,9 +27,7 @@ class FitbitToolsetProvider(ToolsetProvider):
         fitbit_tools = {
             tool.name: tool
             for tool in build_fitbit_tools(
-                fitbit_url=getattr(
-                    deps.config.proactive, "fitbit_url", "http://127.0.0.1:18765"
-                ),
+                fitbit_url=_FITBIT_DEFAULT_URL,
                 requester=deps.http_resources.local_service,
             )
         }
