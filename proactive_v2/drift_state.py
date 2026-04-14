@@ -65,54 +65,50 @@ class SkillMeta:
     status: str
     next: str
     requires_mcp: list[str]
+    builtin: bool
 
 
 class DriftStateStore:
-    def __init__(self, drift_dir: Path) -> None:
+    def __init__(
+        self,
+        drift_dir: Path,
+        *,
+        builtin_skills_dir: Path | None = None,
+        include_builtin_skills: bool = False,
+        builtin_skill_names: set[str] | None = None,
+    ) -> None:
         self.drift_dir = drift_dir.expanduser()
         self.skills_dir = self.drift_dir / "skills"
         self.drift_file = self.drift_dir / "drift.json"
+        self.builtin_skills_dir = (
+            builtin_skills_dir.expanduser()
+            if builtin_skills_dir is not None
+            else None
+        )
+        self.include_builtin_skills = include_builtin_skills
+        self.builtin_skill_names = set(builtin_skill_names or set())
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
     def scan_skills(self) -> list[SkillMeta]:
         skills: list[SkillMeta] = []
-        if not self.skills_dir.exists():
-            logger.info("[drift_state] skills dir missing: %s", self.skills_dir)
-            return skills
-        for skill_dir in sorted(self.skills_dir.iterdir()):
-            if not skill_dir.is_dir():
+        seen_names: set[str] = set()
+        for root, builtin in self._skill_roots():
+            if not root.exists():
+                logger.info("[drift_state] skills dir missing: %s", root)
                 continue
-            skill_file = skill_dir / "SKILL.md"
-            if not skill_file.exists():
-                continue
-            metadata = _parse_skill_frontmatter(skill_file.read_text(encoding="utf-8"))
-            name = str(metadata.get("name") or "").strip()
-            description = str(metadata.get("description") or "").strip()
-            if not name or not description or name != skill_dir.name:
-                logger.info("[drift_state] skip invalid skill dir=%s name=%r", skill_dir, name)
-                continue
-            requires_mcp_val = metadata.get("requires_mcp")
-            if isinstance(requires_mcp_val, list):
-                requires_mcp = [s.strip() for s in requires_mcp_val if s.strip()]
-            else:
-                raw = str(requires_mcp_val or "").strip()
-                requires_mcp = (
-                    [s.strip() for s in raw.split(",") if s.strip()]
-                    if raw
-                    else []
-                )
-            raw_state = self._load_skill_state(skill_dir)
-            skills.append(
-                SkillMeta(
-                    name=name,
-                    description=description,
-                    last_run_at=parse_iso(raw_state.get("last_run_at")),
-                    run_count=max(0, int(raw_state.get("run_count", 0) or 0)),
-                    status=self._normalize_status(raw_state.get("status")),
-                    next=_clip(raw_state.get("next", ""), 100),
-                    requires_mcp=requires_mcp,
-                )
-            )
+            for skill_dir in sorted(root.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                if builtin and self.builtin_skill_names and skill_dir.name not in self.builtin_skill_names:
+                    continue
+                skill = self._load_skill_meta(skill_dir, builtin=builtin)
+                if skill is None:
+                    continue
+                if skill.name in seen_names:
+                    logger.info("[drift_state] skip duplicate skill=%s", skill.name)
+                    continue
+                seen_names.add(skill.name)
+                skills.append(skill)
         skills.sort(
             key=lambda item: item.last_run_at or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
@@ -148,6 +144,19 @@ class DriftStateStore:
             "note": _clip(raw.get("note", ""), 150),
         }
 
+    def skill_dir_for(self, skill_name: str) -> Path | None:
+        name = str(skill_name or "").strip()
+        if not name:
+            return None
+        workspace_dir = self.skills_dir / name
+        if (workspace_dir / "SKILL.md").exists():
+            return workspace_dir
+        if self.include_builtin_skills and self.builtin_skills_dir is not None:
+            builtin_dir = self.builtin_skills_dir / name
+            if (builtin_dir / "SKILL.md").exists():
+                return builtin_dir
+        return None
+
     def save_finish(
         self,
         *,
@@ -158,7 +167,8 @@ class DriftStateStore:
         now_utc: datetime,
     ) -> None:
         skill_name = str(skill_used or "").strip()
-        skill_dir = self.skills_dir / skill_name
+        skill_dir = self.skill_dir_for(skill_name) or (self.skills_dir / skill_name)
+        skill_dir.mkdir(parents=True, exist_ok=True)
         state = self._load_skill_state(skill_dir)
         logger.info(
             "[drift_state] save_finish: skill=%s next=%s note=%s",
@@ -204,3 +214,37 @@ class DriftStateStore:
     def _normalize_status(raw: Any) -> str:
         status = str(raw or "").strip()
         return status if status in {"idle", "in_progress"} else "idle"
+
+    def _skill_roots(self) -> list[tuple[Path, bool]]:
+        roots: list[tuple[Path, bool]] = [(self.skills_dir, False)]
+        if self.include_builtin_skills and self.builtin_skills_dir is not None:
+            roots.append((self.builtin_skills_dir, True))
+        return roots
+
+    def _load_skill_meta(self, skill_dir: Path, *, builtin: bool) -> SkillMeta | None:
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.exists():
+            return None
+        metadata = _parse_skill_frontmatter(skill_file.read_text(encoding="utf-8"))
+        name = str(metadata.get("name") or "").strip()
+        description = str(metadata.get("description") or "").strip()
+        if not name or not description or name != skill_dir.name:
+            logger.info("[drift_state] skip invalid skill dir=%s name=%r", skill_dir, name)
+            return None
+        requires_mcp_val = metadata.get("requires_mcp")
+        if isinstance(requires_mcp_val, list):
+            requires_mcp = [s.strip() for s in requires_mcp_val if s.strip()]
+        else:
+            raw = str(requires_mcp_val or "").strip()
+            requires_mcp = [s.strip() for s in raw.split(",") if s.strip()] if raw else []
+        raw_state = self._load_skill_state(skill_dir)
+        return SkillMeta(
+            name=name,
+            description=description,
+            last_run_at=parse_iso(raw_state.get("last_run_at")),
+            run_count=max(0, int(raw_state.get("run_count", 0) or 0)),
+            status=self._normalize_status(raw_state.get("status")),
+            next=_clip(raw_state.get("next", ""), 100),
+            requires_mcp=requires_mcp,
+            builtin=builtin,
+        )

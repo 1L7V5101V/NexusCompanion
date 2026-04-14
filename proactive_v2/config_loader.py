@@ -155,7 +155,6 @@ def _validate_agent_tick_keys(agent_tick: dict[str, Any]) -> None:
         "delivery_cooldown_hours",
         "drift_enabled",
         "drift_max_steps",
-        "drift_dir",
         "drift_min_interval_hours",
     }
     forbidden = set(agent_tick.keys()) - allowed
@@ -216,7 +215,6 @@ def _validate_drift_keys(drift: dict[str, Any]) -> None:
     allowed = {
         "enabled",
         "max_steps",
-        "dir",
         "min_interval_hours",
     }
     forbidden = set(drift.keys()) - allowed
@@ -390,8 +388,6 @@ def load_proactive_config(p: dict[str, Any]) -> ProactiveConfig:
             3,
             int(_pick(drift, "max_steps", at, "drift_max_steps")),
         )
-    if "dir" in drift or "drift_dir" in at:
-        config.drift_dir = str(_pick(drift, "dir", at, "drift_dir") or "")
     if "min_interval_hours" in drift or "drift_min_interval_hours" in at:
         config.drift_min_interval_hours = max(
             0,

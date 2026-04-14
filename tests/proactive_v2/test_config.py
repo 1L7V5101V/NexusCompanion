@@ -89,8 +89,8 @@ def test_drift_max_steps_default():
     assert ProactiveConfig().drift_max_steps == 20
 
 
-def test_drift_dir_default_empty():
-    assert ProactiveConfig().drift_dir == ""
+def test_drift_dir_removed():
+    assert not hasattr(ProactiveConfig(), "drift_dir")
 
 
 def test_drift_min_interval_hours_default():

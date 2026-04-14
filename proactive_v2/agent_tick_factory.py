@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
+from agent.skills import BUILTIN_SKILLS_DIR
 from agent.tools.registry import ToolRegistry
 from agent.tools.web_fetch import WebFetchTool
 from agent.tools.web_search import WebSearchTool
@@ -23,6 +24,9 @@ from proactive_v2.drift_tools import DriftToolDeps
 from proactive_v2.gateway import GatewayDeps
 from proactive_v2.tools import ToolDeps
 
+
+BUILTIN_DRIFT_SKILLS_DIR = BUILTIN_SKILLS_DIR
+BUILTIN_DRIFT_SKILL_NAMES = {"meme-manage", "create-drift-skill"}
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 AlertFn = Callable[[], Awaitable[list[dict]]]
@@ -263,18 +267,23 @@ class AgentTickFactory:
         if not getattr(self._deps.cfg, "drift_enabled", False):
             return None
         state_path = getattr(self._deps.state_store, "path", None)
-        default_dir = (
+        drift_dir = (
             Path(state_path).parent / "drift"
             if state_path is not None
             else Path.home() / ".nexus" / "workspace" / "drift"
         )
-        drift_dir = Path(getattr(self._deps.cfg, "drift_dir", "") or default_dir).expanduser()
-        store = DriftStateStore(drift_dir)
+        store = DriftStateStore(
+            drift_dir,
+            builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
+            include_builtin_skills=True,
+            builtin_skill_names=BUILTIN_DRIFT_SKILL_NAMES,
+        )
         return DriftRunner(
             store=store,
             tool_deps=DriftToolDeps(
                 drift_dir=drift_dir,
                 store=store,
+                builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,
                 memory=self._deps.memory,
                 shared_tools=self._deps.shared_tools,
                 send_message_fn=self._build_drift_send_message_fn(),

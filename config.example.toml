@@ -92,7 +92,6 @@ delivery_cooldown_hours = 1
 [proactive.drift]
 enabled = false
 max_steps = 20
-dir = ""
 min_interval_hours = 3
 
 [integrations.fitbit]

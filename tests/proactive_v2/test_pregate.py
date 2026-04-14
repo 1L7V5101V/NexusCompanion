@@ -291,7 +291,11 @@ async def test_drift_interval_allows_after_window():
             encoding="utf-8",
         )
         tick = make_agent_tick(
-            cfg=cfg_with(drift_enabled=True, drift_min_interval_hours=3, drift_dir=str(tmp_path), agent_tick_context_prob=0.0),
+            cfg=cfg_with(
+                drift_enabled=True,
+                drift_min_interval_hours=3,
+                agent_tick_context_prob=0.0,
+            ),
             state_store=state,
             llm_fn=llm,
             rng=FakeRng(value=1.0),

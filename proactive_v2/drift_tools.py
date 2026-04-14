@@ -34,6 +34,7 @@ FORCED_FINISH_PROMPT = (
 class DriftToolDeps:
     drift_dir: Path
     store: DriftStateStore
+    builtin_skills_dir: Path | None = None
     memory: Any = None
     shared_tools: ToolRegistry | None = None
     send_message_fn: Any = None
@@ -248,8 +249,9 @@ class DriftWebFetchTool(Tool):
 
 
 class DriftReadFileTool(Tool):
-    def __init__(self, drift_dir: Path) -> None:
+    def __init__(self, drift_dir: Path, builtin_skills_dir: Path | None = None) -> None:
         self._drift_dir = drift_dir
+        self._builtin_skills_dir = builtin_skills_dir
         self._relative_reader = ReadFileTool(allowed_dir=drift_dir)
         self._absolute_reader = ReadFileTool()
 
@@ -269,7 +271,14 @@ class DriftReadFileTool(Tool):
         raw = str(path or "").strip()
         if not raw:
             return await self._absolute_reader.execute(path=path, **kwargs)
-        reader = self._absolute_reader if Path(raw).expanduser().is_absolute() else self._relative_reader
+        raw_path = Path(raw).expanduser()
+        if raw_path.is_absolute():
+            return await self._absolute_reader.execute(path=path, **kwargs)
+        if raw.startswith("skills/") and self._builtin_skills_dir is not None:
+            builtin_path = self._builtin_skills_dir / raw.removeprefix("skills/")
+            if builtin_path.exists():
+                return await self._absolute_reader.execute(path=str(builtin_path), **kwargs)
+        reader = self._relative_reader
         return await reader.execute(path=path, **kwargs)
 
 
@@ -281,7 +290,10 @@ def build_drift_tool_registry(
 ) -> ToolRegistry:
     tools = ToolRegistry()
     drift_dir = deps.drift_dir
-    tools.register(DriftReadFileTool(drift_dir), risk="read-only")
+    tools.register(
+        DriftReadFileTool(drift_dir, deps.builtin_skills_dir),
+        risk="read-only",
+    )
     tools.register(WriteFileTool(allowed_dir=drift_dir), risk="write")
     tools.register(EditFileTool(allowed_dir=drift_dir), risk="write")
 

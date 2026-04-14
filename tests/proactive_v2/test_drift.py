@@ -112,6 +112,7 @@ async def _exec_drift_tool(
         deps=DriftToolDeps(
             drift_dir=tmp_path,
             store=resolved_store,
+            builtin_skills_dir=getattr(resolved_store, "builtin_skills_dir", None),
             shared_tools=_build_shared_tools(),
             send_message_fn=send_message_fn,
         ),
@@ -372,7 +373,7 @@ async def test_agent_tick_enters_drift_and_records_action(tmp_path: Path):
         ]
     )
     tick = make_agent_tick(
-        cfg=cfg_with(drift_enabled=True, drift_dir=str(tmp_path)),
+        cfg=cfg_with(drift_enabled=True),
         any_action_gate=gate,
         llm_fn=llm,
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
@@ -475,7 +476,6 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     tick = AgentTick(
         cfg=cfg_with(
             drift_enabled=True,
-            drift_dir=str(tmp_path),
             default_channel="telegram",
             default_chat_id="1",
         ),
@@ -595,6 +595,39 @@ def test_skill_meta_requires_mcp_empty_when_missing(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     skills = store.scan_skills()
     assert skills[0].requires_mcp == []
+
+
+def test_drift_state_store_includes_builtin_skills_when_enabled(tmp_path: Path):
+    store = DriftStateStore(
+        tmp_path,
+        builtin_skills_dir=Path("skills"),
+        include_builtin_skills=True,
+        builtin_skill_names={"meme-manage", "create-drift-skill"},
+    )
+    skills = store.scan_skills()
+    names = {skill.name for skill in skills}
+    assert "meme-manage" in names
+    assert "create-drift-skill" in names
+    assert next(skill for skill in skills if skill.name == "meme-manage").builtin is True
+
+
+@pytest.mark.asyncio
+async def test_drift_readfile_accepts_builtin_skill_shorthand_path(tmp_path: Path):
+    ctx = AgentTickContext(now_utc=datetime.now(timezone.utc))
+    store = DriftStateStore(
+        tmp_path,
+        builtin_skills_dir=Path("skills"),
+        include_builtin_skills=True,
+        builtin_skill_names={"meme-manage", "create-drift-skill"},
+    )
+    raw = await _exec_drift_tool(
+        tmp_path,
+        ctx,
+        "read_file",
+        {"path": "skills/meme-manage/SKILL.md"},
+        store=store,
+    )
+    assert "表情包库管理" in str(raw)
 
 
 @pytest.mark.asyncio
@@ -831,7 +864,6 @@ def _build_factory(tmp_path: Path, *, sender_ok: bool, state_store):
     deps = AgentTickDeps(
         cfg=cfg_with(
             drift_enabled=True,
-            drift_dir=str(tmp_path),
             default_channel="telegram",
             default_chat_id="1",
         ),

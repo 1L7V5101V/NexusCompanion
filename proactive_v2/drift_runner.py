@@ -38,7 +38,7 @@ class DriftRunner:
             return False
         skills = self.store.scan_skills()
         if not skills:
-            logger.info("[drift] skip: no available skills under %s", self.store.skills_dir)
+            logger.info("[drift] skip: no available drift skills")
             return False
 
         # 过滤掉 requires_mcp 未满足的 skill
@@ -209,6 +209,8 @@ class DriftRunner:
         for skill in skills[:8]:
             next_text = skill.next[:80] if skill.next else ""
             line = f"- {skill.name}/   {skill.run_count}次运行"
+            if skill.builtin:
+                line += "   [builtin]"
             if next_text:
                 line += f'   next: "{next_text}"'
             if skill.requires_mcp:
@@ -263,6 +265,7 @@ class DriftRunner:
             "更有价值、或更适合当前空档时间，优先选别的 skill。\n"
             "2. 自主选择一个 skill，read_file 读它的 SKILL.md 了解细节。\n"
             "   标准路径格式是 skills/<skill_name>/...，例如 skills/explore-curiosity/SKILL.md。\n"
+            "   这个路径同时适用于 drift 工作区 skill 和内建 drift builtin skill。\n"
             "3. read_file 读该 skill 的 working files 了解当前进度。\n"
             "   working file 也优先使用 skills/<skill_name>/... 或 drift 工作区下的绝对路径。\n"
             "4. 读完 skill 和 working files 后，要执行这个 skill 当前最直接的下一步动作，"
