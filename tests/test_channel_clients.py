@@ -457,9 +457,9 @@ async def test_cli_tui_paths(monkeypatch: pytest.MonkeyPatch):
     app._writer = writer2
     await app.on_unmount()
     assert writer2.closed is True
-    assert mod._env_bool("AKASIC_TUI_MOUSE", True) is True
-    monkeypatch.setenv("AKASIC_TUI_MOUSE", "0")
-    assert mod._env_bool("AKASIC_TUI_MOUSE", True) is False
+    assert mod._env_bool("NEXUS_TUI_MOUSE", True) is True
+    monkeypatch.setenv("NEXUS_TUI_MOUSE", "0")
+    assert mod._env_bool("NEXUS_TUI_MOUSE", True) is False
 
     captured = {}
 

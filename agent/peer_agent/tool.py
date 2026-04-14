@@ -1,5 +1,5 @@
 """
-PeerAgentTool：将远程 A2A peer agent 包装成 Akasic 工具。
+PeerAgentTool：将远程 A2A peer agent 包装成 nexus 工具。
 
 行为：
 - 调用前检查 peer agent 健康状态，未启动则冷启动

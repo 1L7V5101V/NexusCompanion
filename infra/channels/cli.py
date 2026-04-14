@@ -67,7 +67,7 @@ class CLIClient:
 
 
 def _print_banner() -> None:
-    print("Akasic Agent CLI  |  输入 exit 退出\n")
+    print("nexus Agent CLI  |  输入 exit 退出\n")
 
 
 async def _read_line() -> str:

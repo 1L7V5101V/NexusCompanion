@@ -329,7 +329,7 @@ class ShellTool(Tool):
     ) -> str:
         task_id = f"shell_{uuid4().hex[:12]}"
         log_fd, log_path = tempfile.mkstemp(
-            prefix=f"akasic-bg-{task_id}-", suffix=".log"
+            prefix=f"nexus-bg-{task_id}-", suffix=".log"
         )
         os.close(log_fd)
 
@@ -379,7 +379,7 @@ class ShellTool(Tool):
         """前台执行；若 _FG_THRESHOLD 秒内未完成则不 kill，自动转后台并返回 task_id。"""
         task_id = f"shell_{uuid4().hex[:12]}"
         log_fd, log_path = tempfile.mkstemp(
-            prefix=f"akasic-fg-{task_id}-", suffix=".log"
+            prefix=f"nexus-fg-{task_id}-", suffix=".log"
         )
         os.close(log_fd)
 
@@ -750,7 +750,7 @@ def _truncate(content: str) -> dict[str, Any]:
 
 
 def _write_full_output(content: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="akasic-shell-", suffix=".log")
+    fd, path = tempfile.mkstemp(prefix="nexus-shell-", suffix=".log")
     os.close(fd)
     Path(path).write_text(content, encoding="utf-8")
     return path

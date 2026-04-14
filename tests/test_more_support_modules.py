@@ -343,7 +343,7 @@ async def test_group_filter_and_cli_paths(
     )
     await CLIClient("/tmp/missing").run()
     _print_banner()
-    assert "Akasic Agent CLI" in capsys.readouterr().out
+    assert "nexus Agent CLI" in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

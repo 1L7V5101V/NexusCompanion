@@ -36,13 +36,13 @@ class TUIStats:
 
 class HeaderBar(Horizontal):
     def compose(self) -> ComposeResult:
-        yield Static("# Akasic Agent CLI / Textual", id="title")
+        yield Static("# nexus Agent CLI / Textual", id="title")
         yield Static("0 sent  0 recv  0 tools  connected: no", id="meta")
 
 
 class FooterBar(Horizontal):
     def compose(self) -> ComposeResult:
-        yield Static("Akasic (Textual TUI)", id="footer-left")
+        yield Static("nexus (Textual TUI)", id="footer-left")
         yield Static(
             "enter send   ctrl+c quit   ctrl+l clear   kitty: Shift+drag copy",
             id="footer-right",
@@ -302,6 +302,6 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def run_tui(socket_path: str = DEFAULT_SOCKET) -> None:
-    # 默认启用鼠标（滚动条可用）；需要复制优先时可设置 AKASIC_TUI_MOUSE=0。
-    mouse_enabled = _env_bool("AKASIC_TUI_MOUSE", True)
+    # 默认启用鼠标（滚动条可用）；需要复制优先时可设置 NEXUS_TUI_MOUSE=0。
+    mouse_enabled = _env_bool("NEXUS_TUI_MOUSE", True)
     CLITextualApp(socket_path).run(mouse=mouse_enabled)

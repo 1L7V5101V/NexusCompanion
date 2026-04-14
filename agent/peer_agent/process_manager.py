@@ -4,7 +4,7 @@ PeerProcessManager：管理 peer agent 子进程的完整生命周期。
 职责：
 - 冷启动：任务提交前检查健康，未运行则自动拉起子进程
 - 终止：任务完成后由 Poller 调用，销毁子进程
-- 全局关闭：Akasic 退出时批量终止所有子进程
+- 全局关闭：nexus 退出时批量终止所有子进程
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class PeerProcessManager:
             await self._kill(proc, self._configs[name].shutdown_timeout_s)
 
     async def shutdown_all(self) -> None:
-        """Akasic 退出时批量终止所有子进程。"""
+        """nexus 退出时批量终止所有子进程。"""
         names = list(self._procs.keys())
         if names:
             logger.info("[PeerProcess] 关闭所有子进程: %s", names)

@@ -1,4 +1,4 @@
-# Akasic Agent Passive Reply Layer
+# nexus Agent Passive Reply Layer
 
 ```text
 当前仓库里的被动回复层

@@ -13,7 +13,7 @@ agent 必须通过 web_fetch 查询 HLTV 排名来确认是否在 top15，
 - 预期行为：LLM 必须调用 web_fetch 查询 HLTV 排名 URL
 
 运行方式（需真实 LLM + 网络权限）：
-    AKASIC_RUN_HLTV_WHITELIST_TEST=1 pytest tests/proactive_v2/test_hltv_whitelist_verification.py -v -s
+    nexus_RUN_HLTV_WHITELIST_TEST=1 pytest tests/proactive_v2/test_hltv_whitelist_verification.py -v -s
 """
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ from tests.proactive_v2.conftest import FakeLLM, FakeRng, FakeStateStore, make_a
 
 # ── 环境检查 ───────────────────────────────────────────────────────────────
 
-_RUN = bool(int(os.environ.get("AKASIC_RUN_HLTV_WHITELIST_TEST", "0")))
-_SKIP_REASON = "AKASIC_RUN_HLTV_WHITELIST_TEST 未开启"
+_RUN = bool(int(os.environ.get("nexus_RUN_HLTV_WHITELIST_TEST", "0")))
+_SKIP_REASON = "nexus_RUN_HLTV_WHITELIST_TEST 未开启"
 
 _PROACTIVE_CONTEXT_WITH_HLTV_RULE = """\
 # Proactive Context
@@ -119,7 +119,7 @@ class RecordingWebFetch:
 
 # ── 真实 memory 构建 ──────────────────────────────────────────────────────
 
-_WORKSPACE = Path("/home/huashen/.akasic/workspace")
+_WORKSPACE = Path("/home/huashen/.nexus/workspace")
 _MEMORY_DB = _WORKSPACE / "memory" / "memory2.db"
 
 

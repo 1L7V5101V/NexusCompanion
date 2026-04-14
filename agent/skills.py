@@ -171,9 +171,9 @@ class SkillsLoader:
         """解析 frontmatter 中 metadata 字段的 JSON 配置。
 
         配置结构示例：
-            {"akasic": {"always": true, "requires": {"bins": ["curl"]}}}
+            {"nexus": {"always": true, "requires": {"bins": ["curl"]}}}
 
-        为兼容其他格式，同时识别 "akasic" 和 "skill" 顶层键。
+        为兼容其他格式，同时识别 "nexus" 和 "skill" 顶层键。
 
         Args:
             raw: frontmatter 中 metadata 字段的原始字符串。
@@ -186,7 +186,7 @@ class SkillsLoader:
             if not isinstance(data, dict):
                 return {}
             # 依次尝试已知的顶层键
-            for key in ("akasic", "skill"):
+            for key in ("nexus", "skill"):
                 if key in data:
                     return data[key]
             # 兼容：直接返回整个对象（旧格式）

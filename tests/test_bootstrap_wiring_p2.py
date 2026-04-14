@@ -110,7 +110,7 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
                 },
             },
             "channels": {
-                "socket": "/tmp/dev-akasic.sock",
+                "socket": "/tmp/dev-nexus.sock",
             },
         },
     )
@@ -202,7 +202,7 @@ max_tokens = 256
 memory_window = 12
 
 [channels]
-socket = "/tmp/toml-akasic.sock"
+socket = "/tmp/toml-nexus.sock"
 
 [integrations.fitbit]
 enabled = true
@@ -217,7 +217,7 @@ enabled = true
     assert cfg.model == "m"
     assert cfg.max_tokens == 256
     assert cfg.memory_window == 12
-    assert cfg.channels.socket == "/tmp/toml-akasic.sock"
+    assert cfg.channels.socket == "/tmp/toml-nexus.sock"
     assert cfg.fitbit.enabled is True
 
 
