@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,8 @@ class McpClient:
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 1
         self._tool_infos: list[McpToolInfo] = []
+        self._recent_stdout: deque[str] = deque(maxlen=8)
+        self._recent_stderr: deque[str] = deque(maxlen=8)
 
     @property
     def tool_infos(self) -> list[McpToolInfo]:
@@ -82,7 +85,7 @@ class McpClient:
                 },
             }
         )
-        await self._recv(expected_id=init_id)
+        await self._recv(expected_id=init_id, stage="initialize")
 
         # initialized 通知（无 id，不等响应）
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
@@ -92,7 +95,7 @@ class McpClient:
         await self._send(
             {"jsonrpc": "2.0", "id": list_id, "method": "tools/list", "params": {}}
         )
-        resp = await self._recv(expected_id=list_id)
+        resp = await self._recv(expected_id=list_id, stage="tools/list")
 
         raw_tools = resp.get("result", {}).get("tools", [])
         self._tool_infos = [
@@ -119,7 +122,10 @@ class McpClient:
                 "params": {"name": tool_name, "arguments": arguments},
             }
         )
-        resp = await self._recv(expected_id=call_id)
+        resp = await self._recv(
+            expected_id=call_id,
+            stage=f"tools/call:{tool_name}",
+        )
 
         if "error" in resp:
             err = resp["error"]
@@ -152,22 +158,35 @@ class McpClient:
 
     async def _send(self, payload: dict[str, Any]) -> None:
         assert self._process and self._process.stdin
+        logger.debug(
+            "[mcp:%s] -> %s",
+            self.name,
+            json.dumps(payload, ensure_ascii=False)[:400],
+        )
         self._process.stdin.write(
             (json.dumps(payload, ensure_ascii=False) + "\n").encode()
         )
         await self._process.stdin.drain()
 
-    async def _recv(self, expected_id: int | None = None) -> dict[str, Any]:
+    async def _recv(
+        self,
+        expected_id: int | None = None,
+        stage: str = "recv",
+    ) -> dict[str, Any]:
         assert self._process and self._process.stdout
         while True:
-            line = await asyncio.wait_for(
-                self._process.stdout.readline(), timeout=_RECV_TIMEOUT
-            )
+            try:
+                line = await asyncio.wait_for(
+                    self._process.stdout.readline(), timeout=_RECV_TIMEOUT
+                )
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(self._build_timeout_message(stage, expected_id)) from e
             if not line:
                 raise ConnectionError(f"MCP server {self.name!r} 意外关闭了 stdout")
             text = line.decode().strip()
             if not text:
                 continue
+            self._recent_stdout.append(text[:500])
             try:
                 msg = json.loads(text)
             except json.JSONDecodeError:
@@ -175,9 +194,18 @@ class McpClient:
                 continue
             # 跳过通知（有 method 但无 id）
             if "method" in msg and "id" not in msg:
+                logger.debug("[mcp:%s] <- notification: %s", self.name, text[:400])
                 continue
             if expected_id is not None and msg.get("id") != expected_id:
+                logger.debug(
+                    "[mcp:%s] <- skip id=%r expect=%r: %s",
+                    self.name,
+                    msg.get("id"),
+                    expected_id,
+                    text[:400],
+                )
                 continue
+            logger.debug("[mcp:%s] <- %s", self.name, text[:400])
             return msg
 
     async def _drain_stderr(self) -> None:
@@ -188,6 +216,24 @@ class McpClient:
                 line = await self._process.stderr.readline()
                 if not line:
                     break
-                logger.debug("[mcp:%s] stderr: %s", self.name, line.decode().rstrip())
+                text = line.decode().rstrip()
+                self._recent_stderr.append(text[:500])
+                logger.debug("[mcp:%s] stderr: %s", self.name, text)
         except Exception:
             pass
+
+    def _build_timeout_message(self, stage: str, expected_id: int | None) -> str:
+        details = [
+            f"MCP server {self.name!r} 在阶段 {stage!r} 等待响应超时（{_RECV_TIMEOUT:.0f}s）",
+        ]
+        if expected_id is not None:
+            details.append(f"expected_id={expected_id}")
+        if self.command:
+            details.append(f"command={self.command!r}")
+        if self.cwd:
+            details.append(f"cwd={self.cwd}")
+        if self._recent_stdout:
+            details.append("recent_stdout=" + " | ".join(self._recent_stdout))
+        if self._recent_stderr:
+            details.append("recent_stderr=" + " | ".join(self._recent_stderr))
+        return "; ".join(details)

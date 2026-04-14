@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import agent.mcp.client as mcp_client_module
 
 from agent.mcp.client import McpClient, _infer_cwd
 from agent.tool_runtime import append_tool_result
@@ -363,3 +364,28 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     client._process = proc
     with pytest.raises(ConnectionError):
         await client._recv(expected_id=1)
+
+
+@pytest.mark.asyncio
+async def test_mcp_recv_timeout_includes_stage_and_recent_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    script = tmp_path / "server.py"
+    script.write_text("print(1)", encoding="utf-8")
+    proc = _Proc([])
+    client = McpClient("docs", ["python", str(script)])
+    client._process = proc
+    client._recent_stdout.append('{"jsonrpc":"2.0","method":"note"}')
+    client._recent_stderr.append("GitHub MCP Server running on stdio")
+
+    async def raise_timeout(*args, **kwargs):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(mcp_client_module.asyncio, "wait_for", raise_timeout)
+    with pytest.raises(TimeoutError) as exc:
+        await client._recv(expected_id=1, stage="initialize")
+    text = str(exc.value)
+    assert "initialize" in text
+    assert "expected_id=1" in text
+    assert "recent_stderr=GitHub MCP Server running on stdio" in text

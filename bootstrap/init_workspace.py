@@ -42,6 +42,11 @@ _JSON_FILES: dict[str, object] = {
     "memes/manifest.json": {"categories": {}},
 }
 
+_DIRECTORIES: tuple[str, ...] = (
+    "skills",
+    "drift/skills",
+)
+
 
 @dataclass
 class InitSummary:
@@ -109,6 +114,21 @@ def _ensure_workspace_json_assets(
 ) -> None:
     for rel_path, payload in _JSON_FILES.items():
         _write_json_file(workspace / rel_path, payload, force=force, summary=summary)
+
+
+def _ensure_workspace_directories(
+    workspace: Path,
+    *,
+    summary: InitSummary,
+) -> None:
+    for rel_path in _DIRECTORIES:
+        path = workspace / rel_path
+        existed = path.exists()
+        path.mkdir(parents=True, exist_ok=True)
+        if existed:
+            summary.skipped.append(path)
+        else:
+            summary.created.append(path)
 
 
 def _ensure_workspace_db_assets(
@@ -200,6 +220,7 @@ def init_workspace(
     config = Config.load(config_path)
     _ensure_workspace_text_assets(workspace, force=force, summary=summary)
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
+    _ensure_workspace_directories(workspace, summary=summary)
     _ensure_workspace_db_assets(
         workspace,
         memory_enabled=bool(config.memory_v2.enabled),
