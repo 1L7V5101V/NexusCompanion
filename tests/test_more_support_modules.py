@@ -380,7 +380,7 @@ async def test_bootstrap_trigger_and_entrypoints_cover_paths(
     monkeypatch.setattr(
         "agent.config.Config.load",
         classmethod(
-            lambda cls, path="config.json": SimpleNamespace(
+            lambda cls, path="config.toml": SimpleNamespace(
                 channels=SimpleNamespace(socket="/tmp/sock")
             )
         ),

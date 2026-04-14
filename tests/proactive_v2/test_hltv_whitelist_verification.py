@@ -144,7 +144,7 @@ def _make_fake_memory():
     from bootstrap.memory import build_memory_runtime
     from core.net.http import SharedHttpResources
 
-    cfg = load_config("config.json")
+    cfg = load_config("config.toml")
     cfg.memory_v2.db_path = str(_MEMORY_DB)
 
     provider = LLMProvider(api_key=cfg.api_key, base_url=cfg.base_url)
@@ -177,11 +177,11 @@ def _patch_real_openai() -> None:
 
 
 def _build_real_llm_fn():
-    """从 config.json 读取 API key，构建真实 _llm_fn。"""
+    """从 config.toml 读取 API key，构建真实 _llm_fn。"""
     from agent.config import load_config
     from agent.provider import LLMProvider
 
-    cfg = load_config("config.json")
+    cfg = load_config("config.toml")
     provider = LLMProvider(
         api_key=cfg.api_key,
         base_url=cfg.base_url,

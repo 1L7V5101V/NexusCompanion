@@ -1,5 +1,6 @@
 # 敏感配置（本地填写，不提交）
 /config.json
+/config.toml
 
 # NcatBot 自动生成的配置文件
 config.yaml

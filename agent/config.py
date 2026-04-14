@@ -1,14 +1,14 @@
 """
 配置加载模块
-从 config.json 读取配置，支持 ${ENV_VAR} 格式的环境变量插值。
+从 config.toml 读取配置，支持 ${ENV_VAR} 格式的环境变量插值。
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
+import tomllib
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -68,9 +68,8 @@ def _warn_deprecated_config(key_path: str, message: str) -> None:
     )
 
 
-def load_config(path: str | Path = "config.json") -> Config:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+def load_config(path: str | Path = "config.toml") -> Config:
+    data = _load_config_data(path)
 
     llm = _as_dict(data.get("llm"))
     llm_main = _as_dict(llm.get("main"))
@@ -350,7 +349,14 @@ def _resolve(value: str) -> str:
     return resolved
 
 
-def _config_load(cls, path: str | Path = "config.json") -> Config:
+def _load_config_data(path: str | Path) -> dict:
+    path = Path(path)
+    if path.suffix.lower() != ".toml":
+        raise ValueError(f"主配置仅支持 TOML: {path.suffix}")
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _config_load(cls, path: str | Path = "config.toml") -> Config:
     return load_config(path)
 
 

@@ -56,7 +56,7 @@ Default model is `google/gemini-3-flash-preview` if none is set.
 
 ## Config
 
-Optional config file: `~/.summarize/config.json`
+Optional config file: `~/.summarize/config.toml`
 
 ```json
 { "model": "openai/gpt-5.2" }

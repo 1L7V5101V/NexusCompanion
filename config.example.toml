@@ -1,0 +1,97 @@
+[llm]
+provider = "qwen"
+
+[llm.main]
+model = "qwen3.5-plus"
+api_key = "${QWEN_API_KEY}"
+base_url = "https://coding.dashscope.aliyuncs.com/v1"
+enable_thinking = false
+
+[llm.fast]
+model = "qwen-flash"
+api_key = "${QWEN_API_KEY}"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[agent]
+system_prompt = "You are Nexus, a helpful AI assistant with access to tools. Always respond in the same language the user uses."
+max_tokens = 8192
+max_iterations = 40
+
+[agent.context]
+memory_window = 40
+
+[agent.tools]
+search_enabled = true
+
+[agent.wiring]
+context = "default"
+memory = "default"
+toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
+
+[channels.telegram]
+token = "${TELEGRAM_BOT_TOKEN}"
+allow_from = ["your_username"]
+
+[channels.qq]
+bot_uin = "123456789"
+allow_from = ["987654321"]
+
+[[channels.qq.groups]]
+group_id = "111111111"
+allow_from = ["987654321"]
+require_at = true
+
+[memory]
+enabled = true
+
+[memory.embedding]
+model = "text-embedding-v3"
+
+[memory.retrieval]
+top_k_history = 8
+score_threshold = 0.45
+relative_delta = 0.2
+route_intention = true
+
+[memory.retrieval.thresholds]
+procedure = 0.66
+preference = 0.5
+event = 0.5
+profile = 0.5
+
+[memory.retrieval.inject]
+max_chars = 6000
+line_max = 600
+event_profile = 4
+
+[memory.gate]
+llm_timeout_ms = 1600
+max_tokens = 200
+
+[memory.hyde]
+enabled = true
+timeout_ms = 2000
+
+[proactive]
+enabled = true
+profile = "daily"
+
+[proactive.target]
+channel = "telegram"
+chat_id = "your_chat_id"
+
+[proactive.agent]
+max_steps = 20
+content_limit = 5
+web_fetch_max_chars = 8000
+context_prob = 0.03
+delivery_cooldown_hours = 1
+
+[proactive.drift]
+enabled = false
+max_steps = 20
+dir = ""
+min_interval_hours = 3
+
+[integrations.fitbit]
+enabled = false

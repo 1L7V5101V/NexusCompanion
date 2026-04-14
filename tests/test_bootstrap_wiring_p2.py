@@ -16,31 +16,71 @@ from bootstrap.wiring import (
 )
 
 
+def _toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return str(value)
+
+
+def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
+    lines: list[str] = []
+    scalar_lines: list[str] = []
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            continue
+        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+            continue
+        scalar_lines.append(f"{key} = {_toml_value(value)}")
+
+    if prefix:
+        lines.append(f"[{'.'.join(prefix)}]")
+    lines.extend(scalar_lines)
+    if scalar_lines:
+        lines.append("")
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.extend(_dump_toml(value, prefix + (key,)))
+        elif isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+            for item in value:
+                lines.append(f"[[{'.'.join(prefix + (key,))}]]")
+                for item_key, item_value in item.items():
+                    lines.append(f"{item_key} = {_toml_value(item_value)}")
+                lines.append("")
+    return lines
+
+
+def _write_toml(path: Path, payload: dict) -> None:
+    path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
+
+
 def test_config_load_reads_wiring_block(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(
-        json.dumps(
-            {
-                "llm": {
-                    "provider": "openai",
-                    "main": {
-                        "model": "m",
-                        "api_key": "k",
-                    },
-                },
-                "agent": {
-                    "system_prompt": "s",
-                    "wiring": {
-                        "context": "default",
-                        "memory": "default",
-                        "memory_engine": "default",
-                        "toolsets": ["schedule", "mcp"],
-                    },
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
                 },
             },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+            "agent": {
+                "system_prompt": "s",
+                "wiring": {
+                    "context": "default",
+                    "memory": "default",
+                    "memory_engine": "default",
+                    "toolsets": ["schedule", "mcp"],
+                },
+            },
+        },
     )
 
     cfg = Config.load(cfg_path)
@@ -52,30 +92,27 @@ def test_config_load_reads_wiring_block(tmp_path: Path):
 
 
 def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(
-        json.dumps(
-            {
-                "llm": {
-                    "provider": "openai",
-                    "main": {
-                        "model": "m",
-                        "api_key": "k",
-                    },
-                },
-                "agent": {
-                    "system_prompt": "s",
-                    "context": {
-                        "memory_window": 20,
-                    },
-                },
-                "channels": {
-                    "socket": "/tmp/dev-akasic.sock",
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
                 },
             },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+            "agent": {
+                "system_prompt": "s",
+                "context": {
+                    "memory_window": 20,
+                },
+            },
+            "channels": {
+                "socket": "/tmp/dev-akasic.sock",
+            },
+        },
     )
 
     cfg = Config.load(cfg_path)
@@ -85,33 +122,68 @@ def test_config_load_reads_memory_window_and_socket(tmp_path: Path):
 
 
 def test_config_load_reads_fitbit_integration_block(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
-    cfg_path.write_text(
-        json.dumps(
-            {
-                "llm": {
-                    "provider": "openai",
-                    "main": {
-                        "model": "m",
-                        "api_key": "k",
-                    },
-                },
-                "agent": {
-                    "system_prompt": "s",
-                },
-                "integrations": {
-                    "fitbit": {
-                        "enabled": True,
-                    }
+    cfg_path = tmp_path / "config.toml"
+    _write_toml(
+        cfg_path,
+        {
+            "llm": {
+                "provider": "openai",
+                "main": {
+                    "model": "m",
+                    "api_key": "k",
                 },
             },
-            ensure_ascii=False,
-        ),
+            "agent": {
+                "system_prompt": "s",
+            },
+            "integrations": {
+                "fitbit": {
+                    "enabled": True,
+                }
+            },
+        },
+    )
+
+    cfg = Config.load(cfg_path)
+
+    assert cfg.fitbit.enabled is True
+
+
+def test_config_load_reads_toml_layout(tmp_path: Path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        """
+[llm]
+provider = "openai"
+
+[llm.main]
+model = "m"
+api_key = "k"
+
+[agent]
+system_prompt = "s"
+max_tokens = 256
+
+[agent.context]
+memory_window = 12
+
+[channels]
+socket = "/tmp/toml-akasic.sock"
+
+[integrations.fitbit]
+enabled = true
+""".strip()
+        + "\n",
         encoding="utf-8",
     )
 
     cfg = Config.load(cfg_path)
 
+    assert cfg.provider == "openai"
+    assert cfg.model == "m"
+    assert cfg.max_tokens == 256
+    assert cfg.memory_window == 12
+    assert cfg.channels.socket == "/tmp/toml-akasic.sock"
     assert cfg.fitbit.enabled is True
 
 

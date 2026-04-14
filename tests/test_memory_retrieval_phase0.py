@@ -53,12 +53,43 @@ class _FakeProvider:
         return LLMResponse(content="ok", tool_calls=[])
 
 
+def _toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return str(value)
+
+
+def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
+    lines: list[str] = []
+    scalar_lines: list[str] = []
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            continue
+        scalar_lines.append(f"{key} = {_toml_value(value)}")
+
+    if prefix:
+        lines.append(f"[{'.'.join(prefix)}]")
+    lines.extend(scalar_lines)
+    if scalar_lines:
+        lines.append("")
+
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.extend(_dump_toml(value, prefix + (key,)))
+    return lines
+
+
 def _write_config(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
 
 
 def test_memory_v2_top_k_history_compat_from_legacy_fields(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
+    cfg_path = tmp_path / "config.toml"
     _write_config(
         cfg_path,
         {
@@ -82,7 +113,7 @@ def test_memory_v2_top_k_history_compat_from_legacy_fields(tmp_path: Path):
 
 
 def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
+    cfg_path = tmp_path / "config.toml"
     _write_config(
         cfg_path,
         {
@@ -107,7 +138,7 @@ def test_memory_v2_top_k_history_prefers_new_field(tmp_path: Path):
 
 
 def test_memory_v2_reads_embed_endpoint_fields(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
+    cfg_path = tmp_path / "config.toml"
     _write_config(
         cfg_path,
         {
@@ -130,7 +161,7 @@ def test_memory_v2_reads_embed_endpoint_fields(tmp_path: Path):
 
 
 def test_memory_reads_grouped_layout_fields(tmp_path: Path):
-    cfg_path = tmp_path / "config.json"
+    cfg_path = tmp_path / "config.toml"
     _write_config(
         cfg_path,
         {

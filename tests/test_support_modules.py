@@ -572,9 +572,9 @@ async def test_loop_trigger_and_main_entry_cover_paths(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     module = __import__("main")
-    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.json": SimpleNamespace(channels=SimpleNamespace(socket="/tmp/sock"))))
+    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.toml": SimpleNamespace(channels=SimpleNamespace(socket="/tmp/sock"))))
     monkeypatch.setitem(sys.modules, "infra.channels.cli_tui", SimpleNamespace(run_tui=MagicMock()))
-    module.connect_cli("config.json")
+    module.connect_cli("config.toml")
     sys.modules["infra.channels.cli_tui"].run_tui.assert_called_once_with("/tmp/sock")
 
     real_import = __import__
@@ -598,10 +598,10 @@ async def test_loop_trigger_and_main_entry_cover_paths(
         return None
 
     monkeypatch.setattr("asyncio.run", _fake_asyncio_run)
-    module.connect_cli("config.json")
+    module.connect_cli("config.toml")
 
     runtime = SimpleNamespace(run=AsyncMock())
-    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.json": SimpleNamespace()))
+    monkeypatch.setattr(module.Config, "load", classmethod(lambda cls, path="config.toml": SimpleNamespace()))
     monkeypatch.setattr(module, "build_app_runtime", lambda config, workspace: runtime)
-    await module.serve("config.json")
+    await module.serve("config.toml")
     runtime.run.assert_awaited_once()

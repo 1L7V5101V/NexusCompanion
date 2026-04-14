@@ -19,6 +19,34 @@ from agent.config import (
 from core.net.http import SharedHttpResources
 
 
+def _toml_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return str(value)
+
+
+def _dump_toml(data: dict, prefix: tuple[str, ...] = ()) -> list[str]:
+    lines: list[str] = []
+    scalar_lines: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            continue
+        scalar_lines.append(f"{key} = {_toml_value(value)}")
+    if prefix:
+        lines.append(f"[{'.'.join(prefix)}]")
+    lines.extend(scalar_lines)
+    if scalar_lines:
+        lines.append("")
+    for key, value in data.items():
+        if isinstance(value, dict):
+            lines.extend(_dump_toml(value, prefix + (key,)))
+    return lines
+
+
 def _write_config(path: Path, socket_path: Path) -> None:
     payload = {
         "llm": {
@@ -46,12 +74,12 @@ def _write_config(path: Path, socket_path: Path) -> None:
             }
         },
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    path.write_text("\n".join(_dump_toml(payload)).strip() + "\n", encoding="utf-8")
 
 
 @pytest.mark.asyncio
 async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path):
-    config_path = tmp_path / "config.json"
+    config_path = tmp_path / "config.toml"
     socket_path = tmp_path / "nexus.sock"
     _write_config(config_path, socket_path)
 
@@ -115,7 +143,7 @@ async def test_run_cleanup_steps_continues_after_failure():
 
 
 def test_connect_cli_uses_socket_from_config(monkeypatch, tmp_path):
-    config_path = tmp_path / "config.json"
+    config_path = tmp_path / "config.toml"
     socket_path = tmp_path / "cli.sock"
     _write_config(config_path, socket_path)
     observed: dict[str, str] = {}

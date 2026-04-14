@@ -16,7 +16,7 @@ from agent.config import Config
 from bootstrap.app import build_app_runtime
 
 
-def connect_cli(config_path: str = "config.json") -> None:
+def connect_cli(config_path: str = "config.toml") -> None:
     socket_path = Config.load(config_path).channels.socket
     try:
         from infra.channels.cli_tui import run_tui
@@ -32,7 +32,7 @@ def connect_cli(config_path: str = "config.json") -> None:
 
 
 async def serve(
-    config_path: str = "config.json",
+    config_path: str = "config.toml",
     workspace: Path | None = None,
 ) -> None:
     config = Config.load(config_path)
@@ -45,7 +45,7 @@ async def serve(
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    config_path = "config.json"
+    config_path = "config.toml"
     workspace: Path | None = None
 
     if "--config" in args:
@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     if not Path(config_path).exists():
         print(
-            f"找不到配置文件 {config_path!r}，请先复制 config.example.json 为 config.json。"
+            f"找不到配置文件 {config_path!r}，请先复制 config.example.toml 为 config.toml。"
         )
         sys.exit(1)
 
