@@ -119,7 +119,7 @@ class RecordingWebFetch:
 
 # ── 真实 memory 构建 ──────────────────────────────────────────────────────
 
-_WORKSPACE = Path("/home/huashen/.nexus/workspace")
+_WORKSPACE = Path.home() / ".nexus" / "workspace"
 _MEMORY_DB = _WORKSPACE / "memory" / "memory2.db"
 
 
