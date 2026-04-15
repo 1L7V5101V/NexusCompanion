@@ -42,12 +42,19 @@ python main.py init
 
 ```toml
 [llm.main]
-api_key = "sk-..."          # 你的 LLM API key
+model = "qwen3.5-plus"      # 主模型：必须是多模态模型（用户图片会直接传给它）
+api_key = "sk-..."
+
+[llm.fast]
+model = "qwen-flash"        # 轻量模型：用于 memory gate / query rewrite / HyDE 等后台任务
+api_key = "sk-..."          # 可以用同一个 key，也可以换别家更便宜的模型
 
 [channels.telegram]
 token = "123456:ABC..."     # BotFather 给的 bot token
 allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 ```
+
+主模型必须是多模态的原因：Telegram 和 QQ 频道收到图片后会直接以 `image_url` 形式拼进消息，主模型需要能处理视觉输入。`llm.fast` 只处理纯文本的轻量判断，不接触图片，用小模型即可。
 
 **3. 启动并发消息**
 
