@@ -244,6 +244,48 @@ def test_subagent_no_false_positive_when_same_tool_but_different_args():
     assert len(tool.calls) == 2
 
 
+def test_subagent_ignores_repeated_task_output_in_loop_guard():
+    tool = _DummyTool("task_output")
+    provider = _FakeProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("s1", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s2", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s3", "task_output", {"x": 1})]),
+            LLMResponse(content="状态已确认", tool_calls=[]),
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
+    )
+
+    result = asyncio.run(subagent.run("看后台任务状态"))
+
+    assert subagent.last_exit_reason == "completed"
+    assert result == "状态已确认"
+    assert len(tool.calls) == 3
+
+
+def test_subagent_ignores_repeated_task_stop_in_loop_guard():
+    tool = _DummyTool("task_stop")
+    provider = _FakeProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("s1", "task_stop", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s2", "task_stop", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("s3", "task_stop", {"x": 1})]),
+            LLMResponse(content="任务已停止", tool_calls=[]),
+        ]
+    )
+    subagent = SubAgent(
+        provider=cast(Any, provider), model="m", tools=[tool], max_iterations=10
+    )
+
+    result = asyncio.run(subagent.run("停止后台任务"))
+
+    assert subagent.last_exit_reason == "completed"
+    assert result == "任务已停止"
+    assert len(tool.calls) == 3
+
+
 def test_subagent_keeps_tool_result_clean():
     tool = _DummyTool("shell")
     provider = _FakeProvider(
@@ -348,6 +390,46 @@ def test_agent_loop_does_not_trigger_on_two_repeats_only(tmp_path):
 
     assert final == "final"
     assert len(tool.calls) == 2
+
+
+def test_agent_loop_ignores_repeated_task_output_in_loop_guard(tmp_path):
+    tool = _DummyTool("task_output")
+    provider = _FakeProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "task_output", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c3", "task_output", {"x": 1})]),
+            LLMResponse(content="状态已确认", tool_calls=[]),
+        ]
+    )
+    loop = _make_agent_loop(tmp_path, provider, tool)
+
+    final, _, _, _vn, _ = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "看后台任务状态"}])
+    )
+
+    assert final == "状态已确认"
+    assert len(tool.calls) == 3
+
+
+def test_agent_loop_ignores_repeated_task_stop_in_loop_guard(tmp_path):
+    tool = _DummyTool("task_stop")
+    provider = _FakeProvider(
+        [
+            LLMResponse(content="", tool_calls=[ToolCall("c1", "task_stop", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c2", "task_stop", {"x": 1})]),
+            LLMResponse(content="", tool_calls=[ToolCall("c3", "task_stop", {"x": 1})]),
+            LLMResponse(content="任务已停止", tool_calls=[]),
+        ]
+    )
+    loop = _make_agent_loop(tmp_path, provider, tool)
+
+    final, _, _, _vn, _ = asyncio.run(
+        loop._run_agent_loop([{"role": "user", "content": "停止后台任务"}])
+    )
+
+    assert final == "任务已停止"
+    assert len(tool.calls) == 3
 
 
 def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):

@@ -111,6 +111,8 @@ class _BackgroundTask:
     started_at: float                # monotonic，用于 TTL 检查
     wall_started_at_ms: int          # epoch ms，返回给 LLM
     last_output_at_ms: int | None = None  # epoch ms，每次写文件时更新
+    timeout_s: int | None = None
+    timeout_handle: asyncio.TimerHandle | None = None
 
 
 # 模块级单例：跨 ShellTool 实例共享
@@ -170,7 +172,9 @@ def _schedule_eviction(task_id: str, log_path: str) -> None:
         return
 
     def _evict() -> None:
-        _BG_REGISTRY.pop(task_id, None)
+        task = _BG_REGISTRY.pop(task_id, None)
+        if task is not None and task.timeout_handle is not None:
+            task.timeout_handle.cancel()
         try:
             os.unlink(log_path)
         except OSError:
@@ -184,6 +188,8 @@ def _bg_kill(task_id: str) -> None:
     task = _BG_REGISTRY.pop(task_id, None)
     if task is None:
         return
+    if task.timeout_handle is not None:
+        task.timeout_handle.cancel()
     try:
         os.killpg(task.proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
@@ -227,9 +233,9 @@ class ShellTool(Tool):
             "- 网络命令（curl/wget/httpie/xh）仅允许访问公网 HTTP(S)，且禁止上传/写文件\n"
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
-            "- 超时默认 60 秒，最大 600 秒\n"
-            "- 命令超过 15 秒未完成时自动转为后台任务，返回 background_task_id（与 run_in_background=true 格式相同）\n"
-            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待\n"
+            "- 前台总超时默认 60 秒，最大 600 秒\n"
+            "- 命令超过 15 秒未完成时自动转为后台任务，返回 background_task_id；若本次设置了 timeout，后台会继续沿用这个截止时间\n"
+            "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，调用 task_output 查看输出和耗时，"
             "根据命令的性质自行判断是否卡死；若判断卡死则 task_stop 终止\n"
             "禁止用途：不得用 shell 替代专用工具（read_file 读文件、web_fetch 抓网页、list_dir 列目录）。"
@@ -273,6 +279,7 @@ class ShellTool(Tool):
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
+        timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
         run_in_background: bool = bool(kwargs.get("run_in_background", False))
         on_data = kwargs.get("_on_data")
 
@@ -314,11 +321,12 @@ class ShellTool(Tool):
             return _err(cmd_err)
 
         if run_in_background:
-            return await self._execute_background(command, cwd, env)
+            bg_timeout = timeout if timeout_specified else None
+            return await self._execute_background(command, cwd, env, bg_timeout)
 
         # ── 前台路径（15s 未完成自动转后台）────────────────────────────
         return await self._execute_with_auto_promote(
-            command, cwd, env, on_data if callable(on_data) else None
+            command, cwd, env, timeout, on_data if callable(on_data) else None
         )
 
     async def _execute_background(
@@ -326,6 +334,7 @@ class ShellTool(Tool):
         command: str,
         cwd: Path | None,
         env: dict[str, str],
+        timeout_s: int | None,
     ) -> str:
         task_id = f"shell_{uuid4().hex[:12]}"
         log_fd, log_path = tempfile.mkstemp(
@@ -349,11 +358,13 @@ class ShellTool(Tool):
             pump_task=None,
             started_at=time.monotonic(),
             wall_started_at_ms=wall_start_ms,
+            timeout_s=timeout_s,
         )
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg))
         pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
         bg.pump_task = pump
         _BG_REGISTRY[task_id] = bg
+        _arm_background_timeout(task_id, bg)
         logger.info("shell bg started [%s] pid=%s log=%s", task_id, proc.pid, log_path)
 
         return json.dumps(
@@ -363,6 +374,7 @@ class ShellTool(Tool):
                 "status": "running",
                 "output_path": log_path,
                 "started_at_ms": wall_start_ms,
+                "timeout_s": timeout_s,
                 "exit_code": None,
                 "interrupted": False,
             },
@@ -374,6 +386,7 @@ class ShellTool(Tool):
         command: str,
         cwd: Path | None,
         env: dict[str, str],
+        timeout: int,
         on_data: Callable[[str], None] | None,
     ) -> str:
         """前台执行；若 _FG_THRESHOLD 秒内未完成则不 kill，自动转后台并返回 task_id。"""
@@ -400,16 +413,22 @@ class ShellTool(Tool):
             pump_task=None,
             started_at=start_mono,
             wall_started_at_ms=wall_start_ms,
+            timeout_s=timeout,
         )
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
         bg.pump_task = pump
 
+        fg_wait_timeout = min(timeout, _FG_THRESHOLD)
         try:
-            await asyncio.wait_for(asyncio.shield(pump), timeout=_FG_THRESHOLD)
+            await asyncio.wait_for(asyncio.shield(pump), timeout=fg_wait_timeout)
         except asyncio.TimeoutError:
+            elapsed_s = time.monotonic() - start_mono
+            if elapsed_s >= timeout:
+                return await self._finalize_timed_out_process(command, proc, pump, log_path, start_mono)
             # ── 自动转后台 ──────────────────────────────────────────────
             pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
             _BG_REGISTRY[task_id] = bg
+            _arm_background_timeout(task_id, bg)
             logger.info(
                 "shell auto-promoted [%s] pid=%s log=%s", task_id, proc.pid, log_path
             )
@@ -420,6 +439,7 @@ class ShellTool(Tool):
                     "status": "running",
                     "output_path": log_path,
                     "started_at_ms": wall_start_ms,
+                    "timeout_s": timeout,
                     "exit_code": None,
                     "interrupted": False,
                     "auto_promoted": True,
@@ -474,6 +494,63 @@ class ShellTool(Tool):
                 "command": command,
                 "exit_code": exit_code,
                 "interrupted": False,
+                "duration_ms": duration_ms,
+                "output": output_meta["text"],
+                "truncation": truncation,
+                "full_output_path": full_output_path,
+            },
+            ensure_ascii=False,
+        )
+
+    async def _finalize_timed_out_process(
+        self,
+        command: str,
+        proc: Any,
+        pump: asyncio.Task,
+        log_path: str,
+        start_mono: float,
+    ) -> str:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+        try:
+            await asyncio.wait_for(asyncio.shield(pump), timeout=_STREAM_DRAIN_GRACE_S)
+        except asyncio.TimeoutError:
+            pump.cancel()
+            await asyncio.gather(pump, return_exceptions=True)
+
+        duration_ms = int((time.monotonic() - start_mono) * 1000)
+        try:
+            content = Path(log_path).read_bytes().decode(errors="replace")
+        except OSError:
+            content = ""
+        finally:
+            try:
+                os.unlink(log_path)
+            except OSError:
+                pass
+
+        if not content:
+            content = "（无输出）"
+        content = content + "\nCommand timed out"
+        output_meta = _truncate(content)
+        full_output_path = _write_full_output(content) if output_meta["truncated"] else None
+        truncation = None
+        if output_meta["truncated"]:
+            truncation = {
+                "strategy": output_meta["strategy"],
+                "full_length": output_meta["full_length"],
+                "returned_length": output_meta["returned_length"],
+                "omitted_lines": output_meta["omitted_lines"],
+            }
+
+        return json.dumps(
+            {
+                "command": command,
+                "exit_code": -1,
+                "interrupted": True,
                 "duration_ms": duration_ms,
                 "output": output_meta["text"],
                 "truncation": truncation,
@@ -541,6 +618,9 @@ class ShellTaskOutputTool(Tool):
         if task is None:
             return _err(f"任务 {task_id!r} 不存在或已清理")
 
+        if _is_background_timeout(task):
+            _bg_kill(task_id)
+            return _err(f"任务 {task_id!r} 已超时（{task.timeout_s}s），已自动终止")
         if time.monotonic() - task.started_at > _BG_TTL_S:
             _bg_kill(task_id)
             return _err(f"任务 {task_id!r} 已超出 TTL（{_BG_TTL_S}s），已自动终止")
@@ -635,6 +715,26 @@ class ShellTaskStopTool(Tool):
 
 def _err(msg: str) -> str:
     return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def _arm_background_timeout(task_id: str, task: _BackgroundTask) -> None:
+    if task.timeout_s is None:
+        return
+    remain_s = task.timeout_s - (time.monotonic() - task.started_at)
+    if remain_s <= 0:
+        _bg_kill(task_id)
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task.timeout_handle = loop.call_later(remain_s, lambda: _bg_kill(task_id))
+
+
+def _is_background_timeout(task: _BackgroundTask) -> bool:
+    if task.timeout_s is None:
+        return False
+    return time.monotonic() - task.started_at >= task.timeout_s
 
 
 async def _run(

@@ -698,6 +698,75 @@ async def test_shell_foreground_completes_normally_within_threshold(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_shell_foreground_timeout_kills_instead_of_auto_promote(monkeypatch):
+    import agent.tools.shell as shell_mod
+
+    proc = _FakeProc(stdout="", stderr="", returncode=None)
+
+    async def _wait_forever():
+        await asyncio.Future()
+
+    proc.wait = _wait_forever
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        return proc
+
+    killed = []
+
+    def _fake_killpg(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+    monkeypatch.setattr("agent.tools.shell.os.killpg", _fake_killpg)
+    monkeypatch.setattr(shell_mod, "_FG_THRESHOLD", 15)
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(command="sleep infinity", description="前台超时", timeout=1)
+    )
+
+    assert result["interrupted"] is True
+    assert result["exit_code"] == -1
+    assert "background_task_id" not in result
+    assert "Command timed out" in result["output"]
+    assert killed == [(proc.pid, signal.SIGKILL)]
+
+
+@pytest.mark.asyncio
+async def test_task_output_timeout_expired(monkeypatch, tmp_path):
+    import agent.tools.shell as shell_mod
+
+    monkeypatch.setattr("agent.tools.shell.os.killpg", lambda *_: None)
+
+    log_path = tmp_path / "timeout.log"
+    log_path.write_text("old output", encoding="utf-8")
+
+    fake_proc = _FakeProc(stdout="", stderr="", returncode=0)
+    fake_proc.pid = 3456
+
+    task_id = "shell_timeout_expired"
+    shell_mod._BG_REGISTRY[task_id] = shell_mod._BackgroundTask(
+        proc=fake_proc,
+        log_path=str(log_path),
+        pump_task=asyncio.ensure_future(asyncio.sleep(100)),
+        started_at=shell_mod.time.monotonic() - 2,
+        wall_started_at_ms=0,
+        timeout_s=1,
+    )
+
+    tool = ShellTaskOutputTool()
+    result = json.loads(await tool.execute(task_id=task_id))
+
+    assert "error" in result
+    assert "超时" in result["error"]
+    assert task_id not in shell_mod._BG_REGISTRY
+    assert not log_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_bg_pump_done_evicts_registry_and_log(monkeypatch, tmp_path):
     """pump_task 完成后的 done callback 应清理注册表并删除日志文件。
 

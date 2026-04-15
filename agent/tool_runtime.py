@@ -6,6 +6,8 @@ from typing import Any
 
 from agent.tools.base import Tool, ToolResult, normalize_tool_result
 
+_TOOL_LOOP_EXCLUDED = frozenset({"task_output", "task_stop"})
+
 
 @dataclass(frozen=True)
 class PreparedToolset:
@@ -43,6 +45,8 @@ def build_tool_map(tools: list[Tool]) -> dict[str, Tool]:
 def tool_call_signature(tool_calls: list[Any]) -> str:
     parts: list[str] = []
     for tool_call in tool_calls:
+        if tool_call.name in _TOOL_LOOP_EXCLUDED:
+            continue
         args = json.dumps(tool_call.arguments, ensure_ascii=False, sort_keys=True)
         parts.append(f"{tool_call.name}:{args}")
     return "|".join(parts)
