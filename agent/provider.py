@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -36,7 +37,6 @@ _CONTEXT_LENGTH_KEYWORDS = (
     "string too long",  # 通用
     "reduce the length",  # 通用
     "too many tokens",  # 通用
-    "invalid_parameter_error",  # DashScope 超长
 )
 
 
@@ -72,8 +72,9 @@ class LLMProvider:
         request_timeout_s: float = 90.0,
         max_retries: int = 1,
     ) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._base_url = base_url or ""
+        normalized_base_url = _normalize_openai_base_url(base_url)
+        self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
+        self._base_url = normalized_base_url or ""
         self._system = system_prompt
         self._extra_body = extra_body or {}
         self._request_timeout_s = max(1.0, float(request_timeout_s))
@@ -386,3 +387,18 @@ def _normalize_chat_messages(messages: list[dict]) -> list[dict]:
 
         normalized.append(item)
     return normalized
+
+
+def _normalize_openai_base_url(base_url: str | None) -> str | None:
+    text = (base_url or "").strip()
+    if not text:
+        return None
+    parsed = urlsplit(text)
+    path = parsed.path.rstrip("/")
+    for suffix in ("/chat/completions", "/completions", "/responses"):
+        if path.endswith(suffix):
+            path = path[: -len(suffix)].rstrip("/")
+            break
+    if not path:
+        path = ""
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))

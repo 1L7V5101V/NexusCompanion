@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.mcp.registry import McpServerRegistry
-from agent.provider import ContextLengthError, ContentSafetyError, LLMProvider
+from agent.provider import (
+    ContextLengthError,
+    ContentSafetyError,
+    LLMProvider,
+    _normalize_openai_base_url,
+)
 from infra.channels.cli import CLIClient, _print_banner
 from infra.channels.group_filter import DefaultGroupFilter, strip_at_segments
 from memory2.models import MemoryItem
@@ -112,10 +117,27 @@ async def test_provider_chat_and_retry_paths(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(ContextLengthError):
         await LLMProvider(api_key="k").chat([], [], "m", 1)
 
+    fake = _FakeClient([RuntimeError("invalid_parameter_error")])
+    monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
+    with pytest.raises(RuntimeError):
+        await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
+
     fake = _FakeClient([RuntimeError("bad request")])
     monkeypatch.setattr("agent.provider.AsyncOpenAI", lambda **_: fake)
     with pytest.raises(RuntimeError):
         await LLMProvider(api_key="k", max_retries=0).chat([], [], "m", 1)
+
+
+def test_normalize_openai_base_url_trims_endpoint_suffix():
+    assert (
+        _normalize_openai_base_url("https://pro.nasdw.top:888/v1/chat/completions")
+        == "https://pro.nasdw.top:888/v1"
+    )
+    assert (
+        _normalize_openai_base_url("https://example.com/v1/responses")
+        == "https://example.com/v1"
+    )
+    assert _normalize_openai_base_url("https://example.com") == "https://example.com"
 
 
 @pytest.mark.asyncio

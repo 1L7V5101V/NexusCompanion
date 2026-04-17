@@ -143,29 +143,40 @@ TOOL_SCHEMAS: list[dict] = [
                 },
             }, "required": ["item_ids"]}),
 
-    _schema("finish_turn",
+    _schema("finish_reply",
             (
-                "【终止工具】声明本轮最终决策，调用后 loop 立即结束。\n"
-                "decision=reply 时需要 content；evidence 只填实际引用条目。"
+                "【终止工具】发送最终主动消息，调用后 loop 立即结束。\n"
+                "必须提供非空 content；evidence 只填本轮实际引用的 alert/content 条目。"
             ),
             {"type": "object", "properties": {
-                "decision": {
-                    "type": "string",
-                    "enum": ["reply", "skip"],
-                },
-                "content": {"type": "string", "description": "最终输出消息；skip 可为空"},
+                "content": {"type": "string", "description": "最终输出消息，必须非空"},
                 "evidence": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "引用的内容复合键列表",
                 },
+                "note": {"type": "string", "description": "可选补充说明（写入日志）"},
+            }, "required": ["content"]}),
+
+    _schema("finish_skip",
+            (
+                "【终止工具】声明本轮不发送消息，调用后 loop 立即结束。\n"
+                "不要提供 content；reason 应为 no_content/user_busy/already_sent_similar/other。"
+            ),
+            {"type": "object", "properties": {
                 "reason": {
                     "type": "string",
                     "enum": ["no_content", "user_busy", "already_sent_similar", "other"],
-                    "description": "decision=skip 时建议填写",
+                    "description": "skip 原因",
                 },
                 "note": {"type": "string", "description": "可选补充说明（写入日志）"},
-            }, "required": ["decision"]}),
+            }, "required": ["reason"]}),
+]
+
+TERMINAL_TOOL_SCHEMAS: list[dict] = [
+    schema
+    for schema in TOOL_SCHEMAS
+    if schema.get("function", {}).get("name") in {"finish_reply", "finish_skip"}
 ]
 
 
@@ -318,34 +329,68 @@ def _mark_not_interesting(ctx: AgentTickContext, args: dict) -> str:
     return json.dumps({"ok": True}, ensure_ascii=False)
 
 
-def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
-    decision = str(args.get("decision", "") or "").strip()
-    if decision not in {"reply", "skip"}:
-        raise ValueError("finish_turn.decision must be one of: reply, skip")
+def _valid_evidence_ids(ctx: AgentTickContext) -> set[str]:
+    alert_ids = {
+        f"{e['ack_server']}:{e.get('event_id') or e.get('id', '')}"
+        for e in ctx.fetched_alerts
+        if e.get("ack_server") and (e.get("event_id") or e.get("id"))
+    }
+    return _valid_content_ids(ctx) | alert_ids
 
+
+def _parse_evidence(ctx: AgentTickContext, evidence_raw: object) -> list[str]:
+    evidence = (
+        [str(item_id) for item_id in evidence_raw if str(item_id).strip()]
+        if isinstance(evidence_raw, list)
+        else []
+    )
+    unknown = [item_id for item_id in evidence if item_id not in _valid_evidence_ids(ctx)]
+    if unknown:
+        raise ValueError(f"invalid evidence ids: {unknown}")
+    return evidence
+
+
+def _finish_reply(ctx: AgentTickContext, args: dict) -> str:
     content = str(args.get("content", "") or "")
-    evidence_raw = args.get("evidence", [])
-    evidence = [str(item_id) for item_id in evidence_raw if str(item_id).strip()] if isinstance(evidence_raw, list) else []
-    if decision == "reply":
-        if not content.strip():
-            raise ValueError("finish_turn: decision=reply requires non-empty content")
-        ctx.final_message = content
-        ctx.cited_item_ids = evidence
-        ctx.terminal_action = "reply"
-        for key in evidence:
-            ctx.interesting_item_ids.add(key)
-            ctx.discarded_item_ids.discard(key)
-        return json.dumps({"ok": True}, ensure_ascii=False)
+    if not content.strip():
+        raise ValueError("finish_reply requires non-empty content")
+    evidence = _parse_evidence(ctx, args.get("evidence", []))
+    ctx.final_message = content
+    ctx.cited_item_ids = evidence
+    ctx.terminal_action = "reply"
+    for key in evidence:
+        ctx.interesting_item_ids.add(key)
+        ctx.discarded_item_ids.discard(key)
+    return json.dumps({"ok": True}, ensure_ascii=False)
 
-    reason = str(args.get("reason", "other") or "other")
+
+def _finish_skip(ctx: AgentTickContext, args: dict) -> str:
+    content = str(args.get("content", "") or "")
+    if content.strip():
+        raise ValueError("finish_skip does not accept content")
     note = str(args.get("note", "") or "")
+    reason = str(args.get("reason", "other") or "other")
     if reason not in _VALID_SKIP_REASONS:
-        raise ValueError(f"invalid skip reason: {reason!r}. must be one of {sorted(_VALID_SKIP_REASONS)}")
+        raise ValueError(
+            f"invalid skip reason: {reason!r}. must be one of {sorted(_VALID_SKIP_REASONS)}"
+        )
+    evidence = _parse_evidence(ctx, args.get("evidence", []))
+    if evidence:
+        raise ValueError("finish_skip does not accept evidence")
     ctx.skip_reason = reason
     ctx.skip_note = note
     ctx.terminal_action = "skip"
-    ctx.cited_item_ids = evidence
+    ctx.cited_item_ids = []
     return json.dumps({"ok": True}, ensure_ascii=False)
+
+
+def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
+    decision = str(args.get("decision", "") or "").strip()
+    if decision == "reply":
+        return _finish_reply(ctx, args)
+    if decision == "skip":
+        return _finish_skip(ctx, args)
+    raise ValueError("finish_turn.decision must be one of: reply, skip")
 
 
 # ── execute 分发 ──────────────────────────────────────────────────────────
@@ -380,6 +425,12 @@ async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: Tool
 
     if tool_name == "mark_not_interesting":
         return _mark_not_interesting(ctx, args)
+
+    if tool_name == "finish_reply":
+        return _finish_reply(ctx, args)
+
+    if tool_name == "finish_skip":
+        return _finish_skip(ctx, args)
 
     if tool_name == "finish_turn":
         return _finish_turn(ctx, args)
