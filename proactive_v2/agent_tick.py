@@ -375,15 +375,15 @@ class AgentTick:
             f"{recent_context_block}"
             f"【优先级】Alert > Content > Context-fallback（本轮：{fallback_status}）\n\n"
             "【你的任务】\n"
-            "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 finish_turn(decision=reply)，evidence 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
+            "⚡ 如果本轮有 Alert：把本轮所有 Alert 整合成一条消息后立即 finish_reply，evidence 填写本轮全部 Alert 的 id。Alert 是系统触发的高优先级通知，不走内容筛选流程。\n"
             "1. 对本轮 Content 逐条判断：这条内容是否可能让用户不感兴趣，是否可能不符合规则，是否值得进入 interesting。\n"
             "2. 你的主工作是分类，不是主动研究新题材，不是主动扩展候选池。\n"
             "3. 你要基于规则和用户偏好，把本轮 Content 分成 interesting 和 not_interesting。\n\n"
             "【你的输出】\n"
-            "1. 有 Alert → 把本轮所有 Alert 整合成一条消息，evidence 填写全部 Alert id，直接 finish_turn(decision=reply)（跳过一切分类步骤）。\n"
+            "1. 有 Alert → 把本轮所有 Alert 整合成一条消息，evidence 填写全部 Alert id，直接 finish_reply（跳过一切分类步骤）。\n"
             "2. 无 Alert：对每条 Content 给出最终分类：mark_interesting 或 mark_not_interesting。\n"
-            "3. 如果最终没有 interesting，调用 finish_turn(decision=skip, reason=no_content)。\n"
-            "4. 如果最终有 interesting，生成一条最终消息并 finish_turn(decision=reply)。\n\n"
+            "3. 如果最终没有 interesting，调用 finish_skip(reason=no_content)。\n"
+            "4. 如果最终有 interesting，生成一条最终消息并 finish_reply。\n\n"
             "【工具职责】\n"
             "1. Workspace 主动上下文：这是用户当前明确提出并要求你遵守的规则集合。它定义你该怎么筛、哪些要先验证、哪些必须过滤；它不提供新闻事实。\n"
             "2. recall_memory：仅用于 Content 评估——判断单条内容是否可能是用户雷点，或是否可能让用户感兴趣。Alert 不需要调用此工具。\n"
@@ -393,7 +393,7 @@ class AgentTick:
             "4. web_fetch：优先用于抓取当前候选条目的直接来源页面或正文；当条目已经有明确 URL，且你需要补正文、核实细节、核实规则时，先用它。\n"
             "5. get_recent_chat：只用于最后判断现在是否适合打扰用户。\n"
             "6. mark_interesting / mark_not_interesting：写入最终分类结果。\n"
-            "7. finish_turn：结束本轮。\n\n"
+            "7. finish_reply / finish_skip：结束本轮。\n\n"
             "【规则优先级】\n"
             "1. Workspace 主动上下文代表用户当前对主动推送的明确要求，应视为规则而不是建议。\n"
             "2. 当 Workspace 主动上下文规定了过滤条件、白名单、黑名单、必须先验证的步骤时，你必须遵守，不要凭常识跳过。\n"
@@ -411,8 +411,8 @@ class AgentTick:
             "5. 严禁根据长期记忆或 Workspace 主动上下文自行脑补具体新闻、比赛结果、转会、更新或其他外部事件。\n"
             "6. 当候选条目已自带来源 URL 时，先直接 web_fetch 该来源页面；不要凭记忆补细节，也不要跳过来源确认。\n"
             "7. 当本轮 alert 和 content 都为空时，你只有两条路：\n"
-            "   a. finish_turn(decision=skip, reason=no_content)（默认，大多数情况选这条）\n"
-            "   b. get_recent_chat → 若最近对话有自然延伸的未完成话题，可 finish_turn(decision=reply) 轻松挑起对话；\n"
+            "   a. finish_skip(reason=no_content)（默认，大多数情况选这条）\n"
+            "   b. get_recent_chat → 若最近对话有自然延伸的未完成话题，可 finish_reply 轻松挑起对话；\n"
             "      此时 evidence 必须为空 []，消息里不得引用任何外部事件或可验证事实。\n"
             "   禁止在这两条路之外做任何事：不允许 recall_memory、不允许 get_content、\n"
             "   不允许 web_fetch、严禁捏造任何 item_id（包括 'feed:xxx' 格式）。\n"
@@ -421,7 +421,7 @@ class AgentTick:
             "【Alert 快速路径】本轮如有 Alert：\n"
             "  → get_recent_chat 确认用户不在忙\n"
             "  → 把本轮所有 Alert 的内容整合成一条消息，evidence 必须填写本轮全部 Alert 的 id\n"
-            "  → finish_turn(decision=reply) 结束\n"
+            "  → finish_reply 结束\n"
             "  → 结束，可以不调用 recall_memory / mark_* / get_content / web_fetch\n\n"
             "【Content 路径】本轮无 Alert 时，Content 的主要任务不是做研究，而是把本轮候选逐条分成 interesting 或 not_interesting。\n"
             "Content 评估必须逐条进行，不能把不同主题的多条内容打包成一次统一判断。\n"
@@ -440,12 +440,13 @@ class AgentTick:
             "  4. web_fetch 只在必要时使用：当前候选已有直接 URL 时，先抓直接来源页面或正文；规则确认、细节核实都优先走它。\n"
             "     ⚠️ web_fetch 失败（404/超时/二进制图片）不能直接 mark_not_interesting；应退回 recall_memory 以 source/作者名为关键词判断用户兴趣。\n"
             "  5. 最终把每条内容分类为 mark_interesting 或 mark_not_interesting。\n"
-            "  6. 所有条目分类完毕后：有 interesting → get_recent_chat 判断是否打扰 → finish_turn(decision=reply)；全部不感兴趣 → finish_turn(decision=skip, reason=no_content)\n"
-            "  ⚠️ mark_* 不是终止动作，之后必须调 finish_turn\n\n"
+            "  6. 所有条目分类完毕后：有 interesting → get_recent_chat 判断是否打扰 → finish_reply；全部不感兴趣 → finish_skip(reason=no_content)\n"
+            "  ⚠️ mark_* 不是终止动作，之后必须调 finish_reply 或 finish_skip\n\n"
             "Context-fallback（本轮允许且 alert/content 均无结果）：\n"
-            "  context 数据已在上方，有亮点 → finish_turn(decision=reply)，否则 finish_turn(decision=skip)\n\n"
+            "  context 数据已在上方，有亮点 → finish_reply，否则 finish_skip\n\n"
             "【发送要求】\n"
             "- 语气自然，像朋友分享，不是推送通知\n"
+            "- finish_reply 必须带非空 content；finish_skip 不要带 content，也不要带 evidence\n"
             "- 消息里出现的具体数字、比分、排名、阵容、结果，必须来自本轮已提供的 Alerts/Content 数据；严禁基于训练知识或记忆脑补任何可验证事实。\n"
             "- 当某段内容基于外部来源且该来源有可靠链接时，在这段内容结束后自然附上对应原始链接，方便用户立即溯源\n"
             "- 链接要紧跟相关内容，不要把所有链接集中堆到整条消息末尾，也不要做成生硬的参考文献区\n"
@@ -453,8 +454,8 @@ class AgentTick:
             "- 链接直接使用原始 url，不要杜撰、不要改写、不要省略协议头\n"
             "- evidence 格式：\"{ack_server}:{event_id}\"，如 \"feed:fmcp_abc123\"\n"
             "- 当本轮 content 和 alerts 均为空时，evidence 必须为 []；任何 'feed:xxx' 格式的 id 只能来自本轮真实提供的候选列表，不能自行捏造\n"
-            "- 没有实质内容时 finish_turn(decision=skip) 是正确选择\n\n"
-            "【finish_turn.reason】no_content | user_busy | already_sent_similar | other"
+            "- 没有实质内容时 finish_skip(reason=no_content) 是正确选择\n\n"
+            "【finish_skip.reason】no_content | user_busy | already_sent_similar | other"
         )
 
     def _render_alert_block(self, alerts: list[dict]) -> str:
@@ -580,19 +581,19 @@ class AgentTick:
             "content": (
                 "开始本轮 proactive 处理。"
                 "请基于上面的候选内容和规则，必须通过工具逐步完成分类，"
-                "最后调用 finish_turn 收尾。"
+                "最后调用 finish_reply 或 finish_skip 收尾。"
             ),
         }
         messages: list[dict] = [system_msg, kickoff_msg]
 
-        # 4. 主 loop：每轮强制要求模型返回一个 tool call。
-        #    直到 finish_turn 写入 terminal_action，或达到步数上限。
+        # 4. 主 loop：每轮允许模型自行决定是否调用工具。
+        #    直到 finish_reply / finish_skip 写入 terminal_action，或达到步数上限。
         while ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ok = await self._run_tool_step(
                 messages,
                 ctx,
                 loop_tag="loop",
-                tool_choice="required",
+                tool_choice="auto",
             )
             if not ok:
                 break
@@ -601,7 +602,7 @@ class AgentTick:
                 break
 
         # ── Classification completeness check ─────────────────────────────
-        # 若 agent 已 finish_turn(skip) 但仍有未分类 content 条目，重置并强制补完。
+        # 若 agent 已 finish_skip 但仍有未分类 content 条目，重置并强制补完。
         # 这捕捉的场景：agent 评完部分条目后急着结束，剩余条目从未被评估。
         if ctx.terminal_action == "skip" and gw_result.content_meta:
             all_content_ids = {m["id"] for m in gw_result.content_meta}
@@ -620,7 +621,7 @@ class AgentTick:
                     f"【系统提示】以下 {len(unclassified_ids)} 个条目尚未完成分类：\n"
                     f"{titles_hint}\n"
                     "请对每条调用 mark_interesting 或 mark_not_interesting，"
-                    "全部分类完毕后再调用 finish_turn。"
+                    "全部分类完毕后再调用 finish_reply 或 finish_skip。"
                 )
                 logger.info(
                     "[proactive_v2] completeness-check: %d unclassified items, resetting terminal_action → %s",
@@ -640,14 +641,14 @@ class AgentTick:
                         break
 
         # ── Reflection pass ───────────────────────────────────────────────
-        # 5. 若 agent 已经把 interesting 标好了，但还没 finish_turn，
+        # 5. 若 agent 已经把 interesting 标好了，但还没 finish_reply，
         #    就注入一条确定性反思提示，逼它在下一轮完成 reply/skip 收尾。
         if ctx.terminal_action is None and ctx.interesting_item_ids and ctx.steps_taken < self._cfg.agent_tick_max_steps:
             ids_str = ", ".join(sorted(ctx.interesting_item_ids))
             reflection = (
                 f"【系统提示】你已将以下条目标记为 interesting：{ids_str}。\n"
-                "所有条目均已分类完毕。你必须现在调用 finish_turn(decision=reply) 撰写推送，"
-                "或调用 finish_turn(decision=skip)。不允许直接结束。"
+                "所有条目均已分类完毕。你必须现在调用 finish_reply 撰写推送，"
+                "或调用 finish_skip。不允许直接结束。"
             )
             logger.info("[proactive_v2] reflection: interesting=%d, injecting send prompt", len(ctx.interesting_item_ids))
             messages.append({"role": "user", "content": reflection})
@@ -658,7 +659,7 @@ class AgentTick:
                     messages,
                     ctx,
                     loop_tag="reflect",
-                    tool_choice="required",
+                    tool_choice="auto",
                 )
                 if not ok:
                     break
@@ -673,9 +674,11 @@ class AgentTick:
         *,
         loop_tag: str,
         tool_choice: str | dict = "auto",
+        schemas: list[dict] | None = None,
     ) -> bool:
         # 1. 用当前 messages + TOOL_SCHEMAS 调一次模型，拿到本轮唯一的 tool call。
-        tool_call = await self._llm_fn(messages, TOOL_SCHEMAS, tool_choice)
+        active_schemas = schemas or TOOL_SCHEMAS
+        tool_call = await self._llm_fn(messages, active_schemas, tool_choice)
         if tool_call is None:
             logger.warning(
                 "[proactive_v2] %s: llm_fn returned None at step %d, stopping",
@@ -706,6 +709,15 @@ class AgentTick:
         )
         if exec_result.status == "error":
             logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, exec_result.output)
+            result = str(exec_result.output)
+            call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+            self._append_tool_messages(
+                messages,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                tool_call_id=call_id,
+                result=result,
+            )
             return False
         result = str(exec_result.output)
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"

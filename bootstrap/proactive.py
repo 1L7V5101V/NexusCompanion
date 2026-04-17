@@ -24,6 +24,23 @@ _FITBIT_DEFAULT_PATH = (
 )
 
 
+def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
+    api_key = str(getattr(config, "api_key", "") or "").strip()
+    system_prompt = str(getattr(config, "system_prompt", "") or "")
+    base_url = getattr(config, "base_url", None)
+    if not api_key:
+        return provider
+
+    extra_body = dict(getattr(config, "extra_body", {}) or {})
+    extra_body.pop("enable_thinking", None)
+    return LLMProvider(
+        api_key=api_key,
+        base_url=base_url,
+        system_prompt=system_prompt,
+        extra_body=extra_body,
+    )
+
+
 def build_proactive_runtime(
     config: Config,
     workspace: Path,
@@ -45,13 +62,14 @@ def build_proactive_runtime(
     # 2. 先准备 proactive 独立状态存储和配置快照。
     proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
     proactive_cfg = config.proactive
+    proactive_provider = _build_proactive_provider(config, provider)
 
     # 3. 构建 ProactiveLoop。
     #    这里把主动链路需要的外部依赖一次性注入进去：
     #    session / provider / push_tool / memory / presence / passive_busy_fn。
     proactive_loop = ProactiveLoop(
         session_manager=session_manager,
-        provider=provider,
+        provider=proactive_provider,
         push_tool=push_tool,
         config=proactive_cfg,
         model=config.model,

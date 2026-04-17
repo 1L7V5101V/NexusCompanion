@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from bootstrap.proactive import build_proactive_runtime
+from bootstrap.proactive import _build_proactive_provider, build_proactive_runtime
 from proactive_v2.agent_tick import AgentTick
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.context import AgentTickContext
@@ -45,6 +45,21 @@ def test_build_proactive_runtime_accepts_facade_memory(tmp_path):
         close = getattr(task, "close", None)
         if callable(close):
             close()
+
+
+def test_build_proactive_provider_strips_enable_thinking():
+    provider = MagicMock()
+    cfg = SimpleNamespace(
+        api_key="k",
+        base_url="https://example.com/v1",
+        system_prompt="sys",
+        extra_body={"enable_thinking": True, "foo": "bar"},
+    )
+
+    proactive_provider = _build_proactive_provider(cfg, provider)
+
+    assert proactive_provider is not provider
+    assert proactive_provider._extra_body == {"foo": "bar"}
 
 
 def test_sensor_reads_long_term_from_facade():

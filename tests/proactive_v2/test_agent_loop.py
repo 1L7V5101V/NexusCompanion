@@ -11,7 +11,7 @@ TDD — Phase 5: proactive_v2/agent_tick.py — Agent Loop
   - mark_not_interesting 在 loop 内写 discarded_set
   - skip(user_busy) 路径
   - LLM 消息历史：工具结果追加到 messages
-  - tool_choice="required"：主 loop 必须强制 LLM 调用工具，不允许纯文本响应
+  - tool_choice="auto"：主 loop 兼容 thinking 模式供应商
 """
 
 from __future__ import annotations
@@ -156,7 +156,13 @@ async def test_send_message_writes_cited_ids():
     llm = FakeLLM([
         ("finish_turn", {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1", "alert-mcp:2"]}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
+    tick = make_agent_tick(
+        llm_fn=llm,
+        gateway_deps=GatewayDeps(
+            alert_fn=AsyncMock(return_value=[{"ack_server": "alert-mcp", "event_id": "2", "title": "a"}]),
+            feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
+        ),
+    )
     await tick.tick()
     assert tick.last_ctx.cited_item_ids == ["feed-mcp:1", "alert-mcp:2"]
 
@@ -166,7 +172,12 @@ async def test_send_message_cited_added_to_interesting():
     llm = FakeLLM([
         ("finish_turn", {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1"]}),
     ])
-    tick = make_agent_tick(llm_fn=llm)
+    tick = make_agent_tick(
+        llm_fn=llm,
+        gateway_deps=GatewayDeps(
+            feed_fn=AsyncMock(return_value=[{"id": "1", "ack_server": "feed-mcp", "title": "t"}]),
+        ),
+    )
     await tick.tick()
     assert "feed-mcp:1" in tick.last_ctx.interesting_item_ids
 
@@ -470,15 +481,13 @@ async def test_steps_taken_counts_all_tool_calls():
     assert tick.last_ctx.steps_taken == 4
 
 
-# ── tool_choice="required" ────────────────────────────────────────────────
-# 背景：主 loop 若用 tool_choice="auto"，LLM 可以返回纯文本而绕过所有工具。
-# 实际观测到的场景：alerts=7，LLM 直接返回了一段健康提醒文本而非调用
-# send_message，导致 steps=0、消息未发出、alert 未 ACK。
-# 修复：主 loop 改为 tool_choice="required"，强制 LLM 必须调用工具。
+# ── tool_choice="auto" ────────────────────────────────────────────────────
+# 兼容性：当前 proactive 使用的上游在 thinking 模式下不支持 required/object。
+# 因此主 loop 改回 auto，避免整轮 proactive 因 400 直接退出。
 
 @pytest.mark.asyncio
-async def test_main_loop_uses_required_tool_choice():
-    """主 loop 每一步都必须以 tool_choice='required' 调用 llm_fn。"""
+async def test_main_loop_uses_auto_tool_choice():
+    """主 loop 每一步都应以 tool_choice='auto' 调用 llm_fn。"""
     llm = FakeLLM([
         ("get_recent_chat", {}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
@@ -489,19 +498,14 @@ async def test_main_loop_uses_required_tool_choice():
     )
     await tick.tick()
 
-    # 主 loop 的每回调用都必须是 "required"
-    assert all(tc == "required" for tc in llm.tool_choices), (
-        f"expected all tool_choices to be 'required', got {llm.tool_choices}"
+    assert all(tc == "auto" for tc in llm.tool_choices), (
+        f"expected all tool_choices to be 'auto', got {llm.tool_choices}"
     )
 
 
 @pytest.mark.asyncio
-async def test_alert_present_llm_called_with_required_tool_choice():
-    """有 Alert 时主 loop 也必须用 tool_choice='required'，不允许 LLM 绕过工具直接返回文本。
-
-    复现场景：alerts=7，LLM 本应调用 finish_turn(reply)，但 tool_choice='auto' 时
-    LLM 可以直接返回纯文本，导致 steps=0 且消息未发出。
-    """
+async def test_alert_present_llm_called_with_auto_tool_choice():
+    """有 Alert 时主 loop 也应使用 tool_choice='auto'。"""
     alert = {
         "ack_server": "health",
         "event_id": "recovery_001",
@@ -532,7 +536,39 @@ async def test_alert_present_llm_called_with_required_tool_choice():
     assert tick.last_ctx.terminal_action == "reply"
     assert tick.last_ctx.steps_taken > 0
 
-    # 所有主 loop 调用都必须用 "required"——这正是防止 LLM 返回纯文本的关键
-    assert all(tc == "required" for tc in llm.tool_choices), (
-        f"expected all tool_choices to be 'required', got {llm.tool_choices}"
+    assert all(tc == "auto" for tc in llm.tool_choices), (
+        f"expected all tool_choices to be 'auto', got {llm.tool_choices}"
     )
+
+
+@pytest.mark.asyncio
+async def test_main_loop_stops_when_auto_tool_call_is_empty():
+    calls: list[list[dict]] = []
+
+    async def llm_fn(messages, schemas, tool_choice="auto"):
+        calls.append(list(messages))
+        return None
+
+    tick = make_agent_tick(llm_fn=llm_fn)
+    await tick.tick()
+
+    assert tick.last_ctx.terminal_action is None
+    assert tick.last_ctx.steps_taken == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_turn_error_stops_under_auto_tool_choice():
+    llm = FakeLLM([
+        ("get_recent_chat", {"n": 10}),
+        ("finish_reply", {"evidence": ["fitbit:v2_x"]}),
+    ])
+    tick = make_agent_tick(
+        llm_fn=llm,
+        tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
+    )
+
+    await tick.tick()
+
+    assert tick.last_ctx.terminal_action is None
+    assert tick.last_ctx.steps_taken == 2

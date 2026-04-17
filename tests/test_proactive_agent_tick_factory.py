@@ -9,8 +9,12 @@ from bootstrap.proactive import build_proactive_runtime
 
 
 class _FakeProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
     async def chat(self, **kwargs):
-        return SimpleNamespace(tool_calls=[])
+        self.calls.append(kwargs)
+        return SimpleNamespace(tool_calls=[], content="")
 
 
 def _build_deps(*, with_pool: bool):
@@ -97,3 +101,31 @@ def test_build_proactive_runtime_accepts_light_agent_loop_stub(tmp_path):
     )
     assert tasks == []
     assert loop is None
+
+
+async def test_agent_tick_factory_llm_fn_forces_disable_thinking():
+    deps = _build_deps(with_pool=True)
+    provider = deps.provider
+    tick = AgentTickFactory(deps).build()
+
+    await tick._llm_fn(
+        messages=[{"role": "user", "content": "hi"}],
+        schemas=[{"type": "function"}],
+        tool_choice="required",
+    )
+
+    assert "extra_body" not in provider.calls[-1]
+
+
+async def test_agent_tick_factory_llm_fn_honors_disable_thinking_without_schemas():
+    deps = _build_deps(with_pool=True)
+    provider = deps.provider
+    tick = AgentTickFactory(deps).build()
+
+    await tick._llm_fn(
+        messages=[{"role": "user", "content": "hi"}],
+        schemas=[],
+        disable_thinking=True,
+    )
+
+    assert "extra_body" not in provider.calls[-1]
