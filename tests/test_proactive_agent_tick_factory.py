@@ -112,9 +112,10 @@ async def test_agent_tick_factory_llm_fn_forces_disable_thinking():
         messages=[{"role": "user", "content": "hi"}],
         schemas=[{"type": "function"}],
         tool_choice="required",
+        disable_thinking=True,
     )
 
-    assert "extra_body" not in provider.calls[-1]
+    assert provider.calls[-1]["extra_body"] == {"enable_thinking": False}
 
 
 async def test_agent_tick_factory_llm_fn_honors_disable_thinking_without_schemas():
@@ -128,4 +129,4 @@ async def test_agent_tick_factory_llm_fn_honors_disable_thinking_without_schemas
         disable_thinking=True,
     )
 
-    assert "extra_body" not in provider.calls[-1]
+    assert provider.calls[-1]["extra_body"] == {"enable_thinking": False}

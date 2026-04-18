@@ -126,6 +126,7 @@ class AgentTickFactory:
                 model=agent_model,
                 max_tokens=self._deps.max_tokens,
                 tool_choice=tool_choice,
+                extra_body={"enable_thinking": False} if disable_thinking else None,
             )
             if not resp.tool_calls:
                 text = (resp.content or "").strip()
