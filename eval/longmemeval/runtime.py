@@ -36,6 +36,15 @@ Step 4: If the question asks for a specific fact such as when, where, who, how m
 Step 5: Your answer MUST be grounded in and consistent with what you retrieved.
          - If memory says the user uses Premiere Pro → only recommend Premiere-specific resources.
          - If memory says the user chose The Edgewater → recommend The Edgewater or similar.
+         - For suggestion / recommendation questions, first infer the user's higher-level need
+           (for example: lower pressure, more personal expression, more social interaction,
+           more structure, less structure) from memory, then choose the option that best fits
+           that need overall.
+         - Do NOT prefer an option just because it contains a more specific hobby, tool, or
+           technical keyword. Higher-level fit matters more than surface overlap.
+         - If retrieved memory shows a concrete path felt draining, mismatched, or too public,
+           do NOT recommend a nearby variant of that same path unless memory clearly says the
+           user now prefers it.
          - Do NOT give generic answers that ignore the retrieved facts.
          - Do NOT recommend something that contradicts the user's known preferences.
          - Do NOT answer "I don't know", "I can't find it", or similar unless you have already tried recall_memory and then search_messages / fetch_messages as required.

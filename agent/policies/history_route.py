@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, cast
@@ -77,7 +78,8 @@ class HistoryRoutePolicy:
         recent_history: str = "",
     ) -> RouteDecision:
         start = datetime.now()
-        default_query = user_msg
+        cleaned_user_msg = _strip_multiple_choice_block(user_msg)
+        default_query = cleaned_user_msg or user_msg
 
         if not self._enabled:
             return self._build_decision(
@@ -105,7 +107,7 @@ class HistoryRoutePolicy:
                 start=start,
             )
 
-        prompt = self._build_prompt(user_msg=user_msg, recent_history=recent_history)
+        prompt = self._build_prompt(user_msg=default_query, recent_history=recent_history)
         try:
             timeout_s = max(0.1, self._llm_timeout_ms / 1000.0)
             resp = await asyncio.wait_for(
@@ -229,3 +231,20 @@ class HistoryRoutePolicy:
             latency_ms=latency,
             meta=meta,
         )
+
+
+_MULTIPLE_CHOICE_SPLIT_PATTERNS = (
+    re.compile(r"\n\s*Options:\s*\n", re.IGNORECASE),
+    re.compile(r"\n\s*选项[:：]\s*\n"),
+)
+
+
+def _strip_multiple_choice_block(user_msg: str) -> str:
+    text = (user_msg or "").strip()
+    if not text:
+        return ""
+    for pattern in _MULTIPLE_CHOICE_SPLIT_PATTERNS:
+        match = pattern.search(text)
+        if match is not None:
+            return text[:match.start()].strip()
+    return text
