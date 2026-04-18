@@ -80,6 +80,7 @@ class CoreRuntime:
     presence: PresenceStore
     peer_process_manager: PeerProcessManager | None
     peer_poller: PeerAgentPoller | None
+    agent_provider: LLMProvider | None = None
 
     async def start(self) -> None:
         await self.mcp_registry.load_and_connect_all()
@@ -358,7 +359,11 @@ def build_core_runtime(
     observe_writer=None,
 ) -> CoreRuntime:
     bus = MessageBus()
-    provider, light_provider = build_providers(config)
+    provider, light_provider, agent_provider = build_providers(config)
+    # agent_provider is used for the AgentLoop (QA / tool calling).
+    # provider (llm.main) is used for consolidation event extraction.
+    loop_provider = agent_provider or provider
+    loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = build_registered_tools(
@@ -378,7 +383,7 @@ def build_core_runtime(
         config=config,
         workspace=workspace,
         bus=bus,
-        provider=provider,
+        provider=loop_provider,
         light_provider=light_provider,
         tools=tools,
         session_manager=session_manager,
@@ -391,7 +396,7 @@ def build_core_runtime(
         loop_deps,
         AgentLoopConfig(
             llm=LLMConfig(
-                model=config.model,
+                model=loop_model,
                 light_model=config.light_model,
                 max_iterations=config.max_iterations,
                 max_tokens=config.max_tokens,
@@ -423,6 +428,7 @@ def build_core_runtime(
         scheduler=scheduler,
         provider=provider,
         light_provider=light_provider,
+        agent_provider=agent_provider,
         mcp_registry=mcp_registry,
         memory_runtime=memory_runtime,
         presence=presence,

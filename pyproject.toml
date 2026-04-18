@@ -3,3 +3,8 @@ line-length = 88
 target-version = ["py314"]
 include = '\.pyi?$'
 
+[dependency-groups]
+dev = [
+    "rich>=15.0.0",
+]
+

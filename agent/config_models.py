@@ -112,6 +112,9 @@ class Config:
     light_model: str = ""
     light_api_key: str = ""
     light_base_url: str = ""
+    agent_model: str = ""
+    agent_api_key: str = ""
+    agent_base_url: str = ""
     memory_v2: MemoryV2Config = field(default_factory=MemoryV2Config)
     fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
     tool_search_enabled: bool = False

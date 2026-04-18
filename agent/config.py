@@ -74,6 +74,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     llm = _as_dict(data.get("llm"))
     llm_main = _as_dict(llm.get("main"))
     llm_fast = _as_dict(llm.get("fast"))
+    llm_agent = _as_dict(llm.get("agent"))
     agent_cfg = _as_dict(data.get("agent"))
     agent_context = _as_dict(agent_cfg.get("context"))
     agent_tools = _as_dict(agent_cfg.get("tools"))
@@ -123,6 +124,13 @@ def load_config(path: str | Path = "config.toml") -> Config:
         ),
         light_base_url=str(
             llm_fast.get("base_url") or data.get("light_base_url", "")
+        ),
+        agent_model=str(llm_agent.get("model") or data.get("agent_model", "")),
+        agent_api_key=_resolve(
+            str(llm_agent.get("api_key") or data.get("agent_api_key", ""))
+        ),
+        agent_base_url=str(
+            llm_agent.get("base_url") or data.get("agent_base_url", "")
         ),
         memory_v2=memory_v2,
         fitbit=fitbit,

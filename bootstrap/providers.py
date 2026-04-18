@@ -7,7 +7,9 @@ _MAIN_PROVIDER_TIMEOUT_S = 300.0
 _LIGHT_PROVIDER_TIMEOUT_S = 180.0
 
 
-def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
+def build_providers(
+    config: Config,
+) -> tuple[LLMProvider, LLMProvider | None, LLMProvider | None]:
     main_extra = _sanitize_extra_body(
         base_url=config.base_url,
         extra_body=config.extra_body,
@@ -40,7 +42,19 @@ def build_providers(config: Config) -> tuple[LLMProvider, LLMProvider | None]:
             request_timeout_s=_LIGHT_PROVIDER_TIMEOUT_S,
         )
 
-    return provider, light_provider
+    agent_provider: LLMProvider | None = None
+    if config.agent_model and (config.agent_api_key or config.agent_base_url):
+        agent_url = config.agent_base_url or config.base_url or ""
+        agent_extra = _sanitize_extra_body(base_url=agent_url, extra_body={})
+        agent_provider = LLMProvider(
+            api_key=config.agent_api_key or config.api_key,
+            base_url=agent_url,
+            system_prompt=config.system_prompt,
+            extra_body=agent_extra,
+            request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
+        )
+
+    return provider, light_provider, agent_provider
 
 
 def _sanitize_extra_body(base_url: str | None, extra_body: dict | None) -> dict:
