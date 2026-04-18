@@ -141,6 +141,13 @@ def test_extract_cited_ids_strips_ascii_marker_only_at_end():
     assert ids == ["mem_1", "mem-2"]
 
 
+def test_extract_cited_ids_strips_marker_with_spaces_after_commas():
+    clean, ids = _extract_cited_ids("答复正文\n§cited:[mem_1, mem-2]§")
+
+    assert clean == "答复正文"
+    assert ids == ["mem_1", "mem-2"]
+
+
 def test_extract_cited_ids_keeps_body_text_when_marker_not_at_end():
     text = "正文里提到 §cited:[mem_1]§ 这串文本，但不是协议行。\n后面还有内容"
 

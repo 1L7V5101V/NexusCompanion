@@ -505,7 +505,7 @@ async def _run_effects(effects: list[object]) -> None:
 
 # ── Citation extraction ────────────────────────────────────────────────────────
 
-_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-]+)\]§\s*$")
+_CITED_RE = re.compile(r"(?:\n|\r\n)?§cited:\[([A-Za-z0-9_,\-\s]+)\]§\s*$")
 
 
 def _extract_cited_ids(response: str) -> tuple[str, list[str]]:

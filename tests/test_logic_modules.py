@@ -213,6 +213,16 @@ def test_session_get_history_returns_empty_when_window_is_zero():
     assert session.get_history(max_messages=0) == []
 
 
+def test_session_get_history_does_not_inject_inference_tag():
+    session = Session("cli:1")
+    session.add_message("user", "hello")
+    session.add_message("assistant", "world")
+
+    history = session.get_history()
+
+    assert history[-1] == {"role": "assistant", "content": "world"}
+
+
 @pytest.mark.asyncio
 async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop = ProactiveLoop.__new__(ProactiveLoop)

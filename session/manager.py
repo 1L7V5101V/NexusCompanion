@@ -14,7 +14,6 @@ from session.store import SessionStore
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
 _RECENT_TOOL_ROUNDS = 1
 _CLEARED = "[已清除]"
-_INFERENCE_TAG = "[以下为推演内容，本轮未调用工具，不可作为事实依据]\n"
 
 
 def _append_proactive_meta(content: str, msg: dict[str, Any]) -> str:
@@ -167,8 +166,6 @@ class Session:
                     )
 
             content = m.get("content", "") or ""
-            if not tool_chain and content and not content.startswith(_INFERENCE_TAG):
-                content = _INFERENCE_TAG + content
             if content:
                 content = _append_proactive_meta(content, m)
             out.append({"role": "assistant", "content": content})
