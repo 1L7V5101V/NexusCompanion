@@ -48,41 +48,53 @@ class SendMessageTool(Tool):
 
     @property
     def name(self) -> str:
-        return "send_message"
+        return "message_push"
 
     @property
     def description(self) -> str:
-        return "发送一条消息给用户。单次 Drift run 最多只能调用一次。"
+        return (
+            "向用户发送一条消息。单次 Drift run 最多只能调用一次。\n"
+            "channel 和 chat_id 在 Drift 上下文中已由配置预设，可省略不填。"
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "要发送的消息内容"},
+                "message": {"type": "string", "description": "要发送的消息内容"},
+                "channel": {
+                    "type": "string",
+                    "description": "目标渠道（Drift 上下文可省略，已由配置预设）",
+                },
+                "chat_id": {
+                    "type": "string",
+                    "description": "目标会话 ID（Drift 上下文可省略，已由配置预设）",
+                },
             },
-            "required": ["content"],
+            "required": ["message"],
         }
 
-    async def execute(self, content: str, **_: Any) -> str:
+    async def execute(self, message: str = "", content: str = "", **_: Any) -> str:
+        text = (message or content or "").strip()
         if self._send_message_fn is None:
-            logger.info("[drift_tools] send_message unavailable")
-            return json.dumps({"error": "send_message not configured"}, ensure_ascii=False)
+            logger.info("[drift_tools] message_push unavailable")
+            return json.dumps({"error": "message_push not configured"}, ensure_ascii=False)
         if self._ctx.drift_message_sent:
-            logger.info("[drift_tools] send_message rejected: already used")
+            logger.info("[drift_tools] message_push rejected: already used")
             return json.dumps(
-                {"error": "send_message already used in this drift run"},
+                {"error": "message_push already used in this drift run"},
                 ensure_ascii=False,
             )
-        if not str(content or "").strip():
-            logger.info("[drift_tools] send_message rejected: empty content")
-            return json.dumps({"error": "content is required"}, ensure_ascii=False)
-        ok = await self._send_message_fn(content)
+        if not text:
+            logger.info("[drift_tools] message_push rejected: empty message")
+            return json.dumps({"error": "message is required"}, ensure_ascii=False)
+        ok = await self._send_message_fn(text)
         if not ok:
-            logger.warning("[drift_tools] send_message failed")
-            return json.dumps({"error": "send_message failed"}, ensure_ascii=False)
+            logger.warning("[drift_tools] message_push failed")
+            return json.dumps({"error": "message_push failed"}, ensure_ascii=False)
         self._ctx.drift_message_sent = True
-        logger.info("[drift_tools] send_message ok")
+        logger.info("[drift_tools] message_push ok")
         return json.dumps({"ok": True}, ensure_ascii=False)
 
 

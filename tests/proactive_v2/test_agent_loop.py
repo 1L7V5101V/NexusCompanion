@@ -3,7 +3,7 @@ TDD — Phase 5: proactive_v2/agent_tick.py — Agent Loop
 
 测试覆盖：
   - max_steps 保护：loop 不超过 agent_tick_max_steps
-  - 终止工具（send_message/skip）调用后 loop 立即结束
+  - 终止工具（message_push+finish_turn/skip）调用后 loop 立即结束
   - LLM 返回 None → loop 结束
   - llm_fn=None → loop 不执行任何工具
   - Alert 路径：ctx.terminal_action="send" + cited_ids
@@ -98,7 +98,8 @@ async def test_loop_with_no_llm_fn_executes_nothing():
 @pytest.mark.asyncio
 async def test_send_message_stops_loop_immediately():
     llm = FakeLLM([
-        ("finish_turn", {"decision": "reply", "content": "Hello!", "evidence": []}),
+        ("message_push", {"message": "Hello!", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
         ("get_recent_chat", {}),   # 不应执行
     ])
     tick = make_agent_tick(
@@ -106,8 +107,8 @@ async def test_send_message_stops_loop_immediately():
         tool_deps=ToolDeps(recent_chat_fn=AsyncMock(return_value=[])),
     )
     await tick.tick()
-    # send_message 是第 1 步，之后 loop 停止
-    assert tick.last_ctx.steps_taken == 1
+    # message_push + finish_turn 是前 2 步，之后 loop 停止
+    assert tick.last_ctx.steps_taken == 2
     assert tick.last_ctx.terminal_action == "reply"
 
 
@@ -130,13 +131,14 @@ async def test_skip_stops_loop_immediately():
 async def test_only_first_terminal_counts():
     """send_message 之后即使 LLM 想再 skip，也不会被执行"""
     llm = FakeLLM([
-        ("finish_turn", {"decision": "reply", "content": "Hi", "evidence": []}),
+        ("message_push", {"message": "Hi", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
         ("finish_turn", {"decision": "skip", "reason": "no_content"}),
     ])
     tick = make_agent_tick(llm_fn=llm)
     await tick.tick()
     assert tick.last_ctx.terminal_action == "reply"
-    assert tick.last_ctx.steps_taken == 1
+    assert tick.last_ctx.steps_taken == 2
 
 
 # ── send_message 写 ctx ───────────────────────────────────────────────────
@@ -144,7 +146,8 @@ async def test_only_first_terminal_counts():
 @pytest.mark.asyncio
 async def test_send_message_writes_final_message():
     llm = FakeLLM([
-        ("finish_turn", {"decision": "reply", "content": "Hello world!", "evidence": []}),
+        ("message_push", {"message": "Hello world!", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(llm_fn=llm)
     await tick.tick()
@@ -154,7 +157,8 @@ async def test_send_message_writes_final_message():
 @pytest.mark.asyncio
 async def test_send_message_writes_cited_ids():
     llm = FakeLLM([
-        ("finish_turn", {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1", "alert-mcp:2"]}),
+        ("message_push", {"message": "msg", "evidence": ["feed-mcp:1", "alert-mcp:2"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,
@@ -170,7 +174,8 @@ async def test_send_message_writes_cited_ids():
 @pytest.mark.asyncio
 async def test_send_message_cited_added_to_interesting():
     llm = FakeLLM([
-        ("finish_turn", {"decision": "reply", "content": "msg", "evidence": ["feed-mcp:1"]}),
+        ("message_push", {"message": "msg", "evidence": ["feed-mcp:1"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,
@@ -208,7 +213,8 @@ async def test_alert_path_send_sets_terminal():
               "body": "使用率 95%", "severity": "high", "triggered_at": "2026-01-01T00:00:00Z"}
     llm = FakeLLM([
         ("get_alert_events", {}),
-        ("finish_turn", {"decision": "reply", "content": "告警：CPU 95%", "evidence": ["alert-mcp:a1"]}),
+        ("message_push", {"message": "告警：CPU 95%", "evidence": ["alert-mcp:a1"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,
@@ -306,7 +312,8 @@ async def test_content_path_send_interesting_tracked():
     llm = FakeLLM([
         ("get_alert_events", {}),
         ("get_content_events", {}),
-        ("finish_turn", {"decision": "reply", "content": "Great article", "evidence": ["feed-mcp:c1"]}),
+        ("message_push", {"message": "Great article", "evidence": ["feed-mcp:c1"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,
@@ -380,7 +387,8 @@ async def test_recall_memory_in_loop():
     )
     llm = FakeLLM([
         ("recall_memory", {"query": "RPG games"}),
-        ("finish_turn", {"decision": "reply", "content": "RPG 推荐", "evidence": []}),
+        ("message_push", {"message": "RPG 推荐", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,
@@ -514,11 +522,8 @@ async def test_alert_present_llm_called_with_auto_tool_choice():
     }
     llm = FakeLLM([
         ("get_recent_chat", {}),
-        ("finish_turn", {
-            "decision": "reply",
-            "content": "最近恢复指标有点下滑，今天早点睡？",
-            "evidence": ["health:recovery_001"],
-        }),
+        ("message_push", {"message": "最近恢复指标有点下滑，今天早点睡？", "evidence": ["health:recovery_001"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
 
     tick = make_agent_tick(
@@ -561,7 +566,7 @@ async def test_main_loop_stops_when_auto_tool_call_is_empty():
 async def test_finish_turn_error_stops_under_auto_tool_choice():
     llm = FakeLLM([
         ("get_recent_chat", {"n": 10}),
-        ("finish_reply", {"evidence": ["fitbit:v2_x"]}),
+        ("finish_turn", {"decision": "reply"}),
     ])
     tick = make_agent_tick(
         llm_fn=llm,

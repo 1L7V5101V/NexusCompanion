@@ -106,11 +106,28 @@ TOOL_SCHEMAS: list[dict] = [
                 "n": {"type": "integer", "description": "返回条数，默认 20", "default": 20},
             }, "required": []}),
 
+    _schema("message_push",
+            (
+                "暂存本轮要发送给用户的消息草稿。调用后 loop 不终止，"
+                "必须随后调用 finish_turn(decision=reply) 提交。\n"
+                "调用过 message_push 后，禁止 finish_turn(decision=skip, ...)，否则报错。\n"
+                "每轮只能调用一次，重复调用报错。\n"
+                "evidence 只填本轮实际引用的 alert/content 条目复合键。"
+            ),
+            {"type": "object", "properties": {
+                "message": {"type": "string", "description": "要发送给用户的消息内容，必须非空"},
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "引用的内容复合键列表，格式 \"{ack_server}:{event_id}\"",
+                },
+            }, "required": ["message"]}),
+
     _schema("mark_interesting",
             (
                 "将指定 item 明确标记为「感兴趣」。只用于你已单独评估且明确相关的条目，"
                 "不能因为其中一条相关就把整批不同主题内容一起标记。"
-                "被标记但未被 finish_turn.evidence 引用的条目将得到 24h ACK。"
+                "被标记但未被 message_push.evidence 引用的条目将得到 24h ACK。"
                 "可选传 reason，简短说明为什么 interesting。"
             ),
             {"type": "object", "properties": {
@@ -143,40 +160,38 @@ TOOL_SCHEMAS: list[dict] = [
                 },
             }, "required": ["item_ids"]}),
 
-    _schema("finish_reply",
+    _schema("finish_turn",
             (
-                "【终止工具】发送最终主动消息，调用后 loop 立即结束。\n"
-                "必须提供非空 content；evidence 只填本轮实际引用的 alert/content 条目。"
+                "【终止工具】提交本轮决策，调用后 loop 立即结束。\n"
+                "decision=reply：要求之前已调用 message_push 暂存草稿，否则报错。\n"
+                "decision=skip：本轮不发送，reason 必填。"
             ),
             {"type": "object", "properties": {
-                "content": {"type": "string", "description": "最终输出消息，必须非空"},
-                "evidence": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "引用的内容复合键列表",
+                "decision": {
+                    "type": "string",
+                    "enum": ["reply", "skip"],
                 },
-                "note": {"type": "string", "description": "可选补充说明（写入日志）"},
-            }, "required": ["content"]}),
-
-    _schema("finish_skip",
-            (
-                "【终止工具】声明本轮不发送消息，调用后 loop 立即结束。\n"
-                "不要提供 content；reason 应为 no_content/user_busy/already_sent_similar/other。"
-            ),
-            {"type": "object", "properties": {
                 "reason": {
                     "type": "string",
                     "enum": ["no_content", "user_busy", "already_sent_similar", "other"],
-                    "description": "skip 原因",
+                    "description": "decision=skip 时必填",
                 },
                 "note": {"type": "string", "description": "可选补充说明（写入日志）"},
-            }, "required": ["reason"]}),
+            }, "required": ["decision"], "allOf": [
+                {
+                    "if": {
+                        "properties": {"decision": {"const": "skip"}},
+                        "required": ["decision"],
+                    },
+                    "then": {"required": ["reason"]},
+                }
+            ]}),
 ]
 
 TERMINAL_TOOL_SCHEMAS: list[dict] = [
     schema
     for schema in TOOL_SCHEMAS
-    if schema.get("function", {}).get("name") in {"finish_reply", "finish_skip"}
+    if schema.get("function", {}).get("name") in {"finish_turn"}
 ]
 
 
@@ -391,11 +406,47 @@ def _finish_skip(ctx: AgentTickContext, args: dict) -> str:
 
 def _finish_turn(ctx: AgentTickContext, args: dict) -> str:
     decision = str(args.get("decision", "") or "").strip()
+    note = str(args.get("note", "") or "")
     if decision == "reply":
-        return _finish_reply(ctx, args)
+        if not ctx.draft_message.strip():
+            raise ValueError("finish_turn(decision=reply) requires prior message_push call")
+        ctx.final_message = ctx.draft_message
+        ctx.cited_item_ids = list(ctx.draft_evidence)
+        for key in ctx.cited_item_ids:
+            ctx.interesting_item_ids.add(key)
+            ctx.discarded_item_ids.discard(key)
+        ctx.draft_message = ""
+        ctx.draft_evidence = []
+        ctx.terminal_action = "reply"
+        return json.dumps({"ok": True}, ensure_ascii=False)
     if decision == "skip":
-        return _finish_skip(ctx, args)
+        if ctx.draft_message.strip():
+            raise ValueError(
+                "finish_turn(decision=skip) must not follow message_push; call finish_turn(decision=reply) instead"
+            )
+        reason = str(args.get("reason", "") or "").strip()
+        if not reason:
+            raise ValueError("finish_turn(decision=skip) requires non-empty reason")
+        if reason not in _VALID_SKIP_REASONS:
+            raise ValueError(f"invalid skip reason: {reason!r}")
+        ctx.skip_reason = reason
+        ctx.skip_note = note
+        ctx.terminal_action = "skip"
+        ctx.cited_item_ids = []
+        return json.dumps({"ok": True}, ensure_ascii=False)
     raise ValueError("finish_turn.decision must be one of: reply, skip")
+
+
+def _message_push(ctx: AgentTickContext, args: dict) -> str:
+    if ctx.draft_message.strip():
+        raise ValueError("message_push already called this turn; cannot overwrite draft")
+    message = str(args.get("message", "") or "")
+    if not message.strip():
+        raise ValueError("message_push requires non-empty message")
+    evidence = _parse_evidence(ctx, args.get("evidence", []))
+    ctx.draft_message = message
+    ctx.draft_evidence = evidence
+    return json.dumps({"ok": True}, ensure_ascii=False)
 
 
 # ── execute 分发 ──────────────────────────────────────────────────────────
@@ -425,17 +476,14 @@ async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: Tool
     if tool_name == "get_recent_chat":
         return await _get_recent_chat(ctx, args, recent_chat_fn=deps.recent_chat_fn)
 
+    if tool_name == "message_push":
+        return _message_push(ctx, args)
+
     if tool_name == "mark_interesting":
         return _mark_interesting(ctx, args)
 
     if tool_name == "mark_not_interesting":
         return _mark_not_interesting(ctx, args)
-
-    if tool_name == "finish_reply":
-        return _finish_reply(ctx, args)
-
-    if tool_name == "finish_skip":
-        return _finish_skip(ctx, args)
 
     if tool_name == "finish_turn":
         return _finish_turn(ctx, args)

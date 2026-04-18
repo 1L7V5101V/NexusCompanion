@@ -5,7 +5,7 @@ TDD — Phase 3: proactive_v2/tools.py
   - TOOL_SCHEMAS 结构与必填字段
   - _web_fetch: 截断、错误透传
   - _recall_memory: list[dict] → {result, hits}
-  - _finish_reply / _finish_skip: 写 ctx 终止状态
+  - _message_push / _finish_turn: 草稿与提交终止状态
   - _mark_not_interesting: 写 ctx.discarded_item_ids
   - _get_alert_events / _get_content_events: 缓存保护
   - _get_context_data: 最多调用一次
@@ -28,8 +28,7 @@ from proactive_v2.tools import (
     _web_fetch,
     _web_search,
     _recall_memory,
-    _finish_reply,
-    _finish_skip,
+    _message_push,
     _finish_turn,
     _mark_not_interesting,
     _get_alert_events,
@@ -60,10 +59,10 @@ def test_all_tools_present():
         "web_search",
         "recall_memory",
         "get_recent_chat",
+        "message_push",
         "mark_interesting",
         "mark_not_interesting",
-        "finish_reply",
-        "finish_skip",
+        "finish_turn",
     }
     assert required <= names  # 允许超集（未来可加工具），但必须包含以上全部
 
@@ -78,25 +77,25 @@ def test_each_schema_has_openai_format():
         assert "parameters" in fn, f"function missing parameters: {s}"
 
 
-def test_finish_reply_schema_evidence_is_array():
-    props = _fn("finish_reply")["parameters"]["properties"]
+def test_message_push_schema_evidence_is_array():
+    props = _fn("message_push")["parameters"]["properties"]
     assert "evidence" in props
     assert props["evidence"]["type"] == "array"
     assert props["evidence"]["items"]["type"] == "string"
 
 
-def test_finish_reply_schema_content_required():
-    assert "content" in _fn("finish_reply")["parameters"]["required"]
+def test_message_push_schema_message_required():
+    assert "message" in _fn("message_push")["parameters"]["required"]
 
 
-def test_finish_skip_schema_reason_is_supported():
-    assert "reason" in _fn("finish_skip")["parameters"]["properties"]
+def test_finish_turn_schema_reason_is_supported():
+    assert "reason" in _fn("finish_turn")["parameters"]["properties"]
 
 
-def test_finish_reply_requires_non_empty_content():
+def test_message_push_requires_non_empty_message():
     ctx = AgentTickContext()
-    with pytest.raises(ValueError, match="requires non-empty content"):
-        _finish_reply(ctx, {"content": "   ", "evidence": []})
+    with pytest.raises(ValueError, match="requires non-empty message"):
+        _message_push(ctx, {"message": "   ", "evidence": []})
 
 
 def test_mark_not_interesting_schema_item_ids_is_array():
@@ -353,79 +352,97 @@ async def test_recall_memory_separator_between_hits():
     assert "---" in result["result"]
 
 
-# ── _finish_reply / _finish_skip 终止语义 ─────────────────────────────────
+# ── _message_push / _finish_turn 终止语义 ────────────────────────────────
 
-def test_finish_reply_sets_terminal_reply():
+def test_message_push_writes_draft_not_final():
     ctx = AgentTickContext()
     ctx.fetched_contents = [{"ack_server": "feed-mcp", "event_id": "1"}]
-    result = json.loads(_finish_reply(ctx, {"content": "hello", "evidence": ["feed-mcp:1"]}))
-    assert ctx.terminal_action == "reply"
+    result = json.loads(_message_push(ctx, {"message": "hello", "evidence": ["feed-mcp:1"]}))
     assert result["ok"] is True
+    assert ctx.draft_message == "hello"
+    assert ctx.draft_evidence == ["feed-mcp:1"]
+    assert ctx.final_message == ""
+    assert ctx.terminal_action is None
 
 
-def test_finish_reply_writes_content_and_evidence():
+def test_message_push_second_call_raises():
     ctx = AgentTickContext()
-    ctx.fetched_contents = [{"ack_server": "feed-mcp", "event_id": "1"}]
-    ctx.fetched_alerts = [{"ack_server": "alert-mcp", "event_id": "2"}]
-    _finish_reply(ctx, {"content": "hello world", "evidence": ["feed-mcp:1", "alert-mcp:2"]})
-    assert ctx.final_message == "hello world"
-    assert ctx.cited_item_ids == ["feed-mcp:1", "alert-mcp:2"]
+    _message_push(ctx, {"message": "first"})
+    with pytest.raises(ValueError, match="already called this turn"):
+        _message_push(ctx, {"message": "second"})
 
 
-def test_finish_reply_evidence_added_to_interesting():
+def test_message_push_invalid_evidence_raises():
+    ctx = AgentTickContext()
+    with pytest.raises(ValueError, match="invalid evidence ids"):
+        _message_push(ctx, {"message": "hello", "evidence": ["fitbit:v2_x"]})
+
+
+def test_message_push_rejects_prefixed_evidence_when_no_valid_ids():
+    ctx = AgentTickContext()
+    with pytest.raises(ValueError, match="invalid evidence ids"):
+        _message_push(ctx, {"message": "hello", "evidence": ["feed-mcp:made-up"]})
+
+
+def test_finish_turn_reply_without_message_push_raises():
+    ctx = AgentTickContext()
+    with pytest.raises(ValueError, match="requires prior message_push call"):
+        _finish_turn(ctx, {"decision": "reply"})
+
+
+def test_finish_turn_reply_promotes_draft_and_clears_it():
     ctx = AgentTickContext()
     ctx.fetched_contents = [
         {"ack_server": "feed-mcp", "event_id": "1"},
         {"ack_server": "feed-mcp", "event_id": "99"},
     ]
     ctx.discarded_item_ids = {"feed-mcp:99"}
-    _finish_reply(ctx, {"content": "msg", "evidence": ["feed-mcp:1", "feed-mcp:99"]})
+    _message_push(ctx, {"message": "msg", "evidence": ["feed-mcp:1", "feed-mcp:99"]})
+    result = json.loads(_finish_turn(ctx, {"decision": "reply"}))
+    assert result["ok"] is True
+    assert ctx.terminal_action == "reply"
+    assert ctx.final_message == "msg"
+    assert ctx.cited_item_ids == ["feed-mcp:1", "feed-mcp:99"]
+    assert ctx.draft_message == ""
+    assert ctx.draft_evidence == []
     assert "feed-mcp:1" in ctx.interesting_item_ids
     assert "feed-mcp:99" in ctx.interesting_item_ids
     assert "feed-mcp:99" not in ctx.discarded_item_ids
 
 
-def test_finish_reply_invalid_evidence_raises():
+def test_finish_turn_skip_sets_reason_and_note():
     ctx = AgentTickContext()
-    with pytest.raises(ValueError, match="invalid evidence ids"):
-        _finish_reply(ctx, {"content": "hello", "evidence": ["fitbit:v2_x"]})
-
-
-def test_finish_reply_rejects_prefixed_evidence_when_no_valid_ids():
-    ctx = AgentTickContext()
-    with pytest.raises(ValueError, match="invalid evidence ids"):
-        _finish_reply(ctx, {"content": "hello", "evidence": ["feed-mcp:made-up"]})
-
-
-def test_finish_skip_sets_reason_and_note():
-    ctx = AgentTickContext()
-    result = json.loads(_finish_skip(ctx, {"reason": "other", "note": "debug info"}))
+    result = json.loads(_finish_turn(ctx, {"decision": "skip", "reason": "other", "note": "debug info"}))
     assert ctx.terminal_action == "skip"
     assert ctx.skip_reason == "other"
     assert ctx.skip_note == "debug info"
     assert result["ok"] is True
 
 
-@pytest.mark.parametrize("reason", ["no_content", "user_busy", "already_sent_similar", "other"])
-def test_finish_skip_valid_reasons(reason):
+def test_finish_turn_skip_after_message_push_raises():
     ctx = AgentTickContext()
-    _finish_skip(ctx, {"reason": reason})
+    _message_push(ctx, {"message": "draft"})
+    with pytest.raises(ValueError, match="must not follow message_push"):
+        _finish_turn(ctx, {"decision": "skip", "reason": "no_content"})
+
+
+@pytest.mark.parametrize("reason", ["no_content", "user_busy", "already_sent_similar", "other"])
+def test_finish_turn_skip_valid_reasons(reason):
+    ctx = AgentTickContext()
+    _finish_turn(ctx, {"decision": "skip", "reason": reason})
     assert ctx.skip_reason == reason
 
 
-def test_finish_skip_invalid_reason_raises():
+def test_finish_turn_skip_invalid_reason_raises():
     ctx = AgentTickContext()
     with pytest.raises(ValueError):
-        _finish_skip(ctx, {"reason": "invalid_reason"})
+        _finish_turn(ctx, {"decision": "skip", "reason": "invalid_reason"})
 
 
-def test_finish_skip_rejects_content_and_evidence():
+def test_finish_turn_skip_requires_reason():
     ctx = AgentTickContext()
-    with pytest.raises(ValueError, match="does not accept content"):
-        _finish_skip(ctx, {"reason": "no_content", "content": "x"})
-    ctx.fetched_contents = [{"ack_server": "feed-mcp", "event_id": "1"}]
-    with pytest.raises(ValueError, match="does not accept evidence"):
-        _finish_skip(ctx, {"reason": "no_content", "evidence": ["feed-mcp:1"]})
+    with pytest.raises(ValueError, match="requires non-empty reason"):
+        _finish_turn(ctx, {"decision": "skip"})
 
 
 # ── _mark_not_interesting ─────────────────────────────────────────────────
@@ -605,19 +622,28 @@ async def test_execute_increments_each_call():
 
 
 @pytest.mark.asyncio
-async def test_execute_dispatches_finish_reply():
+async def test_execute_dispatches_message_push():
     ctx = AgentTickContext()
     ctx.fetched_contents = [{"ack_server": "feed-mcp", "event_id": "1"}]
     deps = ToolDeps()
-    await execute("finish_reply", {"content": "hi", "evidence": ["feed-mcp:1"]}, ctx, deps)
+    await execute("message_push", {"message": "hi", "evidence": ["feed-mcp:1"]}, ctx, deps)
+    assert ctx.draft_message == "hi"
+
+
+@pytest.mark.asyncio
+async def test_execute_dispatches_finish_turn_reply():
+    ctx = AgentTickContext()
+    deps = ToolDeps()
+    await execute("message_push", {"message": "hi", "evidence": []}, ctx, deps)
+    await execute("finish_turn", {"decision": "reply"}, ctx, deps)
     assert ctx.terminal_action == "reply"
 
 
 @pytest.mark.asyncio
-async def test_execute_dispatches_finish_skip():
+async def test_execute_dispatches_finish_turn_skip():
     ctx = AgentTickContext()
     deps = ToolDeps()
-    await execute("finish_skip", {"reason": "no_content"}, ctx, deps)
+    await execute("finish_turn", {"decision": "skip", "reason": "no_content"}, ctx, deps)
     assert ctx.terminal_action == "skip"
 
 

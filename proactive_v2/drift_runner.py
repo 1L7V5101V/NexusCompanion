@@ -117,7 +117,7 @@ class DriftRunner:
                     if s["function"]["name"] in allowed_after_send
                 ]
                 logger.info(
-                    "[drift] send_message already used, restricting schema to write_file/edit_file/finish_drift"
+                    "[drift] message_push already used, restricting schema to write_file/edit_file/finish_drift"
                 )
 
             if "disable_thinking" in inspect.signature(llm_fn).parameters:
@@ -275,19 +275,19 @@ class DriftRunner:
             "5. 只有在本轮已经完成了一个明确动作后，或确认该 skill 当前确实无事可做时，"
             "才允许 finish_drift。\n"
             "6. 有价值的发现必须立即 write_file 或 edit_file，不要积累到最后再写。\n"
-            "7. 如果你决定 send_message，对用户的表达要像此刻自然想到的一句聊天，"
+            "7. 如果你决定 message_push，对用户的表达要像此刻自然想到的一句聊天，"
             "而不是像在执行队列、候选列表、记忆检索或内部流程。\n"
             "   先把内部依据转写成自然联想，再说出口：像突然想到、顺着刚才的感觉延伸、"
             "隐约记得用户会偏好什么、或此刻真的有点好奇。\n"
             "   目标是让用户感受到你是真想聊这个，而不是在汇报你为什么会想到它。\n"
-            "8. 单次 run 最多只能 send_message 一次。\n"
-            "9. send_message 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
+            "8. 单次 run 最多只能 message_push 一次。\n"
+            "9. message_push 成功后不要再调用 recall_memory / web_fetch / web_search / fetch_messages / search_messages / shell，"
             "后续只允许 write_file、edit_file 和 finish_drift 收尾。\n"
             "10. 执行结束前必须调用 finish_drift 保存状态。\n\n"
             f"{mcp_block}"
             "【可用工具】\n"
             "read_file, write_file, edit_file, recall_memory, web_fetch, web_search, "
-            "fetch_messages, search_messages, shell, send_message, finish_drift"
+            "fetch_messages, search_messages, shell, message_push, finish_drift"
             + (", mount_server" if mcp_block else "")
         )
 

@@ -292,7 +292,7 @@ async def test_drift_runner_restricts_tools_after_send_message(tmp_path: Path):
     store = DriftStateStore(tmp_path)
     llm = FakeLLM(
         [
-            ("send_message", {"content": "hello"}),
+            ("message_push", {"message": "hello"}),
             ("finish_drift", {"skill_used": "explore-curiosity", "one_line": "sent", "next": "next"}),
         ]
     )
@@ -462,7 +462,7 @@ async def test_agent_tick_drift_send_message_skips_normal_post_loop(tmp_path: Pa
     gate.should_act.return_value = (True, {})
     llm = FakeLLM(
         [
-            ("send_message", {"content": "hello from drift"}),
+            ("message_push", {"message": "hello from drift"}),
             (
                 "finish_drift",
                 {
