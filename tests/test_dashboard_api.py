@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from bootstrap.dashboard_api import create_dashboard_app
+from memory2.store import MemoryStore2
 from session.store import SessionStore
 
 
@@ -44,6 +45,33 @@ def _seed_workspace(tmp_path) -> None:
         seq=0,
     )
     store.close()
+
+    memory_store = MemoryStore2(tmp_path / "memory" / "memory2.db", vec_dim=2)
+    memory_store.upsert_item(
+        memory_type="preference",
+        summary="喜欢奶茶，少糖去冰",
+        embedding=[1.0, 0.0],
+        source_ref="telegram:100:pref",
+        extra={"scope_channel": "telegram", "scope_chat_id": "100"},
+        happened_at="2026-04-19T10:03:00+08:00",
+        emotional_weight=6,
+    )
+    memory_store.upsert_item(
+        memory_type="event",
+        summary="昨晚和朋友去散步",
+        embedding=[0.9, 0.1],
+        source_ref="telegram:100:event",
+        extra={"scope_channel": "telegram", "scope_chat_id": "100"},
+        happened_at="2026-04-18T20:00:00+08:00",
+    )
+    memory_store.upsert_item(
+        memory_type="profile",
+        summary="常驻上海",
+        embedding=None,
+        source_ref="cli:local:profile",
+        extra={"scope_channel": "cli", "scope_chat_id": "local"},
+    )
+    memory_store.close()
 
 
 def test_list_sessions_with_filters(tmp_path) -> None:
@@ -111,3 +139,93 @@ def test_list_update_and_batch_delete_messages(tmp_path) -> None:
     remain_resp = client.get("/api/dashboard/messages", params={"session_key": "telegram:100"})
     assert remain_resp.status_code == 200
     assert remain_resp.json()["total"] == 1
+
+
+def test_list_memory_items_with_filters(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    resp = client.get(
+        "/api/dashboard/memories",
+        params={
+            "q": "奶茶",
+            "memory_type": "preference",
+            "scope_channel": "telegram",
+            "has_embedding": "true",
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["memory_type"] == "preference"
+    assert payload["items"][0]["scope_chat_id"] == "100"
+    assert payload["items"][0]["has_embedding"] is True
+
+    status_resp = client.get(
+        "/api/dashboard/memories",
+        params={
+            "memory_type": "profile",
+            "status": "active",
+            "page_size": 1,
+        },
+    )
+    assert status_resp.status_code == 200
+    assert status_resp.json()["total"] == 1
+    assert status_resp.json()["items"][0]["memory_type"] == "profile"
+
+
+def test_get_update_and_delete_memory(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    list_resp = client.get("/api/dashboard/memories", params={"q": "奶茶"})
+    memory_id = list_resp.json()["items"][0]["id"]
+
+    get_resp = client.get(
+        f"/api/dashboard/memories/{memory_id}",
+        params={"include_embedding": "true"},
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["embedding_dim"] == 2
+
+    patch_resp = client.patch(
+        f"/api/dashboard/memories/{memory_id}",
+        json={
+            "status": "superseded",
+            "source_ref": "telegram:100:pref:patched",
+            "emotional_weight": 9,
+            "extra_json": {"scope_channel": "telegram", "scope_chat_id": "100"},
+        },
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["status"] == "superseded"
+    assert patch_resp.json()["emotional_weight"] == 9
+    assert patch_resp.json()["source_ref"] == "telegram:100:pref:patched"
+
+    delete_resp = client.delete(f"/api/dashboard/memories/{memory_id}")
+    assert delete_resp.status_code == 200
+
+    missing_resp = client.get(f"/api/dashboard/memories/{memory_id}")
+    assert missing_resp.status_code == 404
+
+
+def test_memory_similar_and_batch_delete(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    list_resp = client.get("/api/dashboard/memories", params={"scope_channel": "telegram"})
+    items = list_resp.json()["items"]
+    pref = next(item for item in items if item["memory_type"] == "preference")
+    event = next(item for item in items if item["memory_type"] == "event")
+
+    similar_resp = client.get(f"/api/dashboard/memories/{pref['id']}/similar")
+    assert similar_resp.status_code == 200
+    assert similar_resp.json()["total"] >= 1
+    assert similar_resp.json()["items"][0]["id"] == event["id"]
+
+    batch_resp = client.post(
+        "/api/dashboard/memories/batch-delete",
+        json={"ids": [pref["id"], event["id"]]},
+    )
+    assert batch_resp.status_code == 200
+    assert batch_resp.json()["deleted_count"] == 2

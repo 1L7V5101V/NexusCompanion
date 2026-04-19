@@ -16,25 +16,55 @@
         <div class="brand-mark">A</div>
         <div>
           <div class="brand-title">Nexus Dashboard</div>
-          <div class="brand-sub">Session / Message Explorer</div>
+          <div class="brand-sub">Session / Memory Explorer</div>
         </div>
       </div>
       <div class="topbar-filters">
-        <label class="search">
-          <span>⌕</span>
-          <input id="msgSearch" type="text" placeholder="搜索消息内容">
-        </label>
-        <select id="msgRoleFilter">
-          <option value="">全部 role</option>
-          <option value="user">user</option>
-          <option value="assistant">assistant</option>
-          <option value="system">system</option>
-          <option value="tool">tool</option>
-        </select>
-        <div class="active-session-chip hidden" id="activeSessionChip">
-          <span>session</span>
-          <code id="activeSessionText"></code>
-          <button id="clearSessionFilter" type="button">×</button>
+        <div class="filter-row" id="messageFilters">
+          <label class="search">
+            <span>⌕</span>
+            <input id="msgSearch" type="text" placeholder="搜索消息内容">
+          </label>
+          <select id="msgRoleFilter">
+            <option value="">全部 role</option>
+            <option value="user">user</option>
+            <option value="assistant">assistant</option>
+            <option value="system">system</option>
+            <option value="tool">tool</option>
+          </select>
+          <div class="active-session-chip hidden" id="activeSessionChip">
+            <span>session</span>
+            <code id="activeSessionText"></code>
+            <button id="clearSessionFilter" type="button">×</button>
+          </div>
+        </div>
+        <div class="filter-row hidden" id="memoryFilters">
+          <label class="search">
+            <span>⌕</span>
+            <input id="memorySearch" type="text" placeholder="搜索 memory / source_ref">
+          </label>
+          <select id="memoryTypeFilter">
+            <option value="">全部 type</option>
+            <option value="procedure">procedure</option>
+            <option value="preference">preference</option>
+            <option value="event">event</option>
+            <option value="profile">profile</option>
+          </select>
+          <select id="memoryStatusFilter">
+            <option value="">全部 status</option>
+            <option value="active">active</option>
+            <option value="superseded">superseded</option>
+          </select>
+          <div class="active-session-chip hidden" id="activeMemoryScopeChip">
+            <span>scope</span>
+            <code id="activeMemoryScopeText"></code>
+            <button id="clearMemoryScopeFilter" type="button">×</button>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-view">
+        <div class="view-chip" id="viewChip">
+          <span id="viewChipLabel">messages</span>
         </div>
       </div>
     </header>
@@ -43,11 +73,11 @@
       <aside class="sessions-pane">
         <div class="pane-head">
           <div>
-            <div class="pane-kicker">Sessions</div>
+            <div class="pane-kicker">Explorer</div>
             <div class="pane-title" id="sessionCountTitle">0 个会话</div>
           </div>
         </div>
-        <div class="filters-stack">
+        <div class="filters-stack" id="sessionSidebarFilters">
           <label class="search search-small">
             <span>⌕</span>
             <input id="sessionSearch" type="text" placeholder="过滤 session">
@@ -56,11 +86,37 @@
             <option value="">全部 channel</option>
           </select>
         </div>
-        <button class="all-messages-row" id="allMessagesButton" type="button">
-          <span>全部消息</span>
-          <strong id="allMessagesCount">0</strong>
-        </button>
-        <div class="session-list" id="sessionList"></div>
+        <nav class="explorer-nav">
+          <section class="nav-group" id="sessionsNavGroup">
+            <button class="nav-group-toggle" id="sessionsNavToggle" type="button">
+              <span class="nav-group-caret">▾</span>
+              <span class="nav-group-label">Sessions</span>
+              <span class="nav-group-count" id="allMessagesCount">0</span>
+            </button>
+            <div class="nav-group-body" id="sessionsNavBody">
+              <button class="all-messages-row" id="allMessagesButton" type="button">
+                <span>全部消息</span>
+                <strong id="allSessionsCount">0</strong>
+              </button>
+              <div class="session-list" id="sessionList"></div>
+            </div>
+          </section>
+
+          <section class="nav-group" id="memoryNavGroup">
+            <button class="nav-group-toggle" id="memoryNavToggle" type="button">
+              <span class="nav-group-caret">▸</span>
+              <span class="nav-group-label">Memory</span>
+              <span class="nav-group-count" id="memoryCountBadge">0</span>
+            </button>
+            <div class="nav-group-body hidden" id="memoryNavBody">
+              <button class="all-messages-row" id="allMemoriesButton" type="button">
+                <span>全部记忆</span>
+                <strong id="allMemoriesCount">0</strong>
+              </button>
+              <div class="memory-quick-list" id="memoryTypeList"></div>
+            </div>
+          </section>
+        </nav>
       </aside>
 
       <section class="messages-pane">
@@ -70,15 +126,7 @@
           <button class="ghost" id="clearSelectionButton" type="button">取消选择</button>
         </div>
 
-        <div class="table-head">
-          <label class="checkbox-cell"><input id="selectAllCheckbox" type="checkbox"></label>
-          <div>Session Key</div>
-          <div>Seq</div>
-          <div>Content</div>
-          <div>Timestamp</div>
-          <div>Role</div>
-          <div></div>
-        </div>
+        <div class="table-head" id="tableHead"></div>
         <div class="table-body" id="messageTable"></div>
         <footer class="table-foot">
           <div id="messageMeta">共 0 条</div>
@@ -92,8 +140,8 @@
 
       <aside class="detail-pane" id="detailPane">
         <div class="detail-empty">
-          <div class="detail-empty-title">消息详情</div>
-          <div class="detail-empty-text">点开一条消息后，这里会显示完整内容、JSON 字段和所属 session 信息。</div>
+          <div class="detail-empty-title">详情</div>
+          <div class="detail-empty-text">点开消息、session 或 memory 后，这里会显示完整内容、字段和 JSON 信息。</div>
         </div>
       </aside>
     </main>
