@@ -88,6 +88,7 @@ const state = {
   navOpen: {
     sessions: true,
     memory: false,
+    proactive: false,
   },
   sessions: [],
   sessionMap: new Map(),
@@ -117,6 +118,17 @@ const state = {
   memoryPage: 1,
   memoryPageSize: 25,
   totalMemories: 0,
+  proactiveOverview: null,
+  proactiveCounts: {},
+  proactiveSection: "all",
+  proactiveItems: [],
+  proactivePage: 1,
+  proactivePageSize: 25,
+  proactiveTotal: 0,
+  proactiveSessionFilter: "",
+  activeProactiveItemKey: null,
+  activeProactiveDetail: null,
+  activeProactiveSteps: [],
 };
 
 const el = {};
@@ -141,6 +153,18 @@ window.dashboardSelectMemoryType = async (memoryType) => {
   render();
 };
 
+window.dashboardSelectProactiveSection = async (section) => {
+  state.viewMode = "proactive";
+  state.proactiveSection = section || "all";
+  state.proactivePage = 1;
+  state.activeProactiveItemKey = null;
+  state.activeProactiveDetail = null;
+  state.activeProactiveSteps = [];
+  await loadProactiveOverview();
+  await loadProactivePanel();
+  render();
+};
+
 function bindElements() {
   el.sessionList = document.getElementById("sessionList");
   el.sessionCountTitle = document.getElementById("sessionCountTitle");
@@ -161,12 +185,17 @@ function bindElements() {
   el.memoryStatusFilter = document.getElementById("memoryStatusFilter");
   el.messageFilters = document.getElementById("messageFilters");
   el.memoryFilters = document.getElementById("memoryFilters");
+  el.proactiveFilters = document.getElementById("proactiveFilters");
   el.activeSessionChip = document.getElementById("activeSessionChip");
   el.activeSessionText = document.getElementById("activeSessionText");
   el.clearSessionFilter = document.getElementById("clearSessionFilter");
   el.activeMemoryScopeChip = document.getElementById("activeMemoryScopeChip");
   el.activeMemoryScopeText = document.getElementById("activeMemoryScopeText");
   el.clearMemoryScopeFilter = document.getElementById("clearMemoryScopeFilter");
+  el.activeProactiveSectionText = document.getElementById("activeProactiveSectionText");
+  el.activeProactiveSessionChip = document.getElementById("activeProactiveSessionChip");
+  el.activeProactiveSessionText = document.getElementById("activeProactiveSessionText");
+  el.clearProactiveSessionFilter = document.getElementById("clearProactiveSessionFilter");
   el.batchBar = document.getElementById("batchBar");
   el.batchCount = document.getElementById("batchCount");
   el.batchDeleteButton = document.getElementById("batchDeleteButton");
@@ -188,6 +217,13 @@ function bindElements() {
   el.memoryNavGroup = document.getElementById("memoryNavGroup");
   el.memoryNavToggle = document.getElementById("memoryNavToggle");
   el.memoryNavBody = document.getElementById("memoryNavBody");
+  el.proactiveNavGroup = document.getElementById("proactiveNavGroup");
+  el.proactiveNavToggle = document.getElementById("proactiveNavToggle");
+  el.proactiveNavBody = document.getElementById("proactiveNavBody");
+  el.proactiveCountBadge = document.getElementById("proactiveCountBadge");
+  el.proactiveAllButton = document.getElementById("proactiveAllButton");
+  el.proactiveOverviewCount = document.getElementById("proactiveOverviewCount");
+  el.proactiveSectionList = document.getElementById("proactiveSectionList");
 }
 
 function initCustomSelects() {
@@ -270,6 +306,10 @@ function bindEvents() {
     render();
   });
 
+  el.proactiveAllButton.addEventListener("click", async () => {
+    await window.dashboardSelectProactiveSection("all");
+  });
+
   el.clearSessionFilter.addEventListener("click", async () => {
     state.activeSessionKey = null;
     state.activeSession = null;
@@ -286,6 +326,16 @@ function bindEvents() {
     state.activeMemorySimilar = [];
     state.memoryPage = 1;
     await loadMemoriesAndSidebar();
+    render();
+  });
+
+  el.clearProactiveSessionFilter.addEventListener("click", async () => {
+    state.proactiveSessionFilter = "";
+    state.proactivePage = 1;
+    state.activeProactiveItemKey = null;
+    state.activeProactiveDetail = null;
+    state.activeProactiveSteps = [];
+    await loadProactivePanel();
     render();
   });
 
@@ -331,6 +381,9 @@ function bindEvents() {
   });
 
   el.clearSelectionButton.addEventListener("click", () => {
+    if (state.viewMode === "proactive") {
+      return;
+    }
     if (state.viewMode === "memory") {
       state.selectedMemoryIds.clear();
     } else {
@@ -340,6 +393,16 @@ function bindEvents() {
   });
 
   el.prevPageButton.addEventListener("click", async () => {
+    if (state.viewMode === "proactive") {
+      if (state.proactivePage <= 1) {
+        return;
+      }
+      state.proactivePage -= 1;
+      await loadProactivePanel();
+      render();
+      return;
+    }
+
     if (state.viewMode === "memory") {
       if (state.memoryPage <= 1) {
         return;
@@ -359,6 +422,16 @@ function bindEvents() {
   });
 
   el.nextPageButton.addEventListener("click", async () => {
+    if (state.viewMode === "proactive") {
+      if (state.proactivePage >= pageCount()) {
+        return;
+      }
+      state.proactivePage += 1;
+      await loadProactivePanel();
+      render();
+      return;
+    }
+
     if (state.viewMode === "memory") {
       if (state.memoryPage >= pageCount()) {
         return;
@@ -384,6 +457,9 @@ function bindEvents() {
   el.memoryNavToggle.addEventListener("click", async () => {
     await toggleNav("memory");
   });
+  el.proactiveNavToggle.addEventListener("click", async () => {
+    await toggleNav("proactive");
+  });
   el.memoryTypeList.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-memory-type]");
     if (!button) {
@@ -391,6 +467,15 @@ function bindEvents() {
     }
     await window.dashboardSelectMemoryType(
       button.getAttribute("data-memory-type") || ""
+    );
+  });
+  el.proactiveSectionList.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-proactive-section]");
+    if (!button) {
+      return;
+    }
+    await window.dashboardSelectProactiveSection(
+      button.getAttribute("data-proactive-section") || "all"
     );
   });
 }
@@ -401,8 +486,11 @@ async function toggleNav(kind) {
     state.navOpen[kind] = true;
     if (kind === "sessions") {
       await loadMessages();
-    } else {
+    } else if (kind === "memory") {
       await loadMemoriesAndSidebar();
+    } else {
+      await loadProactiveOverview();
+      await loadProactivePanel();
     }
     render();
     return;
@@ -415,12 +503,16 @@ async function toggleNav(kind) {
 async function refreshAll() {
   await loadSessions();
   await loadMemorySidebar();
+  await loadProactiveOverview();
   await refreshCurrentView();
 }
 
 async function refreshCurrentView() {
   if (state.viewMode === "memory") {
     await loadMemories();
+  } else if (state.viewMode === "proactive") {
+    await loadProactiveOverview();
+    await loadProactivePanel();
   } else {
     await loadMessages();
   }
@@ -554,6 +646,42 @@ async function loadMemories() {
   }
 }
 
+async function loadProactiveOverview() {
+  state.proactiveOverview = await api("/api/dashboard/proactive/overview");
+  state.proactiveCounts = state.proactiveOverview.counts || {};
+}
+
+async function loadProactivePanel() {
+  const params = new URLSearchParams();
+  params.set("page", String(state.proactivePage));
+  params.set("page_size", String(state.proactivePageSize));
+  if (state.proactiveSessionFilter) {
+    params.set("session_key", state.proactiveSessionFilter);
+  }
+  if (state.proactiveSection === "reply" || state.proactiveSection === "skip") {
+    params.set("terminal_action", state.proactiveSection);
+  } else if (
+    state.proactiveSection === "busy" ||
+    state.proactiveSection === "cooldown" ||
+    state.proactiveSection === "presence"
+  ) {
+    params.set("gate_exit", state.proactiveSection);
+  }
+
+  const payload = await api(`/api/dashboard/proactive/tick_logs?${params.toString()}`);
+  state.proactiveItems = payload.items || [];
+  state.proactiveTotal = payload.total || 0;
+
+  if (
+    state.activeProactiveItemKey &&
+    !state.proactiveItems.find((item) => proactiveItemKey(state.proactiveSection, item) === state.activeProactiveItemKey)
+  ) {
+    state.activeProactiveItemKey = null;
+    state.activeProactiveDetail = null;
+    state.activeProactiveSteps = [];
+  }
+}
+
 async function selectSession(session) {
   state.viewMode = "sessions";
   state.activeSessionKey = session.key;
@@ -584,6 +712,19 @@ async function loadMemoryDetail(memoryId) {
   state.activeMemorySimilar = similar.items || [];
 }
 
+async function selectProactiveItem(item) {
+  state.viewMode = "proactive";
+  state.activeProactiveItemKey = proactiveItemKey(state.proactiveSection, item);
+  const tickId = item.tick_id;
+  const [detail, steps] = await Promise.all([
+    api(`/api/dashboard/proactive/tick_logs/${encodePath(tickId)}`),
+    api(`/api/dashboard/proactive/tick_logs/${encodePath(tickId)}/steps`),
+  ]);
+  state.activeProactiveDetail = detail;
+  state.activeProactiveSteps = steps.items || [];
+  render();
+}
+
 function render() {
   renderNav();
   renderSidebar();
@@ -596,8 +737,10 @@ function render() {
 function renderNav() {
   el.sessionsNavGroup.classList.toggle("active", state.viewMode === "sessions");
   el.memoryNavGroup.classList.toggle("active", state.viewMode === "memory");
+  el.proactiveNavGroup.classList.toggle("active", state.viewMode === "proactive");
   toggleNavBody(el.sessionsNavBody, el.sessionsNavToggle, state.navOpen.sessions);
   toggleNavBody(el.memoryNavBody, el.memoryNavToggle, state.navOpen.memory);
+  toggleNavBody(el.proactiveNavBody, el.proactiveNavToggle, state.navOpen.proactive);
 }
 
 function toggleNavBody(body, toggle, open) {
@@ -609,15 +752,28 @@ function toggleNavBody(body, toggle, open) {
 function renderSidebar() {
   renderSessions();
   renderMemoryTypeList();
+  renderProactiveSections();
 }
 
 function renderTopbar() {
   const memoryMode = state.viewMode === "memory";
-  el.messageFilters.classList.toggle("hidden", memoryMode);
+  const proactiveMode = state.viewMode === "proactive";
+  el.messageFilters.classList.toggle("hidden", memoryMode || proactiveMode);
   el.memoryFilters.classList.toggle("hidden", !memoryMode);
-  el.sessionSidebarFilters.classList.toggle("hidden", memoryMode);
-  el.viewChipLabel.textContent = memoryMode ? "memory" : "messages";
+  el.proactiveFilters.classList.toggle("hidden", !proactiveMode);
+  el.sessionSidebarFilters.classList.toggle("hidden", memoryMode || proactiveMode);
+  el.viewChipLabel.textContent = proactiveMode
+    ? `proactive · ${proactiveSectionLabel(state.proactiveSection)}`
+    : memoryMode
+      ? "memory"
+      : "messages";
   el.batchDeleteButton.textContent = memoryMode ? "批量删除记忆" : "批量删除";
+  el.activeProactiveSectionText.textContent = proactiveSectionLabel(state.proactiveSection);
+  el.activeProactiveSessionChip.classList.toggle(
+    "hidden",
+    !proactiveMode || !state.proactiveSessionFilter
+  );
+  el.activeProactiveSessionText.textContent = state.proactiveSessionFilter || "";
 }
 
 function renderSessionFilters() {
@@ -636,7 +792,11 @@ function renderSessionFilters() {
 
 function renderSessions() {
   el.sessionCountTitle.textContent =
-    state.viewMode === "memory" ? `${state.totalMemories} 条记忆` : `${state.sessions.length} 个会话`;
+    state.viewMode === "memory"
+      ? `${state.totalMemories} 条记忆`
+      : state.viewMode === "proactive"
+        ? `${state.proactiveTotal} 条 Tick`
+        : `${state.sessions.length} 个会话`;
   const total = totalSessionMessages();
   el.allMessagesCount.textContent = String(total);
   el.allSessionsCount.textContent = String(total);
@@ -751,6 +911,48 @@ function renderMemoryTypeList() {
   el.activeMemoryScopeText.textContent = scopeText;
 }
 
+function renderProactiveSections() {
+  const resultCounts = state.proactiveOverview?.result_counts || {};
+  const total = state.proactiveOverview?.counts?.tick_logs || 0;
+  const sections = [
+    ["reply", "Reply", resultCounts.reply || 0, "真正发出消息的 tick"],
+    ["skip", "Skip", resultCounts.skip || 0, "进了 loop 但最终跳过"],
+    ["busy", "Busy", resultCounts.busy || 0, "被 pre-gate busy 拦下"],
+    ["cooldown", "Cooldown", resultCounts.cooldown || 0, "被发送冷却拦下"],
+    ["presence", "Presence", resultCounts.presence || 0, "被 presence / quota 拦下"],
+  ];
+  el.proactiveCountBadge.textContent = String(total);
+  el.proactiveOverviewCount.textContent = String(total);
+  el.proactiveAllButton.classList.toggle(
+    "active",
+    state.viewMode === "proactive" && state.proactiveSection === "all"
+  );
+  el.proactiveSectionList.innerHTML = "";
+  sections.forEach(([section, label, count, hint]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "proactive-quick-item";
+    button.dataset.proactiveSection = section;
+    if (state.viewMode === "proactive" && state.proactiveSection === section) {
+      button.classList.add("active");
+    }
+    button.innerHTML = `
+      <div class="memory-quick-head">
+        <div class="memory-quick-main">
+          <span class="status-pill">${escapeHtml(label)}</span>
+          <div class="memory-quick-title">${escapeHtml(hint)}</div>
+        </div>
+        <span class="status-pill">${escapeHtml(String(count))}</span>
+      </div>
+      <div class="memory-quick-meta">
+        <span>${escapeHtml(proactiveSectionHint(section))}</span>
+        <span>${escapeHtml(String(count))} 条</span>
+      </div>
+    `;
+    el.proactiveSectionList.appendChild(button);
+  });
+}
+
 function memoryTypeHint(memoryType) {
   const hints = {
     procedure: "流程与做法",
@@ -762,6 +964,19 @@ function memoryTypeHint(memoryType) {
 }
 
 function renderTableHead() {
+  if (state.viewMode === "proactive") {
+    el.tableHead.className = "table-head mode-proactive-ticks";
+    el.tableHead.innerHTML = `
+      <div>Session</div>
+      <div>Started</div>
+      <div>Result</div>
+      <div>Summary</div>
+      <div></div>
+    `;
+    el.selectAllCheckbox = null;
+    return;
+  }
+
   if (state.viewMode === "memory") {
     el.tableHead.className = "table-head mode-memory";
     el.tableHead.innerHTML = `
@@ -804,11 +1019,44 @@ function renderTableHead() {
 }
 
 function renderRows() {
-  if (state.viewMode === "memory") {
+  if (state.viewMode === "proactive") {
+    renderProactiveRows();
+  } else if (state.viewMode === "memory") {
     renderMemoryRows();
   } else {
     renderMessageRows();
   }
+}
+
+function renderProactiveRows() {
+  el.batchBar.classList.add("hidden");
+  el.messageTable.innerHTML = "";
+  if (!state.proactiveItems.length) {
+    el.messageTable.innerHTML = '<div class="empty-state">当前筛选下没有 tick logs。</div>';
+  }
+  state.proactiveItems.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "table-row mode-proactive-ticks";
+    if (state.activeProactiveItemKey === proactiveItemKey(state.proactiveSection, item)) {
+      row.classList.add("active");
+    }
+    row.innerHTML = `
+      <div class="mono cell-session">${escapeHtml(formatSessionKeyForTable(item.session_key))}</div>
+      <div class="mono cell-time">${escapeHtml(shortTs(item.started_at))}</div>
+      <div><span class="status-pill" style="${proactiveResultStyle(item)}">${escapeHtml(item.terminal_action || item.gate_exit || "-")}</span></div>
+      <div class="content-preview">${escapeHtml(proactiveTickPreview(item))}</div>
+      <div class="table-actions"></div>
+    `;
+    row.addEventListener("click", async () => {
+      await selectProactiveItem(item);
+    });
+    el.messageTable.appendChild(row);
+  });
+
+  el.messageMeta.textContent = proactiveMetaText();
+  el.pageText.textContent = `${state.proactivePage} / ${pageCount()}`;
+  el.prevPageButton.disabled = state.proactivePage <= 1;
+  el.nextPageButton.disabled = state.proactivePage >= pageCount();
 }
 
 function renderMessageRows() {
@@ -992,6 +1240,11 @@ function renderMemoryRows() {
 }
 
 function renderDetail() {
+  if (state.viewMode === "proactive") {
+    renderProactiveDetail();
+    return;
+  }
+
   if (state.viewMode === "memory") {
     renderMemoryDetail();
     return;
@@ -1255,6 +1508,78 @@ function renderMemoryDetail() {
   attachJsonViewers(el.detailPane);
 }
 
+function renderProactiveDetail() {
+  if (!state.activeProactiveDetail) {
+    el.detailPane.innerHTML = `
+      <div class="detail-empty">
+        <div class="detail-empty-title">Proactive 详情</div>
+        <div class="detail-empty-text">点开一条 tick log 后，这里会显示最终结果和完整 tool chain。</div>
+      </div>
+    `;
+    return;
+  }
+
+  const item = state.activeProactiveDetail;
+  el.detailPane.innerHTML = `
+    <div class="detail-wrap">
+      <div class="detail-toolbar">
+        <div>
+          <div class="detail-title">Tick Log</div>
+          <div class="detail-subtext">${escapeHtml(item.tick_id || "")}</div>
+        </div>
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Final Message</div>
+        <div class="detail-content">${escapeHtml(item.final_message || "没有输出消息")}</div>
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Fields</div>
+        <div class="detail-grid">
+          ${detailRow("session_key", `<code>${escapeHtml(item.session_key || "")}</code>`)}
+          ${detailRow("started_at", `<code>${escapeHtml(item.started_at || "")}</code>`)}
+          ${detailRow("finished_at", `<code>${escapeHtml(item.finished_at || "")}</code>`)}
+          ${detailRow("gate_exit", `<code>${escapeHtml(item.gate_exit || "-")}</code>`)}
+          ${detailRow("terminal_action", `<code>${escapeHtml(item.terminal_action || "-")}</code>`)}
+          ${detailRow("skip_reason", `<code>${escapeHtml(item.skip_reason || "-")}</code>`)}
+          ${detailRow("steps_taken", `<code>${escapeHtml(String(item.steps_taken ?? 0))}</code>`)}
+          ${detailRow("alert_count", `<code>${escapeHtml(String(item.alert_count ?? 0))}</code>`)}
+          ${detailRow("content_count", `<code>${escapeHtml(String(item.content_count ?? 0))}</code>`)}
+          ${detailRow("context_count", `<code>${escapeHtml(String(item.context_count ?? 0))}</code>`)}
+          ${detailRow("drift_entered", String(Boolean(item.drift_entered)))}
+        </div>
+        <div class="modal-actions">
+          <button class="ghost" id="proactiveTickSessionButton" type="button">按这个 session 过滤</button>
+        </div>
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Interesting IDs</div>
+        ${renderTagList(item.interesting_ids || [])}
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Discarded IDs</div>
+        ${renderTagList(item.discarded_ids || [])}
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Cited IDs</div>
+        ${renderTagList(item.cited_ids || [])}
+      </div>
+      <div class="detail-block">
+        <div class="detail-label">Tool Chain</div>
+        ${renderToolChain(state.activeProactiveSteps)}
+      </div>
+    </div>
+  `;
+  document
+    .getElementById("proactiveTickSessionButton")
+    .addEventListener("click", async () => {
+      state.proactiveSessionFilter = item.session_key || "";
+      state.proactivePage = 1;
+      await loadProactivePanel();
+      render();
+    });
+  attachJsonViewers(el.detailPane);
+}
+
 function openMessageEditModal(message) {
   const extra = extraOf(message);
   const toolChain = message.tool_chain || null;
@@ -1511,6 +1836,9 @@ async function api(url, options = {}) {
 }
 
 function pageCount() {
+  if (state.viewMode === "proactive") {
+    return Math.max(1, Math.ceil(state.proactiveTotal / state.proactivePageSize));
+  }
   if (state.viewMode === "memory") {
     return Math.max(1, Math.ceil(state.totalMemories / state.memoryPageSize));
   }
@@ -1556,6 +1884,19 @@ function memoryStatusStyle(status) {
     return "background:var(--yellow-soft);color:#8b6b09;";
   }
   return "background:var(--green-soft);color:var(--green);";
+}
+
+function proactiveResultStyle(item) {
+  if (item.terminal_action === "reply") {
+    return "background:var(--green-soft);color:var(--green);";
+  }
+  if (item.terminal_action === "skip") {
+    return "background:var(--yellow-soft);color:#8b6b09;";
+  }
+  if (item.gate_exit) {
+    return "background:var(--red-soft);color:#b03a3a;";
+  }
+  return "background:#ece6db;color:var(--text-soft);";
 }
 
 function channelOf(key) {
@@ -1623,6 +1964,126 @@ function formatScopeChip() {
     return "";
   }
   return `${state.memoryScopeFilter.channel}:${state.memoryScopeFilter.chatId || ""}`;
+}
+
+function proactiveSectionLabel(section) {
+  const labels = {
+    all: "Tick Logs",
+    reply: "Reply",
+    skip: "Skip",
+    busy: "Busy",
+    cooldown: "Cooldown",
+    presence: "Presence",
+  };
+  return labels[section] || section;
+}
+
+function proactiveSectionHint(section) {
+  const hints = {
+    reply: "真正发出消息的 tick",
+    skip: "进了 loop 但最终跳过",
+    busy: "被 busy pre-gate 拦下",
+    cooldown: "被发送冷却拦下",
+    presence: "被 quota / presence 拦下",
+  };
+  return hints[section] || "";
+}
+
+function proactiveItemKey(section, item) {
+  return item.tick_id;
+}
+
+function proactiveTickPreview(item) {
+  const parts = [];
+  if (item.skip_reason) {
+    parts.push(item.skip_reason);
+  }
+  if (item.final_message) {
+    parts.push(stripMarkdown(item.final_message));
+  }
+  if (!parts.length) {
+    parts.push(
+      `alerts ${item.alert_count || 0} · content ${item.content_count || 0} · context ${item.context_count || 0}`
+    );
+  }
+  return parts.join(" · ");
+}
+
+function proactiveMetaText() {
+  let text = `共 ${state.proactiveTotal} 条 tick`;
+  if (state.proactiveSessionFilter) {
+    text += ` · session: ${state.proactiveSessionFilter}`;
+  }
+  return text;
+}
+
+function renderTagList(items) {
+  if (!items.length) {
+    return '<div class="muted-text">empty</div>';
+  }
+  return `<div class="detail-tag-list">${items
+    .map((item) => `<code class="detail-chip">${escapeHtml(item)}</code>`)
+    .join("")}</div>`;
+}
+
+function renderToolChain(steps) {
+  if (!steps.length) {
+    return '<div class="muted-text">没有记录到工具调用。</div>';
+  }
+  return `<div class="tool-chain">${steps
+    .map(
+      (step) => `
+        <section class="tool-step">
+          <div class="tool-step-head">
+            <div class="tool-step-title">
+              <span class="status-pill">step ${escapeHtml(String(step.step_index))}</span>
+              <span class="type-pill">${escapeHtml(step.tool_name || "")}</span>
+            </div>
+            <div class="tool-step-meta">
+              <code>${escapeHtml(step.phase || "")}</code>
+              <code>${escapeHtml(step.tool_call_id || "")}</code>
+            </div>
+          </div>
+          <div class="tool-step-block">
+            <div class="detail-label">Args</div>
+            ${jvPlaceholder(step.tool_args || {})}
+          </div>
+          <div class="tool-step-block">
+            <div class="detail-label">Result</div>
+            <div class="detail-content tool-result">${escapeHtml(step.tool_result_text || "")}</div>
+          </div>
+          <div class="tool-step-block">
+            <div class="detail-label">State After</div>
+            <div class="detail-grid">
+              ${detailRow("terminal_action", `<code>${escapeHtml(step.terminal_action_after || "-")}</code>`)}
+              ${detailRow("skip_reason", `<code>${escapeHtml(step.skip_reason_after || "-")}</code>`)}
+              ${detailRow("final_message", `<code>${escapeHtml(step.final_message_after || "")}</code>`)}
+            </div>
+            ${renderTagTriplet(step)}
+          </div>
+        </section>
+      `
+    )
+    .join("")}</div>`;
+}
+
+function renderTagTriplet(step) {
+  return `
+    <div class="tool-step-tags">
+      <div>
+        <div class="detail-label">Interesting</div>
+        ${renderTagList(step.interesting_ids_after || [])}
+      </div>
+      <div>
+        <div class="detail-label">Discarded</div>
+        ${renderTagList(step.discarded_ids_after || [])}
+      </div>
+      <div>
+        <div class="detail-label">Cited</div>
+        ${renderTagList(step.cited_ids_after || [])}
+      </div>
+    </div>
+  `;
 }
 
 function _jnSpan(cls, text) {

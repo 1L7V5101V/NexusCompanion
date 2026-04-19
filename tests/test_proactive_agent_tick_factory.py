@@ -69,7 +69,7 @@ def test_agent_tick_factory_builds_drift_runner_when_enabled(tmp_path):
         default_chat_id="cid",
         drift_enabled=True,
     )
-    deps.state_store = SimpleNamespace(path=tmp_path / "proactive_state.json")
+    deps.state_store = SimpleNamespace(workspace_dir=tmp_path)
     deps.any_action_gate = SimpleNamespace()
     tick = AgentTickFactory(deps).build()
     assert tick._drift_runner is not None

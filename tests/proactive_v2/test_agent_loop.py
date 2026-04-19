@@ -91,6 +91,9 @@ async def test_loop_with_no_llm_fn_executes_nothing():
     tick = make_agent_tick(llm_fn=None)
     await tick.tick()
     assert tick.last_ctx.steps_taken == 0
+    assert len(tick._state_store.tick_log_starts) == 1
+    assert len(tick._state_store.tick_log_finishes) == 1
+    assert tick._state_store.tick_log_finishes[0]["terminal_action"] == "skip"
 
 
 # ── 终止工具立即结束 loop ─────────────────────────────────────────────────
@@ -152,6 +155,26 @@ async def test_send_message_writes_final_message():
     tick = make_agent_tick(llm_fn=llm)
     await tick.tick()
     assert tick.last_ctx.final_message == "Hello world!"
+
+
+@pytest.mark.asyncio
+async def test_tool_chain_step_logs_capture_args_and_results():
+    llm = FakeLLM([
+        ("message_push", {"message": "Hello world!", "evidence": []}),
+        ("finish_turn", {"decision": "reply"}),
+    ])
+    tick = make_agent_tick(llm_fn=llm)
+    await tick.tick()
+    assert len(tick._state_store.tick_step_logs) == 2
+    first = tick._state_store.tick_step_logs[0]
+    second = tick._state_store.tick_step_logs[1]
+    assert first["tool_name"] == "message_push"
+    assert first["tool_args"]["message"] == "Hello world!"
+    assert "\"ok\": true" in first["tool_result_text"]
+    assert first["final_message_after"] == ""
+    assert second["tool_name"] == "finish_turn"
+    assert second["terminal_action_after"] == "reply"
+    assert second["final_message_after"] == "Hello world!"
 
 
 @pytest.mark.asyncio

@@ -29,9 +29,13 @@ from tests.proactive_v2.conftest import (
 
 @pytest.mark.asyncio
 async def test_passive_busy_returns_none():
-    tick = make_agent_tick(passive_busy_fn=lambda sk: True)
+    state = FakeStateStore()
+    tick = make_agent_tick(passive_busy_fn=lambda sk: True, state_store=state)
     result = await tick.tick()
     assert result is None
+    assert len(state.tick_log_finishes) == 1
+    assert state.tick_log_finishes[0]["gate_exit"] == "busy"
+    assert state.tick_log_finishes[0]["terminal_action"] is None
 
 
 @pytest.mark.asyncio
@@ -68,6 +72,8 @@ async def test_delivery_cooldown_blocks_when_count_gt_zero():
     tick = make_agent_tick(state_store=state)
     result = await tick.tick()
     assert result is None
+    assert len(state.tick_log_finishes) == 1
+    assert state.tick_log_finishes[0]["gate_exit"] == "cooldown"
 
 
 @pytest.mark.asyncio
@@ -105,9 +111,12 @@ async def test_delivery_cooldown_uses_configured_window():
 async def test_anyaction_gate_blocks_when_should_act_false():
     gate = MagicMock()
     gate.should_act.return_value = (False, {"reason": "quota_exhausted"})
-    tick = make_agent_tick(any_action_gate=gate)
+    state = FakeStateStore()
+    tick = make_agent_tick(any_action_gate=gate, state_store=state)
     result = await tick.tick()
     assert result is None
+    assert len(state.tick_log_finishes) == 1
+    assert state.tick_log_finishes[0]["gate_exit"] == "presence"
 
 
 @pytest.mark.asyncio

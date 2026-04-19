@@ -60,7 +60,7 @@ def build_proactive_runtime(
         return tasks, None
 
     # 2. 先准备 proactive 独立状态存储和配置快照。
-    proactive_state = ProactiveStateStore(workspace / "proactive_state.json")
+    proactive_state = ProactiveStateStore(workspace / "proactive.db")
     proactive_cfg = config.proactive
     proactive_provider = _build_proactive_provider(config, provider)
 

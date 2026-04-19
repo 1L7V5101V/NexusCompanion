@@ -1,34 +1,19 @@
-"""
-ProactiveStateStore — 主动消息流的最小持久化状态。
-
-状态文件只保留四类主链路真实使用的数据：
-1) seen_items: 每个 source 下已处理过的 item_id（长 TTL）
-2) deliveries: 每个 session 下已发送过的 delivery_key
-3) semantic_items: 发送前后用于语义去重的历史文本
-4) rejection_cooldown: LLM 拒绝后的短期冷却
-5) bg_context_last_main_at: 纯背景感知触达的主 topic 冷却时间
-6) drift_last_at: 每个 session 最近一次进入 Drift 的时间
-"""
-
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timedelta, timezone
+import sqlite3
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
-from infra.persistence.json_store import load_json, save_json
 
 logger = logging.getLogger(__name__)
 
 
 def _dedupe_source_key(source_key: str) -> str:
-    """归一化用于状态去重的 source_key。
-
-    MCP 内容流会把 ack 用的 event_id 编进 source_key（mcp:<server>:<event_id>）。
-    去重状态只应按稳定来源维度记账，否则同一内容换一个 event_id 会绕过去重。
-    """
     raw = str(source_key or "").strip()
     if not raw.startswith("mcp:"):
         return raw
@@ -39,18 +24,163 @@ def _dedupe_source_key(source_key: str) -> str:
 
 
 class ProactiveStateStore:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._state = self._load()
+    def __init__(self, db_path: Path) -> None:
+        self.db_path = Path(db_path)
+        self.workspace_dir = self.db_path.parent
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        with self._lock:
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA synchronous=NORMAL")
+            self._init_schema()
         logger.info(
-            "[proactive.state] 初始化完成 path=%s seen_sources=%d delivery_sessions=%d semantic_items=%d reject_cool=%d",
-            self.path,
-            len(self._state["seen_items"]),
-            len(self._state["deliveries"]),
-            len(self._state["semantic_items"]),
-            sum(len(v) for v in self._state["rejection_cooldown"].values()),
+            "[proactive.state] 初始化完成 db=%s seen=%d deliveries=%d semantic=%d reject=%d",
+            self.db_path,
+            self._count_rows("seen_items"),
+            self._count_rows("deliveries"),
+            self._count_rows("semantic_items"),
+            self._count_rows("rejection_cooldown"),
         )
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
+    def record_tick_log_start(
+        self,
+        *,
+        tick_id: str,
+        session_key: str,
+        started_at: str,
+        gate_exit: str | None = None,
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO tick_log(tick_id, session_key, started_at, gate_exit)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(tick_id) DO UPDATE SET
+                    session_key = excluded.session_key,
+                    started_at = excluded.started_at,
+                    gate_exit = excluded.gate_exit
+                """,
+                (tick_id, session_key, started_at, gate_exit),
+            )
+            self._db.commit()
+
+    def record_tick_log_finish(
+        self,
+        *,
+        tick_id: str,
+        session_key: str,
+        started_at: str,
+        finished_at: str,
+        gate_exit: str | None,
+        terminal_action: str | None,
+        skip_reason: str,
+        steps_taken: int,
+        alert_count: int,
+        content_count: int,
+        context_count: int,
+        interesting_ids: list[str],
+        discarded_ids: list[str],
+        cited_ids: list[str],
+        drift_entered: bool,
+        final_message: str,
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO tick_log(
+                    tick_id, session_key, started_at, finished_at, gate_exit,
+                    terminal_action, skip_reason, steps_taken, alert_count,
+                    content_count, context_count, interesting_ids, discarded_ids,
+                    cited_ids, drift_entered, final_message
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(tick_id) DO UPDATE SET
+                    session_key = excluded.session_key,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    gate_exit = excluded.gate_exit,
+                    terminal_action = excluded.terminal_action,
+                    skip_reason = excluded.skip_reason,
+                    steps_taken = excluded.steps_taken,
+                    alert_count = excluded.alert_count,
+                    content_count = excluded.content_count,
+                    context_count = excluded.context_count,
+                    interesting_ids = excluded.interesting_ids,
+                    discarded_ids = excluded.discarded_ids,
+                    cited_ids = excluded.cited_ids,
+                    drift_entered = excluded.drift_entered,
+                    final_message = excluded.final_message
+                """,
+                (
+                    tick_id,
+                    session_key,
+                    started_at,
+                    finished_at,
+                    gate_exit,
+                    terminal_action,
+                    skip_reason,
+                    steps_taken,
+                    alert_count,
+                    content_count,
+                    context_count,
+                    json.dumps(interesting_ids, ensure_ascii=False),
+                    json.dumps(discarded_ids, ensure_ascii=False),
+                    json.dumps(cited_ids, ensure_ascii=False),
+                    int(drift_entered),
+                    final_message,
+                ),
+            )
+            self._db.commit()
+
+    def record_tick_step_log(
+        self,
+        *,
+        tick_id: str,
+        step_index: int,
+        phase: str,
+        tool_name: str,
+        tool_call_id: str,
+        tool_args: dict[str, Any],
+        tool_result_text: str,
+        terminal_action_after: str | None,
+        skip_reason_after: str,
+        interesting_ids_after: list[str],
+        discarded_ids_after: list[str],
+        cited_ids_after: list[str],
+        final_message_after: str,
+    ) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO tick_step_log(
+                    tick_id, step_index, phase, tool_name, tool_call_id,
+                    tool_args_json, tool_result_text, terminal_action_after,
+                    skip_reason_after, interesting_ids_after, discarded_ids_after,
+                    cited_ids_after, final_message_after
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tick_id,
+                    step_index,
+                    phase,
+                    tool_name,
+                    tool_call_id,
+                    json.dumps(tool_args, ensure_ascii=False),
+                    tool_result_text,
+                    terminal_action_after,
+                    skip_reason_after,
+                    json.dumps(interesting_ids_after, ensure_ascii=False),
+                    json.dumps(discarded_ids_after, ensure_ascii=False),
+                    json.dumps(cited_ids_after, ensure_ascii=False),
+                    final_message_after,
+                ),
+            )
+            self._db.commit()
 
     def is_item_seen(
         self,
@@ -61,16 +191,25 @@ class ProactiveStateStore:
     ) -> bool:
         now = now or _utcnow()
         dedupe_key = _dedupe_source_key(source_key)
-        source_map = self._state["seen_items"].get(dedupe_key, {})
-        ts = _parse_iso(source_map.get(item_id))
-        if ts is None:
+        cutoff = now - timedelta(hours=max(ttl_hours, 1))
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT seen_at
+                FROM seen_items
+                WHERE source_key = ? AND item_id = ?
+                """,
+                (dedupe_key, item_id),
+            ).fetchone()
+        if row is None:
             return False
-        if ts < now - timedelta(hours=max(ttl_hours, 1)):
+        ts = _parse_iso(str(row["seen_at"]))
+        if ts is None or ts < cutoff:
             logger.info(
                 "[proactive.state] item 过期，视为未见 source=%s item_id=%s ts=%s ttl_hours=%d",
                 dedupe_key,
                 item_id[:16],
-                source_map.get(item_id),
+                row["seen_at"],
                 ttl_hours,
             )
             return False
@@ -85,18 +224,20 @@ class ProactiveStateStore:
             return
         now = now or _utcnow()
         ts = now.isoformat()
-        added = 0
-        for source_key, item_id in entries:
-            dedupe_key = _dedupe_source_key(source_key)
-            source_map = self._state["seen_items"].setdefault(dedupe_key, {})
-            if item_id not in source_map:
-                added += 1
-            source_map[item_id] = ts
-        self._save()
+        params = [(_dedupe_source_key(source_key), item_id, ts) for source_key, item_id in entries]
+        with self._lock:
+            self._db.executemany(
+                """
+                INSERT INTO seen_items(source_key, item_id, seen_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(source_key, item_id) DO UPDATE SET seen_at = excluded.seen_at
+                """,
+                params,
+            )
+            self._db.commit()
         logger.info(
-            "[proactive.state] 已标记已见条目 count=%d newly_added=%d entries=%s",
+            "[proactive.state] 已标记已见条目 count=%d entries=%s",
             len(entries),
-            added,
             [(sk, iid[:16]) for sk, iid in entries[:3]],
         )
 
@@ -108,17 +249,26 @@ class ProactiveStateStore:
         now: datetime | None = None,
     ) -> bool:
         now = now or _utcnow()
-        sess = self._state["deliveries"].get(session_key, {})
-        ts = _parse_iso(sess.get(delivery_key))
-        if ts is None:
+        cutoff = now - timedelta(hours=max(window_hours, 1))
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT sent_at
+                FROM deliveries
+                WHERE session_key = ? AND delivery_key = ?
+                """,
+                (session_key, delivery_key),
+            ).fetchone()
+        if row is None:
             return False
-        if ts < now - timedelta(hours=max(window_hours, 1)):
+        ts = _parse_iso(str(row["sent_at"]))
+        if ts is None or ts < cutoff:
             return False
         logger.info(
             "[proactive.state] 命中发送去重 session=%s delivery_key=%s ts=%s window_hours=%d",
             session_key,
             delivery_key[:16],
-            sess.get(delivery_key),
+            row["sent_at"],
             window_hours,
         )
         return True
@@ -131,8 +281,16 @@ class ProactiveStateStore:
     ) -> None:
         now = now or _utcnow()
         ts = now.isoformat()
-        self._state["deliveries"].setdefault(session_key, {})[delivery_key] = ts
-        self._save()
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO deliveries(session_key, delivery_key, sent_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(session_key, delivery_key) DO UPDATE SET sent_at = excluded.sent_at
+                """,
+                (session_key, delivery_key, ts),
+            )
+            self._db.commit()
         logger.info(
             "[proactive.state] 已记录发送 session=%s delivery_key=%s ts=%s",
             session_key,
@@ -148,12 +306,16 @@ class ProactiveStateStore:
     ) -> int:
         now = now or _utcnow()
         cutoff = now - timedelta(hours=window_hours)
-        count = 0
-        for raw_ts in self._state["deliveries"].get(session_key, {}).values():
-            ts = _parse_iso(raw_ts)
-            if ts and ts >= cutoff:
-                count += 1
-        return count
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT COUNT(*)
+                FROM deliveries
+                WHERE session_key = ? AND sent_at >= ?
+                """,
+                (session_key, cutoff.isoformat()),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def get_semantic_items(
         self,
@@ -163,30 +325,33 @@ class ProactiveStateStore:
     ) -> list[dict[str, str]]:
         now = now or _utcnow()
         cutoff = now - timedelta(hours=window_hours)
-        items: list[dict[str, str]] = []
-        for raw in self._state["semantic_items"]:
-            ts = _parse_iso(str(raw.get("ts", "")))
-            text = str(raw.get("text", "")).strip()
-            if ts is None or ts < cutoff or not text:
-                continue
-            items.append(
-                {
-                    "source_key": str(raw.get("source_key", "")),
-                    "item_id": str(raw.get("item_id", "")),
-                    "text": text,
-                    "ts": ts.isoformat(),
-                }
-            )
-        items.sort(key=lambda item: item["ts"], reverse=True)
-        limited = items[: max(max_candidates, 1)]
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT source_key, item_id, text, ts
+                FROM semantic_items
+                WHERE ts >= ?
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (cutoff.isoformat(), max(max_candidates, 1)),
+            ).fetchall()
+        items = [
+            {
+                "source_key": str(row["source_key"]),
+                "item_id": str(row["item_id"]),
+                "text": str(row["text"]),
+                "ts": str(row["ts"]),
+            }
+            for row in rows
+            if str(row["text"]).strip()
+        ]
         logger.info(
-            "[proactive.state] 语义候选加载 total=%d within_window=%d returned=%d window_hours=%d",
-            len(self._state["semantic_items"]),
+            "[proactive.state] 语义候选加载 returned=%d window_hours=%d",
             len(items),
-            len(limited),
             window_hours,
         )
-        return limited
+        return items
 
     def mark_semantic_items(
         self,
@@ -197,24 +362,31 @@ class ProactiveStateStore:
             return
         now = now or _utcnow()
         ts = now.isoformat()
-        added = 0
+        params: list[tuple[str, str, str, str]] = []
         for entry in entries:
             text = str(entry.get("text", "")).strip()
             if not text:
                 continue
-            self._state["semantic_items"].append(
-                {
-                    "source_key": str(entry.get("source_key", "")),
-                    "item_id": str(entry.get("item_id", "")),
-                    "text": text,
-                    "ts": ts,
-                }
+            params.append(
+                (
+                    str(entry.get("source_key", "")),
+                    str(entry.get("item_id", "")),
+                    text,
+                    ts,
+                )
             )
-            added += 1
-        if added <= 0:
+        if not params:
             return
-        self._save()
-        logger.info("[proactive.state] 已记录语义条目 count=%d ts=%s", added, ts)
+        with self._lock:
+            self._db.executemany(
+                """
+                INSERT INTO semantic_items(source_key, item_id, text, ts)
+                VALUES(?, ?, ?, ?)
+                """,
+                params,
+            )
+            self._db.commit()
+        logger.info("[proactive.state] 已记录语义条目 count=%d ts=%s", len(params), ts)
 
     def is_rejection_cooled(
         self,
@@ -227,11 +399,20 @@ class ProactiveStateStore:
             return False
         now = now or _utcnow()
         dedupe_key = _dedupe_source_key(source_key)
-        source_map = self._state["rejection_cooldown"].get(dedupe_key, {})
-        ts = _parse_iso(source_map.get(item_id))
-        if ts is None:
+        cutoff = now - timedelta(hours=ttl_hours)
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT rejected_at
+                FROM rejection_cooldown
+                WHERE source_key = ? AND item_id = ?
+                """,
+                (dedupe_key, item_id),
+            ).fetchone()
+        if row is None:
             return False
-        return ts >= now - timedelta(hours=ttl_hours)
+        ts = _parse_iso(str(row["rejected_at"]))
+        return ts is not None and ts >= cutoff
 
     def mark_rejection_cooldown(
         self,
@@ -243,18 +424,20 @@ class ProactiveStateStore:
             return
         now = now or _utcnow()
         ts = now.isoformat()
-        added = 0
-        for source_key, item_id in entries:
-            dedupe_key = _dedupe_source_key(source_key)
-            source_map = self._state["rejection_cooldown"].setdefault(dedupe_key, {})
-            if item_id not in source_map:
-                added += 1
-            source_map[item_id] = ts
-        self._save()
+        params = [(_dedupe_source_key(source_key), item_id, ts) for source_key, item_id in entries]
+        with self._lock:
+            self._db.executemany(
+                """
+                INSERT INTO rejection_cooldown(source_key, item_id, rejected_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(source_key, item_id) DO UPDATE SET rejected_at = excluded.rejected_at
+                """,
+                params,
+            )
+            self._db.commit()
         logger.info(
-            "[proactive.state] 拒绝冷却已记录 count=%d newly_added=%d ttl_hours=%d",
+            "[proactive.state] 拒绝冷却已记录 count=%d ttl_hours=%d",
             len(entries),
-            added,
             hours,
         )
 
@@ -266,26 +449,37 @@ class ProactiveStateStore:
         rejection_cooldown_ttl_hours: int = 0,
     ) -> None:
         now = _utcnow()
-        removed_seen = self._cleanup_nested_map(
-            "seen_items",
-            now - timedelta(hours=max(seen_ttl_hours, 1)),
-        )
-        removed_delivery = self._cleanup_nested_map(
-            "deliveries",
-            now - timedelta(hours=max(delivery_ttl_hours, 1)),
-        )
-        removed_semantic = self._cleanup_semantic_items(
-            now - timedelta(hours=max(semantic_ttl_hours, 1))
-        )
-        removed_cooldown = 0
-        if rejection_cooldown_ttl_hours > 0:
-            removed_cooldown = self._cleanup_nested_map(
-                "rejection_cooldown",
-                now - timedelta(hours=rejection_cooldown_ttl_hours),
-            )
-        # 清理 context-only 时间戳（24h 窗口）
-        removed_context_only = self._cleanup_context_only_timestamps(24, now)
-        self._save()
+        seen_cutoff = (now - timedelta(hours=max(seen_ttl_hours, 1))).isoformat()
+        delivery_cutoff = (now - timedelta(hours=max(delivery_ttl_hours, 1))).isoformat()
+        semantic_cutoff = (now - timedelta(hours=max(semantic_ttl_hours, 1))).isoformat()
+        context_only_cutoff = (now - timedelta(hours=24)).isoformat()
+        with self._lock:
+            removed_seen = self._db.execute(
+                "DELETE FROM seen_items WHERE seen_at < ?",
+                (seen_cutoff,),
+            ).rowcount
+            removed_delivery = self._db.execute(
+                "DELETE FROM deliveries WHERE sent_at < ?",
+                (delivery_cutoff,),
+            ).rowcount
+            removed_semantic = self._db.execute(
+                "DELETE FROM semantic_items WHERE ts < ? OR TRIM(text) = ''",
+                (semantic_cutoff,),
+            ).rowcount
+            removed_cooldown = 0
+            if rejection_cooldown_ttl_hours > 0:
+                cooldown_cutoff = (
+                    now - timedelta(hours=rejection_cooldown_ttl_hours)
+                ).isoformat()
+                removed_cooldown = self._db.execute(
+                    "DELETE FROM rejection_cooldown WHERE rejected_at < ?",
+                    (cooldown_cutoff,),
+                ).rowcount
+            removed_context_only = self._db.execute(
+                "DELETE FROM context_only_timestamps WHERE ts < ?",
+                (context_only_cutoff,),
+            ).rowcount
+            self._db.commit()
         logger.debug(
             "[proactive.state] cleanup 完成 removed_seen=%d removed_delivery=%d removed_semantic=%d removed_cooldown=%d removed_context_only=%d",
             removed_seen,
@@ -295,71 +489,51 @@ class ProactiveStateStore:
             removed_context_only,
         )
 
-    def _cleanup_context_only_timestamps(
-        self, window_hours: int, now: datetime
-    ) -> int:
-        """清理过期的 context-only 时间戳。"""
-        cutoff = now - timedelta(hours=window_hours)
-        removed = 0
-        for session_key in list(
-            self._state.get("context_only_sent_timestamps", {}).keys()
-        ):
-            timestamps = self._state["context_only_sent_timestamps"][session_key]
-            before = len(timestamps)
-            self._state["context_only_sent_timestamps"][session_key] = [
-                ts
-                for ts in timestamps
-                if (_parse_iso(ts) or datetime.min.replace(tzinfo=timezone.utc))
-                >= cutoff
-            ]
-            after = len(self._state["context_only_sent_timestamps"][session_key])
-            removed += before - after
-            if not self._state["context_only_sent_timestamps"][session_key]:
-                del self._state["context_only_sent_timestamps"][session_key]
-        return removed
-
     def get_bg_context_last_main_at(self) -> datetime | None:
-        raw = self._state.get("bg_context_last_main_at")
-        return _parse_iso(raw) if raw else None
+        return self._get_kv_datetime("bg_context_last_main_at")
 
     def mark_bg_context_main_send(self, now: datetime | None = None) -> None:
         now = now or _utcnow()
-        self._state["bg_context_last_main_at"] = now.isoformat()
-        self._save()
+        self._set_kv("bg_context_last_main_at", now.isoformat())
         logger.info(
             "[proactive.state] bg_context 主 topic 发送已记录 ts=%s",
             now.isoformat(),
         )
 
     def get_last_drift_at(self, session_key: str) -> datetime | None:
-        raw = self._state.get("drift_last_at", {}).get(session_key)
-        return _parse_iso(raw) if raw else None
+        return self._get_session_datetime(session_key, "drift_last_at")
 
     def mark_drift_run(self, session_key: str, now: datetime | None = None) -> None:
         now = now or _utcnow()
         ts = now.isoformat()
-        self._state.setdefault("drift_last_at", {})[session_key] = ts
-        self._save()
+        self._set_session_state(session_key, "drift_last_at", ts)
         logger.info("[proactive.state] drift 已记录 session=%s ts=%s", session_key, ts)
 
-    # ── context-only 配额管理 ──────────────────────────────────────────
-
     def get_last_context_only_at(self, session_key: str) -> datetime | None:
-        """获取指定 session 最后一次 context-only 发送时间。"""
-        raw = self._state.get("context_only_last_at", {}).get(session_key)
-        return _parse_iso(raw) if raw else None
+        return self._get_session_datetime(session_key, "context_only_last_at")
 
     def mark_context_only_send(
         self, session_key: str, now: datetime | None = None
     ) -> None:
-        """记录 context-only 发送时间。"""
         now = now or _utcnow()
         ts = now.isoformat()
-        self._state.setdefault("context_only_last_at", {})[session_key] = ts
-        self._state.setdefault("context_only_sent_timestamps", {}).setdefault(
-            session_key, []
-        ).append(ts)
-        self._save()
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO session_state(session_key, key, value)
+                VALUES(?, ?, ?)
+                ON CONFLICT(session_key, key) DO UPDATE SET value = excluded.value
+                """,
+                (session_key, "context_only_last_at", ts),
+            )
+            self._db.execute(
+                """
+                INSERT INTO context_only_timestamps(session_key, ts)
+                VALUES(?, ?)
+                """,
+                (session_key, ts),
+            )
+            self._db.commit()
         logger.info(
             "[proactive.state] context-only 发送已记录 session=%s ts=%s",
             session_key,
@@ -369,134 +543,164 @@ class ProactiveStateStore:
     def count_context_only_in_window(
         self, session_key: str, window_hours: int, now: datetime | None = None
     ) -> int:
-        """统计指定 session 在窗口内的 context-only 发送次数。"""
         now = now or _utcnow()
         cutoff = now - timedelta(hours=window_hours)
-        count = 0
-        for raw_ts in self._state.get("context_only_sent_timestamps", {}).get(
-            session_key, []
-        ):
-            ts = _parse_iso(raw_ts)
-            if ts and ts >= cutoff:
-                count += 1
-        return count
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT COUNT(*)
+                FROM context_only_timestamps
+                WHERE session_key = ? AND ts >= ?
+                """,
+                (session_key, cutoff.isoformat()),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
 
-    def _cleanup_nested_map(self, key: str, cutoff: datetime) -> int:
-        removed = 0
-        for outer_key in list(self._state[key].keys()):
-            inner_map = self._state[key][outer_key]
-            for inner_key in list(inner_map.keys()):
-                ts = _parse_iso(inner_map[inner_key])
-                if ts is None or ts < cutoff:
-                    del inner_map[inner_key]
-                    removed += 1
-            if not inner_map:
-                del self._state[key][outer_key]
-        return removed
+    def _init_schema(self) -> None:
+        self._db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS seen_items (
+                source_key TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                seen_at TEXT NOT NULL,
+                PRIMARY KEY (source_key, item_id)
+            );
 
-    def _cleanup_semantic_items(self, cutoff: datetime) -> int:
-        before = len(self._state["semantic_items"])
-        self._state["semantic_items"] = [
-            row
-            for row in self._state["semantic_items"]
-            if (_parse_iso(str(row.get("ts", ""))) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
-            and str(row.get("text", "")).strip()
-        ]
-        return before - len(self._state["semantic_items"])
+            CREATE TABLE IF NOT EXISTS deliveries (
+                session_key TEXT NOT NULL,
+                delivery_key TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                PRIMARY KEY (session_key, delivery_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_deliveries_session_sent
+            ON deliveries(session_key, sent_at);
 
-    def _load(self) -> dict[str, Any]:
-        raw = load_json(self.path, default=None, domain="proactive.state")
-        if raw is None:
-            return self._empty_state()
-        state = self._empty_state()
-        state["version"] = int(raw.get("version", 5))
-        state["seen_items"] = self._normalize_nested_map(raw.get("seen_items"))
-        state["deliveries"] = self._normalize_nested_map(raw.get("deliveries"))
-        state["rejection_cooldown"] = self._normalize_nested_map(
-            raw.get("rejection_cooldown")
+            CREATE TABLE IF NOT EXISTS rejection_cooldown (
+                source_key TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                rejected_at TEXT NOT NULL,
+                PRIMARY KEY (source_key, item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS semantic_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                text TEXT NOT NULL,
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_items_ts
+            ON semantic_items(ts);
+
+            CREATE TABLE IF NOT EXISTS kv_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS session_state (
+                session_key TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                PRIMARY KEY (session_key, key)
+            );
+
+            CREATE TABLE IF NOT EXISTS context_only_timestamps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL,
+                ts TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_context_only_session_ts
+            ON context_only_timestamps(session_key, ts);
+
+            CREATE TABLE IF NOT EXISTS tick_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tick_id TEXT NOT NULL UNIQUE,
+                session_key TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                gate_exit TEXT,
+                terminal_action TEXT,
+                skip_reason TEXT,
+                steps_taken INTEGER,
+                alert_count INTEGER,
+                content_count INTEGER,
+                context_count INTEGER,
+                interesting_ids TEXT,
+                discarded_ids TEXT,
+                cited_ids TEXT,
+                drift_entered INTEGER DEFAULT 0,
+                final_message TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tick_log_session_started
+            ON tick_log(session_key, started_at);
+
+            CREATE TABLE IF NOT EXISTS tick_step_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tick_id TEXT NOT NULL,
+                step_index INTEGER NOT NULL,
+                phase TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_args_json TEXT NOT NULL,
+                tool_result_text TEXT NOT NULL,
+                terminal_action_after TEXT,
+                skip_reason_after TEXT,
+                interesting_ids_after TEXT NOT NULL,
+                discarded_ids_after TEXT NOT NULL,
+                cited_ids_after TEXT NOT NULL,
+                final_message_after TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tick_step_log_tick_step
+            ON tick_step_log(tick_id, step_index);
+            """
         )
-        state["semantic_items"] = self._normalize_semantic_items(
-            raw.get("semantic_items", [])
-        )
-        state["bg_context_last_main_at"] = raw.get("bg_context_last_main_at")
-        # context_only_last_at 是 dict[session_key, iso_ts]，不是嵌套 map
-        raw_last_at = raw.get("context_only_last_at", {})
-        if isinstance(raw_last_at, dict):
-            state["context_only_last_at"] = {str(k): str(v) for k, v in raw_last_at.items() if v}
-        else:
-            state["context_only_last_at"] = {}
-        state["context_only_sent_timestamps"] = self._normalize_context_only_timestamps(
-            raw.get("context_only_sent_timestamps", {})
-        )
-        raw_drift_last_at = raw.get("drift_last_at", {})
-        if isinstance(raw_drift_last_at, dict):
-            state["drift_last_at"] = {str(k): str(v) for k, v in raw_drift_last_at.items() if v}
-        else:
-            state["drift_last_at"] = {}
-        logger.info("[proactive.state] 从磁盘加载状态成功 path=%s", self.path)
-        return state
+        self._db.commit()
 
-    def _save(self) -> None:
-        save_json(self.path, self._state, domain="proactive.state")
-        logger.debug("[proactive.state] 状态已保存 path=%s", self.path)
+    def _get_kv_datetime(self, key: str) -> datetime | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT value FROM kv_state WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return _parse_iso(str(row["value"])) if row is not None else None
 
-    @staticmethod
-    def _empty_state() -> dict[str, Any]:
-        return {
-            "version": 5,
-            "seen_items": {},
-            "deliveries": {},
-            "semantic_items": [],
-            "rejection_cooldown": {},
-            "bg_context_last_main_at": None,
-            "context_only_last_at": {},
-            "context_only_sent_timestamps": {},
-            "drift_last_at": {},
-        }
-
-    @staticmethod
-    def _normalize_nested_map(raw: Any) -> dict[str, dict[str, str]]:
-        if not isinstance(raw, dict):
-            return {}
-        normalized: dict[str, dict[str, str]] = {}
-        for outer_key, inner_raw in raw.items():
-            if not isinstance(inner_raw, dict):
-                continue
-            inner: dict[str, str] = {}
-            for inner_key, value in inner_raw.items():
-                text = str(value or "").strip()
-                if text:
-                    inner[str(inner_key)] = text
-            if inner:
-                normalized[str(outer_key)] = inner
-        return normalized
-
-    @staticmethod
-    def _normalize_semantic_items(raw: Any) -> list[dict[str, str]]:
-        if not isinstance(raw, list):
-            return []
-        normalized: list[dict[str, str]] = []
-        for row in raw:
-            if not isinstance(row, dict):
-                continue
-            normalized.append(
-                {
-                    "source_key": str(row.get("source_key", "")),
-                    "item_id": str(row.get("item_id", "")),
-                    "text": str(row.get("text", "")),
-                    "ts": str(row.get("ts", "")),
-                }
+    def _set_kv(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO kv_state(key, value)
+                VALUES(?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
             )
-        return normalized
+            self._db.commit()
 
-    @staticmethod
-    def _normalize_context_only_timestamps(raw: Any) -> dict[str, list[str]]:
-        """规范化 context_only_sent_timestamps 结构。"""
-        if not isinstance(raw, dict):
-            return {}
-        normalized: dict[str, list[str]] = {}
-        for session_key, timestamps in raw.items():
-            if not isinstance(timestamps, list):
-                continue
-            normalized[str(session_key)] = [str(ts) for ts in timestamps if ts]
-        return normalized
+    def _get_session_datetime(self, session_key: str, key: str) -> datetime | None:
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT value
+                FROM session_state
+                WHERE session_key = ? AND key = ?
+                """,
+                (session_key, key),
+            ).fetchone()
+        return _parse_iso(str(row["value"])) if row is not None else None
+
+    def _set_session_state(self, session_key: str, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO session_state(session_key, key, value)
+                VALUES(?, ?, ?)
+                ON CONFLICT(session_key, key) DO UPDATE SET value = excluded.value
+                """,
+                (session_key, key, value),
+            )
+            self._db.commit()
+
+    def _count_rows(self, table: str) -> int:
+        with self._lock:
+            row = self._db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0]) if row is not None else 0

@@ -188,9 +188,7 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert json.loads(
         (workspace / "proactive_sources.json").read_text(encoding="utf-8")
     ) == {"sources": []}
-    assert json.loads(
-        (workspace / "proactive_state.json").read_text(encoding="utf-8")
-    )["version"] == 5
+    assert (workspace / "proactive.db").exists()
     assert (workspace / "skills").is_dir()
     assert (workspace / "drift" / "skills").is_dir()
     assert any(path == config_path for path in summary.created)

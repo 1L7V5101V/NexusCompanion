@@ -260,19 +260,12 @@ class AgentTickFactory:
 
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:
         recent_n = getattr(self._deps.cfg, "message_dedupe_recent_n", 5)
-        if not hasattr(self._deps.sense, "collect_recent_proactive"):
-            return None
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
     def _build_drift_runner(self, tool_deps: ToolDeps) -> DriftRunner | None:
         if not getattr(self._deps.cfg, "drift_enabled", False):
             return None
-        state_path = getattr(self._deps.state_store, "path", None)
-        drift_dir = (
-            Path(state_path).parent / "drift"
-            if state_path is not None
-            else Path.home() / ".nexus" / "workspace" / "drift"
-        )
+        drift_dir = Path(self._deps.state_store.workspace_dir) / "drift"
         store = DriftStateStore(
             drift_dir,
             builtin_skills_dir=BUILTIN_DRIFT_SKILLS_DIR,

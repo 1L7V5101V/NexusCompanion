@@ -61,6 +61,17 @@
             <button id="clearMemoryScopeFilter" type="button">×</button>
           </div>
         </div>
+        <div class="filter-row hidden" id="proactiveFilters">
+          <div class="active-session-chip" id="activeProactiveSectionChip">
+            <span>result</span>
+            <code id="activeProactiveSectionText"></code>
+          </div>
+          <div class="active-session-chip hidden" id="activeProactiveSessionChip">
+            <span>session</span>
+            <code id="activeProactiveSessionText"></code>
+            <button id="clearProactiveSessionFilter" type="button">×</button>
+          </div>
+        </div>
       </div>
       <div class="topbar-view">
         <div class="view-chip" id="viewChip">
@@ -114,6 +125,21 @@
                 <strong id="allMemoriesCount">0</strong>
               </button>
               <div class="memory-quick-list" id="memoryTypeList"></div>
+            </div>
+          </section>
+
+          <section class="nav-group" id="proactiveNavGroup">
+            <button class="nav-group-toggle" id="proactiveNavToggle" type="button">
+              <span class="nav-group-caret">▸</span>
+              <span class="nav-group-label">Proactive</span>
+              <span class="nav-group-count" id="proactiveCountBadge">0</span>
+            </button>
+            <div class="nav-group-body hidden" id="proactiveNavBody">
+              <button class="all-messages-row" id="proactiveAllButton" type="button">
+                <span>Tick Logs</span>
+                <strong id="proactiveOverviewCount">0</strong>
+              </button>
+              <div class="proactive-quick-list" id="proactiveSectionList"></div>
             </div>
           </section>
         </nav>

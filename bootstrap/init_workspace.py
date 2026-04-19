@@ -161,17 +161,14 @@ def _ensure_workspace_db_assets(
     else:
         summary.skipped.append(consolidation_db)
 
-    state_path = workspace / "proactive_state.json"
+    proactive_db = workspace / "proactive.db"
     quota_path = workspace / "proactive_quota.json"
-    if not state_path.exists():
-        save_json(
-            state_path,
-            ProactiveStateStore._empty_state(),
-            domain="workspace.init",
-        )
-        summary.created.append(state_path)
+    proactive_exists = proactive_db.exists()
+    ProactiveStateStore(proactive_db).close()
+    if not proactive_exists:
+        summary.created.append(proactive_db)
     else:
-        summary.skipped.append(state_path)
+        summary.skipped.append(proactive_db)
     if not quota_path.exists():
         save_json(
             quota_path,

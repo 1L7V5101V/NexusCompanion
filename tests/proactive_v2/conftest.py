@@ -33,6 +33,9 @@ class FakeStateStore:
         self._last_drift_at: datetime | None = None
         self.drift_run_marked: bool = False
         self._deliveries: list[str] = []
+        self.tick_log_starts: list[dict[str, Any]] = []
+        self.tick_log_finishes: list[dict[str, Any]] = []
+        self.tick_step_logs: list[dict[str, Any]] = []
 
     # pre-gate
     def count_deliveries_in_window(self, session_key: str, window_hours: int) -> int:
@@ -61,6 +64,15 @@ class FakeStateStore:
     def mark_drift_run(self, session_key: str, now: datetime | None = None) -> None:
         self._last_drift_at = now
         self.drift_run_marked = True
+
+    def record_tick_log_start(self, **payload: Any) -> None:
+        self.tick_log_starts.append(payload)
+
+    def record_tick_log_finish(self, **payload: Any) -> None:
+        self.tick_log_finishes.append(payload)
+
+    def record_tick_step_log(self, **payload: Any) -> None:
+        self.tick_step_logs.append(payload)
 
     # helpers
     def set_delivery_count(self, n: int) -> None:

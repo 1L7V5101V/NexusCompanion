@@ -116,7 +116,7 @@ class ProactiveLoop:
     ) -> ProactiveStateStore:
         if state_store is not None:
             return state_store
-        return ProactiveStateStore(state_path or Path("proactive_state.json"))
+        return ProactiveStateStore(state_path or Path("proactive.db"))
 
     def _build_fitbit_provider(self):
         if not self._fitbit_enabled:
@@ -150,10 +150,7 @@ class ProactiveLoop:
         )
 
     def _build_anyaction_gate(self) -> AnyActionGate:
-        if hasattr(self._state, "path"):
-            quota_path = self._state.path.parent / "proactive_quota.json"
-        else:
-            quota_path = Path("proactive_quota.json")
+        quota_path = Path(self._state.workspace_dir) / "proactive_quota.json"
         return AnyActionGate(
             cfg=self._cfg,
             quota_store=QuotaStore(quota_path),

@@ -258,6 +258,7 @@ class AgentTick:
         # 5.1 passive_busy（系统硬 veto）
         if self._passive_busy_fn and self._passive_busy_fn(self._session_key):
             logger.debug("[proactive_v2] pre-gate: passive_busy → return None")
+            self._record_tick_log_finish(ctx, gate_exit="busy")
             return None
 
         # 5.2 delivery_cooldown
@@ -266,6 +267,7 @@ class AgentTick:
             self._cfg.agent_tick_delivery_cooldown_hours,
         ) > 0:
             logger.debug("[proactive_v2] pre-gate: delivery_cooldown → return None")
+            self._record_tick_log_finish(ctx, gate_exit="cooldown")
             return None
 
         # 5.3 AnyAction gate
@@ -276,6 +278,7 @@ class AgentTick:
             )
             if not should_act:
                 logger.debug("[proactive_v2] pre-gate: anyaction gate → return None meta=%s", meta)
+                self._record_tick_log_finish(ctx, gate_exit="presence")
                 return None
 
         # 5.4 context gate（概率 + 配额）
@@ -297,11 +300,12 @@ class AgentTick:
 
         ctx.context_as_fallback_open = context_as_fallback_open
         self.last_ctx = ctx
+        self._record_tick_log_start(ctx)
 
         # 2. 通过 pre-gate 后，才真正进入“预取数据 -> agent loop -> post_loop”主流程。
         logger.info("[proactive_v2] tick: pre-gate passed, starting loop (context_fallback=%s)", ctx.context_as_fallback_open)
         entered_execution = await self._run_loop(ctx)
-        if entered_execution and self._any_action_gate is not None:
+        if (entered_execution or ctx.drift_entered) and self._any_action_gate is not None:
             self._any_action_gate.record_action(now_utc=ctx.now_utc)
         if ctx.drift_entered:
             logger.info(
@@ -309,11 +313,82 @@ class AgentTick:
                 ctx.drift_message_sent,
                 ctx.drift_finished,
             )
+            self._record_tick_log_finish(ctx)
             ctx.content_store.clear()
             return 0.0
         result = await self._post_loop(ctx)
         ctx.content_store.clear()  # 清理 hashmap，防止内存泄漏
         return result
+
+    def _record_tick_log_start(self, ctx: AgentTickContext) -> None:
+        self._state_store.record_tick_log_start(
+            tick_id=ctx.tick_id,
+            session_key=self._session_key,
+            started_at=ctx.now_utc.isoformat(),
+            gate_exit=None,
+        )
+
+    def _record_tick_log_finish(
+        self,
+        ctx: AgentTickContext,
+        *,
+        gate_exit: str | None = None,
+        result: TurnResult | None = None,
+    ) -> None:
+        decision = result.decision if result is not None else ctx.terminal_action
+        if ctx.drift_entered and result is None and decision is None:
+            decision = "reply" if ctx.drift_message_sent else "skip"
+        trace_extra = result.trace.extra if result is not None and result.trace is not None else {}
+        skip_reason = str(trace_extra.get("skip_reason") or ctx.skip_reason or "")
+        final_message = ""
+        if result is not None and result.outbound is not None:
+            final_message = str(result.outbound.content or "")
+        elif ctx.final_message:
+            final_message = ctx.final_message
+        self._state_store.record_tick_log_finish(
+            tick_id=ctx.tick_id,
+            session_key=self._session_key,
+            started_at=ctx.now_utc.isoformat(),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            gate_exit=gate_exit,
+            terminal_action=decision,
+            skip_reason=skip_reason,
+            steps_taken=ctx.steps_taken,
+            alert_count=len(ctx.fetched_alerts),
+            content_count=len(ctx.fetched_contents),
+            context_count=len(ctx.fetched_context),
+            interesting_ids=sorted(ctx.interesting_item_ids),
+            discarded_ids=sorted(ctx.discarded_item_ids),
+            cited_ids=list(ctx.cited_item_ids),
+            drift_entered=ctx.drift_entered,
+            final_message=final_message,
+        )
+
+    def _record_tick_step(
+        self,
+        ctx: AgentTickContext,
+        *,
+        phase: str,
+        tool_name: str,
+        tool_call_id: str,
+        tool_args: dict[str, Any],
+        tool_result_text: str,
+    ) -> None:
+        self._state_store.record_tick_step_log(
+            tick_id=ctx.tick_id,
+            step_index=ctx.steps_taken,
+            phase=phase,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_args=tool_args,
+            tool_result_text=tool_result_text,
+            terminal_action_after=ctx.terminal_action,
+            skip_reason_after=ctx.skip_reason,
+            interesting_ids_after=sorted(ctx.interesting_item_ids),
+            discarded_ids_after=sorted(ctx.discarded_item_ids),
+            cited_ids_after=list(ctx.cited_item_ids),
+            final_message_after=ctx.final_message,
+        )
 
     def _build_system_prompt(self, ctx: AgentTickContext, gw: GatewayResult) -> str:
         fallback_status = "允许" if ctx.context_as_fallback_open else "不允许"
@@ -542,9 +617,7 @@ class AgentTick:
         #     直接跳过 LLM，避免空转。
         if not gw_result.alerts and not gw_result.content_meta and not ctx.context_as_fallback_open:
             if self._drift_runner is not None and self._cfg.drift_enabled:
-                last_drift_at = None
-                if hasattr(self._state_store, "get_last_drift_at"):
-                    last_drift_at = self._state_store.get_last_drift_at(self._session_key)
+                last_drift_at = self._state_store.get_last_drift_at(self._session_key)
                 min_interval_hours = max(0, int(getattr(self._cfg, "drift_min_interval_hours", 0) or 0))
                 if (
                     last_drift_at is not None
@@ -563,8 +636,7 @@ class AgentTick:
                 logger.info("[proactive_v2] _run_loop: empty gateway result, attempting drift")
                 entered_drift = await self._drift_runner.run(ctx, self._llm_fn)
                 if entered_drift:
-                    if hasattr(self._state_store, "mark_drift_run"):
-                        self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
+                    self._state_store.mark_drift_run(self._session_key, ctx.now_utc)
                     logger.info("[proactive_v2] _run_loop: drift entered, message_sent=%s", ctx.drift_message_sent)
                     self.last_ctx = ctx
                     return bool(ctx.drift_message_sent)
@@ -715,6 +787,14 @@ class AgentTick:
             logger.warning("[proactive_v2] %s: tool error: %s", loop_tag, exec_result.output)
             result = str(exec_result.output)
             call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+            self._record_tick_step(
+                ctx,
+                phase=f"{loop_tag}:error",
+                tool_name=tool_name,
+                tool_call_id=str(call_id),
+                tool_args=tool_args,
+                tool_result_text=result,
+            )
             self._append_tool_messages(
                 messages,
                 tool_name=tool_name,
@@ -725,6 +805,14 @@ class AgentTick:
             return False
         result = str(exec_result.output)
         call_id = tool_call.get("id") or f"call_{ctx.steps_taken}"
+        self._record_tick_step(
+            ctx,
+            phase=loop_tag,
+            tool_name=tool_name,
+            tool_call_id=str(call_id),
+            tool_args=tool_args,
+            tool_result_text=result,
+        )
         # 3. 把 assistant tool_call + tool result 都回写到 messages。
         #    下一轮模型就能看到上一轮工具做了什么、返回了什么。
         self._append_tool_messages(
@@ -773,6 +861,7 @@ class AgentTick:
         """收口到 TurnResult；发送与副作用交给 orchestrator。"""
         # 1. 先把 ctx 归并成 TurnResult（reply/skip、evidence、副作用）。
         result = await self._build_turn_result(ctx)
+        self._record_tick_log_finish(ctx, result=result)
         if self._turn_orchestrator is None:
             raise RuntimeError("proactive turn_orchestrator is required")
         # 2. 再统一交给 TurnOrchestrator 落会话、发送消息、执行 side effects。

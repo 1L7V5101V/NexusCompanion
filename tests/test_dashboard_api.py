@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import sqlite3
+from datetime import datetime
 
 from fastapi.testclient import TestClient
 
 from bootstrap.dashboard_api import create_dashboard_app
 from memory2.store import MemoryStore2
+from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
 
 
@@ -74,6 +77,168 @@ def _seed_workspace(tmp_path) -> None:
         extra={"scope_channel": "cli", "scope_chat_id": "local"},
     )
     memory_store.close()
+
+    proactive_store = ProactiveStateStore(tmp_path / "proactive.db")
+    proactive_store.mark_items_seen(
+        [
+            ("mcp:feed:event-1", "feed-1"),
+            ("mcp:feed:event-2", "feed-2"),
+            ("rss:news", "rss-1"),
+        ],
+        now=datetime.fromisoformat("2026-04-19T02:00:00+00:00"),
+    )
+    proactive_store.mark_delivery(
+        "telegram:100",
+        "delivery-a",
+        now=datetime.fromisoformat("2026-04-19T02:05:00+00:00"),
+    )
+    proactive_store.mark_delivery(
+        "cli:local",
+        "delivery-b",
+        now=datetime.fromisoformat("2026-04-19T02:06:00+00:00"),
+    )
+    proactive_store.mark_rejection_cooldown(
+        [("mcp:feed:event-3", "feed-3")],
+        hours=24,
+        now=datetime.fromisoformat("2026-04-19T02:10:00+00:00"),
+    )
+    proactive_store.mark_semantic_items(
+        [
+            {
+                "source_key": "rss:news",
+                "item_id": "rss-1",
+                "text": "今天有新游戏资讯",
+            },
+            {
+                "source_key": "mcp:feed",
+                "item_id": "feed-2",
+                "text": "用户昨天提到过奶茶",
+            },
+        ],
+        now=datetime.fromisoformat("2026-04-19T02:20:00+00:00"),
+    )
+    proactive_store.mark_bg_context_main_send(
+        now=datetime.fromisoformat("2026-04-19T02:30:00+00:00")
+    )
+    proactive_store.mark_context_only_send(
+        "telegram:100",
+        now=datetime.fromisoformat("2026-04-19T02:31:00+00:00"),
+    )
+    proactive_store.mark_drift_run(
+        "telegram:100",
+        now=datetime.fromisoformat("2026-04-19T02:32:00+00:00"),
+    )
+    proactive_store.close()
+
+    conn = sqlite3.connect(tmp_path / "proactive.db")
+    conn.execute(
+        """
+        INSERT INTO tick_log(
+            tick_id, session_key, started_at, finished_at, gate_exit,
+            terminal_action, skip_reason, steps_taken, alert_count,
+            content_count, context_count, interesting_ids, discarded_ids,
+            cited_ids, drift_entered, final_message
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tick-1",
+            "telegram:100",
+            "2026-04-19T02:40:00+00:00",
+            "2026-04-19T02:40:05+00:00",
+            None,
+            "reply",
+            None,
+            3,
+            1,
+            2,
+            1,
+            '["mcp:feed:feed-1"]',
+            '["rss:news:rss-9"]',
+            '["mcp:feed:feed-1"]',
+            0,
+            "记得早点休息",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO tick_log(
+            tick_id, session_key, started_at, finished_at, gate_exit,
+            terminal_action, skip_reason, steps_taken, alert_count,
+            content_count, context_count, interesting_ids, discarded_ids,
+            cited_ids, drift_entered, final_message
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tick-2",
+            "cli:local",
+            "2026-04-19T03:00:00+00:00",
+            "2026-04-19T03:00:01+00:00",
+            "busy",
+            "skip",
+            "busy",
+            0,
+            0,
+            0,
+            0,
+            "[]",
+            "[]",
+            "[]",
+            1,
+            None,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO tick_step_log(
+            tick_id, step_index, phase, tool_name, tool_call_id, tool_args_json,
+            tool_result_text, terminal_action_after, skip_reason_after,
+            interesting_ids_after, discarded_ids_after, cited_ids_after,
+            final_message_after
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tick-1",
+            1,
+            "loop",
+            "message_push",
+            "call-1",
+            '{"message":"记得早点休息","evidence":["mcp:feed:feed-1"]}',
+            '{"ok": true}',
+            None,
+            "",
+            '["mcp:feed:feed-1"]',
+            "[]",
+            "[]",
+            "",
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO tick_step_log(
+            tick_id, step_index, phase, tool_name, tool_call_id, tool_args_json,
+            tool_result_text, terminal_action_after, skip_reason_after,
+            interesting_ids_after, discarded_ids_after, cited_ids_after,
+            final_message_after
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "tick-1",
+            2,
+            "loop",
+            "finish_turn",
+            "call-2",
+            '{"decision":"reply"}',
+            '{"ok": true}',
+            "reply",
+            "",
+            '["mcp:feed:feed-1"]',
+            "[]",
+            '["mcp:feed:feed-1"]',
+            "记得早点休息",
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 def test_list_sessions_with_filters(tmp_path) -> None:
@@ -258,3 +423,112 @@ def test_memory_dashboard_filters_survive_parallel_requests(tmp_path) -> None:
     for status_code, payload in results:
         assert status_code == 200
         assert "total" in payload
+
+
+def test_proactive_dashboard_endpoints(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    overview_resp = client.get("/api/dashboard/proactive/overview")
+    assert overview_resp.status_code == 200
+    overview = overview_resp.json()
+    assert overview["counts"]["seen_items"] == 3
+    assert overview["counts"]["deliveries"] == 2
+    assert overview["counts"]["tick_logs"] == 2
+    assert overview["last_tick_at"] == "2026-04-19T03:00:00+00:00"
+    assert overview["last_send_at"] == "2026-04-19T02:06:00+00:00"
+    assert overview["last_skip_reason"] == "busy"
+
+    deliveries_resp = client.get(
+        "/api/dashboard/proactive/deliveries",
+        params={"session_key": "telegram:100"},
+    )
+    assert deliveries_resp.status_code == 200
+    assert deliveries_resp.json()["total"] == 1
+    assert deliveries_resp.json()["items"][0]["delivery_key"] == "delivery-a"
+
+    seen_resp = client.get(
+        "/api/dashboard/proactive/seen_items",
+        params={"source_key": "mcp:feed"},
+    )
+    assert seen_resp.status_code == 200
+    assert seen_resp.json()["total"] == 2
+
+    semantic_resp = client.get("/api/dashboard/proactive/semantic_items")
+    assert semantic_resp.status_code == 200
+    assert semantic_resp.json()["total"] == 2
+
+    tick_logs_resp = client.get(
+        "/api/dashboard/proactive/tick_logs",
+        params={"terminal_action": "skip"},
+    )
+    assert tick_logs_resp.status_code == 200
+    assert tick_logs_resp.json()["total"] == 1
+    assert tick_logs_resp.json()["items"][0]["tick_id"] == "tick-2"
+
+    tick_detail_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1")
+    assert tick_detail_resp.status_code == 200
+    assert tick_detail_resp.json()["interesting_ids"] == ["mcp:feed:feed-1"]
+    assert tick_detail_resp.json()["final_message"] == "记得早点休息"
+
+    tick_steps_resp = client.get("/api/dashboard/proactive/tick_logs/tick-1/steps")
+    assert tick_steps_resp.status_code == 200
+    assert tick_steps_resp.json()["total"] == 2
+    assert tick_steps_resp.json()["items"][0]["tool_name"] == "message_push"
+    assert tick_steps_resp.json()["items"][0]["tool_args"]["message"] == "记得早点休息"
+    assert tick_steps_resp.json()["items"][1]["terminal_action_after"] == "reply"
+
+
+def test_proactive_dashboard_batch_delete(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    seen_delete_resp = client.request(
+        "DELETE",
+        "/api/dashboard/proactive/seen_items/batch",
+        json={"source_key": "mcp:feed", "item_ids": ["feed-1"]},
+    )
+    assert seen_delete_resp.status_code == 200
+    assert seen_delete_resp.json()["deleted_count"] == 1
+
+    seen_resp = client.get(
+        "/api/dashboard/proactive/seen_items",
+        params={"source_key": "mcp:feed"},
+    )
+    assert seen_resp.json()["total"] == 1
+
+    cooldown_delete_resp = client.request(
+        "DELETE",
+        "/api/dashboard/proactive/rejection_cooldown/batch",
+        json={"source_key": "mcp:feed", "item_ids": ["feed-3"]},
+    )
+    assert cooldown_delete_resp.status_code == 200
+    assert cooldown_delete_resp.json()["deleted_count"] == 1
+
+    cooldown_resp = client.get(
+        "/api/dashboard/proactive/rejection_cooldown",
+        params={"source_key": "mcp:feed"},
+    )
+    assert cooldown_resp.status_code == 200
+    assert cooldown_resp.json()["total"] == 0
+
+
+def test_proactive_dashboard_batch_delete_rejects_empty_payload(tmp_path) -> None:
+    _seed_workspace(tmp_path)
+    client = TestClient(create_dashboard_app(tmp_path))
+
+    seen_delete_resp = client.request(
+        "DELETE",
+        "/api/dashboard/proactive/seen_items/batch",
+        json={},
+    )
+    assert seen_delete_resp.status_code == 400
+    assert seen_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
+
+    cooldown_delete_resp = client.request(
+        "DELETE",
+        "/api/dashboard/proactive/rejection_cooldown/batch",
+        json={},
+    )
+    assert cooldown_delete_resp.status_code == 400
+    assert cooldown_delete_resp.json()["detail"] == "至少提供 source_key 或 item_ids"
