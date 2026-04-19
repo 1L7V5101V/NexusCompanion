@@ -14,6 +14,7 @@ from pathlib import Path
 
 from agent.config import Config
 from bootstrap.app import build_app_runtime
+from bootstrap.dashboard_api import run_dashboard_api
 from bootstrap.init_workspace import InitSummary, init_workspace
 
 
@@ -80,10 +81,14 @@ if __name__ == "__main__":
     workspace: Path | None = None
     force = "--force" in args
     with_fitbit = "--with-fitbit" in args
+    dashboard_host = "127.0.0.1"
+    dashboard_port = 2236
 
     try:
         config_value = _get_flag_value(args, "--config")
         workspace_value = _get_flag_value(args, "--workspace")
+        host_value = _get_flag_value(args, "--host")
+        port_value = _get_flag_value(args, "--port")
     except ValueError as exc:
         print(str(exc))
         sys.exit(1)
@@ -92,6 +97,10 @@ if __name__ == "__main__":
         config_path = config_value
     if workspace_value is not None:
         workspace = Path(workspace_value)
+    if host_value is not None:
+        dashboard_host = host_value
+    if port_value is not None:
+        dashboard_port = int(port_value)
 
     if args and args[0] == "init":
         summary = init_workspace(
@@ -105,6 +114,14 @@ if __name__ == "__main__":
 
     if args and args[0] == "gateway":
         asyncio.run(serve(config_path, workspace))
+        sys.exit(0)
+
+    if args and args[0] == "dashboard":
+        run_dashboard_api(
+            workspace=workspace or _default_workspace(),
+            host=dashboard_host,
+            port=dashboard_port,
+        )
         sys.exit(0)
 
     if not Path(config_path).exists():

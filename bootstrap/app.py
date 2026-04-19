@@ -9,6 +9,7 @@ from typing import Awaitable, Callable
 
 from agent.config_models import Config
 from bootstrap.channels import start_channels
+from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.memory import build_memory_runtime
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.providers import build_providers
@@ -78,6 +79,8 @@ class AppRuntime:
         self.peer_poller = None
         self.observe_writer: TraceWriter | None = None
         self.observe_task: asyncio.Task[None] | None = None
+        self.dashboard_server = None
+        self.dashboard_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
         self._shutdown = False
         self._started = False
@@ -145,6 +148,12 @@ class AppRuntime:
                 self.observe_task = asyncio.create_task(
                     self.observe_writer.run(), name="observe_writer"
                 )
+            self.dashboard_server = build_dashboard_server(workspace=self.workspace)
+            self.dashboard_task = asyncio.create_task(
+                self.dashboard_server.serve(),
+                name="dashboard_server",
+            )
+            self.tasks.append(self.dashboard_task)
             proactive_tasks, self.proactive_loop = build_proactive_runtime(
                 self.config,
                 self.workspace,
@@ -188,6 +197,13 @@ class AppRuntime:
             return
         self._shutdown = True
         try:
+            if self.dashboard_server is not None:
+                self.dashboard_server.should_exit = True
+            if self.dashboard_task is not None:
+                try:
+                    await self.dashboard_task
+                except asyncio.CancelledError:
+                    pass
             if self.observe_task is not None:
                 self.observe_task.cancel()
                 try:
