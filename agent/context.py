@@ -136,7 +136,9 @@ class MessageEnvelopeBuilder:
     ) -> str:
         stripped = text.lstrip()
         if not stripped:
-            return text
+            return build_current_message_time_envelope(
+                message_timestamp=message_timestamp
+            )
         if stripped.startswith("[当前消息时间:"):
             return text
         stamp = build_current_message_time_envelope(message_timestamp=message_timestamp)
@@ -224,7 +226,6 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
-        message_timestamp: "datetime | None" = None,
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
     ) -> SystemPromptBuildResult:
@@ -235,7 +236,6 @@ class ContextBuilder:
             skill_names=skill_names or [],
             channel=channel,
             chat_id=chat_id,
-            message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
         )
         built = self._system_prompt_builder.build(
