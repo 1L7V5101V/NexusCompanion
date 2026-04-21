@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -30,7 +29,6 @@ class TurnContext:
     skill_names: list[str]
     channel: str | None
     chat_id: str | None
-    message_timestamp: datetime | None
     retrieved_memory_block: str
 
 
@@ -45,15 +43,36 @@ class PromptBlock(Protocol):
 
 
 # ─── Prompt Block 渲染顺序（priority 升序 = system prompt 拼接顺序）────────────
-#  10 IdentityPromptBlock      → 工作区路径 + 文件索引         (static, cacheable)
-#  15 BehaviorRulesPromptBlock → 行为规范 + 历史检索协议        (static, cacheable)
-#  20 MemoryBlockPromptBlock   → 本轮语义检索注入              (dynamic)
-#  30 LongTermMemoryPromptBlock→ 长期 profile                 (dynamic)
-#  40 SelfModelPromptBlock     → SELF.md                     (dynamic)
-#  50 SessionContextPromptBlock→ 当前时间 + 环境 + channel     (dynamic)
-#  60 ActiveSkillsPromptBlock  → active skill 内容            (dynamic)
-#  65 MemesPromptBlock         → meme catalog                 (dynamic)
-#  70 SkillsCatalogPromptBlock → 技能目录                     (static, cacheable)
+#  10 IdentityPromptBlock      → build_agent_static_identity_prompt(workspace)
+#                              来源：工作区路径、memory/* 文件索引
+#                              时机：仅 workspace 变化时才变，最稳定
+#  15 BehaviorRulesPromptBlock → build_agent_behavior_rules_prompt(workspace)
+#                              来源：prompts/agent.py 里的固定行为规范
+#                              时机：仅代码或 workspace 变化时才变，最稳定
+#  20 SkillsCatalogPromptBlock → skills.build_skills_summary()
+#                              来源：skills/ 目录扫描结果、技能描述、依赖可用性
+#                              时机：技能文件或环境依赖变化时才变，低频
+#  25 MemesPromptBlock         → memes/manifest.json
+#                              来源：MemeCatalog.build_prompt_block()
+#                              时机：表情 manifest 更新时才变，低频
+#  30 SelfModelPromptBlock     → memory/SELF.md
+#                              来源：memory.read_self()
+#                              时机：自我认知被写回时才变，低频
+#  35 LongTermMemoryPromptBlock→ memory/MEMORY.md
+#                              来源：memory.read_profile() / get_memory_context()
+#                              时机：长期记忆 consolidate 或人工更新时才变，低频
+#  40 SessionContextPromptBlock→ 环境 + 当前 session
+#                              来源：platform.machine() + channel + chat_id
+#                              时机：切换机器架构、channel、chat_id 时才变；同 session 基本稳定
+#  45 RecentContextPromptBlock → memory/RECENT_CONTEXT.md（裁掉 Recent Turns）
+#                              来源：memory.read_recent_context()
+#                              时机：近期语境压缩摘要更新时变化；每轮 Recent Turns 刷新不会直接进入这里
+#  50 ActiveSkillsPromptBlock  → active skill 内容
+#                              来源：always skills + 本轮命中的 skill_names
+#                              时机：本轮技能命中集合变化时就会变，中频
+#  55 MemoryBlockPromptBlock   → 本轮语义检索注入
+#                              来源：retrieved_memory_block
+#                              时机：每轮 retrieval 结果都可能不同，最高频
 # ─────────────────────────────────────────────────────────────────────────────
 class IdentityPromptBlock:
     priority = 10
@@ -85,21 +104,60 @@ class BehaviorRulesPromptBlock:
         return str(ctx.workspace.expanduser().resolve())
 
 
-class MemoryBlockPromptBlock:
+class SkillsCatalogPromptBlock:
     priority = 20
-    label = "retrieved_memory"
+    label = "skills_catalog"
+    is_static = True
+
+    def __init__(self, render_fn=build_skills_catalog_prompt) -> None:
+        self._render_fn = render_fn
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        summary = cached_signature or ""
+        if not summary:
+            return None
+        return self._render_fn(summary)
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        summary = ctx.skills.build_skills_summary()
+        return summary or None
+
+
+class MemesPromptBlock:
+    priority = 25
+    label = "memes"
+    is_static = False
+
+    def __init__(self, catalog: MemeCatalog) -> None:
+        self._catalog = catalog
+
+    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        block = self._catalog.build_prompt_block()
+        if not block:
+            return None
+        return f"# Memes\n\n{block}"
+
+    def cache_signature(self, ctx: TurnContext) -> str | None:
+        return None
+
+
+class SelfModelPromptBlock:
+    priority = 30
+    label = "self_model"
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = (ctx.retrieved_memory_block or "").strip()
-        return block or None
+        self_content = ctx.memory.read_self()
+        if not self_content:
+            return None
+        return f"## Nexus 自我认知\n\n{self_content}"
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
 
 
 class LongTermMemoryPromptBlock:
-    priority = 30
+    priority = 35
     label = "long_term_memory"
     is_static = False
 
@@ -111,16 +169,19 @@ class LongTermMemoryPromptBlock:
         return None
 
 
-class SelfModelPromptBlock:
+class SessionContextPromptBlock:
     priority = 40
-    label = "self_model"
+    label = "session_context"
     is_static = False
 
+    def __init__(self, render_fn=build_agent_session_context_prompt) -> None:
+        self._render_fn = render_fn
+
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        self_content = ctx.memory.read_self()
-        if not self_content:
-            return None
-        return f"## Nexus 自我认知\n\n{self_content}"
+        return self._render_fn(
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+        )
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
@@ -145,27 +206,8 @@ class RecentContextPromptBlock:
         return None
 
 
-class SessionContextPromptBlock:
-    priority = 50
-    label = "session_context"
-    is_static = False
-
-    def __init__(self, render_fn=build_agent_session_context_prompt) -> None:
-        self._render_fn = render_fn
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        return self._render_fn(
-            message_timestamp=ctx.message_timestamp,
-            channel=ctx.channel,
-            chat_id=ctx.chat_id,
-        )
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        return None
-
-
 class ActiveSkillsPromptBlock:
-    priority = 60
+    priority = 50
     label = "active_skills"
     is_static = False
 
@@ -189,41 +231,17 @@ class ActiveSkillsPromptBlock:
         return None
 
 
-class MemesPromptBlock:
-    priority = 65
-    label = "memes"
+class MemoryBlockPromptBlock:
+    priority = 55
+    label = "retrieved_memory"
     is_static = False
 
-    def __init__(self, catalog: MemeCatalog) -> None:
-        self._catalog = catalog
-
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        block = self._catalog.build_prompt_block()
-        if not block:
-            return None
-        return f"# Memes\n\n{block}"
+        block = (ctx.retrieved_memory_block or "").strip()
+        return block or None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
-
-
-class SkillsCatalogPromptBlock:
-    priority = 70
-    label = "skills_catalog"
-    is_static = True
-
-    def __init__(self, render_fn=build_skills_catalog_prompt) -> None:
-        self._render_fn = render_fn
-
-    def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        summary = cached_signature or ""
-        if not summary:
-            return None
-        return self._render_fn(summary)
-
-    def cache_signature(self, ctx: TurnContext) -> str | None:
-        summary = ctx.skills.build_skills_summary()
-        return summary or None
 
 
 @dataclass

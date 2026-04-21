@@ -74,7 +74,6 @@ class PromptAssembler:
             skill_names=skill_names,
             channel=channel,
             chat_id=chat_id,
-            message_timestamp=message_timestamp,
             retrieved_memory_block=retrieved_memory_block,
             disabled_sections=disabled_sections,
         )

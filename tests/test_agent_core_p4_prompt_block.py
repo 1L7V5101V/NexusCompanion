@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 from agent.core.prompt_block import (
+    ActiveSkillsPromptBlock,
+    BehaviorRulesPromptBlock,
     IdentityPromptBlock,
+    LongTermMemoryPromptBlock,
+    MemesPromptBlock,
     MemoryBlockPromptBlock,
+    RecentContextPromptBlock,
+    SelfModelPromptBlock,
+    SessionContextPromptBlock,
+    SkillsCatalogPromptBlock,
     SystemPromptBuilder,
     TurnContext,
 )
@@ -46,7 +53,6 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
         skill_names=[],
         channel=None,
         chat_id=None,
-        message_timestamp=datetime(2026, 4, 4, 21, 0, 0),
         retrieved_memory_block="retrieved",
     )
 
@@ -72,7 +78,6 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
         skill_names=[],
         channel=None,
         chat_id=None,
-        message_timestamp=None,
         retrieved_memory_block="retrieved",
     )
 
@@ -87,3 +92,31 @@ def test_static_identity_prompt_is_not_hardcoded_to_specific_user(tmp_path: Path
 
     assert "花月的长期 AI 伙伴" not in prompt
     assert "用户的长期 AI 伙伴" in prompt
+
+
+def test_prompt_block_priorities_leave_spacing_for_future_inserts():
+    priorities = [
+        (IdentityPromptBlock.label, IdentityPromptBlock.priority),
+        (BehaviorRulesPromptBlock.label, BehaviorRulesPromptBlock.priority),
+        (SkillsCatalogPromptBlock.label, SkillsCatalogPromptBlock.priority),
+        (MemesPromptBlock.label, MemesPromptBlock.priority),
+        (SelfModelPromptBlock.label, SelfModelPromptBlock.priority),
+        (LongTermMemoryPromptBlock.label, LongTermMemoryPromptBlock.priority),
+        (SessionContextPromptBlock.label, SessionContextPromptBlock.priority),
+        (RecentContextPromptBlock.label, RecentContextPromptBlock.priority),
+        (ActiveSkillsPromptBlock.label, ActiveSkillsPromptBlock.priority),
+        (MemoryBlockPromptBlock.label, MemoryBlockPromptBlock.priority),
+    ]
+
+    assert priorities == [
+        ("identity", 10),
+        ("behavior_rules", 15),
+        ("skills_catalog", 20),
+        ("memes", 25),
+        ("self_model", 30),
+        ("long_term_memory", 35),
+        ("session_context", 40),
+        ("recent_context", 45),
+        ("active_skills", 50),
+        ("retrieved_memory", 55),
+    ]

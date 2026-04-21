@@ -33,7 +33,7 @@ def _weekday_cn(ts: datetime) -> str:
     return ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][ts.weekday()]
 
 
-# ─── Layer 1: 静态身份（priority=10，workspace 路径 + 文件索引）────────────────
+# ─── 静态身份层：工作区路径 + 文件索引 ──────────────────────────────────────────
 def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
@@ -67,7 +67,7 @@ def build_agent_static_identity_prompt(*, workspace: Path) -> str:
 """
 
 
-# ─── Layer 2: 行为规范（priority=15，工具路由 + 历史检索协议 + 输出格式）────────
+# ─── 行为规范层：工具路由 + 历史检索协议 + 输出格式 ────────────────────────────
 def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
@@ -174,56 +174,34 @@ def build_agent_behavior_rules_prompt(*, workspace: Path) -> str:
 宏观时间线浏览：`read_file {workspace_path}/memory/HISTORY.md`。""" + _MEMORY_CITATION_PROTOCOL
 
 
-# ─── Layer 3: 动态上下文（priority=50，每轮变化：时间 + 环境 + channel）─────────
+# ─── 动态上下文层：环境 + channel ────────────────────────────────────────────
 def build_agent_session_context_prompt(
     *,
-    message_timestamp: datetime | None = None,
     channel: str | None = None,
     chat_id: str | None = None,
 ) -> str:
-    parts = [
-        build_agent_request_time_prompt(message_timestamp=message_timestamp),
-        build_agent_environment_prompt(),
-    ]
+    parts = [build_agent_environment_prompt()]
     if channel and chat_id:
         parts.append(build_current_session_prompt(channel=channel, chat_id=chat_id).strip())
     return "\n\n".join(part for part in parts if part.strip())
-
-
-def build_agent_request_time_prompt(*, message_timestamp: datetime | None = None) -> str:
-    ts = _normalize_timestamp(message_timestamp)
-    now = ts.strftime("%Y-%m-%d %H:%M:%S %Z")
-    now_iso = ts.isoformat()
-    local_date = ts.strftime("%Y-%m-%d")
-    weekday = ts.strftime("%A")
-    timezone_name = ts.tzname() or "UNKNOWN"
-    yesterday = ts - timedelta(days=1)
-    tomorrow = ts + timedelta(days=1)
-    day_after_tomorrow = ts + timedelta(days=2)
-    return f"""## 当前时间
-{now}
-request_time={now_iso}
-local_date={local_date}
-weekday={weekday}
-timezone_name={timezone_name}
-相对日期换算：
-- 昨天={yesterday.strftime("%Y-%m-%d")}（{_weekday_cn(yesterday)}）
-- 今天={local_date}（{_weekday_cn(ts)}）
-- 明天={tomorrow.strftime("%Y-%m-%d")}（{_weekday_cn(tomorrow)}）
-- 后天={day_after_tomorrow.strftime("%Y-%m-%d")}（{_weekday_cn(day_after_tomorrow)}）
-- 当前用户消息里的“今天/明天/昨天/后天/周几”等相对时间，默认都以这里为准再换算成绝对日期
-（调用 schedule 工具时，将该 request_time 原样传入 request_time 字段）"""
 
 
 def build_current_message_time_envelope(*, message_timestamp: datetime | None = None) -> str:
     ts = _normalize_timestamp(message_timestamp)
     if ts.tzinfo is None:
         ts = ts.astimezone()
+    yesterday = ts - timedelta(days=1)
     tomorrow = ts + timedelta(days=1)
+    day_after_tomorrow = ts + timedelta(days=2)
     return (
-        f"[当前消息时间: {ts.strftime('%Y-%m-%d %H:%M %Z')} | "
-        f"今天={ts.strftime('%Y-%m-%d')} | "
-        f"明天={tomorrow.strftime('%Y-%m-%d')}]"
+        f"[当前消息时间: {ts.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+        f"request_time={ts.isoformat()} | "
+        f"今天={ts.strftime('%Y-%m-%d')}（{_weekday_cn(ts)}） | "
+        f"昨天={yesterday.strftime('%Y-%m-%d')}（{_weekday_cn(yesterday)}） | "
+        f"明天={tomorrow.strftime('%Y-%m-%d')}（{_weekday_cn(tomorrow)}） | "
+        f"后天={day_after_tomorrow.strftime('%Y-%m-%d')}（{_weekday_cn(day_after_tomorrow)}） | "
+        f"weekday={ts.strftime('%A')} | "
+        f"相对时间以此为准]"
     )
 
 
