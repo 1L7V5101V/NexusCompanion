@@ -254,3 +254,78 @@ def test_default_reasoner_run_turn_uses_context_render():
     result = asyncio.run(reasoner.run_turn(msg=msg, session=session))
 
     assert result.reply == "done"
+
+
+def test_empty_content_with_thinking_triggers_retry_and_succeeds():
+    provider = _Provider(
+        [
+            LLMResponse(content=None, tool_calls=[], thinking="长思考过程"),
+            LLMResponse(content="正式回复", tool_calls=[], thinking="新思考"),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "正式回复"
+    assert result.thinking == "新思考"
+    retry_call = provider.calls[1]
+    assert retry_call["tools"] == []
+    assert len(provider.calls) == 2
+
+
+def test_empty_content_with_thinking_retry_still_empty_falls_back():
+    provider = _Provider(
+        [
+            LLMResponse(content=None, tool_calls=[], thinking="只有思考"),
+            LLMResponse(content=None, tool_calls=[], thinking=None),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "（无响应）"
+    assert result.thinking == "只有思考"
+    assert len(provider.calls) == 2
+
+
+def test_empty_content_without_thinking_no_retry():
+    provider = _Provider(
+        [
+            LLMResponse(content=None, tool_calls=[], thinking=None),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_DummyTool(), always_on=True)
+    reasoner = DefaultReasoner(
+        llm=LLMServices(provider=cast(Any, provider), light_provider=cast(Any, provider)),
+        llm_config=LLMConfig(model="m", max_iterations=4, max_tokens=512),
+        tools=tools,
+        discovery=ToolDiscoveryState(),
+        tool_search_enabled=False,
+        memory_window=40,
+    )
+
+    result = asyncio.run(reasoner.run([{"role": "user", "content": "hi"}]))
+
+    assert result.reply == "（无响应）"
+    assert len(provider.calls) == 1
