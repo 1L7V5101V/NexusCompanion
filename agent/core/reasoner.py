@@ -604,6 +604,32 @@ class DefaultReasoner(Reasoner):
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
+            # 8a. 若 content 为空（模型只输出了 thinking），retry 一次。
+            if not response.content and response.thinking:
+                logger.warning(
+                    "[空回复重试] 第%d轮，content为空但thinking非空，触发一次重试",
+                    iteration + 1,
+                )
+                messages.append({"role": "assistant", "content": ""})
+                messages.append({
+                    "role": "user",
+                    "content": "你刚才只输出了思考过程，没有给出正式回复。请直接回复用户，不要重复思考。",
+                })
+                retry_response = await self._llm.provider.chat(
+                    messages=messages,
+                    tools=[],
+                    model=self._llm_config.model,
+                    max_tokens=self._llm_config.max_tokens,
+                    on_content_delta=on_content_delta,
+                )
+                if retry_response.content:
+                    response = retry_response
+                    if on_content_delta is not None:
+                        streamed = True
+                    logger.info("[空回复重试] 重试成功，获得正常回复")
+                else:
+                    logger.warning("[空回复重试] 重试仍为空，使用fallback")
+
             logger.info(
                 "[LLM决策→回复] 第%d轮，共调用工具%d次: %s",
                 iteration + 1,
