@@ -203,3 +203,17 @@ python main.py cli      # 连接运行中的 agent（TUI / 纯文本 CLI）
 pytest tests/           # 单元测试
 NEXUS_RUN_SCENARIOS=1 pytest -c pytest-scenarios.ini tests_scenarios/  # 场景测试（真实 LLM）
 ```
+
+## Roadmap
+
+### Memory System (记忆系统演进)
+- [ ] **Storage Layer**: 引入按日归档的 `journal/YYYY-MM-DD.md`，通过 Append-only 降低写入冲突。
+- [ ] **Hierarchical Time Rollup**: 新增状态驱动的定时折叠任务，自动聚合生成周报、月报与年报，防止跨度过大的查询撑爆上下文。
+- [ ] **Implicit Bypass**: 升级前置查询意图识别。当探测到时间查询时，与向量检索并行执行，根据时间跨度动态抽取最适合粒度的日记/月报文本进行混合注入。
+- [ ] **Drill-down Tool**: 增加 `read_journal` 工具供 ReAct 循环使用。支持容错查询，帮助大模型在宏观摘要不足时自动下钻到具体日期。
+- [ ] **Response Parser Pipeline**: 在 `AgentCore.process` 循环结尾引入统一的文本解析管道。拦截大模型原始输出，抽离出 `§cited:xxx§` 与 `<meme:xxx>` 等标签，将清洗后的干净文本与结构化 Metadata 传入 `ContextStore`，彻底解除底层的正则与协议耦合。
+- [ ] **Memory Pluginification**: 提取 `DefaultMemory` 的全部行为，实现记忆系统的完全 SPI 解耦。
+
+### Tools & Integration (工具与集成架构)
+- [ ] **Tool Pluginification**: 重构静态的工具注册机制，将其从依赖注入列表解脱，抽象为动态的 Plugin 系统，作为大范围模块化（如 Memory SPI）的前置基建。
+- [ ] **Async Webhook Bypass**: 实现基于 HTTP 的异步回调通道。支持大模型通过 Shell 委派长时间后台任务（如 Codex 执行）时注入 Callback URL。外部任务完成后通过该 URL 投递状态信号，以标准 `InboundMessage` 的形式安全合并回主循环总线。
