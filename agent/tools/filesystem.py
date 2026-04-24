@@ -99,13 +99,6 @@ _IMAGE_MAX_EDGE = 1568
 _IMAGE_TARGET_B64_LEN = 8_000_000
 _IMAGE_MIN_QUALITY = 45
 _READ_PROBE_BYTES = 4096
-_SUPPORTED_IMAGE_MIME_TYPES = {
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/bmp",
-    "image/webp",
-}
 
 
 def _encode_image_for_model(
@@ -168,7 +161,11 @@ def _read_image(file_path: Path, detected_mime: str | None = None) -> ToolResult
     )
 
 
-def _detect_image_mime_from_header(head: bytes, file_name: str) -> str | None:
+def _detect_image_mime_from_header(head: bytes) -> str | None:
+    return _detect_supported_image_mime_from_header(head)
+
+
+def _detect_supported_image_mime_from_header(head: bytes) -> str | None:
     if head.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
     if head.startswith(b"\xff\xd8\xff"):
@@ -179,9 +176,6 @@ def _detect_image_mime_from_header(head: bytes, file_name: str) -> str | None:
         return "image/bmp"
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return "image/webp"
-    mime, _ = mimetypes.guess_type(file_name)
-    if mime in _SUPPORTED_IMAGE_MIME_TYPES:
-        return mime
     return None
 
 
@@ -329,7 +323,7 @@ class ReadFileTool(Tool):
 
             with builtins.open(file_path, "rb") as fh:
                 head = fh.read(_READ_PROBE_BYTES)
-            image_mime = _detect_image_mime_from_header(head, file_path.name)
+            image_mime = _detect_image_mime_from_header(head)
             if image_mime:
                 if self._multimodal:
                     return _read_image(file_path, image_mime)

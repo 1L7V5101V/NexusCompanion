@@ -71,6 +71,7 @@ class SpawnToolsetProvider(ToolsetProvider):
             model=config.model,
             max_tokens=config.max_tokens,
             fetch_requester=http_resources.external_default,
+            multimodal=config.multimodal,
         )
         if config.spawn_enabled:
             registry.register(

@@ -2,18 +2,20 @@
 
 import base64
 import io
-import mimetypes
 import os
 from pathlib import Path
 from typing import Any
 
 from agent.provider import LLMProvider
 from agent.tools.base import Tool
-from agent.tools.filesystem import _resolve_path
+from agent.tools.filesystem import (
+    _detect_supported_image_mime_from_header,
+    _resolve_path,
+)
 
-_VL_MAX_FILE_BYTES = 20 * 1024 * 1024        # 20MB 原始文件上限
-_VL_MAX_DATA_URI_BYTES = 8 * 1024 * 1024     # 8MB data URI 上限（base64 编码后）
-_VL_MAX_EDGE = 4096                           # 最长边像素上限，超限自动缩放
+_VL_MAX_FILE_BYTES = 20 * 1024 * 1024  # 20MB 原始文件上限
+_VL_MAX_DATA_URI_BYTES = 8 * 1024 * 1024  # 8MB data URI 上限（base64 编码后）
+_VL_MAX_EDGE = 4096  # 最长边像素上限，超限自动缩放
 
 
 def _encode_image_data_uri(file_path: Path) -> str:
@@ -30,23 +32,22 @@ def _encode_image_data_uri(file_path: Path) -> str:
         )
 
     raw = file_path.read_bytes()
-    b64 = base64.b64encode(raw).decode()
-    mime, _ = mimetypes.guess_type(file_path.name)
-    if not mime or not mime.startswith("image/"):
-        mime = "image/png"
+    mime = _detect_supported_image_mime_from_header(raw[:4096])
+    if mime is None:
+        raise ValueError("不支持的图片格式。仅支持 PNG、JPEG、GIF、BMP、WebP。")
 
-    if len(b64) <= _VL_MAX_DATA_URI_BYTES:
-        return f"data:{mime};base64,{b64}"
-
-    # 图片编码后仍然过大，用 Pillow 压缩
     try:
         from PIL import Image, ImageOps
     except ModuleNotFoundError:
         raise ValueError(
-            f"图片编码后过大（{len(b64) / 1024 / 1024:.1f}MB base64），"
-            "且当前环境未安装 Pillow，无法自动压缩。"
-            "请手动压缩图片或安装 Pillow 后重试。"
+            "当前环境未安装 Pillow，无法校验图片。请安装 Pillow 后重试。"
         )
+
+    try:
+        with Image.open(file_path) as img:
+            img.verify()
+    except Exception as e:
+        raise ValueError("图片文件无法解码或已损坏。请确认这是有效图片。") from e
 
     with Image.open(file_path) as img:
         img = ImageOps.exif_transpose(img)
@@ -58,8 +59,21 @@ def _encode_image_data_uri(file_path: Path) -> str:
         elif img.mode == "L":
             img = img.convert("RGB")
 
-        if max(img.size) > _VL_MAX_EDGE:
+        raw_b64_len = len(base64.b64encode(raw).decode())
+        if max(img.size) > _VL_MAX_EDGE or raw_b64_len > _VL_MAX_DATA_URI_BYTES:
             img.thumbnail((_VL_MAX_EDGE, _VL_MAX_EDGE))
+
+        if raw_b64_len <= _VL_MAX_DATA_URI_BYTES and max(img.size) <= _VL_MAX_EDGE:
+            buf = io.BytesIO()
+            if mime == "image/jpeg":
+                img.save(buf, format="JPEG", quality=95, optimize=True)
+                clean_mime = "image/jpeg"
+            else:
+                img.save(buf, format="PNG", optimize=True)
+                clean_mime = "image/png"
+            clean_b64 = base64.b64encode(buf.getvalue()).decode()
+            if len(clean_b64) <= _VL_MAX_DATA_URI_BYTES:
+                return f"data:{clean_mime};base64,{clean_b64}"
 
         best: bytes | None = None
         for quality in (85, 75, 65, 55, 45):
@@ -73,7 +87,12 @@ def _encode_image_data_uri(file_path: Path) -> str:
 
     if best is None:
         raise ValueError("图片压缩失败")
-    return f"data:image/jpeg;base64,{base64.b64encode(best).decode()}"
+    best_b64 = base64.b64encode(best).decode()
+    raise ValueError(
+        f"图片压缩后仍然过大（{len(best_b64) / 1024 / 1024:.1f}MB base64），"
+        f"上限为 {_VL_MAX_DATA_URI_BYTES / 1024 / 1024:.0f}MB。"
+        "请继续压缩图片或裁剪到只包含需要分析的区域。"
+    )
 
 
 class ReadImageVisionTool(Tool):
