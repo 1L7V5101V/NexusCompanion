@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,7 +38,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
         ),
         build_injection_block=lambda items: ("注入块", ["m1"]),
     )
-    engine = DefaultMemoryEngine(retriever=retriever)
+    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
 
     result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -73,7 +74,7 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
         ),
         build_injection_block=lambda items: ("历史块", ["e1"]),
     )
-    engine = DefaultMemoryEngine(retriever=retriever)
+    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
 
     result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -87,7 +88,9 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
 
     assert result.text_block == "历史块"
     assert result.trace["mode"] == "episodic"
-    assert result.raw["items"][0]["id"] == "e1"
+    raw = cast(dict[str, object], result.raw)
+    raw_items = cast(list[object], raw["items"])
+    assert cast(dict[str, object], raw_items[0])["id"] == "e1"
     assert result.hits[0].id == "e1"
     assert result.hits[0].injected is True
 
@@ -97,7 +100,7 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
         retrieve=AsyncMock(return_value=[]),
         build_injection_block=lambda items: ("", []),
     )
-    engine = DefaultMemoryEngine(retriever=retriever)
+    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
 
     await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -131,7 +134,7 @@ async def test_default_engine_keeps_history_injected_ids():
         ),
         build_injection_block=lambda items: ("## 【相关历史】\n- 用户昨天提过 FitBit", ["e1"]),
     )
-    engine = DefaultMemoryEngine(retriever=retriever)
+    engine = DefaultMemoryEngine(retriever=cast(Any, retriever))
 
     history_result = await engine.retrieve(
         MemoryEngineRetrieveRequest(
@@ -167,8 +170,8 @@ async def test_default_engine_keeps_history_injected_ids():
 async def test_default_memory_engine_ingest_delegates_to_post_worker():
     worker = SimpleNamespace(run=AsyncMock())
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        post_response_worker=worker,
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
     )
 
     result = await engine.ingest(
@@ -193,8 +196,8 @@ async def test_default_memory_engine_remember_uses_memorizer():
         save_item_with_supersede=AsyncMock(return_value="new:memu-1")
     )
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        memorizer=memorizer,
+        retriever=cast(Any, SimpleNamespace()),
+        memorizer=cast(Any, memorizer),
     )
 
     result = await engine.remember(
@@ -215,8 +218,8 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
         save_item_with_supersede=AsyncMock(return_value="merged:memu-1")
     )
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        memorizer=memorizer,
+        retriever=cast(Any, SimpleNamespace()),
+        memorizer=cast(Any, memorizer),
     )
 
     result = await engine.remember(
@@ -235,8 +238,8 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
 async def test_default_memory_engine_ingest_accepts_conversation_batch_messages():
     worker = SimpleNamespace(run=AsyncMock())
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        post_response_worker=worker,
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
     )
 
     result = await engine.ingest(
@@ -265,8 +268,8 @@ async def test_default_memory_engine_ingest_accepts_conversation_batch_messages(
 async def test_default_memory_engine_ingest_falls_back_to_post_response_source_ref():
     worker = SimpleNamespace(run=AsyncMock())
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        post_response_worker=worker,
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
     )
 
     result = await engine.ingest(
@@ -289,8 +292,8 @@ async def test_default_memory_engine_ingest_falls_back_to_post_response_source_r
 async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
     worker = SimpleNamespace(run=AsyncMock())
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
-        post_response_worker=worker,
+        retriever=cast(Any, SimpleNamespace()),
+        post_response_worker=cast(Any, worker),
     )
 
     result = await engine.ingest(
@@ -308,7 +311,7 @@ async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
 
 async def test_default_memory_engine_ingest_rejects_when_worker_missing():
     engine = DefaultMemoryEngine(
-        retriever=SimpleNamespace(),
+        retriever=cast(Any, SimpleNamespace()),
         post_response_worker=None,
     )
 
@@ -457,9 +460,9 @@ def test_build_memory_runtime_uses_memory_engine_factory(monkeypatch, tmp_path: 
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
-        provider=SimpleNamespace(),
+        provider=cast(Any, SimpleNamespace()),
         light_provider=None,
-        http_resources=SimpleNamespace(external_default=SimpleNamespace()),
+        http_resources=cast(Any, SimpleNamespace(external_default=SimpleNamespace())),
     )
 
     assert runtime.engine is not None
@@ -578,9 +581,9 @@ def test_build_memory_runtime_exposes_default_memory_engine(
         ),
         workspace=tmp_path,
         tools=ToolRegistry(),
-        provider=SimpleNamespace(),
+        provider=cast(Any, SimpleNamespace()),
         light_provider=None,
-        http_resources=SimpleNamespace(external_default=SimpleNamespace()),
+        http_resources=cast(Any, SimpleNamespace(external_default=SimpleNamespace())),
     )
 
     assert runtime.engine is not None

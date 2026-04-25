@@ -90,10 +90,10 @@ async def test_reasoner_wrapper_and_shell_cover_branches(tmp_path: Path):
     tool = ShellTool()
     assert "命令不能为空" in await tool.execute(command="")
     assert "不被允许" in await tool.execute(command="nc localhost 1")
-    assert "URL" in _validate_network_command("curl ftp://x")
-    assert "上传/写文件" in _validate_network_command("curl -o out http://x.com")
+    assert "URL" in (_validate_network_command("curl ftp://x") or "")
+    assert "上传/写文件" in (_validate_network_command("curl -o out http://x.com") or "")
     assert _validate_network_command("echo hi") is None
-    assert "禁止访问内网" in _validate_network_command("curl http://127.0.0.1")
+    assert "禁止访问内网" in (_validate_network_command("curl http://127.0.0.1") or "")
     truncated = _truncate("HEAD\n" + ("a" * 31000) + "\nTAIL")
     assert truncated["truncated"] is True
     assert truncated["strategy"] == "tail"

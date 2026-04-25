@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any, cast
 
 from datetime import datetime
 from pathlib import Path
@@ -173,7 +174,7 @@ async def test_memu_engine_retrieval_pipeline_injects_memory_block(tmp_path: Pat
     pipeline = DefaultMemoryRetrievalPipeline(
         memory=MemoryServices(
             engine=engine,
-            query_rewriter=SimpleNamespace(
+            query_rewriter=cast(Any, SimpleNamespace(
                 decide=AsyncMock(
                     return_value=GateDecision(
                         needs_episodic=True,
@@ -181,10 +182,10 @@ async def test_memu_engine_retrieval_pipeline_injects_memory_block(tmp_path: Pat
                         latency_ms=1,
                     )
                 )
-            ),
+            )),
         ),
         memory_config=MemoryConfig(),
-        llm=LLMServices(provider=object(), light_provider=object()),
+        llm=LLMServices(provider=cast(Any, object()), light_provider=cast(Any, object())),
         workspace=tmp_path,
         light_model="test-light",
     )

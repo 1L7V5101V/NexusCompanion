@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.context import ContextBuilder
+from agent.core.context_store import ContextStore
+from agent.core.reasoner import Reasoner
 from agent.core.runtime_support import TurnRunResult
 from agent.core.agent_core import AgentCore, AgentCoreDeps, _predict_current_user_source_ref
 from agent.core.types import ContextBundle
+from agent.looping.ports import SessionServices
+from agent.tools.registry import ToolRegistry
 from bus.events import InboundMessage, OutboundMessage
 
 
@@ -52,7 +58,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
         run_turn=AsyncMock(
             side_effect=lambda *args, **kwargs: order.append("run")
             or TurnRunResult(
-                reply="final",
+                reply="final <meme:shy>\n§cited:[mem_1]§",
                 tools_used=["shell"],
                 tool_chain=[{"text": "done", "calls": []}],
                 thinking="think",
@@ -62,20 +68,23 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     )
     context_store.commit = AsyncMock(
         side_effect=lambda **kwargs: order.append("commit")
-        or OutboundMessage(channel="telegram", chat_id="123", content="final")
+        or OutboundMessage(channel="telegram", chat_id="123", content=kwargs["reply"])
     )
     agent_core = AgentCore(
         AgentCoreDeps(
-            session=SimpleNamespace(
-                session_manager=SimpleNamespace(
-                    get_or_create=MagicMock(return_value=session),
-                    peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                )
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                    )
+                ),
             ),
-            context_store=context_store,
-            context=context,
-            tools=tools,
-            reasoner=reasoner,
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
         )
     )
     msg = InboundMessage(
@@ -105,6 +114,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
     assert context_store.commit.await_args.kwargs["thinking"] == "think"
     assert context_store.commit.await_args.kwargs["context_retry"] == {"selected_plan": "full"}
+    assert context_store.commit.await_args.kwargs["reply"] == "final"
+    response_metadata = context_store.commit.await_args.kwargs["response_metadata"]
+    assert response_metadata.raw_text == "final <meme:shy>\n§cited:[mem_1]§"
+    assert response_metadata.cited_memory_ids == ["mem_1"]
+    assert response_metadata.meme_tag == "shy"
 
 
 @pytest.mark.asyncio
@@ -118,24 +132,38 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     )
     agent_core = AgentCore(
         AgentCoreDeps(
-            session=SimpleNamespace(
-                session_manager=SimpleNamespace(
-                    get_or_create=MagicMock(return_value=session),
-                    peek_next_message_id=MagicMock(return_value="cli:1:0"),
-                )
-            ),
-            context_store=context_store,
-            context=SimpleNamespace(
-                render=MagicMock(
-                    return_value=SimpleNamespace(system_prompt="prompt", messages=[])
-                ),
-                build_system_prompt=MagicMock(
-                    side_effect=AssertionError("legacy build_system_prompt should not be used")
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="cli:1:0"),
+                    )
                 ),
             ),
-            tools=SimpleNamespace(set_context=MagicMock()),
-            reasoner=SimpleNamespace(
-                run_turn=AsyncMock(return_value=TurnRunResult(reply=None)),
+            context_store=cast(ContextStore, context_store),
+            context=cast(
+                ContextBuilder,
+                SimpleNamespace(
+                    render=MagicMock(
+                        return_value=SimpleNamespace(system_prompt="prompt", messages=[])
+                    ),
+                    build_system_prompt=MagicMock(
+                        side_effect=AssertionError(
+                            "legacy build_system_prompt should not be used"
+                        )
+                    ),
+                ),
+            ),
+            tools=cast(
+                ToolRegistry,
+                SimpleNamespace(set_context=MagicMock()),
+            ),
+            reasoner=cast(
+                Reasoner,
+                SimpleNamespace(
+                    run_turn=AsyncMock(return_value=TurnRunResult(reply=None)),
+                ),
             ),
         )
     )

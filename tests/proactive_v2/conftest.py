@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from proactive_v2.config import ProactiveConfig
@@ -146,15 +146,19 @@ class FakeAlertAckSink:
 class _FakeSession:
     def __init__(self, key: str) -> None:
         self.key = key
-        self.messages: list[dict] = []
+        self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, Any] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500) -> list[dict]:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
         return self.messages[-max_messages:]
 
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
-        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        msg: dict[str, object] = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
         if media:
             msg["media"] = list(media)
         msg.update(kwargs)
@@ -258,8 +262,8 @@ def make_agent_tick(
         append_messages=AsyncMock(return_value=None),
     )
     session_svc = SessionServices(
-        session_manager=session_manager,
-        presence=SimpleNamespace(record_proactive_sent=lambda _key: None),
+        session_manager=cast(Any, session_manager),
+        presence=cast(Any, SimpleNamespace(record_proactive_sent=lambda _key: None)),
     )
     trace_svc = ObservabilityServices(workspace=Path("."), observe_writer=None)
 

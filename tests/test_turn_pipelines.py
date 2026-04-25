@@ -320,7 +320,8 @@ async def test_default_post_turn_pipeline_serializes_same_session_post_mem():
 
     async def _ingest(request: MemoryIngestRequest):
         nonlocal active, max_active
-        label = str(request.content["user_message"])
+        content = cast(dict[str, object], request.content)
+        label = str(content["user_message"])
         started.append(label)
         active += 1
         max_active = max(max_active, active)

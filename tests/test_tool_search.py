@@ -12,7 +12,7 @@ tool_search 搜索质量回归测试。
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 
@@ -505,10 +505,11 @@ class TestToolSearchTool:
     def test_get_deferred_names_excludes_visible(self):
         """get_deferred_names(visible=...) 不包含已可见（preloaded）工具。"""
         reg = _make_registry()
-        deferred = reg.get_deferred_names(visible={"schedule"})
-        assert "schedule" not in deferred.get("builtin", [])
+        deferred = cast(dict[str, object], reg.get_deferred_names(visible={"schedule"}))
+        builtin = cast(list[str], deferred.get("builtin", []))
+        assert "schedule" not in builtin
         # write_file 未在 visible 中，应出现在 deferred 里
-        assert "write_file" in deferred.get("builtin", [])
+        assert "write_file" in builtin
 
     def test_select_respects_allowed_risk(self):
         """select: 加载时尊重 allowed_risk，write 工具在 read-only 过滤下不返回。"""

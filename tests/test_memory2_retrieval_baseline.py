@@ -13,10 +13,16 @@ Memory2 检索排序能力基线测试
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import math
 from datetime import datetime, timedelta, timezone
 
 from memory2.store import MemoryStore2
+
+
+def _as_record(value: object) -> dict[str, object]:
+    return cast(dict[str, object], value)
 
 
 def _now() -> datetime:
@@ -39,11 +45,14 @@ def test_baseline_cosine_ranking_basic(tmp_path):
     store.upsert_item("event", "低相似条目 C", embedding=[0.0, 1.0, 0.0], extra={})
 
     # 查询向量与 A 最相似，与 C 正交
-    results = store.vector_search(query_vec=[1.0, 0.0, 0.0], top_k=3, score_threshold=0.0)
+    results = cast(list[dict[str, object]], store.vector_search(query_vec=[1.0, 0.0, 0.0], top_k=3, score_threshold=0.0))
 
     assert len(results) == 3
-    assert results[0]["summary"] == "高相似条目 A"
-    assert results[0]["score"] >= results[1]["score"] >= results[2]["score"]
+    assert _as_record(results[0])["summary"] == "高相似条目 A"
+    score0 = cast(float, _as_record(results[0])["score"])
+    score1 = cast(float, _as_record(results[1])["score"])
+    score2 = cast(float, _as_record(results[2])["score"])
+    assert score0 >= score1 >= score2
 
 
 def test_baseline_superseded_excluded_from_retrieval(tmp_path):
@@ -52,7 +61,7 @@ def test_baseline_superseded_excluded_from_retrieval(tmp_path):
 
     store.upsert_item("procedure", "旧规则（已退休）", embedding=[1.0, 0.0], extra={})
     old_id = store.list_by_type("procedure")[0]["id"]
-    store.mark_superseded(old_id)
+    store.mark_superseded(cast(Any, old_id))
 
     store.upsert_item("procedure", "新规则（active）", embedding=[0.9, 0.0], extra={})
 
@@ -253,14 +262,15 @@ def test_boundary_score_does_not_include_hotness_fields(tmp_path):
     results = store.vector_search(query_vec=[1.0, 0.0], top_k=1, score_threshold=0.0)
     assert len(results) == 1
 
-    debug = results[0].get("_score_debug")
+    debug = cast(dict[str, object] | None, _as_record(results[0]).get("_score_debug"))
     assert debug is not None, "优化后：_score_debug 字段应始终存在"
     assert "semantic" in debug
     assert "hotness" in debug
     assert "final" in debug
     # hotness_alpha=0（默认）时，hotness 分量为 0，final == semantic
-    assert debug["hotness"] == 0.0
-    assert abs(debug["final"] - debug["semantic"]) < 1e-6
+    score_debug = cast(dict[str, float], debug)
+    assert score_debug["hotness"] == 0.0
+    assert abs(score_debug["final"] - score_debug["semantic"]) < 1e-6
 
 
 def test_emotional_weight_extends_hotness_half_life_in_ranking(tmp_path):
@@ -297,7 +307,9 @@ def test_emotional_weight_extends_hotness_half_life_in_ranking(tmp_path):
     )
 
     assert results[0]["summary"] == "情绪事件"
-    assert results[0]["_score_debug"]["hotness"] > results[1]["_score_debug"]["hotness"]
+    assert cast(dict[str, float], _as_record(results[0]).get("_score_debug", {}))["hotness"] > cast(
+        dict[str, float], _as_record(results[1]).get("_score_debug", {})
+    )["hotness"]
 
 
 # ─── C. 热度公式规格预验证（与实现无关的数学验证）──────────────────────────────
