@@ -29,5 +29,6 @@ jobs:
           pyright --level error
 
       - name: Run pytest
+        timeout-minutes: 10
         run: |
           pytest tests/
