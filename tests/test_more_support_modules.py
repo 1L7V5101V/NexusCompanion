@@ -573,6 +573,13 @@ async def test_app_runtime_start_passes_profile_maint_to_memory_optimizer(
     monkeypatch.setattr(
         "bootstrap.app.run_retention_if_needed", AsyncMock(return_value=None)
     )
+    monkeypatch.setattr(
+        "bootstrap.app.build_dashboard_server",
+        lambda **_: SimpleNamespace(
+            should_exit=False,
+            serve=AsyncMock(return_value=None),
+        ),
+    )
 
     app = AppRuntime(
         config=SimpleNamespace(),

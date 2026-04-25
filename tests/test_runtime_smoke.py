@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 import types
@@ -18,6 +19,15 @@ from agent.config import (
     TelegramChannelConfig,
 )
 from core.net.http import SharedHttpResources
+
+
+class _FakeDashboardServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+
+    async def serve(self) -> None:
+        while not self.should_exit:
+            await asyncio.sleep(0)
 
 
 def _toml_value(value):
@@ -112,6 +122,9 @@ async def test_serve_smoke_loads_config_and_runs_shutdown(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         bootstrap_app, "build_core_runtime", _patched_build_core_runtime
+    )
+    monkeypatch.setattr(
+        bootstrap_app, "build_dashboard_server", lambda **_: _FakeDashboardServer()
     )
     monkeypatch.setattr(main.Path, "home", lambda: tmp_path)
 
