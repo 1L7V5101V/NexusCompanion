@@ -600,7 +600,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         has_embedding: bool | None = None,
         page: int = 1,
         page_size: int = 50,
-        sort_by: str = "updated_at",
+        sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> tuple[list[dict[str, object]], int]:
         with self._lock:
@@ -611,7 +611,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "reinforcement",
                 "emotional_weight",
                 "memory_type",
-            } else "updated_at"
+            } else "created_at"
             safe_sort_order = "asc" if sort_order == "asc" else "desc"
             safe_page = max(1, page)
             safe_page_size = max(1, min(page_size, 200))
