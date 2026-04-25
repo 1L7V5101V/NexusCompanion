@@ -23,17 +23,19 @@ python main.py init
     RECENT_CONTEXT.md  # 近期上下文摘要（空）
     PENDING.md         # 待提取事实（空）
     NOW.md             # 近期进行中 / 待确认事项（模板）
+    memory2.db         # 语义记忆数据库（memory.enabled=true 时）
+    consolidation_writes.db  # 归档写入记录
   PROACTIVE_CONTEXT.md # 主动推送规则文件（模板）
   mcp_servers.json     # MCP server 注册表
   schedules.json       # 定时任务列表
   proactive_sources.json  # 信息源列表
   memes/manifest.json  # 表情包清单
   skills/              # 用户自定义 skill 目录
-  drift/skills/        # Drift 内建 skill 目录
+  drift/skills/        # 用户自定义 Drift skill 目录
   sessions.db          # 会话存储
   observe/observe.db   # trace 数据库
-  memory/memory2.db    # 语义记忆数据库
-  proactive_state.json # proactive 状态
+  proactive.db         # proactive 状态数据库
+  proactive_quota.json # proactive 配额
 ```
 
 **2. 填写配置**
@@ -42,7 +44,7 @@ python main.py init
 
 ```toml
 [llm.main]
-model = "qwen3.5-plus"      # 主模型：必须是多模态模型（用户图片会直接传给它）
+model = "qwen3.5-plus"      # 主模型
 api_key = "sk-..."
 
 [llm.fast]
@@ -54,7 +56,17 @@ token = "123456:ABC..."     # BotFather 给的 bot token
 allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 ```
 
-主模型必须是多模态的原因：Telegram 和 QQ 频道收到图片后会直接以 `image_url` 形式拼进消息，主模型需要能处理视觉输入。`llm.fast` 只处理纯文本的轻量判断，不接触图片，用小模型即可。
+**图像能力配置**
+
+有三种配置路线，按需选一种：
+
+| 路线 | `llm.main.multimodal` | `llm.vl.model` | 图片处理方式 |
+|------|----------------------|----------------|-------------|
+| A: 主模型多模态 | `true` | (不填) | 图片直接作为 `image_url` 传给主模型 |
+| B: 非多模态 + VL 工具 | `false` | `"qwen-vl-plus"` | 图片转为路径提示，模型按需调用 `read_image_vision` 工具 |
+| C: 纯文本 | `false` | `""` | 图片不可理解，只保留路径提示 |
+
+路线 B 适合主模型用纯文本模型（如 DeepSeek）但仍需图片理解的场景。`llm.fast` 只处理纯文本的轻量判断，不接触图片，用小模型即可。
 
 **3. 启动并发消息**
 
@@ -64,20 +76,15 @@ python main.py
 
 打开 Telegram，找到你的 bot，发一条消息，就可以开始对话。
 
-**4. 打开 Proactive**
+**4. 配置 Proactive**
 
-在 `config.toml` 里填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到）：
+`config.example.toml` 默认 `proactive.enabled = true`。填上你的 Telegram chat_id（可以向 bot 发一条消息后从日志里拿到），agent 就会在订阅的信息源有内容时主动推送消息。如果不需要主动推送，设为 `enabled = false`。
 
 ```toml
-[proactive]
-enabled = true
-
 [proactive.target]
 channel = "telegram"
 chat_id = "123456789"   # 你的 Telegram user id
 ```
-
-Proactive 打开后，agent 会在你订阅的信息源有内容时主动推送消息。
 
 **5. 打开 Drift**
 

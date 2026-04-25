@@ -95,8 +95,8 @@ class TestMcpProactivePipeline:
 
             original_get_server_cfg = mcp_sources._get_server_cfg
 
-            def patched_cfg(server_name):
-                cfg = original_get_server_cfg(server_name)
+            def patched_cfg(server_name, workspace=None):
+                cfg = original_get_server_cfg(server_name, workspace or mcp_sources._DEFAULT_WORKSPACE)
                 if cfg and server_name == "fitbit":
                     cfg = dict(cfg)
                     cfg["env"] = env_patch
@@ -178,8 +178,8 @@ class TestMcpProactivePipeline:
             }
             original_get_server_cfg = mcp_sources._get_server_cfg
 
-            def patched_cfg(server_name):
-                cfg = original_get_server_cfg(server_name)
+            def patched_cfg(server_name, workspace=None):
+                cfg = original_get_server_cfg(server_name, workspace or mcp_sources._DEFAULT_WORKSPACE)
                 if cfg and server_name == "fitbit":
                     cfg = dict(cfg)
                     cfg["env"] = env_patch

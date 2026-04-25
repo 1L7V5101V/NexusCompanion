@@ -33,6 +33,7 @@ search_enabled = true
 [agent.wiring]
 context = "default"
 memory = "default"
+memory_engine = "default"
 toolsets = ["meta_common", "fitbit", "spawn", "schedule", "mcp"]
 
 [channels.telegram]
@@ -87,7 +88,7 @@ profile = "daily"
 
 [proactive.target]
 channel = "telegram"
-chat_id = "your_chat_id"
+chat_id = ""
 
 [proactive.agent]
 max_steps = 20

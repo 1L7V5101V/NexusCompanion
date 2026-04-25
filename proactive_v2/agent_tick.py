@@ -268,6 +268,11 @@ class AgentTick:
 
         # ── Pre-gate ──────────────────────────────────────────────────────
 
+        if not str(self._cfg.default_chat_id or "").strip():
+            logger.debug("[proactive_v2] pre-gate: no chat_id configured → return None")
+            self._record_tick_log_finish(ctx, gate_exit="no_target")
+            return None
+
         # 5.1 passive_busy（系统硬 veto）
         if self._passive_busy_fn and self._passive_busy_fn(self._session_key):
             logger.debug("[proactive_v2] pre-gate: passive_busy → return None")

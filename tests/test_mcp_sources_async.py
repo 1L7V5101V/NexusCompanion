@@ -11,6 +11,7 @@ class _FakePool:
         responses: dict[tuple[str, str], object],
         failures: set[tuple[str, str]] | None = None,
     ) -> None:
+        self._workspace = mcp_sources._DEFAULT_WORKSPACE
         self._responses = responses
         self._failures = failures or set()
         self.calls: list[tuple[str, str, dict]] = []
@@ -27,7 +28,7 @@ async def test_fetch_alert_events_async_filters_kind_and_sets_ack_server(monkeyp
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [
+        lambda _w=None: [
             {"channel": "alert", "server": "s1", "get_tool": "get_proactive_events"},
             {"channel": "context", "server": "ctx", "get_tool": "get_context"},
         ],
@@ -52,7 +53,7 @@ async def test_fetch_content_events_async_keeps_default_compat_channel_filter(mo
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [
+        lambda _w=None: [
             {"channel": "", "server": "s1", "get_tool": "get_proactive_events"},
             {"channel": "alert", "server": "alert_only", "get_tool": "get_proactive_events"},
         ],
@@ -77,7 +78,7 @@ async def test_fetch_context_data_async_accepts_dict_and_list(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [
+        lambda _w=None: [
             {"channel": "context", "server": "ctx1", "get_tool": "get_context"},
             {"channel": "context", "server": "ctx2", "get_tool": "get_context"},
         ],
@@ -102,7 +103,7 @@ async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatc
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [
+        lambda _w=None: [
             {"channel": "content", "server": "s1", "poll_tool": "poll"},
             {"channel": "content", "server": "s2", "poll_tool": "poll"},
             {"channel": "alert", "server": "a1", "poll_tool": "poll"},
@@ -129,7 +130,7 @@ async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [
+        lambda _w=None: [
             {"server": "fitbit", "ack_tool": "ack_events"},
             {"server": "feed", "ack_tool": "ack_events"},
         ],
@@ -164,7 +165,7 @@ async def test_acknowledge_content_entries_async_passes_ttl_hours(monkeypatch):
     monkeypatch.setattr(
         mcp_sources,
         "_load_sources",
-        lambda: [{"server": "feed", "ack_tool": "ack_content"}],
+        lambda _w=None: [{"server": "feed", "ack_tool": "ack_content"}],
     )
     pool = _FakePool({("feed", "ack_content"): {"ok": True}})
 
