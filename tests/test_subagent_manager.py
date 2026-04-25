@@ -125,6 +125,49 @@ async def test_subagent_manager_announces_completion_to_origin_session(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_subagent_manager_lists_and_cancels_running_job(tmp_path):
+    bus = MessageBus()
+    manager = SubagentManager(
+        provider=cast(Any, _Provider()),
+        workspace=tmp_path,
+        bus=bus,
+        model="m",
+        max_tokens=256,
+        fetch_requester=object(),  # type: ignore[arg-type]
+    )
+
+    class _WaitingSubAgent:
+        last_exit_reason = "running"
+
+        async def run(self, task: str) -> str:
+            await asyncio.Future()
+            return "never"
+
+    manager._build_subagent = (
+        lambda *, task_dir, profile="research": _WaitingSubAgent()
+    )  # type: ignore[assignment]
+
+    await manager.spawn(
+        task="long task",
+        label="long",
+        origin_channel="telegram",
+        origin_chat_id="42",
+    )
+
+    jobs = manager.list_running_jobs()
+    assert len(jobs) == 1
+    job_id = str(jobs[0]["job_id"])
+    assert jobs[0]["label"] == "long"
+    assert await manager.cancel(job_id) is True
+
+    msg = await asyncio.wait_for(bus.consume_inbound(), timeout=0.2)
+    assert msg.metadata["spawn"]["status"] == "cancelled"
+    assert msg.metadata["spawn"]["exit_reason"] == "cancelled"
+    await asyncio.sleep(0)
+    assert manager.get_running_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_spawn_sync_uses_shorter_iteration_budget(tmp_path):
     bus = MessageBus()
     manager = SubagentManager(

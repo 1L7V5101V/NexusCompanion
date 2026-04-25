@@ -40,7 +40,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             LLMResponse(content="updated self"),
         ]
     )
-    opt = MemoryOptimizer(memory, provider, "m", max_tokens=100, history_max_chars=20)
+    opt = MemoryOptimizer(memory, provider, "m", max_tokens=100)
     opt._STEP_DELAY_SECONDS = 0
     await opt.optimize()
     memory.write_long_term.assert_called_once_with("merged")

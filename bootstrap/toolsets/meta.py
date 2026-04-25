@@ -10,7 +10,7 @@ from agent.tools.base import Tool
 from agent.tools.meta import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
-from agent.tools.spawn import SpawnTool
+from agent.tools.spawn import SpawnManageTool, SpawnTool
 from bus.queue import MessageBus
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
@@ -79,6 +79,12 @@ class SpawnToolsetProvider(ToolsetProvider):
                 always_on=True,
                 risk="write",
                 search_hint="后台执行 子任务 多步调研 独立任务",
+            )
+            registry.register(
+                SpawnManageTool(subagent_manager),
+                always_on=True,
+                risk="external-side-effect",
+                search_hint="查看 取消 后台任务 subagent job_id spawn_manage",
             )
         return build_registration_result(
             registry=registry,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from agent.background.subagent_manager import SubagentManager
@@ -159,3 +160,72 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
             label=label,
             profile=profile,
         )
+
+
+class SpawnManageTool(Tool):
+    """List or cancel background subagent jobs."""
+
+    def __init__(self, manager: SubagentManager) -> None:
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "spawn_manage"
+
+    @property
+    def description(self) -> str:
+        return """\
+管理当前运行中的后台 subagent。
+
+可用 action：
+- list：列出正在运行的后台任务，包含 job_id、label、profile、task_dir、任务摘要和启动时间
+- cancel：按 job_id 取消后台任务；取消后系统会把“已取消”作为后台任务完成事件回灌当前会话
+
+只在用户询问后台任务状态、要求查看 job_id、或明确要求停止某个后台任务时使用。\
+"""
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "cancel"],
+                    "description": "list 查看运行中任务；cancel 取消指定 job_id",
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "action=cancel 时要取消的后台任务 job_id",
+                },
+            },
+            "required": ["action"],
+        }
+
+    async def execute(
+        self,
+        action: str,
+        job_id: str | None = None,
+        **_: Any,
+    ) -> str:
+        if action == "list":
+            return json.dumps(
+                {
+                    "running_count": self._manager.get_running_count(),
+                    "jobs": self._manager.list_running_jobs(),
+                },
+                ensure_ascii=False,
+            )
+        if action == "cancel":
+            target = (job_id or "").strip()
+            if not target:
+                return json.dumps({"error": "缺少 job_id"}, ensure_ascii=False)
+            cancelled = await self._manager.cancel(target)
+            return json.dumps(
+                {
+                    "job_id": target,
+                    "status": "cancel_requested" if cancelled else "not_found",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps({"error": f"未知 action: {action}"}, ensure_ascii=False)

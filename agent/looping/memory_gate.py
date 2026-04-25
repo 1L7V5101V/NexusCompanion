@@ -96,11 +96,6 @@ def _trace_memory_retrieve(
 # creating a circular import at module load time.
 
 
-def _extract_task_tools(tools_used: list[str]) -> list[str]:
-    from agent.core.context_store import _extract_task_tools as _impl
-    return _impl(tools_used)
-
-
 def _update_session_runtime_metadata(
     session: object,
     *,

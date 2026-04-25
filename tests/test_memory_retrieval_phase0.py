@@ -244,8 +244,6 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     )
 
     assert session.metadata["last_turn_tool_calls_count"] == 2
-    assert session.metadata["last_turn_had_task_tool"] is False
-    assert session.metadata["recent_task_tools"] == []
     assert isinstance(session.metadata.get("last_turn_ts"), str)
 
     _update_session_runtime_metadata(
@@ -255,8 +253,6 @@ def test_loop_updates_session_runtime_metadata(tmp_path: Path):
     )
 
     assert session.metadata["last_turn_tool_calls_count"] == 1
-    assert isinstance(session.metadata.get("_task_tools_turns"), list)
-    assert len(session.metadata["_task_tools_turns"]) <= 2
 
 
 @pytest.mark.asyncio

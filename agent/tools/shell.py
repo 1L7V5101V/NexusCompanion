@@ -21,7 +21,7 @@ import signal
 import shlex
 import ipaddress
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -234,7 +234,8 @@ class ShellTool(Tool):
             "- 以下命令被禁止：nc、telnet、浏览器等高风险工具\n"
             "- 输出超过 30000 字符时自动截断\n"
             "- 前台总超时默认 60 秒，最大 600 秒\n"
-            "- 命令超过 15 秒未完成时自动转为后台任务，返回 background_task_id；若本次设置了 timeout，后台会继续沿用这个截止时间\n"
+            "- 命令超过 15 秒未完成时默认自动转为后台任务，返回 background_task_id；若本次设置了 timeout，后台会继续沿用这个截止时间\n"
+            "- 只有用户明确说“阻塞”时，才设置 auto_promote=false，并显式配置 timeout\n"
             "- 服务进程或已知长时间运行的命令，直接用 run_in_background=true 后台启动，跳过 15 秒等待；后台模式只有显式传 timeout 时才会按 timeout 自动终止\n"
             "- 收到 background_task_id 后，调用 task_output 查看输出和耗时，"
             "根据命令的性质自行判断是否卡死；若判断卡死则 task_stop 终止\n"
@@ -271,6 +272,13 @@ class ShellTool(Tool):
                         "适用于服务进程、长时间编译等不需要等待结果的场景。"
                     ),
                 },
+                "auto_promote": {
+                    "type": "boolean",
+                    "description": (
+                        "前台命令超过 15 秒未完成时是否自动转后台，默认 true。"
+                        "只有用户明确说“阻塞”时才设为 false；同时应显式设置 timeout。"
+                    ),
+                },
             },
             "required": ["command", "description"],
         }
@@ -281,13 +289,14 @@ class ShellTool(Tool):
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)
         timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
         run_in_background: bool = bool(kwargs.get("run_in_background", False))
+        auto_promote: bool = bool(kwargs.get("auto_promote", True))
         on_data = kwargs.get("_on_data")
 
         if not command:
             return _err("命令不能为空")
 
         cwd = self._working_dir
-        env = os.environ.copy()
+        env = _shell_env()
         if self._spawn_hook is not None:
             hooked = self._spawn_hook(
                 {
@@ -324,12 +333,12 @@ class ShellTool(Tool):
             bg_timeout = timeout if timeout_specified else None
             return await self._execute_background(command, cwd, env, bg_timeout)
 
-        # ── 前台路径（15s 未完成自动转后台）────────────────────────────
+        # ── 前台路径（默认 15s 未完成自动转后台）──────────────────────
         data_callback = (
             cast(Callable[[str], None], on_data) if callable(on_data) else None
         )
         return await self._execute_with_auto_promote(
-            command, cwd, env, timeout, data_callback
+            command, cwd, env, timeout, data_callback, auto_promote
         )
 
     async def _execute_background(
@@ -391,8 +400,9 @@ class ShellTool(Tool):
         env: dict[str, str],
         timeout: int,
         on_data: Callable[[str], None] | None,
+        auto_promote: bool,
     ) -> str:
-        """前台执行；若 _FG_THRESHOLD 秒内未完成则不 kill，自动转后台并返回 task_id。"""
+        """前台执行；允许按需关闭自动转后台，直接等待完整结果。"""
         task_id = f"shell_{uuid4().hex[:12]}"
         log_fd, log_path = tempfile.mkstemp(
             prefix=f"nexus-fg-{task_id}-", suffix=".log"
@@ -421,13 +431,15 @@ class ShellTool(Tool):
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
         bg.pump_task = pump
 
-        fg_wait_timeout = min(timeout, _FG_THRESHOLD)
+        fg_wait_timeout = min(timeout, _FG_THRESHOLD) if auto_promote else timeout
         try:
             await asyncio.wait_for(asyncio.shield(pump), timeout=fg_wait_timeout)
         except asyncio.TimeoutError:
             elapsed_s = time.monotonic() - start_mono
-            if elapsed_s >= timeout:
-                return await self._finalize_timed_out_process(command, proc, pump, log_path, start_mono)
+            if not auto_promote or elapsed_s >= timeout:
+                return await self._finalize_timed_out_process(
+                    command, proc, pump, log_path, start_mono
+                )
             # ── 自动转后台 ──────────────────────────────────────────────
             pump.add_done_callback(lambda _: _schedule_eviction(task_id, log_path))
             _BG_REGISTRY[task_id] = bg
@@ -741,6 +753,66 @@ def _is_background_timeout(task: _BackgroundTask) -> bool:
     if task.timeout_s is None:
         return False
     return time.monotonic() - task.started_at >= task.timeout_s
+
+
+def _shell_env() -> dict[str, str]:
+    env = os.environ.copy()
+    _prepend_existing_path_entries(env, _discover_user_path_entries(env))
+    return env
+
+
+def _discover_user_path_entries(env: dict[str, str]) -> list[Path]:
+    home_text = env.get("HOME")
+    if not home_text:
+        return []
+    home = Path(home_text).expanduser()
+    nvm_dir = Path(env.get("NVM_DIR") or home / ".nvm").expanduser()
+    entries = [home / ".local" / "bin"]
+    nvm_bin = env.get("NVM_BIN")
+    if nvm_bin:
+        entries.append(Path(nvm_bin).expanduser())
+    entries.extend(_discover_nvm_node_bins(nvm_dir))
+    return entries
+
+
+def _discover_nvm_node_bins(nvm_dir: Path) -> list[Path]:
+    node_root = nvm_dir / "versions" / "node"
+    try:
+        version_dirs = [p for p in node_root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+    return [
+        version_dir / "bin"
+        for version_dir in sorted(
+            version_dirs,
+            key=lambda p: _node_version_key(p.name),
+            reverse=True,
+        )
+        if (version_dir / "bin").is_dir()
+    ]
+
+
+def _node_version_key(version: str) -> tuple[int, int, int]:
+    parts = version.removeprefix("v").split(".")
+    nums: list[int] = []
+    for part in parts[:3]:
+        nums.append(int(part) if part.isdigit() else 0)
+    while len(nums) < 3:
+        nums.append(0)
+    return (nums[0], nums[1], nums[2])
+
+
+def _prepend_existing_path_entries(env: dict[str, str], entries: list[Path]) -> None:
+    current = [p for p in env.get("PATH", "").split(os.pathsep) if p]
+    seen = set(current)
+    prepend: list[str] = []
+    for entry in entries:
+        text = str(entry)
+        if text in seen or not entry.is_dir():
+            continue
+        prepend.append(text)
+        seen.add(text)
+    env["PATH"] = os.pathsep.join([*prepend, *current])
 
 
 async def _run(

@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.background.runtime import (
@@ -35,6 +37,20 @@ _SPAWN_MAX_ITERATIONS = 50
 _SYNC_MAX_ITERATIONS = 10
 
 
+@dataclass(frozen=True)
+class RunningSubagentJob:
+    job_id: str
+    label: str
+    task: str
+    profile: str
+    origin_channel: str
+    origin_chat_id: str
+    task_dir: str
+    retry_count: int
+    started_at: str
+    status: str = "running"
+
+
 class SubagentManager:
     """Manage background subagent jobs and announce completion to the main loop."""
 
@@ -59,6 +75,8 @@ class SubagentManager:
         self._fetch_requester = fetch_requester
         self._multimodal = multimodal
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+        self._running_jobs: dict[str, RunningSubagentJob] = {}
+        self._cancel_announced: set[str] = set()
 
     def _spawn_jobs_dir(self) -> Path:
         root = self._workspace / "subagent-runs"
@@ -167,7 +185,18 @@ class SubagentManager:
         )
         # 3. 最后登记运行中任务，并返回给主 agent 一段立即可回复用户的确认文本。
         self._running_tasks[job_id] = bg_task
-        bg_task.add_done_callback(lambda _: self._running_tasks.pop(job_id, None))
+        self._running_jobs[job_id] = RunningSubagentJob(
+            job_id=job_id,
+            label=display_label,
+            task=task,
+            profile=profile,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            task_dir=str(task_dir),
+            retry_count=retry_count,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        bg_task.add_done_callback(lambda _: self._forget_running_job(job_id))
         logger.info(
             "[spawn] started job_id=%s label=%r profile=%s retry_count=%d origin=%s:%s reason=%s confidence=%s",
             job_id,
@@ -187,6 +216,27 @@ class SubagentManager:
     def get_running_count(self) -> int:
         return len(self._running_tasks)
 
+    def list_running_jobs(self) -> list[dict[str, object]]:
+        return [asdict(job) for job in self._running_jobs.values()]
+
+    async def cancel(self, job_id: str) -> bool:
+        task = self._running_tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        job = self._running_jobs.get(job_id)
+        if job is not None:
+            self._cancel_announced.add(job_id)
+            await self._announce_cancelled_job(job)
+        task.cancel()
+        await asyncio.sleep(0)
+        logger.info("[spawn] cancel requested job_id=%s", job_id)
+        return True
+
+    def _forget_running_job(self, job_id: str) -> None:
+        self._running_tasks.pop(job_id, None)
+        self._running_jobs.pop(job_id, None)
+        self._cancel_announced.discard(job_id)
+
     async def _run_subagent(
         self,
         *,
@@ -204,22 +254,51 @@ class SubagentManager:
         job_runner = AgentBackgroundJobRunner(
             lambda: self._build_subagent(task_dir=task_dir, profile=profile)
         )
-        # 1. 先按统一 background job spec 执行 subagent，本层不直接碰 loop 细节。
-        result = await job_runner.run(
-            AgentBackgroundJobSpec(
+        try:
+            # 1. 先按统一 background job spec 执行 subagent，本层不直接碰 loop 细节。
+            result = await job_runner.run(
+                AgentBackgroundJobSpec(
+                    job_id=job_id,
+                    job_kind="conversation_spawn",
+                    label=label,
+                    task=task,
+                    max_iterations=_SPAWN_MAX_ITERATIONS,
+                    completion_mode="message_bus",
+                    persistence_mode="ephemeral",
+                ),
+                on_exception=lambda e: logger.exception(
+                    "[spawn] subagent failed job_id=%s err=%s", job_id, e
+                ),
+                error_result_summary=None,
+            )
+        except asyncio.CancelledError:
+            if job_id not in self._cancel_announced:
+                await self._announce_result(
+                    job_id=job_id,
+                    label=label,
+                    task=task,
+                    origin_channel=origin_channel,
+                    origin_chat_id=origin_chat_id,
+                    status="cancelled",
+                    exit_reason="cancelled",
+                    result="后台任务已按请求取消。",
+                    decision=decision,
+                    profile=profile,
+                    retry_count=retry_count,
+                )
+            self._append_spawn_trace(
                 job_id=job_id,
-                job_kind="conversation_spawn",
-                label=label,
-                task=task,
-                max_iterations=_SPAWN_MAX_ITERATIONS,
-                completion_mode="message_bus",
-                persistence_mode="ephemeral",
-            ),
-            on_exception=lambda e: logger.exception(
-                "[spawn] subagent failed job_id=%s err=%s", job_id, e
-            ),
-            error_result_summary=None,
-        )
+                payload={
+                    "phase": "cancelled",
+                    "task_dir": str(task_dir),
+                    "status": "cancelled",
+                    "exit_reason": "cancelled",
+                    "profile": profile,
+                    "retry_count": retry_count,
+                    "decision": _decision_payload(decision),
+                },
+            )
+            raise
         # 2. 再把统一结果协议转成 bus completion event，回到原会话。
         await self._announce_result(
             job_id=job_id,
@@ -251,6 +330,21 @@ class SubagentManager:
                 "retry_count": retry_count,
                 "decision": _decision_payload(decision),
             },
+        )
+
+    async def _announce_cancelled_job(self, job: RunningSubagentJob) -> None:
+        await self._announce_result(
+            job_id=job.job_id,
+            label=job.label,
+            task=job.task,
+            origin_channel=job.origin_channel,
+            origin_chat_id=job.origin_chat_id,
+            status="cancelled",
+            exit_reason="cancelled",
+            result="后台任务已按请求取消。",
+            decision=None,
+            profile=job.profile,
+            retry_count=job.retry_count,
         )
 
     def _build_subagent(
