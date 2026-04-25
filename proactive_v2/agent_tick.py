@@ -576,7 +576,11 @@ class AgentTick:
     def _render_context_block(self, context: list[dict]) -> str:
         if not context:
             return ""
-        annotated_context = [normalize_context(item).to_prompt_item() for item in context]
+        local_tz = getattr(self._cfg, "anyaction_timezone", None)
+        annotated_context = [
+            normalize_context(item, local_tz=local_tz).to_prompt_item()
+            for item in context
+        ]
         return (
             "【背景上下文】\n"
             "注：sleep_prob=睡眠概率，awake_prob=清醒概率（= 1 - sleep_prob）；"

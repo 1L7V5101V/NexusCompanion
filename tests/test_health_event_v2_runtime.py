@@ -8,6 +8,8 @@ import pytest
 
 def _import_health_event_v2():
     module_dir = Path(__file__).resolve().parents[1] / "scripts" / "fitbit-monitor"
+    if not (module_dir / "health_event_v2.py").exists():
+        pytest.skip("private_runtime fitbit-monitor 未 checkout，跳过健康事件 runtime 测试")
     if str(module_dir) not in sys.path:
         sys.path.insert(0, str(module_dir))
     import health_event_v2  # type: ignore
