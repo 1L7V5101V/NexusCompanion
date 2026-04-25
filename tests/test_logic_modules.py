@@ -104,7 +104,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     assert port.keyword_match_procedures(["shell"]) == [{"id": "p1"}]
 
     broken = DefaultMemoryPort(
-        cast(Any, S)impleNamespace(
+        cast(Any, SimpleNamespace(
             read_long_term=lambda: (_ for _ in ()).throw(RuntimeError("x")),
             write_long_term=lambda content: None,
             read_self=lambda: "",
@@ -122,18 +122,19 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             get_memory_context=lambda: "",
             history_file=tmp_path / "missing.txt",
         ),
-        memorizer=SimpleNamespace(
+        ),
+        memorizer=cast(Any, SimpleNamespace(
             save_item=AsyncMock(side_effect=RuntimeError("x")),
             save_from_consolidation=AsyncMock(side_effect=RuntimeError("x")),
             reinforce_items_batch=MagicMock(side_effect=RuntimeError("x")),
-        ),
-        retriever=SimpleNamespace(
+        )),
+        retriever=cast(Any, SimpleNamespace(
             retrieve=AsyncMock(side_effect=RuntimeError("x")),
             embed=AsyncMock(side_effect=RuntimeError("x")),
             retrieve_with_vec=AsyncMock(side_effect=RuntimeError("x")),
             build_injection_block=lambda items: (_ for _ in ()).throw(RuntimeError("x")),
             _store=SimpleNamespace(keyword_match_procedures=lambda action_tokens: (_ for _ in ()).throw(RuntimeError("x"))),
-        ),
+        )),
     )
     assert broken.has_long_term_memory() is False
     assert await broken.retrieve_related("q") == []

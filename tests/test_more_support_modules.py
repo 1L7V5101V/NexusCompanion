@@ -763,9 +763,9 @@ def test_bootstrap_proactive_builders_cover_enabled_and_disabled_paths(
         push_tool=MagicMock(),
         memory_store=MagicMock(),
         presence=MagicMock(),
-        agent_loop=SimpleNamespace(
+        agent_loop=cast(Any, SimpleNamespace(
             processing_state=SimpleNamespace(is_busy=lambda: False)
-        ),
+        )),
     )
     assert tasks == [
         "loop-task",

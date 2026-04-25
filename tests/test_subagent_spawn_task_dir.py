@@ -25,7 +25,7 @@ async def test_spawn_write_file_is_scoped_to_task_dir(tmp_path: Path):
 
     result = await write_tool.execute(path="final_report.md", content="done")
 
-    assert "已写入" in result
+    assert "已写入" in str(result)
     assert (task_dir / "final_report.md").read_text(encoding="utf-8") == "done"
     assert not (workspace / "final_report.md").exists()
 

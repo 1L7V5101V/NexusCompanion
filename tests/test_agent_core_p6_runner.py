@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -19,7 +19,7 @@ async def test_core_runner_routes_passive_message_to_agent_core():
     runner = CoreRunner(
         CoreRunnerDeps(
             agent_core=cast(
-                object,
+                Any,
                 SimpleNamespace(
                 process=AsyncMock(
                     return_value=OutboundMessage(
@@ -70,7 +70,7 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     runner = CoreRunner(
         CoreRunnerDeps(
             agent_core=cast(
-                object,
+                Any,
                 SimpleNamespace(process=AsyncMock()),
             ),
             session=cast(SessionServices, session_svc),

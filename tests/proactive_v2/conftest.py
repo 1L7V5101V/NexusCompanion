@@ -146,17 +146,21 @@ class FakeAlertAckSink:
 class _FakeSession:
     def __init__(self, key: str) -> None:
         self.key = key
-        self.messages: list[dict] = []
+        self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, Any] = {}
         self.last_consolidated = 0
 
-    def get_history(self, max_messages: int = 500) -> list[dict]:
+    def get_history(self, max_messages: int = 500) -> list[dict[str, object]]:
         return self.messages[-max_messages:]
 
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
-        msg = {"role": role, "content": content, "timestamp": datetime.now().isoformat()}
+        msg: dict[str, object] = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
         if media:
-            cast(Any, msg["media"]) = list(media)
+            msg["media"] = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
 

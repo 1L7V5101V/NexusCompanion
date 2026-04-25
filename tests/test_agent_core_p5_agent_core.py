@@ -72,11 +72,14 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     )
     agent_core = AgentCore(
         AgentCoreDeps(
-            session=SimpleNamespace(
-                session_manager=SimpleNamespace(
-                    get_or_create=MagicMock(return_value=session),
-                    peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                )
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                    )
+                ),
             ),
             context_store=cast(ContextStore, context_store),
             context=cast(ContextBuilder, context),
@@ -142,11 +145,14 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
             context=cast(
                 ContextBuilder,
                 SimpleNamespace(
-                render=MagicMock(
-                    return_value=SimpleNamespace(system_prompt="prompt", messages=[])
-                ),
-                build_system_prompt=MagicMock(
-                    side_effect=AssertionError("legacy build_system_prompt should not be used")
+                    render=MagicMock(
+                        return_value=SimpleNamespace(system_prompt="prompt", messages=[])
+                    ),
+                    build_system_prompt=MagicMock(
+                        side_effect=AssertionError(
+                            "legacy build_system_prompt should not be used"
+                        )
+                    ),
                 ),
             ),
             tools=cast(
@@ -156,8 +162,8 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
             reasoner=cast(
                 Reasoner,
                 SimpleNamespace(
-                run_turn=AsyncMock(return_value=TurnRunResult(reply=None)),
-                )
+                    run_turn=AsyncMock(return_value=TurnRunResult(reply=None)),
+                ),
             ),
         )
     )

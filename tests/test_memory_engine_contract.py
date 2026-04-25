@@ -88,7 +88,9 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
 
     assert result.text_block == "历史块"
     assert result.trace["mode"] == "episodic"
-    assert result.raw["items"][0]["id"] == "e1"
+    raw = cast(dict[str, object], result.raw)
+    raw_items = cast(list[object], raw["items"])
+    assert cast(dict[str, object], raw_items[0])["id"] == "e1"
     assert result.hits[0].id == "e1"
     assert result.hits[0].injected is True
 

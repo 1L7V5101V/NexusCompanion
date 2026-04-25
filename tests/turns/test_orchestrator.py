@@ -16,17 +16,17 @@ from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 class _DummySession:
     def __init__(self, key: str) -> None:
         self.key = key
-        self.messages: list[dict] = []
+        self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
 
     def add_message(self, role: str, content: str, media=None, **kwargs) -> None:
-        msg = {
+        msg: dict[str, object] = {
             "role": role,
             "content": content,
         }
         if media:
-            cast(Any, msg["media"]) = list(media)
+            msg["media"] = list(media)
         msg.update(kwargs)
         self.messages.append(msg)
 

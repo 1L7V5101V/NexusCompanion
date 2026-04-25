@@ -1,7 +1,5 @@
 from __future__ import annotations
 from typing import Any, cast
-
-from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,21 +21,7 @@ from core.memory.runtime_facade import (
     InterestRetrievalRequest,
     MemoryRuntimeFacade,
 )
-
-
-@dataclass(frozen=True)
-class _ToolCall:
-    call_id: str
-    name: str
-    arguments: dict
-    result: str
-
-
-@dataclass(frozen=True)
-class _ToolGroup:
-    text: str
-    calls: list[_ToolCall]
-
+from agent.core.types import ToolCall, ToolCallGroup
 
 @pytest.mark.asyncio
 async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
@@ -58,16 +42,16 @@ async def test_default_runtime_facade_ingest_post_turn_delegates_to_engine():
             user_message="以后用中文",
             assistant_response="好的",
             tools_used=["memorize"],
-            tool_chain=[
-                cast(Any, _)ToolGroup(
-                    text="memo",
-                    calls=[
-                        _ToolCall(
-                            call_id="call-1",
-                            name="memorize",
-                            arguments={"summary": "以后用中文"},
-                            result="ok",
-                        )
+        tool_chain=[
+            ToolCallGroup(
+                text="memo",
+                calls=[
+                    ToolCall(
+                        call_id="call-1",
+                        name="memorize",
+                        arguments={"summary": "以后用中文"},
+                        result="ok",
+                    )
                     ],
                 )
             ],

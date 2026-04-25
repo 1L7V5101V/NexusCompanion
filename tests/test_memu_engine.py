@@ -174,7 +174,7 @@ async def test_memu_engine_retrieval_pipeline_injects_memory_block(tmp_path: Pat
     pipeline = DefaultMemoryRetrievalPipeline(
         memory=MemoryServices(
             engine=engine,
-            query_rewriter=SimpleNamespace(
+            query_rewriter=cast(Any, SimpleNamespace(
                 decide=AsyncMock(
                     return_value=GateDecision(
                         needs_episodic=True,
@@ -182,7 +182,7 @@ async def test_memu_engine_retrieval_pipeline_injects_memory_block(tmp_path: Pat
                         latency_ms=1,
                     )
                 )
-            ),
+            )),
         ),
         memory_config=MemoryConfig(),
         llm=LLMServices(provider=cast(Any, object()), light_provider=cast(Any, object())),

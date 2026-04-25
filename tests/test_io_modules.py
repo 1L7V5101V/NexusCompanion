@@ -141,6 +141,7 @@ async def test_filesystem_tools_cover_core_paths(monkeypatch: pytest.MonkeyPatch
     _fs_mod._READ_MAX_BYTES = 25  # 强制触发普通字节截断，但不触发首行超长分支
     truncated = await reader.execute("a.txt")
     _fs_mod._READ_MAX_BYTES = orig_max_bytes
+    truncated = _as_text(truncated)
     assert "limit=N" in truncated, "截断提示应引导用户用 limit=N 分页，而非 offset 续读"
     assert "字节数超限" in truncated
     assert "本次返回" in truncated

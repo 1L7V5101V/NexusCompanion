@@ -19,11 +19,11 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
 
     result = SchedulerToolsetProvider().register(
         registry,
-        cast(Any, S)impleNamespace(
+        cast(Any, SimpleNamespace(
             config=None,
             workspace=tmp_path,
             scheduler=scheduler,
-        ),
+        )),
     )
 
     assert result.source_name == "schedule"

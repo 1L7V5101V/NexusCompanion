@@ -87,13 +87,13 @@ def test_agent_tick_prompt_keeps_self_block_with_facade():
         last_user_at_fn=lambda: None,
         passive_busy_fn=None,
         deduper=MagicMock(),
-        tool_deps=SimpleNamespace(
+        tool_deps=cast(Any, SimpleNamespace(
             memory=SimpleNamespace(
                 read_long_term_context=lambda: "MEMORY",
                 read_self=lambda: "SELF",
             ),
             recent_chat_fn=None,
-        ),
+        )),
         gateway_deps=GatewayDeps(
             alert_fn=MagicMock(),
             feed_fn=MagicMock(),
