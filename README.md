@@ -40,33 +40,45 @@ python main.py init
 
 **2. 填写配置**
 
-编辑 `config.toml`，至少要改这几项：
-
+编辑 `config.toml`，至少要改 API key 和频道 token。推荐配置（DeepSeek 主模型 + Qwen 轻量/视觉）：
+推荐如果非多模态模型可以用deepseek-v4-flash,他的agent能力是nextlevel的
 ```toml
+[llm]
+provider = "deepseek"
+
 [llm.main]
-model = "qwen3.5-plus"      # 主模型
-api_key = "sk-..."
+model = "deepseek-v4-flash"     # 主模型：推理能力强、速度快、价格低
+api_key = "sk-..."              # DeepSeek API key
+base_url = "https://api.deepseek.com/v1"
+enable_thinking = true          # 开启 reasoning（R1 模式）
+multimodal = false              # DeepSeek 不支持图片，用 VL 工具补
 
 [llm.fast]
-model = "qwen-flash"        # 轻量模型：用于 memory gate / query rewrite / HyDE 等后台任务
-api_key = "sk-..."          # 可以用同一个 key，也可以换别家更便宜的模型
+model = "qwen-flash"            # 轻量模型：memory gate / query rewrite / HyDE
+api_key = "sk-..."              # Qwen API key（DashScope）
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[llm.vl]
+model = "qwen-vl-plus"          # 视觉模型：主模型 multimodal=false 时自动启用
+api_key = "sk-..."              # 同 Qwen key
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 [channels.telegram]
-token = "123456:ABC..."     # BotFather 给的 bot token
+token = "123456:ABC..."         # BotFather 给的 bot token
 allow_from = ["your_username"]  # 你的 Telegram 用户名（不带 @）
 ```
 
-**图像能力配置**
+也可以用 Qwen 全家桶（主模型换 `qwen3.5-plus`，`multimodal = true`，`llm.vl` 留空），或者用 OpenAI 兼容的任意 provider。
 
-有三种配置路线，按需选一种：
+**图像能力**
 
-| 路线 | `llm.main.multimodal` | `llm.vl.model` | 图片处理方式 |
-|------|----------------------|----------------|-------------|
-| A: 主模型多模态 | `true` | (不填) | 图片直接作为 `image_url` 传给主模型 |
-| B: 非多模态 + VL 工具 | `false` | `"qwen-vl-plus"` | 图片转为路径提示，模型按需调用 `read_image_vision` 工具 |
-| C: 纯文本 | `false` | `""` | 图片不可理解，只保留路径提示 |
+| 路线 | 配置 | 效果 |
+|------|------|------|
+| A: 主模型多模态 | `multimodal = true`，`llm.vl.model = ""` | 图片直接 `image_url` 进主模型 |
+| B: 主模型 + VL 工具 | `multimodal = false`，`llm.vl.model = "qwen-vl-plus"` | 图片转路径提示，模型按需调用 `read_image_vision` |
+| C: 纯文本 | `multimodal = false`，`llm.vl.model = ""` | 图片不可理解，只保留路径 |
 
-路线 B 适合主模型用纯文本模型（如 DeepSeek）但仍需图片理解的场景。`llm.fast` 只处理纯文本的轻量判断，不接触图片，用小模型即可。
+路线 B 是推荐方案：主模型用 DeepSeek 这类纯文本强模型，图片理解交给专门的 VL 模型，性价比最高。
 
 **3. 启动并发消息**
 
