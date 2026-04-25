@@ -46,10 +46,6 @@ class SectionCache:
         self._data[(scope, section_name, signature)] = content
 
 
-def build_turn_injection_message(content: str) -> dict[str, str]:
-    return {"role": "system", "content": content}
-
-
 _CONTEXT_FRAME_SECTIONS = {
     "active_skills",
     "recent_context",
@@ -57,6 +53,14 @@ _CONTEXT_FRAME_SECTIONS = {
 }
 SYSTEM_CONTEXT_FRAME_MARKER = "<system-reminder data-system-context-frame=\"true\">"
 SYSTEM_CONTEXT_FRAME_END = "</system-reminder>"
+LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
+
+
+def is_context_frame(content: str) -> bool:
+    text = content.lstrip()
+    return text.startswith(SYSTEM_CONTEXT_FRAME_MARKER) or text.startswith(
+        LEGACY_CONTEXT_FRAME_MARKER
+    )
 
 
 def build_context_frame_message(content: str) -> dict[str, str]:

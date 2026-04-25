@@ -254,6 +254,14 @@ def test_session_get_history_rewinds_consolidated_index_to_user_boundary():
     assert history[0] == {"role": "user", "content": "hello"}
 
 
+def test_session_get_history_assistant_only_returns_empty():
+    session = Session("cli:1")
+    session.add_message("assistant", "a1")
+    session.add_message("assistant", "a2")
+
+    assert session.get_history(start_index=0) == []
+
+
 def test_session_get_history_normalizes_legacy_context_frame():
     session = Session("cli:1")
     session.add_message(

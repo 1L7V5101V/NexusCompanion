@@ -9,28 +9,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent.prompting import (
+    LEGACY_CONTEXT_FRAME_MARKER,
+    SYSTEM_CONTEXT_FRAME_END,
+    SYSTEM_CONTEXT_FRAME_MARKER,
+)
 from session.store import SessionStore
+
+logger = logging.getLogger(__name__)
 
 # 保留完整 tool_result 的最近轮次数；更早的轮次仅保留调用结构，结果替换为占位符
 _RECENT_TOOL_ROUNDS = 1
 _CLEARED = "[已清除]"
-_OLD_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
-_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
-_CONTEXT_FRAME_END = "</system-reminder>"
 
 
 def _normalize_context_frame(content: str) -> str:
     text = content.strip()
-    if text.startswith(_OLD_CONTEXT_FRAME_MARKER):
+    if text.startswith(LEGACY_CONTEXT_FRAME_MARKER):
         text = text.replace(
-            _OLD_CONTEXT_FRAME_MARKER,
-            _CONTEXT_FRAME_MARKER,
+            LEGACY_CONTEXT_FRAME_MARKER,
+            SYSTEM_CONTEXT_FRAME_MARKER,
             1,
         )
-    if text.startswith(_CONTEXT_FRAME_MARKER) and not text.endswith(
-        _CONTEXT_FRAME_END
+    if text.startswith(SYSTEM_CONTEXT_FRAME_MARKER) and not text.endswith(
+        SYSTEM_CONTEXT_FRAME_END
     ):
-        text = f"{text}\n\n{_CONTEXT_FRAME_END}"
+        text = f"{text}\n\n{SYSTEM_CONTEXT_FRAME_END}"
     return text
 
 
@@ -91,6 +95,13 @@ def _rebuild_user_content(text: str, media_paths: list[str]) -> "str | list[dict
     return images + [{"type": "text", "text": combined_text}]
 
 
+def _align_to_user_boundary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            return messages[i:]
+    return []
+
+
 def _safe_filename(key: str) -> str:
     """Convert a session key to a safe filename."""
     return re.sub(r"[^\w\-]", "_", key)
@@ -129,11 +140,32 @@ class Session:
         start_index: int | None = None,
     ) -> list[dict[str, Any]]:
         """将 session 消息展开为 LLM 可直接使用的 OpenAI 格式消息列表。"""
+        cache_tail_mode = False
         if start_index is not None:
+            if max_messages <= 0:
+                return []
             start = max(0, int(start_index))
+            if start >= len(self.messages):
+                return []
+            # 向前回退到最近的 user 边界（保留完整 turn）
             while start > 0 and self.messages[start].get("role") != "user":
                 start -= 1
+            # start=0 但仍非 user 时，向后找第一个 user
             messages = self.messages[start:]
+            if messages and messages[0].get("role") != "user":
+                messages = _align_to_user_boundary(messages)
+            if not messages:
+                return []
+            if len(messages) > max_messages * 2:
+                logger.warning(
+                    "get_history: consolidated tail (%d) exceeds 2x window (%d), "
+                    "falling back to sliding window",
+                    len(messages), max_messages,
+                )
+                messages = self.messages[-max_messages:]
+                messages = _align_to_user_boundary(messages)
+            else:
+                cache_tail_mode = True
         elif max_messages <= 0:
             messages = []
         else:
@@ -141,7 +173,7 @@ class Session:
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]
-        if start_index is not None or len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
+        if cache_tail_mode or len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
             recent_boundary = 0
         else:
             recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]

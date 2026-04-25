@@ -14,7 +14,7 @@ from agent.core.types import (
     to_tool_call_groups,
 )
 from agent.postturn.protocol import PostTurnEvent
-from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
+from agent.prompting import is_context_frame
 from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
 from bus.events import OutboundMessage
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from bus.events import InboundMessage
 
 logger = logging.getLogger("agent.core.context_store")
-_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 
 @runtime_checkable
@@ -349,10 +348,7 @@ def _to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
 
 def _is_llm_context_frame(message: dict) -> bool:
     content = message.get("content")
-    return isinstance(content, str) and (
-        content.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
-        or content.startswith(_LEGACY_CONTEXT_FRAME_MARKER)
-    )
+    return isinstance(content, str) and is_context_frame(content)
 
 
 def _emit_observe_traces(

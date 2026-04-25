@@ -17,10 +17,10 @@ from agent.looping.constants import (
 )
 from agent.prompting import (
     DEFAULT_CONTEXT_TRIM_PLANS,
-    SYSTEM_CONTEXT_FRAME_MARKER,
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
+    is_context_frame,
 )
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
@@ -38,7 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.core.reasoner")
 _LOG_PREVIEW_LIMIT = 160
-_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 
 def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
@@ -140,10 +139,7 @@ def _extract_model_facing_turn(
         return user_content, None
     frame = messages[-2]
     frame_content = frame.get("content")
-    if isinstance(frame_content, str) and (
-        frame_content.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
-        or frame_content.startswith(_LEGACY_CONTEXT_FRAME_MARKER)
-    ):
+    if isinstance(frame_content, str) and is_context_frame(frame_content):
         return user_content, frame_content
     return user_content, None
 

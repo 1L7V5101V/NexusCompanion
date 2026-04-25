@@ -73,7 +73,7 @@ class LLMResponse:
 
 class ProviderStrategy:
     def normalize_messages(self, messages: list[dict]) -> list[dict]:
-        return _normalize_chat_messages(messages)
+        return _strip_reasoning_content(_normalize_chat_messages(messages))
 
     def prepare_request(
         self,
@@ -657,6 +657,11 @@ def _normalize_chat_messages(
 
         normalized.append(item)
     return normalized
+
+
+def _strip_reasoning_content(messages: list[dict]) -> list[dict]:
+    # 非 DeepSeek provider 不应发送 reasoning_content 字段
+    return [{k: v for k, v in m.items() if k != "reasoning_content"} for m in messages]
 
 
 def _strip_image_url_blocks(messages: list[dict]) -> list[dict]:

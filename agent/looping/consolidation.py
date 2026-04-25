@@ -10,10 +10,9 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 import json_repair
 
 from agent.llm_json import load_json_object_loose
+from agent.prompting import is_context_frame
 
 logger = logging.getLogger("agent.loop")
-_CONTEXT_FRAME_MARKER = '<system-reminder data-system-context-frame="true">'
-_LEGACY_CONTEXT_FRAME_MARKER = "[SYSTEM_CONTEXT_FRAME]"
 
 if TYPE_CHECKING:
     from agent.looping.ports import TurnScheduler
@@ -197,10 +196,8 @@ def _message_time(message: dict) -> str:
 
 
 def _is_context_frame_message(message: dict) -> bool:
-    content = str(message.get("content") or "").lstrip()
-    return content.startswith(_CONTEXT_FRAME_MARKER) or content.startswith(
-        _LEGACY_CONTEXT_FRAME_MARKER
-    )
+    content = str(message.get("content") or "")
+    return is_context_frame(content)
 
 
 def _format_recent_context_messages(messages: list[dict]) -> str:
