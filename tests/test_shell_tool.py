@@ -101,6 +101,37 @@ async def test_shell_tool_uses_configured_working_dir(monkeypatch, tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_shell_tool_adds_nvm_bin_to_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    observed: dict[str, object] = {}
+    nvm_bin = tmp_path / ".nvm" / "versions" / "node" / "v22.17.1" / "bin"
+    nvm_bin.mkdir(parents=True)
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        observed["kwargs"] = kwargs
+        return _FakeProc(stdout="ok")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.delenv("NVM_BIN", raising=False)
+    monkeypatch.delenv("NVM_DIR", raising=False)
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    await tool.execute(command="which codex", description="找 codex")
+
+    observed_kwargs = cast(dict[str, object], observed["kwargs"])
+    env = cast(dict[str, str], observed_kwargs["env"])
+    path_entries = env["PATH"].split(os.pathsep)
+    assert str(nvm_bin) in path_entries
+    assert path_entries.index(str(nvm_bin)) < path_entries.index("/usr/bin")
+
+
+@pytest.mark.asyncio
 async def test_shell_tool_supports_spawn_hook_and_streaming(monkeypatch, tmp_path: Path):
     observed: dict[str, object] = {}
     streamed: list[str] = []
@@ -680,6 +711,43 @@ async def test_shell_auto_promotes_to_background_after_fg_threshold(monkeypatch)
 
     # 清理
     shell_mod._BG_REGISTRY.pop(task_id, None)
+
+
+@pytest.mark.asyncio
+async def test_shell_auto_promote_false_waits_for_foreground_completion(monkeypatch):
+    """auto_promote=False 时，即使超过前台阈值也应同步等待完整结果。"""
+    import agent.tools.shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "_FG_THRESHOLD", 0)
+
+    async def _fake_create_subprocess_shell(command, **kwargs):
+        proc = _FakeProc(stdout="done", stderr="", returncode=0)
+
+        async def _wait_after_threshold():
+            await asyncio.sleep(0.01)
+            return 0
+
+        proc.wait = _wait_after_threshold
+        return proc
+
+    monkeypatch.setattr(
+        "agent.tools.shell.asyncio.create_subprocess_shell",
+        _fake_create_subprocess_shell,
+    )
+
+    tool = ShellTool()
+    result = json.loads(
+        await tool.execute(
+            command="codex exec test",
+            description="同步 codex",
+            timeout=1,
+            auto_promote=False,
+        )
+    )
+
+    assert "background_task_id" not in result
+    assert result["exit_code"] == 0
+    assert result["output"] == "done"
 
 
 @pytest.mark.asyncio

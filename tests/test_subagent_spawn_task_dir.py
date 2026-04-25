@@ -1,5 +1,6 @@
 from pathlib import Path
 from unittest.mock import MagicMock
+import json
 
 import pytest
 
@@ -82,6 +83,35 @@ def test_scripting_profile_has_no_web_tools(tmp_path: Path):
     assert "web_search" not in tool_names
     assert "shell" in tool_names
     assert "write_file" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_scripting_shell_allows_pipes_and_target_paths(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    task_dir = workspace / "subagent-runs" / "job-1"
+    target_dir = tmp_path / "target"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.mkdir()
+
+    spec = build_spawn_spec(
+        workspace=workspace,
+        task_dir=task_dir,
+        fetch_requester=MagicMock(),
+        system_prompt="test",
+        profile="scripting",
+    )
+    shell_tool = next(t for t in spec.tools if t.name == "shell")
+
+    output = await shell_tool.execute(
+        command=f"ls -la {target_dir} 2>&1 | head -1",
+        description="检查目标目录",
+        timeout=10,
+    )
+    assert isinstance(output, str)
+    result = json.loads(output)
+
+    assert "error" not in result
+    assert result["exit_code"] == 0
 
 
 @pytest.mark.asyncio

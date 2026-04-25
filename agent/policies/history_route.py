@@ -61,13 +61,6 @@ class HistoryRoutePolicy:
             return True
         if _FLOW_SEQUENCE_PATTERN.search(text):
             return True
-        if bool(metadata.get("last_turn_had_task_tool", False)):
-            return True
-        recent_task_tools = metadata.get("recent_task_tools")
-        if isinstance(recent_task_tools, list) and any(
-            isinstance(tool, str) and tool for tool in recent_task_tools
-        ):
-            return True
         return False
 
     async def decide(

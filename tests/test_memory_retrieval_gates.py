@@ -266,21 +266,14 @@ def test_flow_execution_state_not_triggered_by_single_char_xian_zai():
     assert _is_flow_execution_state("先查再说", {}) is True
 
 
-def test_flow_execution_state_uses_task_tool_flag_not_any_tool_count():
+def test_flow_execution_state_ignores_tool_count_metadata():
     loop = _make_loop(_Provider(), memory_route_intention_enabled=True)
     assert (
         _is_flow_execution_state(
             "普通问题",
-            {"last_turn_tool_calls_count": 3, "last_turn_had_task_tool": False},
+            {"last_turn_tool_calls_count": 3},
         )
         is False
-    )
-    assert (
-        _is_flow_execution_state(
-            "普通问题",
-            {"last_turn_tool_calls_count": 0, "last_turn_had_task_tool": True},
-        )
-        is True
     )
 
 

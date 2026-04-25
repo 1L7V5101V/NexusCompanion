@@ -89,7 +89,6 @@ def build_scripting_spec(
         ShellTool(
             allow_network=False,
             working_dir=task_dir,
-            restricted_dir=task_dir,
         ),
     ]
     return SubagentSpec(
@@ -120,7 +119,6 @@ def build_general_spec(
         ShellTool(
             allow_network=True,
             working_dir=task_dir,
-            restricted_dir=task_dir,
         ),
     ]
     return SubagentSpec(

@@ -4,7 +4,7 @@ import pytest
 
 from agent.policies.delegation import SpawnDecision, SpawnDecisionMeta
 from agent.tools.registry import ToolRegistry
-from agent.tools.spawn import SpawnTool
+from agent.tools.spawn import SpawnManageTool, SpawnTool
 
 
 def _make_manager(spawn_return="started", spawn_sync_return="sync-result"):
@@ -12,6 +12,8 @@ def _make_manager(spawn_return="started", spawn_sync_return="sync-result"):
     manager.spawn = AsyncMock(return_value=spawn_return)
     manager.spawn_sync = AsyncMock(return_value=spawn_sync_return)
     manager.get_running_count = Mock(return_value=0)
+    manager.list_running_jobs = Mock(return_value=[])
+    manager.cancel = AsyncMock(return_value=False)
     return manager
 
 
@@ -134,7 +136,7 @@ async def test_spawn_tool_forwards_retry_count_in_background_mode():
     registry.set_context(channel="telegram", chat_id="123")
 
     await tool.execute(
-        task="retry task",
+        task="retry task auto_promote=false",
         label="job",
         run_in_background=True,
         retry_count=1,
@@ -142,3 +144,31 @@ async def test_spawn_tool_forwards_retry_count_in_background_mode():
 
     kwargs = manager.spawn.await_args.kwargs
     assert kwargs["retry_count"] == 1
+    assert kwargs["task"] == "retry task auto_promote=false"
+
+
+@pytest.mark.asyncio
+async def test_spawn_manage_lists_running_jobs():
+    manager = _make_manager()
+    manager.get_running_count = Mock(return_value=1)
+    manager.list_running_jobs = Mock(
+        return_value=[{"job_id": "abc123", "label": "job", "status": "running"}]
+    )
+    tool = SpawnManageTool(manager)
+
+    result = await tool.execute(action="list")
+
+    assert '"running_count": 1' in result
+    assert "abc123" in result
+
+
+@pytest.mark.asyncio
+async def test_spawn_manage_cancels_by_job_id():
+    manager = _make_manager()
+    manager.cancel = AsyncMock(return_value=True)
+    tool = SpawnManageTool(manager)
+
+    result = await tool.execute(action="cancel", job_id="abc123")
+
+    assert "cancel_requested" in result
+    manager.cancel.assert_awaited_once_with("abc123")

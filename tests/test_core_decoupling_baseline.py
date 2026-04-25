@@ -188,57 +188,6 @@ def test_session_metadata_update_counts_tool_calls():
     assert session.metadata["last_turn_tool_calls_count"] == 3
 
 
-def test_session_metadata_update_has_no_task_tools_after_update_now_removal():
-    """_update_session_runtime_metadata no longer tracks removed task tools."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
-
-    session = _make_session()
-    _update_session_runtime_metadata(
-        session,
-        tools_used=["shell"],
-        tool_chain=[{"calls": [{"name": "shell"}]}],
-    )
-    assert session.metadata["last_turn_had_task_tool"] is False
-    assert session.metadata["recent_task_tools"] == []
-
-
-def test_session_metadata_update_no_task_tools():
-    """Turn without task tools: last_turn_had_task_tool is False."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
-
-    session = _make_session()
-    _update_session_runtime_metadata(
-        session,
-        tools_used=["shell"],
-        tool_chain=[{"calls": [{"name": "shell"}]}],
-    )
-    assert session.metadata["last_turn_had_task_tool"] is False
-    assert session.metadata["recent_task_tools"] == []
-
-
-def test_session_metadata_update_task_tools_turns_rolling_window():
-    """_task_tools_turns keeps only the last 2 turns."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
-
-    session = _make_session()
-    _update_session_runtime_metadata(session, tools_used=["shell"], tool_chain=[])
-    _update_session_runtime_metadata(session, tools_used=["web_search"], tool_chain=[])
-    _update_session_runtime_metadata(session, tools_used=["shell"], tool_chain=[])
-    turns = session.metadata["_task_tools_turns"]
-    assert len(turns) == 2, "_task_tools_turns must be capped at 2 turns"
-
-
-def test_session_metadata_update_recent_task_tools_dedup():
-    """recent_task_tools flattens and deduplicates across the rolling window."""
-    from agent.looping.memory_gate import _update_session_runtime_metadata
-
-    session = _make_session()
-    _update_session_runtime_metadata(session, tools_used=["shell"], tool_chain=[])
-    _update_session_runtime_metadata(session, tools_used=["shell"], tool_chain=[])
-    recent = session.metadata["recent_task_tools"]
-    assert recent == []
-
-
 def test_session_metadata_update_sets_last_turn_ts():
     """last_turn_ts is set to a non-empty ISO timestamp."""
     from agent.looping.memory_gate import _update_session_runtime_metadata

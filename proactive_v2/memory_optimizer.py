@@ -131,13 +131,11 @@ class MemoryOptimizer:
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,
-        history_max_chars: int = 6000,
     ) -> None:
         self._memory = memory
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
-        self._history_max_chars = history_max_chars
 
     # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
     _STEP_DELAY_SECONDS: int = 15
@@ -223,12 +221,6 @@ class MemoryOptimizer:
                 logger.info("[memory_optimizer] SELF.md 已更新")
         except Exception as e:
             logger.error("[memory_optimizer] SELF.md 更新失败: %s", e)
-
-    def _read_recent_history(self) -> str:
-        try:
-            return self._memory.read_history(max_chars=self._history_max_chars)
-        except Exception:
-            return ""
 
     async def _request_text_response(
         self,

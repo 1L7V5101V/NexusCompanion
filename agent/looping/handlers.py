@@ -40,6 +40,7 @@ async def process_spawn_completion_event(
         "tool_loop": "工具调用循环截断（任务可能不完整）",
         "error": "执行出错",
         "forced_summary": "强制汇总（任务可能不完整）",
+        "cancelled": "已取消",
     }
     exit_label = _EXIT_LABELS.get(exit_reason, exit_reason or "未知")
 
@@ -92,6 +93,8 @@ async def process_spawn_completion_event(
             final_content = "后台任务已完成。"
         elif status == "incomplete":
             final_content = "后台任务未全部完成，部分工作尚未收尾。"
+        elif status == "cancelled":
+            final_content = "后台任务已取消。"
         else:
             final_content = "后台任务执行出错。"
 
