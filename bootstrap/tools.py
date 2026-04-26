@@ -11,6 +11,7 @@ from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
 from agent.looping.core import AgentLoop
+from agent.looping.lifecycle_consumers import register_post_turn_consumers
 from agent.looping.ports import (
     AgentLoopConfig,
     AgentLoopDeps,
@@ -52,7 +53,6 @@ from bootstrap.wiring import (
 )
 from bootstrap.providers import build_providers, build_vl_provider
 from bus.event_bus import EventBus
-from bus.events_lifecycle import PostTurnScheduled
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.runtime import MemoryRuntime
@@ -357,10 +357,10 @@ def _build_loop_deps(
         light_model=llm_config.light_model or llm_config.model,
     )
 
-    async def _refresh_recent_context(event: PostTurnScheduled) -> None:
-        await consolidation.refresh_recent_turns(session=event.session)
-
-    event_bus.on(PostTurnScheduled, _refresh_recent_context)
+    register_post_turn_consumers(
+        event_bus=event_bus,
+        consolidation=consolidation,
+    )
     post_turn_pipeline = DefaultPostTurnPipeline(
         scheduler=turn_scheduler,
         engine=memory_engine,
