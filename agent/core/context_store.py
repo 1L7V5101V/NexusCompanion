@@ -20,7 +20,7 @@ from agent.retrieval.protocol import RetrievalRequest
 from agent.turns.outbound import OutboundDispatch
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
-from bus.events_lifecycle import BeforeDispatch, TurnCompleted
+from bus.events_lifecycle import BeforeDispatch, TurnCompleted, TurnPersisted
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -234,6 +234,18 @@ class DefaultContextStore(ContextStore):
         )
         persist_count = 1 if omit_user_turn else 2
         await self._session.session_manager.append_messages(session, session.messages[-persist_count:])
+        if self._event_bus is not None:
+            await self._event_bus.observe(
+                TurnPersisted(
+                    session_key=session_key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    user_message=None if omit_user_turn else msg.content,
+                    assistant_response=final_content,
+                    tools_used=list(tools_used),
+                    thinking=thinking,
+                )
+            )
         post_reply_budget = _build_post_reply_context_budget(
             context=self._context,
             history=session.get_history(max_messages=self._history_window),

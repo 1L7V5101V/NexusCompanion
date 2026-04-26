@@ -11,7 +11,9 @@ import pytest
 from agent.core.context_store import DefaultContextStore
 from agent.core.response_parser import ResponseMetadata, parse_response
 from agent.retrieval.protocol import RetrievalResult
+from bus.event_bus import EventBus
 from bus.events import InboundMessage
+from bus.events_lifecycle import TurnPersisted
 
 
 class _DummySession:
@@ -56,6 +58,12 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     outbound = SimpleNamespace(
         dispatch=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True)
     )
+    event_bus = EventBus()
+    persisted_events: list[TurnPersisted] = []
+    event_bus.on(
+        TurnPersisted,
+        lambda event: order.append("persisted") or persisted_events.append(event),
+    )
     decorator = SimpleNamespace(
         decorate=MagicMock(
             return_value=SimpleNamespace(
@@ -73,6 +81,7 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
         post_turn=cast(Any, post_turn),
         outbound=cast(Any, outbound),
         meme_decorator=cast(Any, decorator),
+        event_bus=event_bus,
     )
     msg = InboundMessage(
         channel="telegram",
@@ -135,11 +144,69 @@ async def test_context_store_commit_persists_observes_schedules_and_dispatches()
     assert post_turn.events[0].assistant_response == "整理好了"
     outbound.dispatch.assert_awaited_once()
     post_turn_action.run.assert_awaited_once()
-    assert order == ["persist", "observe", "observe", "post_turn", "post_turn_action", "dispatch"]
+    assert order == [
+        "persist",
+        "persisted",
+        "observe",
+        "observe",
+        "post_turn",
+        "post_turn_action",
+        "dispatch",
+    ]
+    assert persisted_events[0].session_key == "telegram:123"
+    assert persisted_events[0].user_message == "你好"
+    assert persisted_events[0].assistant_response == "整理好了"
+    assert persisted_events[0].tools_used == ["noop"]
+    assert persisted_events[0].thinking == "思考"
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"
     assert session.messages[-1]["cited_memory_ids"] == ["mem_1"]
     decorator.decorate.assert_called_once_with("整理好了", meme_tag="shy")
+
+
+@pytest.mark.asyncio
+async def test_turn_persisted_omits_user_message_when_user_turn_not_persisted():
+    session = _DummySession("cli:direct")
+    session_manager = SimpleNamespace(
+        get_or_create=MagicMock(return_value=session),
+        append_messages=AsyncMock(),
+    )
+    event_bus = EventBus()
+    persisted_events: list[TurnPersisted] = []
+    event_bus.on(TurnPersisted, lambda event: persisted_events.append(event))
+    store = DefaultContextStore(
+        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
+        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
+        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=None)),
+        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=None)),
+        post_turn=cast(Any, SimpleNamespace(schedule=MagicMock())),
+        outbound=cast(Any, SimpleNamespace(dispatch=AsyncMock())),
+        event_bus=event_bus,
+    )
+
+    await store.commit(
+        msg=InboundMessage(
+            channel="cli",
+            sender="hua",
+            chat_id="direct",
+            content="内部提示词",
+            metadata={"omit_user_turn": True},
+        ),
+        session_key="cli:direct",
+        reply="完成",
+        response_metadata=ResponseMetadata(raw_text="完成"),
+        tools_used=[],
+        tool_chain=[],
+        thinking=None,
+        streamed_reply=False,
+        retrieval_raw=None,
+        context_retry={},
+    )
+
+    assert persisted_events[0].user_message is None
+    assert persisted_events[0].assistant_response == "完成"
+    assert [msg["role"] for msg in session.messages] == ["assistant"]
+    session_manager.append_messages.assert_awaited_once_with(session, session.messages[-1:])
 
 
 def test_response_parser_strips_ascii_marker_only_at_end():

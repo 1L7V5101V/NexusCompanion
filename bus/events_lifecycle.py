@@ -55,6 +55,17 @@ class BeforeReasoning:
     retrieved_memory_block: str = ""
 
 
+@dataclass(frozen=True)
+class TurnPersisted:
+    session_key: str
+    channel: str
+    chat_id: str
+    user_message: str | None
+    assistant_response: str
+    tools_used: list[str]
+    thinking: str | None = None
+
+
 @dataclass
 class BeforeDispatch:
     channel: str
