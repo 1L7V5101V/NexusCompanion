@@ -110,7 +110,8 @@ class AppRuntime:
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus
-            self.event_bus = self.core.event_bus
+            event_bus = self.core.event_bus
+            self.event_bus = event_bus
             self.tools = self.core.tools
             self.push_tool = self.core.push_tool
             self.session_manager = self.core.session_manager
@@ -130,17 +131,9 @@ class AppRuntime:
                 session_manager=self.session_manager,
                 push_tool=self.push_tool,
                 http_resources=self.http_resources,
+                event_bus=event_bus,
                 interrupt_controller=self.agent_loop,
             )
-            if self.tg_channel is not None:
-                tg_channel = self.tg_channel
-                self.agent_loop.set_stream_sink_factory(
-                    lambda msg: (
-                        tg_channel.create_stream_sender(msg.chat_id)
-                        if getattr(msg, "channel", "") == "telegram"
-                        else None
-                    )
-                )
 
             self.tasks = [
                 self.agent_loop.run(),

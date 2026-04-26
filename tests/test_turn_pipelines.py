@@ -8,7 +8,7 @@ import pytest
 
 from agent.core.types import ToolCall, ToolCallGroup
 from agent.core.runtime_support import TurnRunResult
-from agent.looping.core import AgentLoop
+from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
@@ -76,6 +76,14 @@ class _CustomPostTurn(PostTurnPipeline):
 
     def schedule(self, event: PostTurnEvent) -> None:
         self.events.append(event)
+
+
+def test_stream_events_only_support_telegram_private_chat():
+    assert _supports_stream_events("telegram", "123")
+    assert not _supports_stream_events("telegram", "-1001")
+    assert not _supports_stream_events("telegram", "@alice")
+    assert not _supports_stream_events("qq", "123")
+    assert not _supports_stream_events("cli", "direct")
 
 
 def _make_loop(

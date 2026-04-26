@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from agent.context import ContextBuilder
 from agent.core.agent_core import AgentCore, AgentCoreDeps
@@ -42,7 +43,7 @@ from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.event_bus import EventBus
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
-from bus.events_lifecycle import TurnStarted
+from bus.events_lifecycle import StreamDeltaReady, TurnStarted
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -61,6 +62,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
+
+StreamDelta: TypeAlias = dict[str, str] | str
+StreamSink: TypeAlias = Callable[[StreamDelta], Awaitable[None]]
+StreamSinkFactory: TypeAlias = Callable[[object], StreamSink | None]
+StreamSupportPolicy: TypeAlias = Callable[[str], bool]
+
+
+def _is_positive_int(value: str) -> bool:
+    try:
+        return int(value) > 0
+    except ValueError:
+        return False
+
+
+_STREAM_SUPPORT_POLICIES: dict[str, StreamSupportPolicy] = {
+    "telegram": _is_positive_int,
+}
+
+
+def _supports_stream_events(channel: str, chat_id: str) -> bool:
+    policy = _STREAM_SUPPORT_POLICIES.get(channel)
+    return bool(policy is not None and policy(chat_id))
 
 
 def _item_content(item: InboundItem) -> str:
@@ -133,29 +156,40 @@ class AgentLoop:
             post_mem_worker=post_mem_worker,
             hyde_enhancer=hyde_enhancer,
         )
+        self._configure_stream_events()
         self._configure_interrupt_progress_tracking()
 
-    def set_stream_sink_factory(self, factory) -> None:
+    def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
-            setter(self._wrap_stream_sink_factory(factory))
+            _ = setter(self._wrap_stream_sink_factory(factory))
+
+    def _configure_stream_events(self) -> None:
+        setter = getattr(self._reasoner, "set_stream_sink_factory", None)
+        if callable(setter):
+            _ = setter(self._build_stream_event_sink)
 
     def _configure_interrupt_progress_tracking(self) -> None:
         progress_setter = getattr(self._reasoner, "set_progress_sink_factory", None)
         if callable(progress_setter):
-            progress_setter(self._build_progress_sink)
+            _ = progress_setter(self._build_progress_sink)
 
-    def _wrap_stream_sink_factory(self, factory):
+    def _wrap_stream_sink_factory(
+        self,
+        factory: StreamSinkFactory | None,
+    ) -> StreamSinkFactory | None:
         if factory is None:
             return None
 
-        def _build(msg):
+        def _build(msg: object) -> StreamSink | None:
             downstream = factory(msg)
-            session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
+            channel = str(getattr(msg, "channel", ""))
+            chat_id = str(getattr(msg, "chat_id", ""))
+            session_key = str(getattr(msg, "session_key", f"{channel}:{chat_id}"))
             if downstream is None:
                 return None
 
-            async def _push(delta: dict[str, str] | str) -> None:
+            async def _push(delta: StreamDelta) -> None:
                 if isinstance(delta, str):
                     payload = {"content_delta": delta}
                 else:
@@ -171,6 +205,36 @@ class AgentLoop:
             return _push
 
         return _build
+
+    def _build_stream_event_sink(self, msg: object) -> StreamSink | None:
+        channel = str(getattr(msg, "channel", ""))
+        chat_id = str(getattr(msg, "chat_id", ""))
+        if not _supports_stream_events(channel, chat_id):
+            return None
+        session_key = str(getattr(msg, "session_key", f"{channel}:{chat_id}"))
+
+        async def _push(delta: StreamDelta) -> None:
+            if isinstance(delta, str):
+                payload = {"content_delta": delta}
+            else:
+                payload = delta
+            content_delta = payload.get("content_delta")
+            if isinstance(content_delta, str) and content_delta:
+                self._append_partial_reply(session_key, content_delta)
+            thinking_delta = payload.get("thinking_delta")
+            if isinstance(thinking_delta, str) and thinking_delta:
+                self._append_partial_thinking(session_key, thinking_delta)
+            await self._event_bus.observe(
+                StreamDeltaReady(
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                    content_delta=content_delta if isinstance(content_delta, str) else "",
+                    thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
+                )
+            )
+
+        return _push
 
     def _build_progress_sink(self, msg):
         session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")

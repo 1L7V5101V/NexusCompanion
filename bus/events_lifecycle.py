@@ -32,6 +32,15 @@ class TurnCompleted:
     thinking: str | None = None
 
 
+@dataclass(frozen=True)
+class StreamDeltaReady:
+    session_key: str
+    channel: str
+    chat_id: str
+    content_delta: str = ""
+    thinking_delta: str = ""
+
+
 @dataclass
 class BeforeDispatch:
     channel: str
