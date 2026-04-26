@@ -32,6 +32,33 @@ class AgentCore:
     ┌──────────────────────────────────────┐
     │ AgentCore                            │
     ├──────────────────────────────────────┤
+    │ 1. 持有 PassiveTurnPipeline          │
+    │ 2. 委托 pipeline 处理被动消息        │
+    └──────────────────────────────────────┘
+    """
+
+    def __init__(self, deps: AgentCoreDeps) -> None:
+        self._passive_pipeline = PassiveTurnPipeline(deps)
+
+    async def process(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        return await self._passive_pipeline.run(
+            msg,
+            key,
+            dispatch_outbound=dispatch_outbound,
+        )
+
+
+class PassiveTurnPipeline:
+    """
+    ┌──────────────────────────────────────┐
+    │ PassiveTurnPipeline                  │
+    ├──────────────────────────────────────┤
     │ 1. 准备上下文                        │
     │ 2. 触发 BeforeReasoning              │
     │ 3. 渲染 prompt 预览                  │
@@ -50,7 +77,7 @@ class AgentCore:
         self._event_bus = deps.event_bus
 
     # 处理一条普通被动消息，并提交最终出站结果。
-    async def process(
+    async def run(
         self,
         msg: InboundMessage,
         key: str,
@@ -83,7 +110,7 @@ class AgentCore:
             retrieved_block = before_reasoning.retrieved_memory_block
 
         # 3. 然后通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
-        self._context.render(
+        _ = self._context.render(
             ContextRequest(
                 history=[],
                 current_message="",
