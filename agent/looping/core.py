@@ -43,7 +43,7 @@ from agent.memes.catalog import MemeCatalog
 from agent.memes.decorator import MemeDecorator
 from bus.event_bus import EventBus
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
-from bus.events_lifecycle import StreamDeltaReady, TurnStarted
+from bus.events_lifecycle import PostTurnScheduled, StreamDeltaReady, TurnStarted
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -412,13 +412,18 @@ class AgentLoop:
             light_model=self.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
-        post_turn_pipeline = deps.post_turn_pipeline or DefaultPostTurnPipeline(
-            scheduler=self._scheduler,
-            engine=memory_svc.engine,
-            recent_context_refresher=lambda event: consolidation_service.refresh_recent_turns(
-                session=event.session,
-            ),
-        )
+        if deps.post_turn_pipeline is None:
+            async def _refresh_recent_context(event: PostTurnScheduled) -> None:
+                await consolidation_service.refresh_recent_turns(session=event.session)
+
+            self._event_bus.on(PostTurnScheduled, _refresh_recent_context)
+            post_turn_pipeline = DefaultPostTurnPipeline(
+                scheduler=self._scheduler,
+                engine=memory_svc.engine,
+                event_bus=self._event_bus,
+            )
+        else:
+            post_turn_pipeline = deps.post_turn_pipeline
         passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.core.runtime_support import SessionLike
+    from agent.core.types import ToolCallGroup
 
 
 def _empty_media() -> list[str]:
@@ -64,6 +68,20 @@ class TurnPersisted:
     assistant_response: str
     tools_used: list[str]
     thinking: str | None = None
+
+
+@dataclass(frozen=True)
+class PostTurnScheduled:
+    session_key: str
+    channel: str
+    chat_id: str
+    user_message: str
+    assistant_response: str
+    tools_used: list[str]
+    tool_chain: list["ToolCallGroup"]
+    session: "SessionLike"
+    timestamp: datetime | None = None
+    extra: dict[str, Any] = field(default_factory=_empty_metadata)
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,10 @@ if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
 
 
+def _empty_extra() -> dict[str, object]:
+    return {}
+
+
 @dataclass
 class PostTurnEvent:
     session_key: str
@@ -21,7 +25,7 @@ class PostTurnEvent:
     tool_chain: list[ToolCallGroup]
     session: "SessionLike"
     timestamp: datetime | None = None
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, object] = field(default_factory=_empty_extra)
 
 
 @runtime_checkable

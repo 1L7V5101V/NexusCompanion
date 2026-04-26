@@ -3,49 +3,41 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from agent.core.types import ToolCallGroup
 from agent.looping.ports import TurnScheduler
 from agent.postturn.protocol import PostTurnEvent, PostTurnPipeline
+from bus.events_lifecycle import PostTurnScheduled
 from core.memory.engine import MemoryIngestRequest, MemoryScope
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
+    from bus.event_bus import EventBus
 
 logger = logging.getLogger("agent.postturn")
+
 
 class DefaultPostTurnPipeline(PostTurnPipeline):
     def __init__(
         self,
         scheduler: TurnScheduler,
         engine: "MemoryEngine | None",
-        recent_context_refresher: Callable[[PostTurnEvent], Awaitable[None]] | None = None,
+        event_bus: "EventBus | None" = None,
     ) -> None:
         self._scheduler = scheduler
         self._engine = engine
-        self._recent_context_refresher = recent_context_refresher
+        self._event_bus = event_bus
         self._failures: int = 0
-        self._recent_context_queues: dict[str, deque[PostTurnEvent]] = {}
-        self._recent_context_tasks: dict[str, asyncio.Task] = {}
+        self._scheduled_event_queues: dict[str, deque[PostTurnScheduled]] = {}
+        self._scheduled_event_tasks: dict[str, asyncio.Task[None]] = {}
         self._post_mem_queues: dict[str, deque[PostTurnEvent]] = {}
-        self._post_mem_tasks: dict[str, asyncio.Task] = {}
+        self._post_mem_tasks: dict[str, asyncio.Task[None]] = {}
 
     def schedule(self, event: PostTurnEvent) -> None:
-        if self._recent_context_refresher is not None:
-            queue = self._recent_context_queues.setdefault(event.session_key, deque())
-            queue.append(event)
-            if event.session_key not in self._recent_context_tasks:
-                task = asyncio.create_task(
-                    self._run_recent_context_queue(event.session_key),
-                    name=f"recent_context:{event.session_key}",
-                )
-                self._recent_context_tasks[event.session_key] = task
-                task.add_done_callback(
-                    lambda t: self._on_recent_context_done(t, event.session_key)
-                )
         # 1. 回复一落库就先尝试挂起 consolidation；是否真的执行由 scheduler 决定。
         self._scheduler.schedule_consolidation(event.session, event.session_key)
+        self._enqueue_post_turn_scheduled(event)
         if bool((event.extra or {}).get("skip_post_memory")):
             return
         if self._engine is None:
@@ -77,7 +69,7 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
                         session_key, self._failures, e,
                     )
         finally:
-            self._post_mem_tasks.pop(session_key, None)
+            _ = self._post_mem_tasks.pop(session_key, None)
             queue = self._post_mem_queues.get(session_key)
             if queue:
                 task = asyncio.create_task(
@@ -87,14 +79,16 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
                 self._post_mem_tasks[session_key] = task
                 task.add_done_callback(lambda t: self._on_done(t, session_key))
             else:
-                self._post_mem_queues.pop(session_key, None)
+                _ = self._post_mem_queues.pop(session_key, None)
 
     async def _ingest_event(self, event: PostTurnEvent) -> None:
         if self._engine is None:
             return
-        tool_chain_raw = [_tool_group_to_dict(g) for g in event.tool_chain]
+        tool_chain_raw: list[dict[str, object]] = [
+            _tool_group_to_dict(g) for g in event.tool_chain
+        ]
         source_ref = f"{event.session_key}@post_response"
-        await self._engine.ingest(
+        _ = await self._engine.ingest(
             MemoryIngestRequest(
                 content={
                     "user_message": event.user_message,
@@ -112,7 +106,7 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
             )
         )
 
-    def _on_done(self, task: asyncio.Task, key: str) -> None:
+    def _on_done(self, task: asyncio.Task[None], key: str) -> None:
         try:
             exc = task.exception()
         except asyncio.CancelledError:
@@ -132,45 +126,82 @@ class DefaultPostTurnPipeline(PostTurnPipeline):
                 key, self._failures, exc,
             )
 
-    async def _run_recent_context_queue(self, session_key: str) -> None:
+    def _enqueue_post_turn_scheduled(self, event: PostTurnEvent) -> None:
+        if self._event_bus is None:
+            return
+        queue = self._scheduled_event_queues.setdefault(event.session_key, deque())
+        queue.append(
+            PostTurnScheduled(
+                session_key=event.session_key,
+                channel=event.channel,
+                chat_id=event.chat_id,
+                user_message=event.user_message,
+                assistant_response=event.assistant_response,
+                tools_used=event.tools_used,
+                tool_chain=event.tool_chain,
+                session=event.session,
+                timestamp=event.timestamp,
+                extra=event.extra,
+            )
+        )
+        if event.session_key in self._scheduled_event_tasks:
+            return
+        task = asyncio.create_task(
+            self._run_scheduled_event_queue(event.session_key),
+            name=f"post_turn_scheduled:{event.session_key}",
+        )
+        self._scheduled_event_tasks[event.session_key] = task
+        task.add_done_callback(
+            lambda t: self._on_scheduled_event_done(t, event.session_key)
+        )
+
+    async def _run_scheduled_event_queue(self, session_key: str) -> None:
         try:
             while True:
-                queue = self._recent_context_queues.get(session_key)
+                queue = self._scheduled_event_queues.get(session_key)
                 if not queue:
                     return
                 event = queue.popleft()
-                if self._recent_context_refresher is None:
+                if self._event_bus is None:
                     continue
-                await self._recent_context_refresher(event)
+                await self._event_bus.observe(event)
         finally:
-            self._recent_context_tasks.pop(session_key, None)
-            queue = self._recent_context_queues.get(session_key)
+            _ = self._scheduled_event_tasks.pop(session_key, None)
+            queue = self._scheduled_event_queues.get(session_key)
             if queue:
                 task = asyncio.create_task(
-                    self._run_recent_context_queue(session_key),
-                    name=f"recent_context:{session_key}",
+                    self._run_scheduled_event_queue(session_key),
+                    name=f"post_turn_scheduled:{session_key}",
                 )
-                self._recent_context_tasks[session_key] = task
+                self._scheduled_event_tasks[session_key] = task
                 task.add_done_callback(
-                    lambda t: self._on_recent_context_done(t, session_key)
+                    lambda t: self._on_scheduled_event_done(t, session_key)
                 )
             else:
-                self._recent_context_queues.pop(session_key, None)
+                _ = self._scheduled_event_queues.pop(session_key, None)
 
-    def _on_recent_context_done(self, task: asyncio.Task, key: str) -> None:
+    def _on_scheduled_event_done(self, task: asyncio.Task[None], key: str) -> None:
         try:
             exc = task.exception()
         except asyncio.CancelledError:
-            logger.info("recent_context refresh cancelled: %s", key)
+            logger.info("post_turn scheduled observer cancelled: %s", key)
             return
         except Exception as e:
-            logger.warning("recent_context inspect failed session=%s err=%s", key, e)
+            logger.warning(
+                "post_turn scheduled observer inspect failed session=%s err=%s",
+                key,
+                e,
+            )
             return
         if exc is not None:
-            logger.warning("recent_context refresh failed: session=%s err=%s", key, exc)
+            logger.warning(
+                "post_turn scheduled observer failed: session=%s err=%s",
+                key,
+                exc,
+            )
 
 
-def _tool_group_to_dict(group: ToolCallGroup) -> dict:
+def _tool_group_to_dict(group: ToolCallGroup) -> dict[str, object]:
     return {
         "text": group.text,
         "calls": [

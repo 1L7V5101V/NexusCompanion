@@ -22,7 +22,9 @@ from agent.retrieval.protocol import (
 )
 from agent.tools.base import Tool
 from agent.tools.registry import ToolRegistry
+from bus.event_bus import EventBus
 from bus.events import InboundMessage
+from bus.events_lifecycle import PostTurnScheduled
 from core.memory.engine import MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
 
@@ -228,15 +230,18 @@ async def test_default_post_turn_pipeline_uses_engine_only():
 
 
 @pytest.mark.asyncio
-async def test_default_post_turn_pipeline_refreshes_recent_context_immediately():
+async def test_default_post_turn_pipeline_observes_post_turn_scheduled_event():
     scheduler = MagicMock()
     refresher = AsyncMock()
+    event_bus = EventBus()
+    event_bus.on(PostTurnScheduled, lambda event: refresher(event))
     pipeline = DefaultPostTurnPipeline(
         scheduler=scheduler,
         engine=None,
-        recent_context_refresher=refresher,
+        event_bus=event_bus,
     )
 
+    session = MagicMock()
     event = PostTurnEvent(
         session_key="cli:1",
         channel="cli",
@@ -245,38 +250,44 @@ async def test_default_post_turn_pipeline_refreshes_recent_context_immediately()
         assistant_response="ok",
         tools_used=[],
         tool_chain=[],
-        session=MagicMock(),
+        session=session,
         timestamp=datetime.now(),
     )
 
     pipeline.schedule(event)
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
-    refresher.assert_awaited_once_with(event)
+    scheduled = refresher.await_args.args[0]
+    assert isinstance(scheduled, PostTurnScheduled)
+    assert scheduled.session_key == "cli:1"
+    assert scheduled.session is session
     scheduler.schedule_consolidation.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_default_post_turn_pipeline_serializes_same_session_recent_context_refresh():
+async def test_default_post_turn_pipeline_serializes_same_session_scheduled_events():
     scheduler = MagicMock()
+    event_bus = EventBus()
     active = 0
     max_active = 0
     first_started = asyncio.Event()
     release_first = asyncio.Event()
 
-    async def _refresh(event: PostTurnEvent):
+    async def _refresh(event: PostTurnScheduled) -> None:
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
         if event.user_message == "a":
             first_started.set()
-            await release_first.wait()
+        await release_first.wait()
         active -= 1
 
+    event_bus.on(PostTurnScheduled, _refresh)
     pipeline = DefaultPostTurnPipeline(
         scheduler=scheduler,
         engine=None,
-        recent_context_refresher=_refresh,
+        event_bus=event_bus,
     )
     session = MagicMock()
     event_a = PostTurnEvent(
