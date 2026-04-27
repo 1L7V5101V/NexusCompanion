@@ -311,6 +311,32 @@ def test_session_get_history_keeps_reasoning_content():
     assert history[-1]["reasoning_content"] == "先想一下"
 
 
+def test_session_get_history_clears_old_tool_results_after_consolidation_tail():
+    session = Session("cli:1")
+    session.last_consolidated = 0
+    for i in range(3):
+        session.add_message("user", f"u{i}")
+        session.add_message("assistant", f"a{i}")
+        session.messages[-1]["tool_chain"] = [
+            {
+                "text": "",
+                "calls": [
+                    {
+                        "call_id": f"call-{i}",
+                        "name": "dummy",
+                        "arguments": {},
+                        "result": f"result-{i}",
+                    }
+                ],
+            }
+        ]
+
+    history = session.get_history(start_index=session.last_consolidated)
+    tool_contents = [m["content"] for m in history if m.get("role") == "tool"]
+
+    assert tool_contents == ["[已清除]", "[已清除]", "result-2"]
+
+
 @pytest.mark.asyncio
 async def test_proactive_loop_wrapper_methods_cover_paths(tmp_path: Path):
     loop = ProactiveLoop.__new__(ProactiveLoop)

@@ -155,7 +155,7 @@ class Session:
         assistant_indices = [
             i for i, m in enumerate(messages) if m.get("role") == "assistant"
         ]
-        if cache_tail_mode or len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
+        if len(assistant_indices) <= _RECENT_TOOL_ROUNDS:
             recent_boundary = 0
         else:
             recent_boundary = assistant_indices[-_RECENT_TOOL_ROUNDS]
