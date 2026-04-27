@@ -444,6 +444,7 @@ class AgentLoop:
                 tools=deps.tools,
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
+                outbound_port=BusOutboundPort(self.bus),
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(

@@ -11,6 +11,8 @@ from agent.prompting import is_context_frame
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
+    from agent.core.runtime_support import SessionLike
+    from session.manager import SessionManager
 
 context_logger = logging.getLogger("agent.core.passive_turn.context_store")
 _LOG_PREVIEW_LIMIT = 160
@@ -191,6 +193,21 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
         return 0
     payload = json.dumps(messages, ensure_ascii=False)
     return max(1, len(payload) // 3)
+
+
+def predict_current_user_source_ref(
+    *,
+    session_manager: SessionManager,
+    session: SessionLike,
+) -> str:
+    peek = getattr(session_manager, "peek_next_message_id", None)
+    if callable(peek):
+        return str(peek(session.key))
+    if session.messages:
+        last_id = str(session.messages[-1].get("id", "") or "").strip()
+        if last_id:
+            return last_id
+    return ""
 
 
 

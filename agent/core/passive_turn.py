@@ -30,17 +30,19 @@ from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExe
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result, tool_call_signature
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
-from agent.turns.outbound import OutboundDispatch
+from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import (
     BeforeDispatch,
-    BeforeReasoning,
     ToolCallCompleted,
     ToolCallStarted,
     TurnCommitted,
     TurnCompleted,
 )
+from agent.lifecycle.phases.before_turn import BeforeTurnPhase
+from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
+from agent.lifecycle.types import BeforeReasoningInput, TurnState
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -48,9 +50,8 @@ if TYPE_CHECKING:
     from agent.looping.ports import LLMConfig, LLMServices, ObservabilityServices, SessionServices
     from agent.memes.decorator import MemeDecorator
     from agent.retrieval.protocol import MemoryRetrievalPipeline
-    from agent.tools.registry import ToolRegistry
-    from agent.turns.outbound import OutboundPort
     from session.manager import SessionManager
+    from agent.tools.registry import ToolRegistry
 
 # 被动链路 god 文件：只集中组织核心实现，不改变运行行为。
 #
@@ -87,6 +88,7 @@ class AgentCoreDeps:
     tools: "ToolRegistry"
     reasoner: "Reasoner"
     event_bus: "EventBus | None" = None
+    outbound_port: "OutboundPort | None" = None
 
 
 class AgentCore:
@@ -136,7 +138,21 @@ class PassiveTurnPipeline:
         self._context = deps.context
         self._tools = deps.tools
         self._reasoner = deps.reasoner
-        self._event_bus = deps.event_bus
+        self._outbound_port = deps.outbound_port
+        bus = deps.event_bus or EventBus()
+
+        # 构造 phases（直到 AfterTurn 接线前，commit 仍保留旧调用）。
+        self._before_turn = BeforeTurnPhase(
+            bus=bus,
+            session_manager=self._session.session_manager,
+            context_store=deps.context_store,
+        )
+        self._before_reasoning = BeforeReasoningPhase(
+            bus=bus,
+            tools=deps.tools,
+            session_manager=self._session.session_manager,
+            context=deps.context,
+        )
 
     # 处理一条普通被动消息，并提交最终出站结果。
     async def run(
@@ -146,59 +162,47 @@ class PassiveTurnPipeline:
         *,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        # 1. 先读取真实 session，并准备本轮上下文。
-        session = self._session.session_manager.get_or_create(key)
-        context_bundle = await self._context_store.prepare(
+        state = TurnState(
             msg=msg,
             session_key=key,
-            session=session,
+            dispatch_outbound=dispatch_outbound,
         )
-
-        # 2. 再允许 BeforeReasoning 干预技能列表和检索块。
-        skill_mentions = list(context_bundle.skill_mentions)
-        retrieved_block = context_bundle.retrieved_memory_block
-        if self._event_bus is not None:
-            before_reasoning = await self._event_bus.emit(
-                BeforeReasoning(
-                    session_key=key,
+        # Phase 1: BeforeTurn（session acquire + context_prepare + skill mentions）
+        before_turn = await self._before_turn.run(state)
+        if before_turn.abort:
+            return await self._control_outbound(
+                state,
+                OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content=msg.content,
-                    skill_names=skill_mentions,
-                    retrieved_memory_block=retrieved_block,
-                )
+                    content=before_turn.abort_reply,
+                ),
             )
-            skill_mentions = list(before_reasoning.skill_names)
-            retrieved_block = before_reasoning.retrieved_memory_block
 
-        # 3. 然后通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
-        _ = self._context.render(
-            ContextRequest(
-                history=[],
-                current_message="",
-                skill_names=skill_mentions,
-                channel=msg.channel,
-                chat_id=msg.chat_id,
-                message_timestamp=msg.timestamp,
-                retrieved_memory_block=retrieved_block,
+        # Phase 2: BeforeReasoning（tool context sync + chain + prompt cache warmup）
+        before_reasoning = await self._before_reasoning.run(
+            BeforeReasoningInput(state=state, before_turn=before_turn)
+        )
+        if before_reasoning.abort:
+            return await self._control_outbound(
+                state,
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=before_reasoning.abort_reply,
+                ),
             )
-        )
 
-        # 4. 先同步 tool context，再执行被动链 reasoner。
-        self._tools.set_context(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            current_user_source_ref=predict_current_user_source_ref(
-                session_manager=self._session.session_manager,
-                session=session,
-            ),
-        )
+        # Phase 3-4: Reasoning（BeforeStep/AfterStep 后续在 Reasoner 内部接入）
+        session = state.session
+        if session is None:
+            raise RuntimeError("Passive turn requires TurnState.session")
         turn_result = await self._reasoner.run_turn(
             msg=msg,
-            skill_names=skill_mentions or None,
+            skill_names=list(before_reasoning.skill_names) or None,
             session=session,
             base_history=None,
-            retrieved_memory_block=retrieved_block,
+            retrieved_memory_block=before_reasoning.retrieved_memory_block,
         )
         final_content = turn_result.reply
         if final_content is None:
@@ -206,7 +210,7 @@ class PassiveTurnPipeline:
         tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
         parsed_response = parse_response(final_content, tool_chain=tool_chain)
 
-        # 5. 最后走 ContextStore.commit 做被动 turn 提交。
+        # Phase 5-6: 待 AfterReasoning + AfterTurn Phase 替换
         return await self._context_store.commit(
             msg=msg,
             session_key=key,
@@ -216,10 +220,29 @@ class PassiveTurnPipeline:
             tool_chain=tool_chain,
             thinking=turn_result.thinking,
             streamed_reply=turn_result.streamed,
-            retrieval_raw=context_bundle.retrieval_trace_raw,
+            retrieval_raw=state.retrieval_raw,
             context_retry=turn_result.context_retry,
             dispatch_outbound=dispatch_outbound,
         )
+
+    # 4. abort / 错误路径的统一 dispatch helper，只有 dispatch_outbound=True 时才发送。
+    async def _control_outbound(
+        self,
+        state: TurnState,
+        outbound: OutboundMessage,
+    ) -> OutboundMessage:
+        if state.dispatch_outbound and self._outbound_port is not None:
+            await self._outbound_port.dispatch(
+                OutboundDispatch(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=outbound.content,
+                    thinking=outbound.thinking,
+                    metadata=outbound.metadata,
+                    media=outbound.media,
+                )
+            )
+        return outbound
 
 
 
@@ -1375,16 +1398,6 @@ class DefaultReasoner(Reasoner):
 
 # ── 模块级辅助函数 ──────────────────────────────────────────────
 
-
-def predict_current_user_source_ref(*, session_manager, session) -> str:
-    peek = getattr(session_manager, "peek_next_message_id", None)
-    if callable(peek):
-        return str(peek(session.key))
-    if session.messages:
-        last_id = str(session.messages[-1].get("id", "") or "").strip()
-        if last_id:
-            return last_id
-    return ""
 
 
 def get_history_since_consolidated(

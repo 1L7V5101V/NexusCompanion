@@ -10,14 +10,14 @@ import pytest
 from agent.context import ContextBuilder
 from agent.core.passive_turn import ContextStore, Reasoner
 from agent.core.runtime_support import TurnRunResult
-from agent.core.passive_turn import predict_current_user_source_ref
+from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
-from bus.events_lifecycle import BeforeReasoning
+from agent.lifecycle.types import BeforeReasoningCtx, BeforeTurnCtx
 
 
 class _DummySession:
@@ -100,7 +100,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final"
-    assert order == ["prepare", "render", "tool_context", "run", "commit"]
+    assert order == ["prepare", "tool_context", "render", "run", "commit"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
     assert render_request.current_message == ""
@@ -200,12 +200,13 @@ async def test_agent_core_before_reasoning_can_patch_context():
     event_bus = EventBus()
 
     event_bus.on(
-        BeforeReasoning,
-        lambda event: BeforeReasoning(
-            session_key=event.session_key,
-            channel=event.channel,
-            chat_id=event.chat_id,
-            content=event.content,
+        BeforeReasoningCtx,
+        lambda ctx: BeforeReasoningCtx(
+            session_key=ctx.session_key,
+            channel=ctx.channel,
+            chat_id=ctx.chat_id,
+            content=ctx.content,
+            timestamp=ctx.timestamp,
             skill_names=["new"],
             retrieved_memory_block="new memory",
         ),
@@ -249,3 +250,159 @@ def test_predict_current_user_source_ref_falls_back_to_last_session_message():
     )
 
     assert value == "telegram:123:41"
+
+
+@pytest.mark.asyncio
+async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+        commit=AsyncMock(),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "blocked by policy"
+        return ctx
+
+    event_bus.on(BeforeTurnCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=dispatch_port,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "blocked by policy"
+    # 不经过 reasoner 和 commit
+    reasoner.run_turn.assert_not_called()
+    context_store.commit.assert_not_called()
+    # 通过 outbound_port 实际 dispatch
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "blocked by policy"
+
+
+@pytest.mark.asyncio
+async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+        commit=AsyncMock(),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "rate limited"
+        return ctx
+
+    event_bus.on(BeforeReasoningCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=dispatch_port,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "rate limited"
+    reasoner.run_turn.assert_not_called()
+    context_store.commit.assert_not_called()
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "rate limited"
+
+
+@pytest.mark.asyncio
+async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+        commit=AsyncMock(),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(run_turn=AsyncMock())
+    event_bus = EventBus()
+    dispatch_port = AsyncMock(return_value=True)
+
+    async def abort_handler(ctx):
+        ctx.abort = True
+        ctx.abort_reply = "quiet abort"
+        return ctx
+
+    event_bus.on(BeforeTurnCtx, abort_handler)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                    )
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            event_bus=event_bus,
+            outbound_port=dispatch_port,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=False)
+
+    assert out.content == "quiet abort"
+    reasoner.run_turn.assert_not_called()
+    context_store.commit.assert_not_called()
+    dispatch_port.dispatch.assert_not_called()
