@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 
 from agent.context import ContextBuilder
-from agent.core.context_store import ContextStore
+from agent.core.passive_turn import ContextStore
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
 from agent.core.runner import CoreRunner, CoreRunnerDeps

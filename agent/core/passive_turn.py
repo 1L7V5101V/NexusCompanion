@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import json
+import copy
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
+import agent.core.passive_support as support
+from agent.core.response_parser import ResponseMetadata, parse_response
 from agent.core.runtime_support import ToolDiscoveryState
-from agent.core.types import ContextRequest, LLMToolCall, ReasonerResult
-from agent.looping.constants import (
-    _INCOMPLETE_SUMMARY_PROMPT,
-    _SUMMARY_MAX_TOKENS,
-    _SAFETY_RETRY_RATIOS,
-    _TOOL_LOOP_REPEAT_LIMIT,
-    _tool_call_signature,
+from agent.core.types import (
+    ContextBundle,
+    ContextRequest,
+    LLMToolCall,
+    ReasonerResult,
+    to_tool_call_groups,
 )
 from agent.prompting import (
     DEFAULT_CONTEXT_TRIM_PLANS,
@@ -23,153 +25,489 @@ from agent.prompting import (
     is_context_frame,
 )
 from agent.provider import ContentSafetyError, ContextLengthError
-from agent.tool_runtime import append_assistant_tool_calls, append_tool_result
+from agent.retrieval.protocol import RetrievalRequest
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_runtime import append_assistant_tool_calls, append_tool_result, tool_call_signature
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
-from bus.events_lifecycle import ToolCallCompleted, ToolCallStarted
+from agent.turns.outbound import OutboundDispatch
+from bus.event_bus import EventBus
+from bus.events import InboundMessage, OutboundMessage
+from bus.events_lifecycle import (
+    BeforeDispatch,
+    BeforeReasoning,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnCommitted,
+    TurnCompleted,
+)
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.looping.ports import LLMConfig, LLMServices
     from agent.core.runtime_support import SessionLike, TurnRunResult
+    from agent.looping.ports import LLMConfig, LLMServices, ObservabilityServices, SessionServices
+    from agent.memes.decorator import MemeDecorator
+    from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
-    from bus.event_bus import EventBus
-    from core.memory.port import MemoryPort
+    from agent.turns.outbound import OutboundPort
     from session.manager import SessionManager
 
-logger = logging.getLogger("agent.core.reasoner")
-_LOG_PREVIEW_LIMIT = 160
+# 被动链路 god 文件：只集中组织核心实现，不改变运行行为。
+#
+# ┌─ inbound
+# │  └─ AgentCore.process
+# │     └─ PassiveTurnPipeline.run
+# │        ├─ ContextStore.prepare
+# │        ├─ BeforeReasoning
+# │        ├─ Reasoner.run_turn
+# │        │  └─ Reasoner.run
+# │        ├─ parse_response
+# │        └─ ContextStore.commit
+# │           └─ outbound.dispatch
+# └─ done
+
+# ── 被动 turn 内联常量 ──────────────────────────────────────────
+_SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
+_TOOL_LOOP_REPEAT_LIMIT = 3
+_SUMMARY_MAX_TOKENS = 512
+_INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输出给用户的中文收尾说明（不要提及系统/工具内部细节）。
+必须包含三点：
+1) 已完成到哪一步（基于当前上下文的事实）；
+2) 目前还缺什么信息或步骤；
+3) 下一步你会怎么继续。
+禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
+
+from agent.core.passive_support import context_logger
+
+@dataclass
+class AgentCoreDeps:
+    session: "SessionServices"
+    context_store: "ContextStore"
+    context: "ContextBuilder"
+    tools: "ToolRegistry"
+    reasoner: "Reasoner"
+    event_bus: "EventBus | None" = None
 
 
-def _log_preview(value: object, limit: int = _LOG_PREVIEW_LIMIT) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "..."
+class AgentCore:
+    """
+    ┌──────────────────────────────────────┐
+    │ AgentCore                            │
+    ├──────────────────────────────────────┤
+    │ 1. 持有 PassiveTurnPipeline          │
+    │ 2. 委托 pipeline 处理被动消息        │
+    └──────────────────────────────────────┘
+    """
+
+    def __init__(self, deps: AgentCoreDeps) -> None:
+        self._passive_pipeline = PassiveTurnPipeline(deps)
+
+    async def process(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        return await self._passive_pipeline.run(
+            msg,
+            key,
+            dispatch_outbound=dispatch_outbound,
+        )
 
 
-def _estimate_messages_tokens(messages: list[dict]) -> int:
-    if not messages:
-        return 0
-    payload = json.dumps(messages, ensure_ascii=False)
-    return max(1, len(payload) // 3)
+class PassiveTurnPipeline:
+    """
+    ┌──────────────────────────────────────┐
+    │ PassiveTurnPipeline                  │
+    ├──────────────────────────────────────┤
+    │ 1. 准备上下文                        │
+    │ 2. 触发 BeforeReasoning              │
+    │ 3. 渲染 prompt 预览                  │
+    │ 4. 执行 reasoner                     │
+    │ 5. 提交 ContextStore                 │
+    │ 6. 返回出站消息                      │
+    └──────────────────────────────────────┘
+    """
 
+    def __init__(self, deps: AgentCoreDeps) -> None:
+        self._session = deps.session
+        self._context_store = deps.context_store
+        self._context = deps.context
+        self._tools = deps.tools
+        self._reasoner = deps.reasoner
+        self._event_bus = deps.event_bus
 
+    # 处理一条普通被动消息，并提交最终出站结果。
+    async def run(
+        self,
+        msg: InboundMessage,
+        key: str,
+        *,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        # 1. 先读取真实 session，并准备本轮上下文。
+        session = self._session.session_manager.get_or_create(key)
+        context_bundle = await self._context_store.prepare(
+            msg=msg,
+            session_key=key,
+            session=session,
+        )
 
-def _build_loop_state_hint(
-    visible_names: set[str] | None = None,
-    always_on_names: set[str] | None = None,
-) -> str:
-    if visible_names is None or always_on_names is None:
-        return "【当前工具状态】tool_search 未开启，本轮按现有工具继续。"
-
-    unlocked_extra = visible_names - always_on_names - {"tool_search"}
-    visible_text = ", ".join(sorted(unlocked_extra)) if unlocked_extra else "仅 always-on"
-    return (
-        f"【当前工具状态】已解锁: {visible_text}\n"
-        "未知工具: tool_search(query=\"关键词\") 搜索\n"
-        "已知工具名但未加载: tool_search(query=\"select:工具名\")"
-    )
-
-
-def _build_deferred_tools_hint(
-    tools: "ToolRegistry",
-    visible: set[str] | None = None,
-) -> str:
-    # 1. 先从 registry 里取 deferred 工具目录。
-    get_deferred_names = getattr(tools, "get_deferred_names", None)
-    if not callable(get_deferred_names):
-        return ""
-    deferred_raw = get_deferred_names(visible=visible)
-    if not isinstance(deferred_raw, dict):
-        return ""
-    builtin_raw = deferred_raw.get("builtin", [])
-    mcp_raw = deferred_raw.get("mcp", {})
-    builtin = [name for name in builtin_raw if isinstance(name, str)]
-    mcp = {
-        str(server): [name for name in names if isinstance(name, str)]
-        for server, names in mcp_raw.items()
-        if isinstance(server, str) and isinstance(names, list)
-    }
-
-    # 2. 没有 deferred 工具时，不补任何目录提示。
-    if not builtin and not mcp:
-        return ""
-
-    # 3. 有 deferred 工具时，按 builtin / mcp 分组输出。
-    lines: list[str] = ["【未加载工具目录（知道名字但 schema 未暴露）】"]
-    if builtin:
-        lines.append(f"内置: {', '.join(builtin)}")
-    for server, names in mcp.items():
-        lines.append(f"MCP ({server}): {', '.join(names)}")
-
-    total = len(builtin) + sum(len(v) for v in mcp.values())
-    lines.append(
-        f"\n共 {total} 个。加载方式：\n"
-        "- 已知工具名 → tool_search(query=\"select:工具名\")，支持逗号分隔多个\n"
-        "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
-    )
-    return "\n".join(lines) + "\n\n"
-
-
-def _build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
-    return build_context_frame_message(
-        build_context_frame_content(
-            [
-                PromptSectionRender(
-                    name=section_name,
-                    content=content,
-                    is_static=False,
+        # 2. 再允许 BeforeReasoning 干预技能列表和检索块。
+        skill_mentions = list(context_bundle.skill_mentions)
+        retrieved_block = context_bundle.retrieved_memory_block
+        if self._event_bus is not None:
+            before_reasoning = await self._event_bus.emit(
+                BeforeReasoning(
+                    session_key=key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=msg.content,
+                    skill_names=skill_mentions,
+                    retrieved_memory_block=retrieved_block,
                 )
-            ]
+            )
+            skill_mentions = list(before_reasoning.skill_names)
+            retrieved_block = before_reasoning.retrieved_memory_block
+
+        # 3. 然后通过 Context 主接口渲染 prompt 预览，提前热身 prompt cache。
+        _ = self._context.render(
+            ContextRequest(
+                history=[],
+                current_message="",
+                skill_names=skill_mentions,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                message_timestamp=msg.timestamp,
+                retrieved_memory_block=retrieved_block,
+            )
         )
-    )
 
-
-def _extract_model_facing_turn(
-    messages: list[dict],
-) -> tuple[object | None, str | None]:
-    if not messages:
-        return None, None
-    user_content = (
-        messages[-1].get("content")
-        if messages[-1].get("role") == "user"
-        else None
-    )
-    if len(messages) < 2:
-        return user_content, None
-    frame = messages[-2]
-    frame_content = frame.get("content")
-    if isinstance(frame_content, str) and is_context_frame(frame_content):
-        return user_content, frame_content
-    return user_content, None
-
-
-def _get_history_since_consolidated(
-    session: "SessionLike",
-    memory_window: int,
-) -> list[dict]:
-    try:
-        return session.get_history(
-            max_messages=memory_window,
-            start_index=session.last_consolidated,
+        # 4. 先同步 tool context，再执行被动链 reasoner。
+        self._tools.set_context(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            current_user_source_ref=predict_current_user_source_ref(
+                session_manager=self._session.session_manager,
+                session=session,
+            ),
         )
-    except TypeError:
-        return session.get_history(max_messages=memory_window)
+        turn_result = await self._reasoner.run_turn(
+            msg=msg,
+            skill_names=skill_mentions or None,
+            session=session,
+            base_history=None,
+            retrieved_memory_block=retrieved_block,
+        )
+        final_content = turn_result.reply
+        if final_content is None:
+            final_content = "I've completed processing but have no response to give."
+        tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
+        parsed_response = parse_response(final_content, tool_chain=tool_chain)
+
+        # 5. 最后走 ContextStore.commit 做被动 turn 提交。
+        return await self._context_store.commit(
+            msg=msg,
+            session_key=key,
+            reply=parsed_response.clean_text,
+            response_metadata=parsed_response.metadata,
+            tools_used=turn_result.tools_used,
+            tool_chain=tool_chain,
+            thinking=turn_result.thinking,
+            streamed_reply=turn_result.streamed,
+            retrieval_raw=context_bundle.retrieval_trace_raw,
+            context_retry=turn_result.context_retry,
+            dispatch_outbound=dispatch_outbound,
+        )
 
 
-# ─── Turn Injection（首轮前注入，非空才追加）─────────────────────────────────
-# 仅当 tool_search 开启且存在 deferred 工具时，附上目录提示；否则返回空串不注入。
-def build_turn_injection_prompt(
-    *,
-    tools: "ToolRegistry",
-    tool_search_enabled: bool,
-    visible_names: set[str] | None,
-) -> str:
-    if not tool_search_enabled:
-        return ""
-    return _build_deferred_tools_hint(tools, visible=visible_names)
+
+
+class ContextStore(ABC):
+    """
+    ┌──────────────────────────────────────┐
+    │ ContextStore                         │
+    ├──────────────────────────────────────┤
+    │ 1. 读取 session history              │
+    │ 2. 调 retrieval pipeline             │
+    │ 3. 收 skill mentions                 │
+    │ 4. 输出 ContextBundle                │
+    └──────────────────────────────────────┘
+    """
+
+    @abstractmethod
+    async def prepare(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        session: "SessionLike",
+    ) -> ContextBundle:
+        """准备本轮对话需要的上下文。"""
+
+    @abstractmethod
+    async def commit(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        reply: str,
+        response_metadata: ResponseMetadata,
+        tools_used: list[str],
+        tool_chain: list[dict],
+        thinking: str | None,
+        streamed_reply: bool,
+        retrieval_raw: object | None,
+        context_retry: dict[str, object],
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        """提交本轮被动 turn，并返回最终出站消息。"""
+
+
+class DefaultContextStore(ContextStore):
+    def __init__(
+        self,
+        *,
+        retrieval: "MemoryRetrievalPipeline",
+        context: "ContextBuilder",
+        history_window: int = 500,
+        session: "SessionServices | None" = None,
+        trace: "ObservabilityServices | None" = None,
+        outbound: "OutboundPort | None" = None,
+        meme_decorator: "MemeDecorator | None" = None,
+        event_bus: EventBus | None = None,
+    ) -> None:
+        self._retrieval = retrieval
+        self._context = context
+        self._history_window = max(1, int(history_window))
+        self._session = session
+        self._trace = trace
+        self._outbound = outbound
+        self._meme_decorator = meme_decorator
+        self._event_bus = event_bus
+
+    async def prepare(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        session: "SessionLike",
+    ) -> ContextBundle:
+        # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
+        raw_history = [
+            item
+            for item in session.get_history()
+            if not support.is_llm_context_frame(item)
+        ]
+        history_messages = support.to_history_messages(raw_history)
+
+        # 2. 再执行 retrieval，保持当前 pipeline 行为不变。
+        retrieval_result = await self._retrieval.retrieve(
+            RetrievalRequest(
+                message=msg.content,
+                session_key=session_key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                history=history_messages,
+                session_metadata=(
+                    session.metadata if isinstance(session.metadata, dict) else {}
+                ),
+                timestamp=msg.timestamp,
+            )
+        )
+
+        # 3. 最后补齐 ContextBundle，把主链正式字段直接收进显式合同。
+        skill_mentions = support.collect_skill_mentions(
+            msg.content,
+            self._context.skills.list_skills(filter_unavailable=False),
+        )
+        return ContextBundle(
+            history=support.to_chat_messages(raw_history),
+            memory_blocks=[retrieval_result.block] if retrieval_result.block else [],
+            skill_mentions=skill_mentions,
+            retrieved_memory_block=retrieval_result.block or "",
+            retrieval_trace_raw=(
+                retrieval_result.trace.raw
+                if retrieval_result.trace is not None
+                else None
+            ),
+            retrieval_metadata=dict(retrieval_result.metadata or {}),
+            history_messages=history_messages,
+        )
+
+    async def commit(
+        self,
+        *,
+        msg: "InboundMessage",
+        session_key: str,
+        reply: str,
+        response_metadata: ResponseMetadata,
+        tools_used: list[str],
+        tool_chain: list[dict],
+        thinking: str | None,
+        streamed_reply: bool,
+        retrieval_raw: object | None,
+        context_retry: dict[str, object],
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        if self._session is None or self._outbound is None:
+            raise RuntimeError("ContextStore.commit requires session/outbound")
+
+        cited_memory_ids = list(response_metadata.cited_memory_ids)
+
+        # 1. 先做 meme decorate，并准备最终回复文本。
+        final_content = reply
+        meme_media: list[str] = []
+        meme_tag = response_metadata.meme_tag
+        if self._meme_decorator is not None:
+            decorated = self._meme_decorator.decorate(
+                final_content,
+                meme_tag=meme_tag,
+            )
+            final_content = decorated.content
+            meme_media = decorated.media
+            meme_tag = decorated.tag
+
+        # 2. 再把 user/assistant 两条消息持久化到 session。
+        session = self._session.session_manager.get_or_create(session_key)
+        omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
+        if not omit_user_turn:
+            if self._session.presence:
+                self._session.presence.record_user_message(session.key)
+            user_kwargs: dict[str, object] = {}
+            llm_user_content = context_retry.get("llm_user_content")
+            if isinstance(llm_user_content, (str, list)):
+                user_kwargs["llm_user_content"] = llm_user_content
+            llm_context_frame = context_retry.get("llm_context_frame")
+            if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+                user_kwargs["llm_context_frame"] = llm_context_frame
+            session.add_message(
+                "user",
+                msg.content,
+                media=msg.media if msg.media else None,
+                **user_kwargs,
+            )
+        _assistant_kwargs: dict = {
+            "tools_used": tools_used if tools_used else None,
+            "tool_chain": tool_chain if tool_chain else None,
+        }
+        if thinking is not None:
+            _assistant_kwargs["reasoning_content"] = thinking
+        if cited_memory_ids:
+            _assistant_kwargs["cited_memory_ids"] = cited_memory_ids
+        session.add_message("assistant", final_content, **_assistant_kwargs)
+        support.update_session_runtime_metadata(
+            session,
+            tools_used=tools_used,
+            tool_chain=tool_chain,
+        )
+        persist_count = 1 if omit_user_turn else 2
+        await self._session.session_manager.append_messages(
+            session,
+            session.messages[-persist_count:],
+        )
+        post_reply_budget = support.build_post_reply_context_budget(
+            context=self._context,
+            history=session.get_history(max_messages=self._history_window),
+            history_window=self._history_window,
+        )
+        react_stats = support.extract_react_stats(context_retry)
+        persisted_user_message = None if omit_user_turn else msg.content
+        tool_chain_raw = copy.deepcopy(tool_chain)
+        extra: dict[str, object] = (
+            {"skip_post_memory": True}
+            if (msg.metadata or {}).get("skip_post_memory")
+            else {}
+        )
+        if self._event_bus is not None:
+            await self._event_bus.fanout(
+                TurnCommitted(
+                    session_key=session_key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    input_message=msg.content,
+                    persisted_user_message=persisted_user_message,
+                    assistant_response=final_content,
+                    tools_used=list(tools_used),
+                    thinking=thinking,
+                    raw_reply=response_metadata.raw_text,
+                    meme_tag=meme_tag,
+                    meme_media_count=len(meme_media),
+                    tool_chain_raw=copy.deepcopy(tool_chain_raw),
+                    tool_call_groups=to_tool_call_groups(tool_chain_raw),
+                    timestamp=msg.timestamp,
+                    retrieval_raw=retrieval_raw,
+                    post_reply_budget=dict(post_reply_budget),
+                    react_stats=dict(react_stats),
+                    extra=dict(extra),
+                )
+            )
+            context_logger.info(
+                "[commit] TurnCommitted fanout 完成 source=passive session=%s channel=%s tools=%d",
+                session_key,
+                msg.channel,
+                len(tools_used),
+            )
+        support.log_post_reply_context_budget(
+            session_key=session_key,
+            budget=post_reply_budget,
+        )
+        support.log_react_context_budget(session_key=session_key, react_stats=react_stats)
+
+        # 3. 发出成功完成事件，再给出站消息留出最后干预点。
+        if self._event_bus is not None:
+            await self._event_bus.observe(
+                TurnCompleted(
+                    session_key=session_key,
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    reply=final_content,
+                    tools_used=list(tools_used),
+                    thinking=thinking,
+                )
+            )
+        dispatch_event = BeforeDispatch(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            thinking=thinking,
+            media=list(meme_media),
+            metadata={
+                **(msg.metadata or {}),
+                "tools_used": tools_used,
+                "tool_chain": tool_chain,
+                "context_retry": context_retry,
+                "streamed_reply": streamed_reply,
+            },
+        )
+        if self._event_bus is not None:
+            dispatch_event = await self._event_bus.emit(dispatch_event)
+
+        # 5. 最后构造 outbound，并按需 dispatch。
+        outbound = OutboundMessage(
+            channel=dispatch_event.channel,
+            chat_id=dispatch_event.chat_id,
+            content=dispatch_event.content,
+            thinking=dispatch_event.thinking,
+            media=list(dispatch_event.media),
+            metadata=dict(dispatch_event.metadata),
+        )
+        if dispatch_outbound:
+            await self._outbound.dispatch(
+                OutboundDispatch(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=outbound.content,
+                    thinking=outbound.thinking,
+                    metadata=outbound.metadata,
+                    media=outbound.media,
+                )
+            )
+        return outbound
+
+
+logger = logging.getLogger("agent.core.passive_turn.reasoner")
 
 
 class Reasoner(ABC):
@@ -292,7 +630,7 @@ class DefaultReasoner(Reasoner):
         source_history = (
             base_history
             if base_history is not None
-            else _get_history_since_consolidated(session, self._memory_window)
+            else get_history_since_consolidated(session, self._memory_window)
         )
         total_history = len(source_history)
         preloaded: set[str] | None = None
@@ -344,7 +682,7 @@ class DefaultReasoner(Reasoner):
                     turn_injection_prompt=turn_injection_prompt,
                 )
             ).messages
-            llm_user_content, llm_context_frame = _extract_model_facing_turn(
+            llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
             )
             try:
@@ -473,7 +811,7 @@ class DefaultReasoner(Reasoner):
 
         for iteration in range(self._llm_config.max_iterations):
             # 4. 调用 LLM，带上当前可见工具 schema。
-            current_input_tokens = _estimate_messages_tokens(messages)
+            current_input_tokens = support.estimate_messages_tokens(messages)
             react_input_samples.append(current_input_tokens)
             logger.info(
                 "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d",
@@ -503,7 +841,7 @@ class DefaultReasoner(Reasoner):
                     iteration + 1,
                     [tc.name for tc in response.tool_calls],
                 )
-                signature = _tool_call_signature(response.tool_calls)
+                signature = tool_call_signature(response.tool_calls)
                 if signature and signature == last_tool_signature:
                     repeat_count += 1
                 else:
@@ -581,7 +919,7 @@ class DefaultReasoner(Reasoner):
                             arguments=tool_call.arguments,
                             final_arguments=tool_call.arguments,
                             status="blocked",
-                            result_preview=_log_preview(result),
+                            result_preview=support.log_preview(result),
                         )
                         iter_calls.append(
                             {
@@ -602,7 +940,7 @@ class DefaultReasoner(Reasoner):
                         and self._tool_search_tool is not None
                     ):
                         self._tool_search_tool.set_excluded_names(visible_names)
-                    _args_preview = _log_preview(tool_call.arguments, 120)
+                    _args_preview = support.log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
                     await self._observe_tool_call_started(
                         session_key=tool_event_session_key,
@@ -633,7 +971,7 @@ class DefaultReasoner(Reasoner):
                         tools_used.append(tool_call.name)
                     result = exec_result.output
                     normalized = normalize_tool_result(result)
-                    _result_preview = _log_preview(normalized.preview())
+                    _result_preview = support.log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")
                     await self._observe_tool_call_completed(
                         session_key=tool_event_session_key,
@@ -722,9 +1060,9 @@ class DefaultReasoner(Reasoner):
                         }
                     )
                 messages.append(
-                    _build_context_hint_message(
+                    build_context_hint_message(
                         "loop_state",
-                        _build_loop_state_hint(
+                        build_loop_state_hint(
                             visible_names=visible_names,
                             always_on_names=(
                                 self._tools.get_always_on_names()
@@ -897,7 +1235,7 @@ class DefaultReasoner(Reasoner):
         try:
             response = await self._llm.provider.chat(
                 messages=messages
-                + [_build_context_hint_message("summary_request", summary_prompt)],
+                + [build_context_hint_message("summary_request", summary_prompt)],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),
@@ -1033,3 +1371,127 @@ class DefaultReasoner(Reasoner):
 
         # 2. 输出稳定的 request_time 锚点字符串。
         return f"request_time={ts.isoformat()} ({ts.strftime('%Y-%m-%d %H:%M:%S %Z')})"
+
+
+# ── 模块级辅助函数 ──────────────────────────────────────────────
+
+
+def predict_current_user_source_ref(*, session_manager, session) -> str:
+    peek = getattr(session_manager, "peek_next_message_id", None)
+    if callable(peek):
+        return str(peek(session.key))
+    if session.messages:
+        last_id = str(session.messages[-1].get("id", "") or "").strip()
+        if last_id:
+            return last_id
+    return ""
+
+
+def get_history_since_consolidated(
+    session: "SessionLike",
+    memory_window: int,
+) -> list[dict]:
+    try:
+        return session.get_history(
+            max_messages=memory_window,
+            start_index=session.last_consolidated,
+        )
+    except TypeError:
+        return session.get_history(max_messages=memory_window)
+
+
+def extract_model_facing_turn(
+    messages: list[dict],
+) -> tuple[object | None, str | None]:
+    if not messages:
+        return None, None
+    user_content = (
+        messages[-1].get("content")
+        if messages[-1].get("role") == "user"
+        else None
+    )
+    if len(messages) < 2:
+        return user_content, None
+    frame = messages[-2]
+    frame_content = frame.get("content")
+    if isinstance(frame_content, str) and is_context_frame(frame_content):
+        return user_content, frame_content
+    return user_content, None
+
+
+def build_turn_injection_prompt(
+    *,
+    tools: "ToolRegistry",
+    tool_search_enabled: bool,
+    visible_names: set[str] | None,
+) -> str:
+    if not tool_search_enabled:
+        return ""
+    return build_deferred_tools_hint(tools, visible=visible_names)
+
+
+def build_deferred_tools_hint(
+    tools: "ToolRegistry",
+    visible: set[str] | None = None,
+) -> str:
+    get_deferred_names = getattr(tools, "get_deferred_names", None)
+    if not callable(get_deferred_names):
+        return ""
+    deferred_raw = get_deferred_names(visible=visible)
+    if not isinstance(deferred_raw, dict):
+        return ""
+    builtin_raw = deferred_raw.get("builtin", [])
+    mcp_raw = deferred_raw.get("mcp", {})
+    builtin = [name for name in builtin_raw if isinstance(name, str)]
+    mcp = {
+        str(server): [name for name in names if isinstance(name, str)]
+        for server, names in mcp_raw.items()
+        if isinstance(server, str) and isinstance(names, list)
+    }
+
+    if not builtin and not mcp:
+        return ""
+
+    lines: list[str] = ["【未加载工具目录（知道名字但 schema 未暴露）】"]
+    if builtin:
+        lines.append(f"内置: {', '.join(builtin)}")
+    for server, names in mcp.items():
+        lines.append(f"MCP ({server}): {', '.join(names)}")
+
+    total = len(builtin) + sum(len(v) for v in mcp.values())
+    lines.append(
+        f"\n共 {total} 个。加载方式：\n"
+        "- 已知工具名 → tool_search(query=\"select:工具名\")，支持逗号分隔多个\n"
+        "- 描述功能   → tool_search(query=\"关键词\") 搜索匹配"
+    )
+    return "\n".join(lines) + "\n\n"
+
+
+def build_loop_state_hint(
+    visible_names: set[str] | None = None,
+    always_on_names: set[str] | None = None,
+) -> str:
+    if visible_names is None or always_on_names is None:
+        return "【当前工具状态】tool_search 未开启，本轮按现有工具继续。"
+
+    unlocked_extra = visible_names - always_on_names - {"tool_search"}
+    visible_text = ", ".join(sorted(unlocked_extra)) if unlocked_extra else "仅 always-on"
+    return (
+        f"【当前工具状态】已解锁: {visible_text}\n"
+        "未知工具: tool_search(query=\"关键词\") 搜索\n"
+        "已知工具名但未加载: tool_search(query=\"select:工具名\")"
+    )
+
+
+def build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
+    return build_context_frame_message(
+        build_context_frame_content(
+            [
+                PromptSectionRender(
+                    name=section_name,
+                    content=content,
+                    is_static=False,
+                )
+            ]
+        )
+    )

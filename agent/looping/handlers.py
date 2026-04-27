@@ -9,7 +9,7 @@ from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.core.context_store import ContextStore
+    from agent.core.passive_turn import ContextStore
     from agent.tools.registry import ToolRegistry
 
 async def process_spawn_completion_event(

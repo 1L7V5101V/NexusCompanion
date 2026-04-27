@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.context_store import DefaultContextStore
+from agent.core.passive_turn import DefaultContextStore
 from agent.core.response_parser import ResponseMetadata, parse_response
 from agent.looping.lifecycle_consumers import (
     register_observe_trace_consumers,

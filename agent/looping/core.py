@@ -7,10 +7,13 @@ from datetime import datetime
 from typing import TYPE_CHECKING, TypeAlias
 
 from agent.context import ContextBuilder
-from agent.core.agent_core import AgentCore, AgentCoreDeps
+from agent.core.passive_turn import (
+    AgentCore,
+    AgentCoreDeps,
+    DefaultContextStore,
+    DefaultReasoner,
+)
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
-from agent.core.context_store import DefaultContextStore
-from agent.core.reasoner import DefaultReasoner
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.looping.consolidation import (
@@ -723,7 +726,7 @@ class AgentLoop:
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
-        from agent.core.reasoner import build_turn_injection_prompt
+        from agent.core.passive_turn import build_turn_injection_prompt
         from agent.prompting import (
             PromptSectionRender,
             build_context_frame_content,

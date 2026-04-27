@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder
-from agent.core.context_store import ContextStore
-from agent.core.reasoner import Reasoner
+from agent.core.passive_turn import ContextStore, Reasoner
 from agent.core.runtime_support import TurnRunResult
-from agent.core.agent_core import AgentCore, AgentCoreDeps, _predict_current_user_source_ref
+from agent.core.passive_turn import predict_current_user_source_ref
+from agent.core.passive_turn import AgentCore, AgentCoreDeps
 from agent.core.types import ContextBundle
 from agent.looping.ports import SessionServices
 from agent.tools.registry import ToolRegistry
@@ -243,7 +243,7 @@ def test_predict_current_user_source_ref_falls_back_to_last_session_message():
     session = _DummySession("telegram:123")
     session.messages.append({"id": "telegram:123:41"})
 
-    value = _predict_current_user_source_ref(
+    value = predict_current_user_source_ref(
         session_manager=SimpleNamespace(),
         session=session,
     )

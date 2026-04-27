@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.core.reasoner import Reasoner
+    from agent.core.passive_turn import Reasoner
     from agent.core.runner import CoreRunner
     from agent.core.runtime_support import (
         ConsolidationRunner,

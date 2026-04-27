@@ -7,8 +7,7 @@ from agent.looping.handlers import process_spawn_completion_event
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 
 if TYPE_CHECKING:
-    from agent.core.agent_core import AgentCore
-    from agent.core.context_store import ContextStore
+    from agent.core.passive_turn import AgentCore, ContextStore
     from agent.core.runtime_support import AgentLoopRunner
     from agent.context import ContextBuilder
     from agent.looping.ports import SessionServices
