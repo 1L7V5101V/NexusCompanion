@@ -17,13 +17,7 @@ from agent.core.types import (
     ReasonerResult,
     to_tool_call_groups,
 )
-from agent.prompting import (
-    DEFAULT_CONTEXT_TRIM_PLANS,
-    PromptSectionRender,
-    build_context_frame_content,
-    build_context_frame_message,
-    is_context_frame,
-)
+from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest
 from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
@@ -44,7 +38,14 @@ from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
 from agent.lifecycle.phases.after_turn import AfterTurnPhase
 from agent.lifecycle.phases.before_turn import BeforeTurnPhase
 from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
-from agent.lifecycle.types import AfterReasoningInput, BeforeReasoningInput, TurnSnapshot, TurnState
+from agent.lifecycle.types import (
+    AfterReasoningInput,
+    AfterStepCtx,
+    BeforeReasoningInput,
+    BeforeStepInput,
+    TurnSnapshot,
+    TurnState,
+)
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -206,9 +207,7 @@ class PassiveTurnPipeline:
             session_key=key,
             dispatch_outbound=dispatch_outbound,
         )
-        # try/except 只包 prepare / hook 前置阶段（BeforeTurn、BeforeReasoning）。
-        # AfterReasoning（persist）和 AfterTurn（dispatch）出错直接向上抛，
-        # 不能用错误消息覆盖已落盘的正常回复。
+        # try/except 只包 prepare/hook + reasoning：在派发前兜底并返回错误提示。
         try:
             # Phase 1: BeforeTurn（session acquire + context_prepare + skill mentions）
             before_turn = await self._before_turn.run(state)
@@ -240,8 +239,16 @@ class PassiveTurnPipeline:
             session = state.session
             if session is None:
                 raise RuntimeError("Passive turn requires TurnState.session")
+            turn_result = await self._reasoner.run_turn(
+                msg=msg,
+                skill_names=list(before_reasoning.skill_names) or None,
+                session=session,
+                base_history=None,
+                retrieved_memory_block=before_reasoning.retrieved_memory_block,
+                extra_hints=list(before_reasoning.extra_hints) or None,
+            )
         except Exception:
-            logger.exception("PassiveTurnPipeline.run failed before reasoning session=%s", key)
+            logger.exception("PassiveTurnPipeline.run failed before dispatch session=%s", key)
             return await self._control_outbound(
                 state,
                 OutboundMessage(
@@ -250,14 +257,6 @@ class PassiveTurnPipeline:
                     content="处理消息时出错，请稍后再试。",
                 ),
             )
-
-        turn_result = await self._reasoner.run_turn(
-            msg=msg,
-            skill_names=list(before_reasoning.skill_names) or None,
-            session=session,
-            base_history=None,
-            retrieved_memory_block=before_reasoning.retrieved_memory_block,
-        )
 
         # Phase 5: AfterReasoning（parse_response + chain + persist + build outbound）
         after_reasoning = await self._after_reasoning.run(
@@ -633,7 +632,7 @@ class Reasoner(ABC):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
     ) -> ReasonerResult:
-        """执行多轮 tool loop，并返回本轮结果。调用方负责提前注入 turn injection。"""
+        """执行多轮 tool loop，并返回本轮结果。"""
 
     @abstractmethod
     async def run_turn(
@@ -644,6 +643,7 @@ class Reasoner(ABC):
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
+        extra_hints: list[str] | None = None,
     ) -> "TurnRunResult":
         """执行完整被动 turn，包括 retry / trim / tool loop。"""
 
@@ -681,9 +681,12 @@ class DefaultReasoner(Reasoner):
         self._stream_sink_factory: Callable[
             [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
         ] | None = None
-        self._progress_sink_factory: Callable[
-            [object], Callable[[dict[str, object]], Awaitable[None]] | None
-        ] | None = None
+        bus = event_bus or EventBus()
+        self._bus = bus
+        from agent.lifecycle.phases.before_step import BeforeStepPhase
+        from agent.lifecycle.phases.after_step import AfterStepPhase
+        self._before_step = BeforeStepPhase(bus=bus)
+        self._after_step = AfterStepPhase(bus=bus)
 
     def set_stream_sink_factory(
         self,
@@ -694,14 +697,11 @@ class DefaultReasoner(Reasoner):
     ) -> None:
         self._stream_sink_factory = factory
 
-    def set_progress_sink_factory(
+    def register_step_observer(
         self,
-        factory: Callable[
-            [object], Callable[[dict[str, object]], Awaitable[None]] | None
-        ]
-        | None,
+        handler: Callable[["AfterStepCtx"], Awaitable[None]],
     ) -> None:
-        self._progress_sink_factory = factory
+        self._bus.on(AfterStepCtx, handler)
 
     async def run_turn(
         self,
@@ -711,6 +711,7 @@ class DefaultReasoner(Reasoner):
         skill_names: list[str] | None = None,
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
+        extra_hints: list[str] | None = None,
     ) -> "TurnRunResult":
         from agent.core.runtime_support import TurnRunResult
 
@@ -739,11 +740,6 @@ class DefaultReasoner(Reasoner):
             )
         stream_sink = (
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
-        )
-        progress_sink = (
-            self._progress_sink_factory(msg)
-            if self._progress_sink_factory is not None
-            else None
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
@@ -779,6 +775,14 @@ class DefaultReasoner(Reasoner):
                     turn_injection_prompt=turn_injection_prompt,
                 )
             ).messages
+            # inject BeforeReasoning plugin hints into every attempt's messages
+            if extra_hints:
+                initial_messages.append(
+                    support.build_context_hint_message(
+                        "plugin_hints",
+                        "\n".join(extra_hints),
+                    )
+                )
             llm_user_content, llm_context_frame = extract_model_facing_turn(
                 initial_messages
             )
@@ -789,7 +793,6 @@ class DefaultReasoner(Reasoner):
                     preloaded_tools=preloaded,
                     preflight_injected=True,
                     on_content_delta=stream_sink,
-                    on_progress=progress_sink,
                     tool_event_session_key=session.key,
                     tool_event_channel=msg.channel,
                     tool_event_chat_id=msg.chat_id,
@@ -877,7 +880,6 @@ class DefaultReasoner(Reasoner):
         preloaded_tools: set[str] | None = None,
         preflight_injected: bool = True,
         on_content_delta: Callable[[dict[str, str]], Awaitable[None]] | None = None,
-        on_progress: Callable[[dict[str, object]], Awaitable[None]] | None = None,
         tool_event_session_key: str = "",
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
@@ -907,14 +909,41 @@ class DefaultReasoner(Reasoner):
             )
 
         for iteration in range(self._llm_config.max_iterations):
+            # 3. BeforeStep：token 估算 + 插件 early-stop 检查。
+            step_ctx = await self._before_step.run(BeforeStepInput(
+                session_key=tool_event_session_key,
+                channel=tool_event_channel,
+                chat_id=tool_event_chat_id,
+                iteration=iteration,
+                messages=messages,
+                visible_names=visible_names,
+            ))
+            if step_ctx.early_stop:
+                summary = await self._summarize_incomplete_progress(
+                    messages,
+                    reason="early_stop",
+                    iteration=iteration + 1,
+                    tools_used=tools_used,
+                )
+                return self._build_result(
+                    reply=step_ctx.early_stop_reply or summary,
+                    tools_used=tools_used,
+                    tool_chain=tool_chain,
+                    visible_names=visible_names,
+                    thinking=None,
+                    streamed=False,
+                    react_input_samples=react_input_samples,
+                    cache_prompt_tokens=react_cache_prompt_tokens,
+                    cache_hit_tokens=react_cache_hit_tokens,
+                    cache_seen=react_cache_seen,
+                )
             # 4. 调用 LLM，带上当前可见工具 schema。
-            current_input_tokens = support.estimate_messages_tokens(messages)
-            react_input_samples.append(current_input_tokens)
+            react_input_samples.append(step_ctx.input_tokens_estimate)
             logger.info(
                 "[LLM调用] 第%d轮，可见工具=%s input_tokens~=%d",
                 iteration + 1,
                 f"{len(visible_names)}个" if visible_names is not None else "全部（tool_search未开启）",
-                current_input_tokens,
+                step_ctx.input_tokens_estimate,
             )
             response = await self._llm.provider.chat(
                 messages=messages,
@@ -1148,16 +1177,21 @@ class DefaultReasoner(Reasoner):
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
-                if on_progress is not None:
-                    await on_progress(
-                        {
-                            "partial_reply": response.content or "",
-                            "tools_used": list(tools_used),
-                            "tool_chain_partial": list(tool_chain),
-                        }
-                    )
+                # 7a. AfterStep（工具分支）：通知观察者本轮工具执行完毕，has_more=True。
+                await self._after_step.run(AfterStepCtx(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    tools_called=tuple(tc.name for tc in response.tool_calls),
+                    partial_reply=response.content or "",
+                    tools_used_so_far=tuple(tools_used),
+                    tool_chain_partial=tuple(tool_chain),
+                    partial_thinking=response.thinking,
+                    has_more=True,
+                ))
                 messages.append(
-                    build_context_hint_message(
+                    support.build_context_hint_message(
                         "loop_state",
                         build_loop_state_hint(
                             visible_names=visible_names,
@@ -1209,15 +1243,19 @@ class DefaultReasoner(Reasoner):
                 tools_used if tools_used else "无",
             )
             messages.append({"role": "assistant", "content": response.content})
-            if on_progress is not None:
-                await on_progress(
-                    {
-                        "partial_reply": response.content or "",
-                        "tools_used": list(tools_used),
-                        "tool_chain_partial": list(tool_chain),
-                        "partial_thinking": response.thinking,
-                    }
-                )
+            # 8a. AfterStep（最终回复分支）：通知观察者本轮推理结束，has_more=False。
+            await self._after_step.run(AfterStepCtx(
+                session_key=tool_event_session_key,
+                channel=tool_event_channel,
+                chat_id=tool_event_chat_id,
+                iteration=iteration,
+                tools_called=(),
+                partial_reply=response.content or "",
+                tools_used_so_far=tuple(tools_used),
+                tool_chain_partial=tuple(tool_chain),
+                partial_thinking=response.thinking,
+                has_more=False,
+            ))
             return self._build_result(
                 reply=response.content or "（无响应）",
                 tools_used=tools_used,
@@ -1332,7 +1370,12 @@ class DefaultReasoner(Reasoner):
         try:
             response = await self._llm.provider.chat(
                 messages=messages
-                + [build_context_hint_message("summary_request", summary_prompt)],
+                + [
+                    support.build_context_hint_message(
+                        "summary_request",
+                        summary_prompt,
+                    )
+                ],
                 tools=[],
                 model=self._llm_config.model,
                 max_tokens=min(_SUMMARY_MAX_TOKENS, self._llm_config.max_tokens),
@@ -1567,18 +1610,4 @@ def build_loop_state_hint(
         f"【当前工具状态】已解锁: {visible_text}\n"
         "未知工具: tool_search(query=\"关键词\") 搜索\n"
         "已知工具名但未加载: tool_search(query=\"select:工具名\")"
-    )
-
-
-def build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
-    return build_context_frame_message(
-        build_context_frame_content(
-            [
-                PromptSectionRender(
-                    name=section_name,
-                    content=content,
-                    is_static=False,
-                )
-            ]
-        )
     )

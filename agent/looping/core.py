@@ -13,6 +13,7 @@ from agent.core.passive_turn import (
     DefaultContextStore,
     DefaultReasoner,
 )
+from agent.lifecycle.types import AfterStepCtx
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
@@ -175,9 +176,9 @@ class AgentLoop:
             _ = setter(self._build_stream_event_sink)
 
     def _configure_interrupt_progress_tracking(self) -> None:
-        progress_setter = getattr(self._reasoner, "set_progress_sink_factory", None)
-        if callable(progress_setter):
-            _ = progress_setter(self._build_progress_sink)
+        step_register = getattr(self._reasoner, "register_step_observer", None)
+        if callable(step_register):
+            _ = step_register(self._on_after_step)
 
     def _wrap_stream_sink_factory(
         self,
@@ -241,27 +242,16 @@ class AgentLoop:
 
         return _push
 
-    def _build_progress_sink(self, msg):
-        session_key = getattr(msg, "session_key", f"{msg.channel}:{msg.chat_id}")
-
-        async def _progress(payload: dict[str, object]) -> None:
-            state = self._active_turn_states.get(session_key)
-            if state is None:
-                return
-            partial_reply = payload.get("partial_reply")
-            if isinstance(partial_reply, str) and partial_reply:
-                state.partial_reply = partial_reply
-            partial_thinking = payload.get("partial_thinking")
-            if isinstance(partial_thinking, str) and partial_thinking:
-                state.partial_thinking = partial_thinking
-            tools_used = payload.get("tools_used")
-            if isinstance(tools_used, list):
-                state.tools_used = list(tools_used)
-            tool_chain_partial = payload.get("tool_chain_partial")
-            if isinstance(tool_chain_partial, list):
-                state.tool_chain_partial = list(tool_chain_partial)
-
-        return _progress
+    async def _on_after_step(self, ctx: AfterStepCtx) -> None:
+        state = self._active_turn_states.get(ctx.session_key)
+        if state is None:
+            return
+        if ctx.partial_reply:
+            state.partial_reply = ctx.partial_reply
+        if ctx.partial_thinking:
+            state.partial_thinking = ctx.partial_thinking
+        state.tools_used = list(ctx.tools_used_so_far)
+        state.tool_chain_partial = list(ctx.tool_chain_partial)
 
     def _append_partial_reply(self, session_key: str, delta: str) -> None:
         state = self._active_turn_states.get(session_key)

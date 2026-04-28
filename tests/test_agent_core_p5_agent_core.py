@@ -397,3 +397,108 @@ async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
     reasoner.run_turn.assert_not_called()
     context_store.commit.assert_not_called()
     dispatch_port.dispatch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoner_exception_turn_returns_control_outbound():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+        commit=AsyncMock(),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(side_effect=RuntimeError("budget guard")),
+    )
+    dispatch_port = AsyncMock(return_value=True)
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            outbound_port=dispatch_port,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert out.content == "处理消息时出错，请稍后再试。"
+    context_store.commit.assert_not_called()
+    dispatch_port.dispatch.assert_awaited_once()
+    dispatched = dispatch_port.dispatch.await_args.args[0]
+    assert dispatched.content == "处理消息时出错，请稍后再试。"
+
+
+@pytest.mark.asyncio
+async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound():
+    session = _DummySession("telegram:123")
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(return_value=ContextBundle()),
+        commit=AsyncMock(),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="ok",
+                tools_used=[],
+                tool_chain=[],
+                thinking=None,
+                context_retry={},
+            )
+        )
+    )
+    dispatch_port = SimpleNamespace(
+        dispatch=AsyncMock(side_effect=RuntimeError("dispatch failed"))
+    )
+
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                SessionServices,
+                SimpleNamespace(
+                    session_manager=SimpleNamespace(
+                        get_or_create=MagicMock(return_value=session),
+                        peek_next_message_id=MagicMock(return_value="telegram:123:0"),
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(ContextBuilder, context),
+            tools=cast(ToolRegistry, tools),
+            reasoner=cast(Reasoner, reasoner),
+            outbound_port=dispatch_port,
+        )
+    )
+    msg = InboundMessage(channel="telegram", sender="hua", chat_id="123", content="hi")
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
+
+    assert len(session.messages) == 2
+    assert session.messages[0]["role"] == "user"
+    assert session.messages[1]["role"] == "assistant"
+    assert session.messages[1]["content"] == "ok"
+    dispatch_port.dispatch.assert_awaited_once()

@@ -7,7 +7,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from agent.core.types import ChatMessage, HistoryMessage, to_tool_call_groups
-from agent.prompting import is_context_frame
+from agent.prompting import (
+    PromptSectionRender,
+    build_context_frame_content,
+    build_context_frame_message,
+    is_context_frame,
+)
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -68,6 +73,20 @@ def to_history_messages(messages: list[dict]) -> list[HistoryMessage]:
 def is_llm_context_frame(message: dict) -> bool:
     content = message.get("content")
     return isinstance(content, str) and is_context_frame(content)
+
+
+def build_context_hint_message(section_name: str, content: str) -> dict[str, str]:
+    return build_context_frame_message(
+        build_context_frame_content(
+            [
+                PromptSectionRender(
+                    name=section_name,
+                    content=content,
+                    is_static=False,
+                )
+            ]
+        )
+    )
 
 
 def build_post_reply_context_budget(
@@ -208,6 +227,5 @@ def predict_current_user_source_ref(
         if last_id:
             return last_id
     return ""
-
 
 

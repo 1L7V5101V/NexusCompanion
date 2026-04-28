@@ -583,15 +583,19 @@ async def test_interrupt_state_carries_partial_progress(tmp_path: Path):
         session_key=session_key,
         original_user_message=msg.content,
     )
-    progress_sink = loop._build_progress_sink(msg)  # type: ignore[attr-defined]
-    await progress_sink(
-        {
-            "partial_reply": "工具阶段说明",
-            "partial_thinking": "思考片段",
-            "tools_used": ["shell"],
-            "tool_chain_partial": [{"text": "tool", "calls": []}],
-        }
-    )
+    from agent.lifecycle.types import AfterStepCtx
+    await loop._on_after_step(AfterStepCtx(  # type: ignore[attr-defined]
+        session_key=session_key,
+        channel="telegram",
+        chat_id="123",
+        iteration=0,
+        tools_called=("shell",),
+        partial_reply="工具阶段说明",
+        tools_used_so_far=("shell",),
+        tool_chain_partial=({"text": "tool", "calls": []},),
+        partial_thinking="思考片段",
+        has_more=True,
+    ))
     loop._append_partial_reply(session_key, " + 流式增量")  # type: ignore[attr-defined]
     pending = _PendingTask()
     loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
@@ -605,8 +609,30 @@ async def test_interrupt_state_carries_partial_progress(tmp_path: Path):
     assert state.tool_chain_partial == [{"text": "tool", "calls": []}]
 
 
-def test_agent_loop_configures_progress_sink_without_stream_factory(tmp_path: Path):
+@pytest.mark.asyncio
+async def test_agent_loop_configures_step_observer_and_afterstep_fires(tmp_path: Path):
     loop = _make_loop(tmp_path)
-    progress_factory = getattr(loop._reasoner, "_progress_sink_factory", None)
+    session_key = "cli:123"
+    loop._active_turn_states[session_key] = TurnInterruptState(
+        session_key=session_key,
+        original_user_message="hello",
+    )
+    msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
+    session = SimpleNamespace(
+        key=session_key,
+        messages=[],
+        last_consolidated=0,
+        get_history=MagicMock(return_value=[]),
+    )
+    loop.session_manager.get_or_create.return_value = session
 
-    assert callable(progress_factory)
+    await loop._reasoner.run_turn(
+        msg=msg,
+        session=session,
+        base_history=[],
+    )
+
+    state = loop._active_turn_states[session_key]
+    assert state.partial_reply == "ok"
+    assert state.tools_used == []
+    assert state.tool_chain_partial == []

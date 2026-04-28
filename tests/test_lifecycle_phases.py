@@ -9,12 +9,18 @@ import pytest
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from agent.core.types import ContextBundle
+from agent.core.passive_support import build_context_hint_message
 from agent.lifecycle.types import (
+    AfterStepCtx,
     BeforeReasoningCtx,
     BeforeReasoningInput,
+    BeforeStepCtx,
+    BeforeStepInput,
     BeforeTurnCtx,
     TurnState,
 )
+from agent.lifecycle.phases.after_step import AfterStepPhase
+from agent.lifecycle.phases.before_step import BeforeStepPhase
 from agent.lifecycle.phases.before_turn import BeforeTurnPhase
 from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
 
@@ -310,3 +316,106 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     call_args = context_builder.render.call_args[0][0]
     assert "chain_added_skill" in call_args.skill_names
     assert call_args.retrieved_memory_block == "chain_modified_block"
+
+
+@pytest.mark.asyncio
+async def test_before_step_setup_records_token_estimate():
+    bus = EventBus()
+    phase = BeforeStepPhase(bus)
+    messages = [{"role": "user", "content": "hello"}]
+
+    ctx = await phase.run(
+        BeforeStepInput(
+            session_key="k",
+            channel="c",
+            chat_id="ch",
+            iteration=1,
+            messages=messages,
+            visible_names=None,
+        )
+    )
+
+    assert ctx.input_tokens_estimate > 0
+
+
+@pytest.mark.asyncio
+async def test_before_step_finalize_injects_extra_hints():
+    bus = EventBus()
+
+    async def append_hint(ctx: BeforeStepCtx) -> BeforeStepCtx:
+        ctx.extra_hints.append("hints from plugin")
+        return ctx
+
+    bus.on(BeforeStepCtx, append_hint)
+    phase = BeforeStepPhase(bus)
+    messages = [{"role": "user", "content": "hello"}]
+
+    await phase.run(
+        BeforeStepInput(
+            session_key="k",
+            channel="c",
+            chat_id="ch",
+            iteration=1,
+            messages=messages,
+            visible_names=None,
+        )
+    )
+
+    expected = build_context_hint_message("plugin_hints", "hints from plugin")
+    assert messages == [{"role": "user", "content": "hello"}, expected]
+
+
+@pytest.mark.asyncio
+async def test_before_step_finalize_early_stop():
+    bus = EventBus()
+
+    async def stop_early(ctx: BeforeStepCtx) -> BeforeStepCtx:
+        ctx.early_stop = True
+        ctx.early_stop_reply = "预算不足"
+        return ctx
+
+    bus.on(BeforeStepCtx, stop_early)
+    phase = BeforeStepPhase(bus)
+    messages = [{"role": "user", "content": "hello"}]
+
+    ctx = await phase.run(
+        BeforeStepInput(
+            session_key="k",
+            channel="c",
+            chat_id="ch",
+            iteration=1,
+            messages=messages,
+            visible_names=None,
+        )
+    )
+
+    assert ctx.early_stop is True
+    assert ctx.early_stop_reply == "预算不足"
+
+
+@pytest.mark.asyncio
+async def test_after_step_phase_runs_observers():
+    bus = EventBus()
+    side_effect: list[str] = []
+
+    async def handler(ctx: AfterStepCtx) -> None:
+        side_effect.append(ctx.partial_reply)
+
+    bus.on(AfterStepCtx, handler)
+    phase = AfterStepPhase(bus)
+    await phase.run(
+        AfterStepCtx(
+            session_key="k",
+            channel="c",
+            chat_id="ch",
+            iteration=0,
+            tools_called=(),
+            partial_reply="ok",
+            tools_used_so_far=(),
+            tool_chain_partial=(),
+            partial_thinking=None,
+            has_more=True,
+        )
+    )
+
+    assert side_effect == ["ok"]
