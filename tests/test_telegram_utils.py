@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any, cast
 from types import SimpleNamespace
 
@@ -7,9 +8,11 @@ from unittest.mock import AsyncMock
 from infra.channels.telegram_utils import (
     TelegramLiveEditQueue,
     TelegramLiveTextMessage,
+    TelegramOutboundLimiter,
     TelegramStreamMessage,
     render_telegram_preview_html,
     send_markdown,
+    send_stream_markdown,
     send_thinking_block,
 )
 
@@ -50,6 +53,120 @@ async def test_send_markdown_splits_long_code_block_into_multiple_messages():
     assert all(call["text"].strip() for call in bot.messages)
     assert any(entity["type"] == "pre" for entity in bot.messages[0]["entities"])
     assert all(len(call["text"]) <= 4090 for call in bot.messages)
+
+
+@pytest.mark.asyncio
+async def test_outbound_limiter_retries_after_cooling_down(monkeypatch):
+    from infra.channels import telegram_utils as mod
+
+    limiter = TelegramOutboundLimiter(
+        send_interval_s=2.0,
+        global_interval_s=0.0,
+        retry_padding_s=1.0,
+        max_attempts=2,
+    )
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+    calls = 0
+
+    async def action():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise mod.RetryAfter(cast(Any, 3.0))
+        return "ok"
+
+    result = await limiter.run(123, kind="send", label="send_message(test)", action=action)
+
+    assert result == "ok"
+    assert calls == 2
+    assert sleep_mock.await_args_list[0].args[0] >= 3.9
+
+
+@pytest.mark.asyncio
+async def test_outbound_limiter_typing_does_not_delay_send(monkeypatch):
+    limiter = TelegramOutboundLimiter(
+        send_interval_s=2.0,
+        typing_interval_s=8.0,
+        global_interval_s=0.0,
+    )
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+
+    await limiter.run(123, kind="typing", label="typing", action=AsyncMock(return_value=True))
+    await limiter.run(123, kind="send", label="send", action=AsyncMock(return_value=True))
+
+    sleep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outbound_limiter_global_slot_covers_action():
+    limiter = TelegramOutboundLimiter(
+        send_interval_s=0.0,
+        global_interval_s=0.0,
+    )
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first_action():
+        first_started.set()
+        await release_first.wait()
+        return "first"
+
+    async def second_action():
+        second_started.set()
+        return "second"
+
+    first_task = asyncio.create_task(
+        limiter.run(123, kind="send", label="first", action=first_action)
+    )
+    await first_started.wait()
+    second_task = asyncio.create_task(
+        limiter.run(456, kind="send", label="second", action=second_action)
+    )
+    await asyncio.sleep(0)
+
+    assert not second_started.is_set()
+    release_first.set()
+    assert await first_task == "first"
+    assert await second_task == "second"
+
+
+@pytest.mark.asyncio
+async def test_outbound_limiter_typing_retry_after_sets_cooldown(monkeypatch):
+    from infra.channels import telegram_utils as mod
+
+    limiter = TelegramOutboundLimiter(
+        typing_interval_s=8.0,
+        retry_padding_s=1.0,
+    )
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+
+    with pytest.raises(mod.RetryAfter):
+        await limiter.run(
+            123,
+            kind="typing",
+            label="typing",
+            action=AsyncMock(side_effect=mod.RetryAfter(cast(Any, 3.0))),
+        )
+    await limiter.run(123, kind="typing", label="typing", action=AsyncMock(return_value=True))
+
+    assert sleep_mock.await_args_list[0].args[0] >= 3.9
+
+
+@pytest.mark.asyncio
+async def test_send_markdown_does_not_fallback_when_send_fails(monkeypatch):
+    from infra.channels import telegram_utils as mod
+
+    bot = BotStub()
+    bot.send_message = AsyncMock(side_effect=mod.TimedOut("x"))
+
+    with pytest.raises(mod.TimedOut):
+        await send_markdown(cast(Any, bot), 123, "hello")
+
+    assert bot.send_message.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -110,6 +227,19 @@ async def test_stream_message_falls_back_to_plain_text_on_html_parse_error():
 
     assert bot.messages[0]["parse_mode"] == "HTML"
     assert bot.edits[-1]["text"] == "**hello**\n\n- a\n- b"
+
+
+@pytest.mark.asyncio
+async def test_send_stream_markdown_falls_back_to_markdown_on_stream_failure():
+    bot = BotStub()
+    bot.edit_message_text = AsyncMock(side_effect=RuntimeError("boom"))
+
+    text = "hello world " * 30
+    await send_stream_markdown(cast(Any, bot), 123, text)
+
+    assert len(bot.messages) == 2
+    assert bot.messages[-1]["text"] == text
+    assert bot.edit_message_text.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -228,6 +358,32 @@ async def test_live_edit_queue_backoff_and_force_retry(monkeypatch):
     await live.update("hello world final", force=True)
     assert bot.edit_message_text.await_count == 1
     assert queue._flood_strikes[123] == 0
+
+
+@pytest.mark.asyncio
+async def test_live_edit_queue_with_limiter_skips_retry_after_frame(monkeypatch):
+    from infra.channels import telegram_utils as mod
+
+    bot = BotStub()
+    bot.edit_message_text = AsyncMock(side_effect=mod.RetryAfter(cast(Any, 8.0)))
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("infra.channels.telegram_utils.asyncio.sleep", sleep_mock)
+    limiter = TelegramOutboundLimiter(
+        send_interval_s=0.0,
+        edit_interval_s=0.0,
+        global_interval_s=0.0,
+        retry_padding_s=0.0,
+    )
+    queue = TelegramLiveEditQueue(min_interval_s=0.0, limiter=limiter)
+    live = TelegramLiveTextMessage(cast(Any, bot), queue, 123)
+    live._message_id = 1
+    live._last_plain = "old"
+
+    await live.update("new")
+
+    assert bot.edit_message_text.await_count == 1
+    sleep_mock.assert_not_awaited()
+    assert queue._flood_strikes[123] == 1
 
 
 @pytest.mark.asyncio

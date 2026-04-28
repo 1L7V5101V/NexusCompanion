@@ -36,6 +36,7 @@ from bus.queue import MessageBus
 from agent.looping.interrupt import InterruptController
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
 from infra.channels.telegram_utils import (
+    TelegramOutboundLimiter,
     TelegramLiveEditQueue,
     TelegramLiveTextMessage,
     TelegramStreamMessage,
@@ -109,8 +110,9 @@ class TelegramChannel:
             event_bus.on(ToolCallCompleted, self._on_tool_call_completed)
         self.user_map = self._identity_index.mapping
         self._polling_conflict_task: asyncio.Task[None] | None = None
+        self._telegram_outbound_limiter = TelegramOutboundLimiter()
         self._active_streams: dict[str, TelegramStreamMessage] = {}
-        self._live_edit_queue = TelegramLiveEditQueue()
+        self._live_edit_queue = TelegramLiveEditQueue(limiter=self._telegram_outbound_limiter)
         self._live_messages: dict[str, TelegramLiveTextMessage] = {}
         self._reply_buffers: dict[str, str] = {}
         self._thinking_buffers: dict[str, str] = {}
@@ -300,7 +302,12 @@ class TelegramChannel:
             )
             return
         if self._interrupt_controller is None:
-            await send_markdown(self._app.bot, str(chat.id), "当前未启用中断功能。")
+            await send_markdown(
+                self._app.bot,
+                str(chat.id),
+                "当前未启用中断功能。",
+                self._telegram_outbound_limiter,
+            )
             return
 
         session_key = f"{_CHANNEL}:{chat.id}"
@@ -309,7 +316,12 @@ class TelegramChannel:
             sender=str(user.id),
             command="/stop",
         )
-        await send_markdown(self._app.bot, str(chat.id), result.message)
+        await send_markdown(
+            self._app.bot,
+            str(chat.id),
+            result.message,
+            self._telegram_outbound_limiter,
+        )
 
     async def _on_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -449,7 +461,12 @@ class TelegramChannel:
 
     async def send(self, chat_id: str, message: str) -> None:
         """发送文本消息（供 MessagePushTool 调用）"""
-        await send_markdown(self._app.bot, self._resolve_chat_id(chat_id), message)
+        await send_markdown(
+            self._app.bot,
+            self._resolve_chat_id(chat_id),
+            message,
+            self._telegram_outbound_limiter,
+        )
 
     async def send_stream(self, chat_id: str, message: str) -> None:
         """发送流式文本消息（私聊优先 draft，其他场景降级普通发送）"""
@@ -457,6 +474,7 @@ class TelegramChannel:
             self._app.bot,
             self._resolve_chat_id(chat_id),
             message,
+            self._telegram_outbound_limiter,
         )
 
     def create_stream_sender(self, chat_id: str):
@@ -464,7 +482,7 @@ class TelegramChannel:
         if cid <= 0:
             return None
         key = str(cid)
-        stream = TelegramStreamMessage(self._app.bot, cid)
+        stream = TelegramStreamMessage(self._app.bot, cid, self._telegram_outbound_limiter)
         self._active_streams[key] = stream
 
         async def _push(delta: dict[str, str] | str) -> None:
@@ -616,11 +634,12 @@ class TelegramChannel:
     ) -> None:
         if not thinking:
             return
-        await self._live_edit_queue.reserve(
-            chat_id,
-            label="send_message(final_thinking)",
+        await send_thinking_block(
+            self._app.bot,
+            original_chat_id,
+            thinking,
+            self._telegram_outbound_limiter,
         )
-        await send_thinking_block(self._app.bot, original_chat_id, thinking)
 
     async def _send_final_tool_snapshot(
         self,
@@ -632,7 +651,12 @@ class TelegramChannel:
             return
         tool_text = _tail_text(_format_tool_live(lines), _TOOL_LIVE_TAIL)
         if tool_text:
-            await send_markdown(self._app.bot, chat_id, f"```\n{tool_text}\n```")
+            await send_markdown(
+                self._app.bot,
+                chat_id,
+                f"```\n{tool_text}\n```",
+                self._telegram_outbound_limiter,
+            )
 
     async def send_file(
         self,
@@ -643,19 +667,46 @@ class TelegramChannel:
     ) -> None:
         """发送文件，可附带说明文字"""
         cid = int(self._resolve_chat_id(chat_id))
-        with open(file_path, "rb") as f:
-            await self._app.bot.send_document(
-                chat_id=cid, document=f, filename=name, caption=caption
-            )
+        await self._telegram_outbound_limiter.run(
+            cid,
+            kind="send",
+            label="send_document",
+            action=lambda: self._send_document_file(cid, file_path, name, caption),
+        )
 
     async def send_image(self, chat_id: str, image: str) -> None:
         """发送图片（本地路径或 URL）"""
         cid = int(self._resolve_chat_id(chat_id))
         if image.startswith(("http://", "https://")):
-            await self._app.bot.send_photo(chat_id=cid, photo=image)
+            await self._telegram_outbound_limiter.run(
+                cid,
+                kind="send",
+                label="send_photo",
+                action=lambda: self._app.bot.send_photo(chat_id=cid, photo=image),
+            )
         else:
-            with open(image, "rb") as f:
-                await self._app.bot.send_photo(chat_id=cid, photo=f)
+            await self._telegram_outbound_limiter.run(
+                cid,
+                kind="send",
+                label="send_photo",
+                action=lambda: self._send_photo_file(cid, image),
+            )
+
+    async def _send_document_file(
+        self,
+        chat_id: int,
+        file_path: str,
+        name: str | None,
+        caption: str | None,
+    ) -> object:
+        with open(file_path, "rb") as f:
+            return await self._app.bot.send_document(
+                chat_id=chat_id, document=f, filename=name, caption=caption
+            )
+
+    async def _send_photo_file(self, chat_id: int, image: str) -> object:
+        with open(image, "rb") as f:
+            return await self._app.bot.send_photo(chat_id=chat_id, photo=f)
 
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
@@ -669,7 +720,12 @@ class TelegramChannel:
         final_thinking = self._final_thinking_text(session_key, msg.thinking)
         if had_live:
             if final_thinking:
-                await send_thinking_block(self._app.bot, msg.chat_id, final_thinking)
+                await send_thinking_block(
+                    self._app.bot,
+                    msg.chat_id,
+                    final_thinking,
+                    self._telegram_outbound_limiter,
+                )
             await self._send_final_tool_snapshot(session_key, msg.chat_id)
         streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
         if msg.content.strip():
@@ -678,9 +734,19 @@ class TelegramChannel:
                 if stream is not None:
                     await stream.finalize(msg.content)
                 else:
-                    await send_markdown(self._app.bot, msg.chat_id, msg.content)
+                    await send_markdown(
+                        self._app.bot,
+                        msg.chat_id,
+                        msg.content,
+                        self._telegram_outbound_limiter,
+                    )
             else:
-                await send_markdown(self._app.bot, msg.chat_id, msg.content)
+                await send_markdown(
+                    self._app.bot,
+                    msg.chat_id,
+                    msg.content,
+                    self._telegram_outbound_limiter,
+                )
         if final_thinking and not had_live:
             await self._send_final_thinking(cid, msg.chat_id, final_thinking)
         self._reply_buffers.pop(session_key, None)
@@ -695,40 +761,21 @@ class TelegramChannel:
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int
     ) -> None:
         """发送 typing 状态；失败时指数退避重试，不影响消息主流程。"""
-        base_delay = 0.4
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            try:
-                await context.bot.send_chat_action(
+        try:
+            await self._telegram_outbound_limiter.run(
+                chat_id,
+                kind="typing",
+                label="send_chat_action",
+                action=lambda: context.bot.send_chat_action(
                     chat_id=chat_id, action=ChatAction.TYPING
-                )
-                return
-            except (TimedOut, NetworkError) as e:
-                if attempt >= max_attempts:
-                    logger.warning(
-                        "[telegram] send_chat_action 重试耗尽，跳过 typing chat_id=%s attempts=%d err=%s",
-                        chat_id,
-                        attempt,
-                        e,
-                    )
-                    return
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning(
-                    "[telegram] send_chat_action 失败，准备重试 chat_id=%s attempt=%d/%d backoff=%.1fs err=%s",
-                    chat_id,
-                    attempt,
-                    max_attempts,
-                    delay,
-                    e,
-                )
-                await asyncio.sleep(delay)
-            except Exception as e:
-                logger.warning(
-                    "[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s",
-                    chat_id,
-                    e,
-                )
-                return
+                ),
+            )
+        except Exception as e:
+            logger.warning(
+                "[telegram] send_chat_action 失败，已跳过 typing chat_id=%s err=%s",
+                chat_id,
+                e,
+            )
 
     def _on_polling_error(self, exc: TelegramError) -> None:
         """处理 Telegram polling 异常，避免 Conflict 场景下持续刷屏。"""

@@ -47,6 +47,175 @@ _ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(
 _T = TypeVar("_T")
 
 
+class TelegramOutboundLimiter:
+    def __init__(
+        self,
+        *,
+        send_interval_s: float = 2.0,
+        edit_interval_s: float = 5.0,
+        typing_interval_s: float = 8.0,
+        global_interval_s: float = 0.25,
+        retry_padding_s: float = 1.0,
+        max_attempts: int = 5,
+    ) -> None:
+        self._send_interval_s = send_interval_s
+        self._edit_interval_s = edit_interval_s
+        self._typing_interval_s = typing_interval_s
+        self._global_interval_s = global_interval_s
+        self._retry_padding_s = retry_padding_s
+        self._max_attempts = max_attempts
+        self._chat_locks: dict[int, asyncio.Lock] = {}
+        self._typing_locks: dict[int, asyncio.Lock] = {}
+        self._global_lock = asyncio.Lock()
+        self._next_chat_at: dict[int, float] = {}
+        self._next_typing_at: dict[int, float] = {}
+        self._next_global_at = 0.0
+
+    async def run(
+        self,
+        chat_id: int | str,
+        *,
+        kind: str,
+        label: str,
+        action: Callable[[], Awaitable[_T]],
+        max_attempts: int | None = None,
+    ) -> _T:
+        cid = int(chat_id)
+        if kind == "typing":
+            return await self._run_typing(cid, label=label, action=action)
+        attempts = max_attempts or self._max_attempts
+        lock = self._chat_locks.setdefault(cid, asyncio.Lock())
+        async with lock:
+            last_err: Exception | None = None
+            for attempt in range(1, attempts + 1):
+                await self._wait_for_chat_slot(cid)
+                try:
+                    result = await self._run_with_global_slot(action)
+                    self._mark_used(cid, kind)
+                    return result
+                except RetryAfter as e:
+                    last_err = e
+                    delay = max(
+                        float(getattr(e, "retry_after", 1.0) or 1.0) + self._retry_padding_s,
+                        self._interval(kind),
+                    )
+                    self._cooldown(cid, delay)
+                    logger.warning(
+                        "[telegram] %s 命中限流，按 retry_after 冷却 chat_id=%s attempt=%d/%d delay=%.1fs",
+                        label,
+                        cid,
+                        attempt,
+                        attempts,
+                        delay,
+                    )
+                except (TimedOut, NetworkError) as e:
+                    last_err = e
+                    delay = min(0.8 * (2 ** (attempt - 1)), 8.0)
+                    self._cooldown(cid, delay)
+                    logger.warning(
+                        "[telegram] %s 网络失败，准备重试 chat_id=%s attempt=%d/%d delay=%.1fs err=%s",
+                        label,
+                        cid,
+                        attempt,
+                        attempts,
+                        delay,
+                        e,
+                    )
+                if attempt >= attempts:
+                    break
+                await self._sleep_until_ready(cid)
+            if last_err is not None:
+                raise last_err
+            raise RuntimeError(f"{label} failed without exception")
+
+    async def _run_typing(
+        self,
+        chat_id: int,
+        *,
+        label: str,
+        action: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        lock = self._typing_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            now = asyncio.get_running_loop().time()
+            wait_s = self._next_typing_at.get(chat_id, 0.0) - now
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+            try:
+                result = await action()
+                self._next_typing_at[chat_id] = (
+                    asyncio.get_running_loop().time() + self._typing_interval_s
+                )
+                return result
+            except RetryAfter as e:
+                delay = (
+                    float(getattr(e, "retry_after", 1.0) or 1.0)
+                    + self._retry_padding_s
+                )
+                self._next_typing_at[chat_id] = asyncio.get_running_loop().time() + delay
+                raise
+
+    async def _wait_for_chat_slot(self, chat_id: int) -> None:
+        now = asyncio.get_running_loop().time()
+        wait_s = self._next_chat_at.get(chat_id, 0.0) - now
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+
+    async def _run_with_global_slot(
+        self,
+        action: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        async with self._global_lock:
+            now = asyncio.get_running_loop().time()
+            wait_s = self._next_global_at - now
+            if wait_s > 0:
+                await asyncio.sleep(wait_s)
+            try:
+                return await action()
+            finally:
+                self._next_global_at = (
+                    asyncio.get_running_loop().time() + self._global_interval_s
+                )
+
+    async def _sleep_until_ready(self, chat_id: int) -> None:
+        now = asyncio.get_running_loop().time()
+        wait_s = self._next_chat_at.get(chat_id, 0.0) - now
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+
+    def _mark_used(self, chat_id: int, kind: str) -> None:
+        now = asyncio.get_running_loop().time()
+        self._next_chat_at[chat_id] = now + self._interval(kind)
+
+    def _cooldown(self, chat_id: int, delay: float) -> None:
+        now = asyncio.get_running_loop().time()
+        self._next_chat_at[chat_id] = max(
+            self._next_chat_at.get(chat_id, 0.0),
+            now + delay,
+        )
+        self._next_global_at = max(self._next_global_at, now + self._global_interval_s)
+
+    def _interval(self, kind: str) -> float:
+        if kind == "edit":
+            return self._edit_interval_s
+        if kind == "typing":
+            return self._typing_interval_s
+        return self._send_interval_s
+
+
+async def _run_outbound(
+    limiter: TelegramOutboundLimiter | None,
+    chat_id: int,
+    *,
+    kind: str,
+    label: str,
+    action: Callable[[], Awaitable[_T]],
+) -> _T:
+    if limiter is not None:
+        return await limiter.run(chat_id, kind=kind, label=label, action=action)
+    return await _send_with_retry_result(action, label=label)
+
+
 async def _send_with_retry(
     send_coro_factory,
     *,
@@ -134,30 +303,42 @@ def _strip_chunk(
     return stripped, adjusted
 
 
-async def send_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
+async def send_markdown(
+    bot: Bot,
+    chat_id: int | str,
+    text: str,
+    limiter: TelegramOutboundLimiter | None = None,
+) -> None:
     cid = int(chat_id)
     try:
         rendered_text, entities, _segments = convert_with_segments(text)
         chunks = split_entities(rendered_text, entities, 4090)
-        for chunk_text, chunk_entities in chunks:
-            chunk_text, chunk_entities = _strip_chunk(chunk_text, chunk_entities)
-            if not chunk_text:
-                continue
-            await _send_with_retry(
-                lambda: bot.send_message(
-                    chat_id=cid,
-                    text=chunk_text,
-                    entities=cast(Any, _serialize_entities(chunk_entities)),
-                ),
-                label="send_message(markdown)",
-            )
     except Exception as e:
         logger.warning(f"[telegram] Markdown 转换失败，降级纯文本: {e}")
         for chunk in _split_text(text, 4090):
-            await _send_with_retry(
-                lambda: bot.send_message(chat_id=cid, text=chunk),
+            await _run_outbound(
+                limiter,
+                cid,
+                kind="send",
+                action=lambda: bot.send_message(chat_id=cid, text=chunk),
                 label="send_message(plain)",
             )
+        return
+    for chunk_text, chunk_entities in chunks:
+        chunk_text, chunk_entities = _strip_chunk(chunk_text, chunk_entities)
+        if not chunk_text:
+            continue
+        await _run_outbound(
+            limiter,
+            cid,
+            kind="send",
+            action=lambda: bot.send_message(
+                chat_id=cid,
+                text=chunk_text,
+                entities=cast(Any, _serialize_entities(chunk_entities)),
+            ),
+            label="send_message(markdown)",
+        )
 
 
 def _split_text(text: str, limit: int) -> list[str]:
@@ -179,7 +360,12 @@ def _split_text(text: str, limit: int) -> list[str]:
     return chunks
 
 
-async def send_thinking_block(bot: Bot, chat_id: int | str, thinking: str) -> None:
+async def send_thinking_block(
+    bot: Bot,
+    chat_id: int | str,
+    thinking: str,
+    limiter: TelegramOutboundLimiter | None = None,
+) -> None:
     """Send thinking content as expandable blockquote message(s).
 
     Telegram 单条消息限制 4096 UTF-16 code units。超长 thinking 按行分段，
@@ -197,8 +383,11 @@ async def send_thinking_block(bot: Bot, chat_id: int | str, thinking: str) -> No
         utf16_len = len(text.encode("utf-16-le")) // 2
         entity = TgEntity(type="expandable_blockquote", offset=0, length=utf16_len)
         try:
-            await _send_with_retry(
-                lambda text=text, entity=entity: bot.send_message(
+            await _run_outbound(
+                limiter,
+                cid,
+                kind="send",
+                action=lambda text=text, entity=entity: bot.send_message(
                     chat_id=cid,
                     text=text,
                     entities=[entity],
@@ -247,7 +436,12 @@ def _utf16_cut(text: str, max_utf16: int) -> int:
     return len(text)
 
 
-async def send_stream_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
+async def send_stream_markdown(
+    bot: Bot,
+    chat_id: int | str,
+    text: str,
+    limiter: TelegramOutboundLimiter | None = None,
+) -> None:
     """主动推送场景的简化流式展示。"""
     cid = int(chat_id)
     stripped = text.strip()
@@ -256,15 +450,16 @@ async def send_stream_markdown(bot: Bot, chat_id: int | str, text: str) -> None:
 
     if cid > 0:
         try:
-            stream = TelegramStreamMessage(bot, cid)
+            stream = TelegramStreamMessage(bot, cid, limiter)
             for chunk in _iter_stream_chunks(stripped):
                 await stream.push_delta(chunk, force=True)
             await stream.finalize(text)
         except Exception as e:
             logger.warning("[telegram] stream edit 失败，降级普通发送: %s", e)
+            await send_markdown(bot, cid, text, limiter)
 
     else:
-        await send_markdown(bot, cid, text)
+        await send_markdown(bot, cid, text, limiter)
 
 
 def _ring_tail(text: str, cap: int) -> str:
@@ -277,8 +472,13 @@ def _ring_tail(text: str, cap: int) -> str:
 
 
 class TelegramLiveEditQueue:
-    def __init__(self, min_interval_s: float = _LIVE_EDIT_MIN_INTERVAL_S) -> None:
+    def __init__(
+        self,
+        min_interval_s: float = _LIVE_EDIT_MIN_INTERVAL_S,
+        limiter: TelegramOutboundLimiter | None = None,
+    ) -> None:
         self._min_interval_s = min_interval_s
+        self._limiter = limiter
         self._locks: dict[int, asyncio.Lock] = {}
         self._next_allowed_at: dict[int, float] = {}
         self._flood_strikes: dict[int, int] = {}
@@ -299,6 +499,39 @@ class TelegramLiveEditQueue:
         force: bool = False,
         action: Callable[[], Awaitable[_T]],
     ) -> _T | None:
+        if self._limiter is not None:
+            strikes = self._flood_strikes.get(chat_id, 0)
+            if strikes >= _LIVE_MAX_FLOOD_STRIKES and not force:
+                logger.warning(
+                    "[telegram] %s live 更新因连续限流跳过 chat_id=%s strikes=%d",
+                    label,
+                    chat_id,
+                    strikes,
+                )
+                return None
+            try:
+                result = await self._limiter.run(
+                    chat_id,
+                    kind="edit" if label.startswith("edit_") else "send",
+                    label=label,
+                    action=action,
+                    max_attempts=1,
+                )
+                self._flood_strikes[chat_id] = 0
+                return result
+            except RetryAfter as e:
+                strikes = self._record_flood(chat_id)
+                logger.warning(
+                    "[telegram] %s live 更新命中限流，跳过本帧 chat_id=%s strikes=%d err=%s",
+                    label,
+                    chat_id,
+                    strikes,
+                    e,
+                )
+                return None
+            except (TimedOut, NetworkError) as e:
+                logger.warning("[telegram] %s live 更新失败，已跳过: %s", label, e)
+                return None
         lock = self._locks.setdefault(chat_id, asyncio.Lock())
         async with lock:
             strikes = self._flood_strikes.get(chat_id, 0)
@@ -433,13 +666,20 @@ class TelegramLiveTextMessage:
     async def delete(self) -> None:
         if self._message_id is None:
             return
+        message_id = self._message_id
         try:
-            await self._bot.delete_message(
-                chat_id=self._chat_id,
-                message_id=self._message_id,
+            ok = await self._queue.run(
+                self._chat_id,
+                label="delete_message(live)",
+                force=True,
+                action=lambda: self._bot.delete_message(
+                    chat_id=self._chat_id,
+                    message_id=message_id,
+                ),
             )
-            self._message_id = None
-            self._last_plain = ""
+            if ok is not None:
+                self._message_id = None
+                self._last_plain = ""
         except RetryAfter as e:
             logger.warning("[telegram] live 预览删除命中限流，已跳过: %s", e)
         except (TimedOut, NetworkError) as e:
@@ -512,9 +752,15 @@ async def _edit_live_message(
 
 
 class TelegramStreamMessage:
-    def __init__(self, bot: Bot, chat_id: int) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        chat_id: int,
+        limiter: TelegramOutboundLimiter | None = None,
+    ) -> None:
         self._bot = bot
         self._chat_id = int(chat_id)
+        self._limiter = limiter
         self._message_id: int | None = None
         self._reply_buffer = ""
         self._thinking_buffer = ""
@@ -624,11 +870,14 @@ class TelegramStreamMessage:
         if plain_text == self._last_sent_plain and self._message_id is not None:
             return
         if self._message_id is None:
-            sent = await _send_with_retry_result(
-                lambda: _send_preview_message(
+            sent = await _run_outbound(
+                self._limiter,
+                self._chat_id,
+                kind="send",
+                label="send_message(stream_start)",
+                action=lambda: _send_preview_message(
                     self._bot, self._chat_id, html_text, plain_text
                 ),
-                label="send_message(stream_start)",
             )
             self._message_id = int(getattr(sent, "message_id", 0) or 0) or None
             self._last_sent_plain = plain_text
@@ -642,13 +891,28 @@ class TelegramStreamMessage:
         plain_text: str,
     ) -> bool:
         try:
-            await _edit_preview_message(
-                self._bot,
-                self._chat_id,
-                self._message_id,
-                html_text,
-                plain_text,
-            )
+            if self._limiter is None:
+                await _edit_preview_message(
+                    self._bot,
+                    self._chat_id,
+                    self._message_id,
+                    html_text,
+                    plain_text,
+                )
+            else:
+                await _run_outbound(
+                    self._limiter,
+                    self._chat_id,
+                    kind="edit",
+                    label="edit_message_text(stream)",
+                    action=lambda: _edit_preview_message(
+                        self._bot,
+                        self._chat_id,
+                        self._message_id,
+                        html_text,
+                        plain_text,
+                    ),
+                )
             return True
         except RetryAfter as e:
             delay = max(float(getattr(e, "retry_after", 1.0) or 1.0), 1.0)

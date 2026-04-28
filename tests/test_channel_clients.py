@@ -498,7 +498,17 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         event_bus=event_bus,
         interrupt_controller=interrupt_controller,
     )
-    channel._live_edit_queue._min_interval_s = 0.0
+    channel._telegram_outbound_limiter = mod.TelegramOutboundLimiter(
+        send_interval_s=0.0,
+        edit_interval_s=0.0,
+        typing_interval_s=0.0,
+        global_interval_s=0.0,
+        retry_padding_s=0.0,
+    )
+    channel._live_edit_queue = mod.TelegramLiveEditQueue(
+        min_interval_s=0.0,
+        limiter=channel._telegram_outbound_limiter,
+    )
     monkeypatch.setattr(mod, "send_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_stream_markdown", AsyncMock())
     monkeypatch.setattr(mod, "send_thinking_block", AsyncMock())
