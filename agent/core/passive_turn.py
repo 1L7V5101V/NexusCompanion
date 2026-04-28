@@ -28,15 +28,26 @@ from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
 )
-from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
-from agent.lifecycle.phases.after_turn import AfterTurnPhase
-from agent.lifecycle.phases.before_turn import BeforeTurnPhase
-from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
+from agent.lifecycle.phase import Phase
+from agent.lifecycle.phases.after_reasoning import (
+    AfterReasoningFrame,
+    default_after_reasoning_modules,
+)
+from agent.lifecycle.phases.after_turn import AfterTurnFrame, default_after_turn_modules
+from agent.lifecycle.phases.before_reasoning import (
+    BeforeReasoningFrame,
+    default_before_reasoning_modules,
+)
+from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
 from agent.lifecycle.types import (
     AfterReasoningInput,
+    AfterReasoningResult,
     AfterStepCtx,
+    BeforeReasoningCtx,
     BeforeReasoningInput,
+    BeforeStepCtx,
     BeforeStepInput,
+    BeforeTurnCtx,
     TurnSnapshot,
     TurnState,
 )
@@ -62,7 +73,7 @@ logger = logging.getLogger(__name__)
 # │        ├─ Reasoner.run_turn
 # │        │  └─ Reasoner.run
 # │        ├─ parse_response
-# │        └─ AfterReasoningPhase + AfterTurnPhase
+# │        └─ AfterReasoning + AfterTurn
 # │           └─ outbound.dispatch
 # └─ done
 
@@ -149,27 +160,44 @@ class PassiveTurnPipeline:
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
-        self._before_turn = BeforeTurnPhase(
-            bus=bus,
-            session_manager=self._session.session_manager,
-            context_store=deps.context_store,
+        self._before_turn: Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame] = Phase(
+            default_before_turn_modules(
+                bus,
+                self._session.session_manager,
+                deps.context_store,
+            ),
+            frame_factory=BeforeTurnFrame,
         )
-        self._before_reasoning = BeforeReasoningPhase(
-            bus=bus,
-            tools=deps.tools,
-            session_manager=self._session.session_manager,
-            context=deps.context,
+        self._before_reasoning: Phase[
+            BeforeReasoningInput,
+            BeforeReasoningCtx,
+            BeforeReasoningFrame,
+        ] = Phase(
+            default_before_reasoning_modules(
+                bus,
+                deps.tools,
+                self._session.session_manager,
+                deps.context,
+            ),
+            frame_factory=BeforeReasoningFrame,
         )
-        self._after_reasoning = AfterReasoningPhase(
-            bus=bus,
-            session_services=self._session,
+        self._after_reasoning: Phase[
+            AfterReasoningInput,
+            AfterReasoningResult,
+            AfterReasoningFrame,
+        ] = Phase(
+            default_after_reasoning_modules(bus, self._session),
+            frame_factory=AfterReasoningFrame,
         )
         outbound_port = deps.outbound_port or _NoopOutboundPort()
-        self._after_turn = AfterTurnPhase(
-            bus=bus,
-            outbound=outbound_port,
-            context=deps.context,
-            history_window=deps.history_window,
+        self._after_turn: Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame] = Phase(
+            default_after_turn_modules(
+                bus,
+                outbound_port,
+                deps.context,
+                deps.history_window,
+            ),
+            frame_factory=AfterTurnFrame,
         )
 
     #核心方法 处理一条普通被动消息，并提交最终出站结果。
@@ -285,7 +313,7 @@ class PassiveTurnPipeline:
         outbound: OutboundMessage,
     ) -> OutboundMessage:
         if state.dispatch_outbound and self._outbound_port is not None:
-            await self._outbound_port.dispatch(
+            _ = await self._outbound_port.dispatch(
                 OutboundDispatch(
                     channel=outbound.channel,
                     chat_id=outbound.chat_id,
@@ -448,10 +476,23 @@ class DefaultReasoner(Reasoner):
         ] | None = None
         bus = event_bus or EventBus()
         self._bus = bus
-        from agent.lifecycle.phases.before_step import BeforeStepPhase
-        from agent.lifecycle.phases.after_step import AfterStepPhase
-        self._before_step = BeforeStepPhase(bus=bus)
-        self._after_step = AfterStepPhase(bus=bus)
+        from agent.lifecycle.phases.before_step import (
+            BeforeStepFrame,
+            default_before_step_modules,
+        )
+        from agent.lifecycle.phases.after_step import (
+            AfterStepFrame,
+            default_after_step_modules,
+        )
+
+        self._before_step: Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame] = Phase(
+            default_before_step_modules(bus),
+            frame_factory=BeforeStepFrame,
+        )
+        self._after_step: Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame] = Phase(
+            default_after_step_modules(bus),
+            frame_factory=AfterStepFrame,
+        )
 
     def set_stream_sink_factory(
         self,
@@ -937,7 +978,7 @@ class DefaultReasoner(Reasoner):
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
                 # 7a. AfterStep（工具分支）：通知观察者本轮工具执行完毕，has_more=True。
-                await self._after_step.run(AfterStepCtx(
+                _ = await self._after_step.run(AfterStepCtx(
                     session_key=tool_event_session_key,
                     channel=tool_event_channel,
                     chat_id=tool_event_chat_id,
@@ -1003,7 +1044,7 @@ class DefaultReasoner(Reasoner):
             )
             messages.append({"role": "assistant", "content": response.content})
             # 8a. AfterStep（最终回复分支）：通知观察者本轮推理结束，has_more=False。
-            await self._after_step.run(AfterStepCtx(
+            _ = await self._after_step.run(AfterStepCtx(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,

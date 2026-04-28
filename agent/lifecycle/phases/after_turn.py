@@ -12,7 +12,7 @@ from agent.core.passive_support import (
     log_react_context_budget,
 )
 from agent.core.types import to_tool_call_groups
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import AfterTurnCtx, TurnSnapshot
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
@@ -227,24 +227,3 @@ def default_after_turn_modules(
         _DispatchOutboundModule(outbound),
         _ReturnOutboundMessageModule(),
     ]
-
-
-class AfterTurnPhase(Phase[TurnSnapshot, OutboundMessage, AfterTurnFrame]):
-    def __init__(
-        self,
-        bus: EventBus,
-        outbound: OutboundPort,
-        context: ContextBuilder,
-        history_window: int = 500,
-    ) -> None:
-        super().__init__(
-            default_after_turn_modules(
-                bus,
-                outbound,
-                context,
-                history_window,
-            )
-        )
-
-    def _build_frame(self, input: TurnSnapshot) -> AfterTurnFrame:
-        return AfterTurnFrame(input=input)

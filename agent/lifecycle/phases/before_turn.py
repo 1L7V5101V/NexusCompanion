@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 from bus.event_bus import EventBus
 from agent.core.types import ContextBundle
 from agent.core.runtime_support import SessionLike
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 
 if TYPE_CHECKING:
@@ -118,16 +118,3 @@ def default_before_turn_modules(
         _EmitBeforeTurnCtxModule(bus),
         _ReturnBeforeTurnCtxModule(),
     ]
-
-
-class BeforeTurnPhase(Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]):
-    def __init__(
-        self,
-        bus: EventBus,
-        session_manager: SessionManager,
-        context_store: ContextStore,
-    ) -> None:
-        super().__init__(default_before_turn_modules(bus, session_manager, context_store))
-
-    def _build_frame(self, input: TurnState) -> BeforeTurnFrame:
-        return BeforeTurnFrame(input=input)

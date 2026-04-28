@@ -7,7 +7,7 @@ from agent.core.passive_support import (
     build_context_hint_message,
     estimate_messages_tokens,
 )
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
 from bus.event_bus import EventBus
 
@@ -86,11 +86,3 @@ def default_before_step_modules(bus: EventBus) -> BeforeStepModules:
         _InjectHintsModule(),
         _ReturnBeforeStepCtxModule(),
     ]
-
-
-class BeforeStepPhase(Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]):
-    def __init__(self, bus: EventBus) -> None:
-        super().__init__(default_before_step_modules(bus))
-
-    def _build_frame(self, input: BeforeStepInput) -> BeforeStepFrame:
-        return BeforeStepFrame(input=input)

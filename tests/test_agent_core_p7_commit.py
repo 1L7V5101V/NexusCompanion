@@ -390,7 +390,7 @@ def test_response_parser_tool_chain_fallback_uses_item_ids():
     assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
 
 
-# ── 新链 (AfterReasoningPhase + AfterTurnPhase) 端到端测试 ──
+# ── 新链 (AfterReasoning + AfterTurn) 端到端测试 ──
 
 
 @pytest.mark.asyncio

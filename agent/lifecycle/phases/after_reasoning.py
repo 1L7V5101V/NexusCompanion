@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from agent.core.passive_support import update_session_runtime_metadata
 from agent.core.response_parser import parse_response
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -215,22 +215,3 @@ def default_after_reasoning_modules(
         _BuildOutboundMessageModule(),
         _ReturnAfterReasoningResultModule(),
     ]
-
-
-class AfterReasoningPhase(
-    Phase[AfterReasoningInput, AfterReasoningResult, AfterReasoningFrame]
-):
-    def __init__(
-        self,
-        bus: EventBus,
-        session_services: SessionServices,
-    ) -> None:
-        super().__init__(
-            default_after_reasoning_modules(
-                bus,
-                session_services,
-            )
-        )
-
-    def _build_frame(self, input: AfterReasoningInput) -> AfterReasoningFrame:
-        return AfterReasoningFrame(input=input)

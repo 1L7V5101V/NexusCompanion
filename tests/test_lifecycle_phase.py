@@ -71,7 +71,8 @@ class _NeedsMissingSlotModule:
 @pytest.mark.asyncio
 async def test_phase_modules_run_in_order():
     phase = Phase[str, str, _TextFrame](
-        [_SetupModule(), _MutateModule(), _FinalizeModule()]
+        [_SetupModule(), _MutateModule(), _FinalizeModule()],
+        frame_factory=_TextFrame,
     )
     result = await phase.run("hello")
     assert result == "setup_hello_mutated_finalized"
@@ -79,28 +80,34 @@ async def test_phase_modules_run_in_order():
 
 @pytest.mark.asyncio
 async def test_phase_modules_can_passthrough():
-    phase = Phase[str, str, _TextFrame]([_SetupModule(), _FinalizeModule()])
+    phase = Phase[str, str, _TextFrame](
+        [_SetupModule(), _FinalizeModule()],
+        frame_factory=_TextFrame,
+    )
     result = await phase.run("hello")
     assert result == "setup_hello_finalized"
 
 
 @pytest.mark.asyncio
 async def test_phase_module_exception_propagates():
-    phase = Phase[str, str, _TextFrame]([_FailingModule()])
+    phase = Phase[str, str, _TextFrame]([_FailingModule()], frame_factory=_TextFrame)
     with pytest.raises(RuntimeError, match="setup failed"):
         await phase.run("x")
 
 
 @pytest.mark.asyncio
 async def test_phase_requires_output():
-    phase = Phase[str, str, _TextFrame]([_NoOutputModule()])
+    phase = Phase[str, str, _TextFrame]([_NoOutputModule()], frame_factory=_TextFrame)
     with pytest.raises(RuntimeError, match="Phase 模块链未产生 output"):
         await phase.run("x")
 
 
 def test_phase_warns_when_slot_not_closed(caplog: pytest.LogCaptureFixture):
     with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
-        Phase[str, str, _TextFrame]([_NeedsMissingSlotModule()])
+        Phase[str, str, _TextFrame](
+            [_NeedsMissingSlotModule()],
+            frame_factory=_TextFrame,
+        )
     assert "Phase slot 未闭合" in caplog.text
 
 

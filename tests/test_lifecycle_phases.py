@@ -11,6 +11,7 @@ from agent.context import ContextBuilder
 from agent.core.passive_support import build_context_hint_message
 from agent.core.passive_turn import ContextStore
 from agent.core.types import ContextBundle
+from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
@@ -23,10 +24,22 @@ from agent.lifecycle.types import (
     BeforeTurnCtx,
     TurnState,
 )
-from agent.lifecycle.phases.after_step import AfterStepPhase
-from agent.lifecycle.phases.before_step import BeforeStepPhase
-from agent.lifecycle.phases.before_turn import BeforeTurnPhase
-from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
+from agent.lifecycle.phases.after_step import (
+    AfterStepFrame,
+    default_after_step_modules,
+)
+from agent.lifecycle.phases.before_reasoning import (
+    BeforeReasoningFrame,
+    default_before_reasoning_modules,
+)
+from agent.lifecycle.phases.before_step import (
+    BeforeStepFrame,
+    default_before_step_modules,
+)
+from agent.lifecycle.phases.before_turn import (
+    BeforeTurnFrame,
+    default_before_turn_modules,
+)
 from session.manager import SessionManager
 
 _now = datetime.now()
@@ -57,7 +70,7 @@ class _DummySession:
         self.messages.append(msg)
 
 
-# ── BeforeTurnPhase ──
+# ── BeforeTurn ──
 
 
 @pytest.mark.asyncio
@@ -79,10 +92,13 @@ async def test_before_turn_setup_fills_turn_state():
         prepare=AsyncMock(return_value=bundle),
     )
 
-    phase = BeforeTurnPhase(
-        bus,
-        cast(SessionManager, session_mgr),
-        cast(ContextStore, ctx_store),
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
     )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
@@ -114,10 +130,13 @@ async def test_before_turn_chain_can_abort():
 
     bus.on(BeforeTurnCtx, abort_handler)
 
-    phase = BeforeTurnPhase(
-        bus,
-        cast(SessionManager, session_mgr),
-        cast(ContextStore, ctx_store),
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
     )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
@@ -142,10 +161,13 @@ async def test_before_turn_chain_can_modify_skill_names():
 
     bus.on(BeforeTurnCtx, add_skill)
 
-    phase = BeforeTurnPhase(
-        bus,
-        cast(SessionManager, session_mgr),
-        cast(ContextStore, ctx_store),
+    phase = Phase(
+        default_before_turn_modules(
+            bus,
+            cast(SessionManager, session_mgr),
+            cast(ContextStore, ctx_store),
+        ),
+        frame_factory=BeforeTurnFrame,
     )
     msg = _inbound()
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
@@ -154,7 +176,7 @@ async def test_before_turn_chain_can_modify_skill_names():
     assert ctx.skill_names == ["search", "added_skill"]
 
 
-# ── BeforeReasoningPhase ──
+# ── BeforeReasoning ──
 
 
 @pytest.mark.asyncio
@@ -170,11 +192,14 @@ async def test_before_reasoning_setup_calls_tools_set_context():
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
-    phase = BeforeReasoningPhase(
-        bus,
-        cast(ToolRegistry, tools),
-        cast(SessionManager, session_mgr),
-        cast(ContextBuilder, context_builder),
+    phase = Phase(
+        default_before_reasoning_modules(
+            bus,
+            cast(ToolRegistry, tools),
+            cast(SessionManager, session_mgr),
+            cast(ContextBuilder, context_builder),
+        ),
+        frame_factory=BeforeReasoningFrame,
     )
     msg = _inbound()
 
@@ -209,11 +234,14 @@ async def test_before_reasoning_requires_session():
     session_mgr = Mock()
     context_builder = Mock()
 
-    phase = BeforeReasoningPhase(
-        bus,
-        cast(ToolRegistry, tools),
-        cast(SessionManager, session_mgr),
-        cast(ContextBuilder, context_builder),
+    phase = Phase(
+        default_before_reasoning_modules(
+            bus,
+            cast(ToolRegistry, tools),
+            cast(SessionManager, session_mgr),
+            cast(ContextBuilder, context_builder),
+        ),
+        frame_factory=BeforeReasoningFrame,
     )
     msg = _inbound()
 
@@ -245,11 +273,14 @@ async def test_before_reasoning_finalize_calls_render():
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
-    phase = BeforeReasoningPhase(
-        bus,
-        cast(ToolRegistry, tools),
-        cast(SessionManager, session_mgr),
-        cast(ContextBuilder, context_builder),
+    phase = Phase(
+        default_before_reasoning_modules(
+            bus,
+            cast(ToolRegistry, tools),
+            cast(SessionManager, session_mgr),
+            cast(ContextBuilder, context_builder),
+        ),
+        frame_factory=BeforeReasoningFrame,
     )
     msg = _inbound()
 
@@ -292,11 +323,14 @@ async def test_before_reasoning_chain_can_add_extra_hints():
 
     bus.on(BeforeReasoningCtx, hint_handler)
 
-    phase = BeforeReasoningPhase(
-        bus,
-        cast(ToolRegistry, tools),
-        cast(SessionManager, session_mgr),
-        cast(ContextBuilder, context_builder),
+    phase = Phase(
+        default_before_reasoning_modules(
+            bus,
+            cast(ToolRegistry, tools),
+            cast(SessionManager, session_mgr),
+            cast(ContextBuilder, context_builder),
+        ),
+        frame_factory=BeforeReasoningFrame,
     )
     msg = _inbound()
 
@@ -333,11 +367,14 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
 
     bus.on(BeforeReasoningCtx, modify_chain)
 
-    phase = BeforeReasoningPhase(
-        bus,
-        cast(ToolRegistry, tools),
-        cast(SessionManager, session_mgr),
-        cast(ContextBuilder, context_builder),
+    phase = Phase(
+        default_before_reasoning_modules(
+            bus,
+            cast(ToolRegistry, tools),
+            cast(SessionManager, session_mgr),
+            cast(ContextBuilder, context_builder),
+        ),
+        frame_factory=BeforeReasoningFrame,
     )
     msg = _inbound()
 
@@ -363,7 +400,7 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
 @pytest.mark.asyncio
 async def test_before_step_setup_records_token_estimate():
     bus = EventBus()
-    phase = BeforeStepPhase(bus)
+    phase = Phase(default_before_step_modules(bus), frame_factory=BeforeStepFrame)
     messages = [{"role": "user", "content": "hello"}]
 
     ctx = await phase.run(
@@ -389,7 +426,7 @@ async def test_before_step_finalize_injects_extra_hints():
         return ctx
 
     bus.on(BeforeStepCtx, append_hint)
-    phase = BeforeStepPhase(bus)
+    phase = Phase(default_before_step_modules(bus), frame_factory=BeforeStepFrame)
     messages = [{"role": "user", "content": "hello"}]
 
     await phase.run(
@@ -417,7 +454,7 @@ async def test_before_step_finalize_early_stop():
         return ctx
 
     bus.on(BeforeStepCtx, stop_early)
-    phase = BeforeStepPhase(bus)
+    phase = Phase(default_before_step_modules(bus), frame_factory=BeforeStepFrame)
     messages = [{"role": "user", "content": "hello"}]
 
     ctx = await phase.run(
@@ -444,7 +481,7 @@ async def test_after_step_phase_runs_observers():
         side_effect.append(ctx.partial_reply)
 
     bus.on(AfterStepCtx, handler)
-    phase = AfterStepPhase(bus)
+    phase = Phase(default_after_step_modules(bus), frame_factory=AfterStepFrame)
     await phase.run(
         AfterStepCtx(
             session_key="k",

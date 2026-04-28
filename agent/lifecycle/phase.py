@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any
 from typing import Generic, Protocol, TypeVar
 
 logger = logging.getLogger(__name__)
 
 I = TypeVar("I")
 O = TypeVar("O")
-# TODO: 若 pyright 支持稳定，再把 F 收窄为 PhaseFrame[I, O]，避免 Phase 和 Frame 的 I/O 不匹配。
 F = TypeVar("F", bound="PhaseFrame[Any, Any]")
 
 
@@ -33,20 +32,23 @@ class PhaseModule(Protocol[F]):
 
 
 class Phase(Generic[I, O, F]):
-    def __init__(self, modules: Sequence[PhaseModule[F]]) -> None:
+    def __init__(
+        self,
+        modules: Sequence[PhaseModule[F]],
+        *,
+        frame_factory: Callable[[I], F],
+    ) -> None:
         self._modules = list(modules)
+        self._frame_factory = frame_factory
         self._validate()
 
     async def run(self, input: I) -> O:
-        frame = self._build_frame(input)
+        frame = self._frame_factory(input)
         for module in self._modules:
             frame = await module.run(frame)
         if frame.output is None:
             raise RuntimeError("Phase 模块链未产生 output")
         return frame.output
-
-    def _build_frame(self, input: I) -> F:
-        return cast(F, PhaseFrame[I, O](input=input))
 
     def _validate(self) -> None:
         provided: set[str] = set()

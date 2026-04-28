@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, TypeAlias, cast
 
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.types import ContextRequest
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeReasoningCtx, BeforeReasoningInput
 from bus.event_bus import EventBus
 
@@ -124,21 +124,3 @@ def default_before_reasoning_modules(
         _PromptWarmupModule(context),
         _ReturnBeforeReasoningCtxModule(),
     ]
-
-
-class BeforeReasoningPhase(
-    Phase[BeforeReasoningInput, BeforeReasoningCtx, BeforeReasoningFrame]
-):
-    def __init__(
-        self,
-        bus: EventBus,
-        tools: ToolRegistry,
-        session_manager: SessionManager,
-        context: ContextBuilder,
-    ) -> None:
-        super().__init__(
-            default_before_reasoning_modules(bus, tools, session_manager, context)
-        )
-
-    def _build_frame(self, input: BeforeReasoningInput) -> BeforeReasoningFrame:
-        return BeforeReasoningFrame(input=input)

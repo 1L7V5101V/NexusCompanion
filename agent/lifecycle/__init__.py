@@ -1,8 +1,17 @@
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
-from agent.lifecycle.phases.after_turn import AfterTurnPhase
-from agent.lifecycle.phases.before_turn import BeforeTurnPhase
-from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
+from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phases.after_reasoning import (
+    AfterReasoningFrame,
+    default_after_reasoning_modules,
+)
+from agent.lifecycle.phases.after_step import AfterStepFrame, default_after_step_modules
+from agent.lifecycle.phases.after_turn import AfterTurnFrame, default_after_turn_modules
+from agent.lifecycle.phases.before_reasoning import (
+    BeforeReasoningFrame,
+    default_before_reasoning_modules,
+)
+from agent.lifecycle.phases.before_step import BeforeStepFrame, default_before_step_modules
+from agent.lifecycle.phases.before_turn import BeforeTurnFrame, default_before_turn_modules
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -20,20 +29,31 @@ from agent.lifecycle.types import (
 
 __all__ = [
     "AfterReasoningCtx",
+    "AfterReasoningFrame",
     "AfterReasoningInput",
-    "AfterReasoningPhase",
     "AfterReasoningResult",
-    "AfterTurnPhase",
     "AfterStepCtx",
+    "AfterStepFrame",
     "AfterTurnCtx",
+    "AfterTurnFrame",
     "BeforeReasoningCtx",
+    "BeforeReasoningFrame",
     "BeforeReasoningInput",
-    "BeforeReasoningPhase",
     "BeforeStepCtx",
+    "BeforeStepFrame",
     "BeforeStepInput",
     "BeforeTurnCtx",
-    "BeforeTurnPhase",
+    "BeforeTurnFrame",
+    "Phase",
+    "PhaseFrame",
+    "PhaseModule",
     "TurnLifecycle",
     "TurnSnapshot",
     "TurnState",
+    "default_after_reasoning_modules",
+    "default_after_step_modules",
+    "default_after_turn_modules",
+    "default_before_reasoning_modules",
+    "default_before_step_modules",
+    "default_before_turn_modules",
 ]

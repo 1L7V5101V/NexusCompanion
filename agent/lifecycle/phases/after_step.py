@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import TypeAlias, cast
 
 from bus.event_bus import EventBus
-from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
+from agent.lifecycle.phase import PhaseFrame, PhaseModule
 from agent.lifecycle.types import AfterStepCtx
 
 
@@ -53,11 +53,3 @@ def default_after_step_modules(bus: EventBus) -> AfterStepModules:
         _FanoutAfterStepCtxModule(bus),
         _ReturnAfterStepCtxModule(),
     ]
-
-
-class AfterStepPhase(Phase[AfterStepCtx, AfterStepCtx, AfterStepFrame]):
-    def __init__(self, bus: EventBus) -> None:
-        super().__init__(default_after_step_modules(bus))
-
-    def _build_frame(self, input: AfterStepCtx) -> AfterStepFrame:
-        return AfterStepFrame(input=input)
