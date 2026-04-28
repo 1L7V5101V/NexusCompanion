@@ -172,7 +172,7 @@ class PassiveTurnPipeline:
             history_window=deps.history_window,
         )
 
-    # 处理一条普通被动消息，并提交最终出站结果。
+    #核心方法 处理一条普通被动消息，并提交最终出站结果。
     async def run(
         self,
         msg: InboundMessage,
