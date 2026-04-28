@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
-from agent.core.response_parser import ResponseMetadata, parse_response
+from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
@@ -40,9 +40,10 @@ from bus.events_lifecycle import (
     TurnCommitted,
     TurnCompleted,
 )
+from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
 from agent.lifecycle.phases.before_turn import BeforeTurnPhase
 from agent.lifecycle.phases.before_reasoning import BeforeReasoningPhase
-from agent.lifecycle.types import BeforeReasoningInput, TurnState
+from agent.lifecycle.types import AfterReasoningInput, AfterReasoningResult, BeforeReasoningInput, TurnState
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -89,6 +90,8 @@ class AgentCoreDeps:
     reasoner: "Reasoner"
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
+    meme_decorator: "MemeDecorator | None" = None
+    history_window: int = 500
 
 
 class AgentCore:
@@ -103,6 +106,10 @@ class AgentCore:
 
     def __init__(self, deps: AgentCoreDeps) -> None:
         self._passive_pipeline = PassiveTurnPipeline(deps)
+
+    @property
+    def pipeline(self) -> "PassiveTurnPipeline":
+        return self._passive_pipeline
 
     async def process(
         self,
@@ -139,9 +146,10 @@ class PassiveTurnPipeline:
         self._tools = deps.tools
         self._reasoner = deps.reasoner
         self._outbound_port = deps.outbound_port
+        self._history_window = deps.history_window
         bus = deps.event_bus or EventBus()
+        self._bus = bus
 
-        # 构造 phases（直到 AfterTurn 接线前，commit 仍保留旧调用）。
         self._before_turn = BeforeTurnPhase(
             bus=bus,
             session_manager=self._session.session_manager,
@@ -153,6 +161,24 @@ class PassiveTurnPipeline:
             session_manager=self._session.session_manager,
             context=deps.context,
         )
+        self._after_reasoning = AfterReasoningPhase(
+            bus=bus,
+            session_services=self._session,
+        )
+
+        # 注册内置 AfterReasoning chain handler: meme 装饰
+        if deps.meme_decorator is not None:
+            _meme = deps.meme_decorator
+            from agent.lifecycle.types import AfterReasoningCtx
+
+            async def _meme_handler(ctx: AfterReasoningCtx) -> AfterReasoningCtx:
+                decorated = _meme.decorate(ctx.reply, meme_tag=ctx.response_metadata.meme_tag)
+                ctx.reply = decorated.content
+                ctx.media.extend(decorated.media)
+                ctx.meme_tag = decorated.tag
+                return ctx
+
+            bus.on(AfterReasoningCtx, _meme_handler)
 
     # 处理一条普通被动消息，并提交最终出站结果。
     async def run(
@@ -204,28 +230,44 @@ class PassiveTurnPipeline:
             base_history=None,
             retrieved_memory_block=before_reasoning.retrieved_memory_block,
         )
-        final_content = turn_result.reply
-        if final_content is None:
-            final_content = "I've completed processing but have no response to give."
-        tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
-        parsed_response = parse_response(final_content, tool_chain=tool_chain)
 
-        # Phase 5-6: 待 AfterReasoning + AfterTurn Phase 替换
-        return await self._context_store.commit(
-            msg=msg,
-            session_key=key,
-            reply=parsed_response.clean_text,
-            response_metadata=parsed_response.metadata,
-            tools_used=turn_result.tools_used,
-            tool_chain=tool_chain,
-            thinking=turn_result.thinking,
-            streamed_reply=turn_result.streamed,
-            retrieval_raw=state.retrieval_raw,
-            context_retry=turn_result.context_retry,
-            dispatch_outbound=dispatch_outbound,
+        # Phase 5: AfterReasoning（parse_response + chain + persist + build outbound）
+        after_reasoning = await self._after_reasoning.run(
+            AfterReasoningInput(state=state, turn_result=turn_result)
         )
 
-    # 4. abort / 错误路径的统一 dispatch helper，只有 dispatch_outbound=True 时才发送。
+        # Phase 6: 待 AfterTurn Phase 替换，暂时仍走旧的 TurnCommitted + dispatch
+        return await self._commit_and_dispatch(
+            state=state,
+            after_reasoning=after_reasoning,
+        )
+
+    # 供外部调用方（如 spawn completion）复用 AfterReasoning + dispatch 流程。
+    async def post_reasoning(
+        self,
+        msg: InboundMessage,
+        session_key: str,
+        turn_result: "TurnRunResult",
+        *,
+        dispatch_outbound: bool = True,
+        retrieval_raw: object | None = None,
+    ) -> OutboundMessage:
+        state = TurnState(
+            msg=msg,
+            session_key=session_key,
+            dispatch_outbound=dispatch_outbound,
+            session=self._session.session_manager.get_or_create(session_key),
+            retrieval_raw=retrieval_raw,
+        )
+        after_reasoning = await self._after_reasoning.run(
+            AfterReasoningInput(state=state, turn_result=turn_result)
+        )
+        return await self._commit_and_dispatch(
+            state=state,
+            after_reasoning=after_reasoning,
+        )
+
+    # abort / 错误路径的统一 dispatch helper，只有 dispatch_outbound=True 时才发送。
     async def _control_outbound(
         self,
         state: TurnState,
@@ -244,6 +286,97 @@ class PassiveTurnPipeline:
             )
         return outbound
 
+    # 临时桥接：AfterReasoning 之后的 TurnCommitted + dispatch，待 AfterTurn Phase 替代。
+    async def _commit_and_dispatch(
+        self,
+        state: TurnState,
+        after_reasoning: AfterReasoningResult,
+    ) -> OutboundMessage:
+        ctx = after_reasoning.ctx
+        outbound = after_reasoning.outbound
+        msg = state.msg
+        session = state.session
+        if session is None:
+            raise RuntimeError("_commit_and_dispatch requires TurnState.session")
+
+        # 1. TurnCommitted fanout
+        hw = self._history_window
+        post_reply_budget = support.build_post_reply_context_budget(
+            context=self._context,
+            history=session.get_history(max_messages=hw),
+            history_window=hw,
+        )
+        react_stats = support.extract_react_stats(ctx.context_retry)
+        omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
+        persisted_user_message = None if omit_user_turn else msg.content
+        tool_chain_raw = copy.deepcopy(list(ctx.tool_chain))
+        extra: dict[str, object] = (
+            {"skip_post_memory": True}
+            if (msg.metadata or {}).get("skip_post_memory")
+            else {}
+        )
+        await self._bus.fanout(
+            TurnCommitted(
+                session_key=state.session_key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                input_message=msg.content,
+                persisted_user_message=persisted_user_message,
+                assistant_response=ctx.reply,
+                tools_used=list(ctx.tools_used),
+                thinking=ctx.thinking,
+                raw_reply=ctx.response_metadata.raw_text,
+                meme_tag=ctx.meme_tag,
+                meme_media_count=len(ctx.media),
+                tool_chain_raw=copy.deepcopy(tool_chain_raw),
+                tool_call_groups=to_tool_call_groups(tool_chain_raw),
+                timestamp=msg.timestamp,
+                retrieval_raw=state.retrieval_raw,
+                post_reply_budget=dict(post_reply_budget),
+                react_stats=dict(react_stats),
+                extra=dict(extra),
+            )
+        )
+        context_logger.info(
+            "[commit] TurnCommitted fanout done source=passive session=%s channel=%s tools=%d",
+            state.session_key,
+            msg.channel,
+            len(ctx.tools_used),
+        )
+        support.log_post_reply_context_budget(
+            session_key=state.session_key,
+            budget=post_reply_budget,
+        )
+        support.log_react_context_budget(
+            session_key=state.session_key,
+            react_stats=react_stats,
+        )
+
+        # 2. TurnCompleted observe（待 AfterTurn 替代后删除）
+        await self._bus.observe(
+            TurnCompleted(
+                session_key=state.session_key,
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                reply=ctx.reply,
+                tools_used=list(ctx.tools_used),
+                thinking=ctx.thinking,
+            )
+        )
+
+        # 3. dispatch（用 AfterReasoning 产出的 outbound，不再经 BeforeDispatch）
+        if state.dispatch_outbound and self._outbound_port is not None:
+            await self._outbound_port.dispatch(
+                OutboundDispatch(
+                    channel=outbound.channel,
+                    chat_id=outbound.chat_id,
+                    content=outbound.content,
+                    thinking=outbound.thinking,
+                    metadata=outbound.metadata,
+                    media=outbound.media,
+                )
+            )
+        return outbound
 
 
 

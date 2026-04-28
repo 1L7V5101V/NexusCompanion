@@ -358,3 +358,146 @@ def test_response_parser_tool_chain_fallback_uses_item_ids():
     parsed = parse_response("答复正文", tool_chain=tool_chain)
 
     assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
+
+
+# ── 新链 (AfterReasoningPhase + _commit_and_dispatch) 端到端测试 ──
+
+
+@pytest.mark.asyncio
+async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed():
+    from agent.core.passive_turn import AgentCore, AgentCoreDeps, ContextStore
+    from agent.core.runtime_support import TurnRunResult
+    from agent.core.types import ContextBundle
+
+    order: list[str] = []
+    session = _DummySession("telegram:456")
+    presence = SimpleNamespace(
+        record_user_message=MagicMock(side_effect=lambda _key: order.append("presence")),
+    )
+    session_manager = SimpleNamespace(
+        get_or_create=MagicMock(return_value=session),
+        peek_next_message_id=MagicMock(return_value="telegram:456:0"),
+        append_messages=AsyncMock(side_effect=lambda *a, **kw: order.append("persist")),
+    )
+    event_bus = EventBus()
+    committed_events: list[TurnCommitted] = []
+    event_bus.on(
+        TurnCommitted,
+        lambda event: order.append("committed") or committed_events.append(event),
+    )
+    dispatch_port = SimpleNamespace(
+        dispatch=AsyncMock(side_effect=lambda *a, **kw: order.append("dispatch")),
+    )
+    decorator = SimpleNamespace(
+        decorate=MagicMock(
+            return_value=SimpleNamespace(
+                content="装饰后内容",
+                media=["/tmp/meme.png"],
+                tag="shy",
+            )
+        ),
+    )
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=[],
+                retrieved_memory_block="",
+            )
+        ),
+    )
+    context = SimpleNamespace(
+        render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
+    )
+    tools = SimpleNamespace(set_context=MagicMock())
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="原始回复 <meme:shy>\n§cited:[mem_1]§",
+                tools_used=["noop"],
+                tool_chain=[{"text": "done", "calls": []}],
+                thinking="思考",
+                streamed=True,
+                context_retry={
+                    "selected_plan": "full",
+                    "react_stats": {
+                        "iteration_count": 2,
+                        "turn_input_sum_tokens": 5000,
+                    },
+                },
+            )
+        ),
+    )
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                Any,
+                SimpleNamespace(
+                    session_manager=session_manager,
+                    presence=presence,
+                ),
+            ),
+            context_store=cast(ContextStore, context_store),
+            context=cast(Any, context),
+            tools=cast(Any, tools),
+            reasoner=cast(Any, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(Any, dispatch_port),
+            meme_decorator=cast(Any, decorator),
+            history_window=100,
+        )
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="hua",
+        chat_id="456",
+        content="你好",
+        metadata={"req_id": "r2"},
+    )
+
+    out = await agent_core.process(msg, "telegram:456")
+    await event_bus.drain()
+
+    # 1. meme handler 经过 AfterReasoning chain 被调用
+    decorator.decorate.assert_called_once_with("原始回复", meme_tag="shy")
+
+    # 2. outbound 内容来自 meme 装饰后
+    assert out.content == "装饰后内容"
+    assert out.media == ["/tmp/meme.png"]
+    assert out.metadata["req_id"] == "r2"
+    assert out.metadata["streamed_reply"] is True
+
+    # 3. persist 写入 session
+    assert len(session.messages) == 2
+    assert session.messages[0]["role"] == "user"
+    assert session.messages[1]["role"] == "assistant"
+    assert session.messages[1]["content"] == "装饰后内容"
+    assert session.messages[1]["reasoning_content"] == "思考"
+    assert session.messages[1]["cited_memory_ids"] == ["mem_1"]
+    presence.record_user_message.assert_called_once_with("telegram:456")
+    session_manager.append_messages.assert_awaited_once()
+
+    # 4. TurnCommitted 字段正确
+    assert len(committed_events) == 1
+    tc = committed_events[0]
+    assert tc.session_key == "telegram:456"
+    assert tc.input_message == "你好"
+    assert tc.persisted_user_message == "你好"
+    assert tc.assistant_response == "装饰后内容"
+    assert tc.tools_used == ["noop"]
+    assert tc.thinking == "思考"
+    assert tc.raw_reply == "原始回复 <meme:shy>\n§cited:[mem_1]§"
+    assert tc.meme_tag == "shy"
+    assert tc.meme_media_count == 1
+    assert tc.retrieval_raw is None
+    assert tc.post_reply_budget["history_window"] == 100
+    assert tc.post_reply_budget["history_messages"] == 2
+    assert tc.react_stats["iteration_count"] == 2
+    assert tc.react_stats["turn_input_sum_tokens"] == 5000
+
+    # 5. 执行顺序: presence → persist → committed → dispatch
+    assert order == ["presence", "persist", "committed", "dispatch"]
+
+    # 6. dispatch 实际发送
+    dispatch_port.dispatch.assert_awaited_once()
+
+    await event_bus.aclose()

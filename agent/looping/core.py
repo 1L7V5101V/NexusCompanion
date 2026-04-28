@@ -445,6 +445,8 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
+                meme_decorator=passive_meme_decorator,
+                history_window=config.memory.keep_count,
             )
         )
         self._core_runner = deps.core_runner or CoreRunner(
@@ -452,7 +454,6 @@ class AgentLoop:
                 agent_core=agent_core,
                 session=session_svc,
                 context=self._context,
-                context_store=passive_context_store,
                 tools=deps.tools,
                 memory_window=config.memory.keep_count,
                 run_agent_loop_fn=self._run_agent_loop,

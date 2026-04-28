@@ -30,6 +30,9 @@ class _DummySession:
     def get_history(self, max_messages: int = 500) -> list[dict]:
         return self.messages[-max_messages:]
 
+    def add_message(self, role: str, content: str, **kwargs: object) -> None:
+        self.messages.append({"role": role, "content": content, **kwargs})
+
 
 @pytest.mark.asyncio
 async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
@@ -68,10 +71,6 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
             )
         ),
     )
-    context_store.commit = AsyncMock(
-        side_effect=lambda **kwargs: order.append("commit")
-        or OutboundMessage(channel="telegram", chat_id="123", content=kwargs["reply"])
-    )
     agent_core = AgentCore(
         AgentCoreDeps(
             session=cast(
@@ -80,7 +79,9 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -100,7 +101,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final"
-    assert order == ["prepare", "tool_context", "render", "run", "commit"]
+    assert order == ["prepare", "tool_context", "render", "run"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
     assert render_request.current_message == ""
@@ -113,14 +114,11 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     )
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
     assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
-    assert context_store.commit.await_args.kwargs["retrieval_raw"] == {"route": "RETRIEVE"}
-    assert context_store.commit.await_args.kwargs["thinking"] == "think"
-    assert context_store.commit.await_args.kwargs["context_retry"] == {"selected_plan": "full"}
-    assert context_store.commit.await_args.kwargs["reply"] == "final"
-    response_metadata = context_store.commit.await_args.kwargs["response_metadata"]
-    assert response_metadata.raw_text == "final <meme:shy>\n§cited:[mem_1]§"
-    assert response_metadata.cited_memory_ids == ["mem_1"]
-    assert response_metadata.meme_tag == "shy"
+    # AfterReasoning persists user+assistant messages to session
+    assert len(session.messages) == 2
+    assert session.messages[0]["role"] == "user"
+    assert session.messages[1]["role"] == "assistant"
+    assert session.messages[1]["content"] == "final"
 
 
 @pytest.mark.asyncio
@@ -128,9 +126,6 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     session = _DummySession("cli:1")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(
-            return_value=OutboundMessage(channel="cli", chat_id="1", content="fallback")
-        )
     )
     agent_core = AgentCore(
         AgentCoreDeps(
@@ -140,7 +135,9 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="cli:1:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
@@ -149,11 +146,6 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
                 SimpleNamespace(
                     render=MagicMock(
                         return_value=SimpleNamespace(system_prompt="prompt", messages=[])
-                    ),
-                    build_system_prompt=MagicMock(
-                        side_effect=AssertionError(
-                            "legacy build_system_prompt should not be used"
-                        )
                     ),
                 ),
             ),
@@ -171,9 +163,9 @@ async def test_agent_core_process_coerces_empty_reply_before_commit():
     )
     msg = InboundMessage(channel="cli", sender="hua", chat_id="1", content="hi")
 
-    await agent_core.process(msg, "cli:1")
+    out = await agent_core.process(msg, "cli:1")
 
-    assert "no response to give" in context_store.commit.await_args.kwargs["reply"]
+    assert "no response to give" in out.content
 
 
 @pytest.mark.asyncio
@@ -185,9 +177,6 @@ async def test_agent_core_before_reasoning_can_patch_context():
                 skill_mentions=["old"],
                 retrieved_memory_block="old memory",
             )
-        ),
-        commit=AsyncMock(
-            return_value=OutboundMessage(channel="telegram", chat_id="123", content="ok")
         ),
     )
     context = SimpleNamespace(
@@ -219,7 +208,9 @@ async def test_agent_core_before_reasoning_can_patch_context():
                     session_manager=SimpleNamespace(
                         get_or_create=MagicMock(return_value=session),
                         peek_next_message_id=MagicMock(return_value="telegram:123:0"),
-                    )
+                        append_messages=AsyncMock(),
+                    ),
+                    presence=None,
                 ),
             ),
             context_store=cast(ContextStore, context_store),
