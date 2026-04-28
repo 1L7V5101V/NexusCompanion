@@ -63,18 +63,25 @@ if TYPE_CHECKING:
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
 
-# 被动链路 god 文件：只集中组织核心实现，不改变运行行为。
+# 被动链路核心入口，负责串起 lifecycle 模块链与 reasoner。
 #
 # ┌─ inbound
 # │  └─ AgentCore.process
 # │     └─ PassiveTurnPipeline.run
-# │        ├─ ContextStore.prepare
+# │        ├─ BeforeTurn
+# │        │  └─ session acquire + ContextStore.prepare + EventBus.emit
 # │        ├─ BeforeReasoning
+# │        │  └─ tool context sync + EventBus.emit + prompt warmup
 # │        ├─ Reasoner.run_turn
 # │        │  └─ Reasoner.run
-# │        ├─ parse_response
-# │        └─ AfterReasoning + AfterTurn
-# │           └─ outbound.dispatch
+# │        │     ├─ BeforeStep
+# │        │     │  └─ token estimate + EventBus.emit + hint injection
+# │        │     └─ AfterStep
+# │        │        └─ EventBus.fanout
+# │        ├─ AfterReasoning
+# │        │  └─ parse + EventBus.emit + persist + outbound build
+# │        └─ AfterTurn
+# │           └─ TurnCommitted fanout + AfterTurn fanout + dispatch
 # └─ done
 
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
@@ -200,7 +207,7 @@ class PassiveTurnPipeline:
             frame_factory=AfterTurnFrame,
         )
 
-    #核心方法 处理一条普通被动消息，并提交最终出站结果。
+    # 核心方法：处理一条普通被动消息，并提交最终出站结果。
     async def run(
         self,
         msg: InboundMessage,
@@ -213,9 +220,9 @@ class PassiveTurnPipeline:
             session_key=key,
             dispatch_outbound=dispatch_outbound,
         )
-        # try/except 只包 prepare/hook + reasoning：在派发前兜底并返回错误提示。
+        # try/except 只包前置模块链和 reasoning：在派发前兜底并返回错误提示。
         try:
-            # Phase 1: BeforeTurn（session acquire + context_prepare + skill mentions）
+            # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
             before_turn = await self._before_turn.run(state)
             if before_turn.abort:
                 return await self._control_outbound(
@@ -227,7 +234,7 @@ class PassiveTurnPipeline:
                     ),
                 )
 
-            # Phase 2: BeforeReasoning（tool context sync + chain + prompt cache warmup）
+            # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
             before_reasoning = await self._before_reasoning.run(
                 BeforeReasoningInput(state=state, before_turn=before_turn)
             )
@@ -241,7 +248,7 @@ class PassiveTurnPipeline:
                     ),
                 )
 
-            # Phase 3-4: Reasoning（BeforeStep/AfterStep 后续在 Reasoner 内部接入）
+            # Phase 3-4: Reasoning（BeforeStep/AfterStep 模块链在 Reasoner 内部执行）。
             session = state.session
             if session is None:
                 raise RuntimeError("Passive turn requires TurnState.session")
@@ -264,12 +271,12 @@ class PassiveTurnPipeline:
                 ),
             )
 
-        # Phase 5: AfterReasoning（parse_response + chain + persist + build outbound）
+        # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
         after_reasoning = await self._after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)
         )
 
-        # Phase 6: AfterTurn（TurnCommitted fanout + plugin taps + dispatch）
+        # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
         return await self._after_turn.run(
             TurnSnapshot(
                 state=state,
@@ -575,7 +582,7 @@ class DefaultReasoner(Reasoner):
                     turn_injection_prompt=turn_injection_prompt,
                 )
             ).messages
-            # inject BeforeReasoning plugin hints into every attempt's messages
+            # 将 BeforeReasoning 产生的额外提示注入每次 retry 的 prompt。
             if extra_hints:
                 initial_messages.append(
                     support.build_context_hint_message(
@@ -709,7 +716,7 @@ class DefaultReasoner(Reasoner):
             )
 
         for iteration in range(self._llm_config.max_iterations):
-            # 3. BeforeStep：token 估算 + 插件 early-stop 检查。
+            # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
             step_ctx = await self._before_step.run(BeforeStepInput(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
@@ -972,12 +979,12 @@ class DefaultReasoner(Reasoner):
                         }
                     )
 
-                # 7. 本轮工具执行完后，注入 Loop State（3行，每轮工具后更新已解锁工具列表）。
+                # 7. 本轮工具执行完后，记录 tool_chain 并追加下一轮 loop_state 提示。
                 tool_chain_group = {"text": response.content, "calls": iter_calls}
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
-                # 7a. AfterStep（工具分支）：通知观察者本轮工具执行完毕，has_more=True。
+                # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
                 _ = await self._after_step.run(AfterStepCtx(
                     session_key=tool_event_session_key,
                     channel=tool_event_channel,
@@ -1043,7 +1050,7 @@ class DefaultReasoner(Reasoner):
                 tools_used if tools_used else "无",
             )
             messages.append({"role": "assistant", "content": response.content})
-            # 8a. AfterStep（最终回复分支）：通知观察者本轮推理结束，has_more=False。
+            # 8b. AfterStep 模块链（最终回复分支）：通知观察者本轮推理结束。
             _ = await self._after_step.run(AfterStepCtx(
                 session_key=tool_event_session_key,
                 channel=tool_event_channel,
