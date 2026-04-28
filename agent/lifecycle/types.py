@@ -152,4 +152,5 @@ class AfterTurnCtx:
     reply: str
     tools_used: tuple[str, ...]
     thinking: str | None
-    dispatch_outbound: bool
+    # pre-dispatch intent flag: dispatch has NOT happened yet when Tap handlers run
+    will_dispatch: bool

@@ -221,6 +221,6 @@ async def test_lifecycle_on_after_turn():
     lifecycle.on_after_turn(handler)
     await bus.fanout(AfterTurnCtx(
         session_key="k", channel="c", chat_id="ch", reply="hi",
-        tools_used=(), thinking=None, dispatch_outbound=True,
+        tools_used=(), thinking=None, will_dispatch=True,
     ))
     handler.assert_awaited_once()
