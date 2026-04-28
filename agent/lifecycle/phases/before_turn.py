@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from bus.event_bus import EventBus
-from agent.lifecycle.phase import GatePhase
+from agent.core.types import ContextBundle
+from agent.core.runtime_support import SessionLike
+from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 
 if TYPE_CHECKING:
@@ -11,34 +14,64 @@ if TYPE_CHECKING:
     from session.manager import SessionManager
 
 
-class BeforeTurnPhase(GatePhase[TurnState, BeforeTurnCtx, BeforeTurnCtx]):
+@dataclass
+class BeforeTurnFrame(PhaseFrame[TurnState, BeforeTurnCtx]):
+    pass
 
-    def __init__(
-        self,
-        bus: EventBus,
-        session_manager: SessionManager,
-        context_store: ContextStore,
-    ) -> None:
-        super().__init__(bus)
+
+BeforeTurnModules: TypeAlias = list[PhaseModule[BeforeTurnFrame]]
+
+
+_SESSION_SLOT = "session:session"
+_CONTEXT_BUNDLE_SLOT = "session:context_bundle"
+_CTX_SLOT = "session:ctx"
+
+
+class _AcquireSessionModule:
+    produces = (_SESSION_SLOT,)
+
+    def __init__(self, session_manager: SessionManager) -> None:
         self._session_manager = session_manager
-        self._context_store = context_store
 
-    async def _setup(self, state: TurnState) -> BeforeTurnCtx:
-        # 1. 从 SessionManager 拿到 or 创建本次 turn 的 session。
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
         session = self._session_manager.get_or_create(state.session_key)
+        # TurnState 是跨 phase 通信载体，后续 BeforeReasoning / AfterReasoning 会读取。
         state.session = session
         state.retrieval_raw = None
+        frame.slots[_SESSION_SLOT] = session
+        return frame
 
-        # 2. 通过 ContextStore.prepare 准备上下文（history、retrieval、skill mentions）。
+
+class _PrepareContextModule:
+    requires = (_SESSION_SLOT,)
+    produces = (_CONTEXT_BUNDLE_SLOT,)
+
+    def __init__(self, context_store: ContextStore) -> None:
+        self._context_store = context_store
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
+        session = cast(SessionLike, frame.slots[_SESSION_SLOT])
         bundle = await self._context_store.prepare(
             msg=state.msg,
             session_key=state.session_key,
             session=session,
         )
+        # TurnState 是跨 phase 通信载体，AfterTurn 会把 retrieval trace 发给后处理。
         state.retrieval_raw = bundle.retrieval_trace_raw
+        frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
+        return frame
 
-        # 3. 组装 BeforeTurnCtx 返回，供 chain 修改和后续阶段读取。
-        return BeforeTurnCtx(
+
+class _BuildBeforeTurnCtxModule:
+    requires = (_CONTEXT_BUNDLE_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        state = frame.input
+        bundle = cast(ContextBundle, frame.slots[_CONTEXT_BUNDLE_SLOT])
+        frame.slots[_CTX_SLOT] = BeforeTurnCtx(
             session_key=state.session_key,
             channel=state.msg.channel,
             chat_id=state.msg.chat_id,
@@ -49,10 +82,52 @@ class BeforeTurnPhase(GatePhase[TurnState, BeforeTurnCtx, BeforeTurnCtx]):
             retrieval_trace_raw=bundle.retrieval_trace_raw,
             history_messages=tuple(bundle.history_messages),
         )
+        return frame
 
-    async def _finalize(
+
+class _EmitBeforeTurnCtxModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        ctx = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
+        frame.slots[_CTX_SLOT] = await self._bus.emit(ctx)
+        return frame
+
+
+class _ReturnBeforeTurnCtxModule:
+    requires = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
+        frame.output = cast(BeforeTurnCtx, frame.slots[_CTX_SLOT])
+        return frame
+
+
+def default_before_turn_modules(
+    bus: EventBus,
+    session_manager: SessionManager,
+    context_store: ContextStore,
+) -> BeforeTurnModules:
+    return [
+        _AcquireSessionModule(session_manager),
+        _PrepareContextModule(context_store),
+        _BuildBeforeTurnCtxModule(),
+        _EmitBeforeTurnCtxModule(bus),
+        _ReturnBeforeTurnCtxModule(),
+    ]
+
+
+class BeforeTurnPhase(Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]):
+    def __init__(
         self,
-        ctx: BeforeTurnCtx,
-        input: TurnState,
-    ) -> BeforeTurnCtx:
-        return ctx
+        bus: EventBus,
+        session_manager: SessionManager,
+        context_store: ContextStore,
+    ) -> None:
+        super().__init__(default_before_turn_modules(bus, session_manager, context_store))
+
+    def _build_frame(self, input: TurnState) -> BeforeTurnFrame:
+        return BeforeTurnFrame(input=input)
