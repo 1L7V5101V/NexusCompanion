@@ -1,40 +1,98 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from collections.abc import Callable
+from typing import Any, TypeAlias, cast
+
 import agent.core.passive_support as support
-from agent.lifecycle.phase import GatePhase
+from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import BeforeStepCtx, BeforeStepInput
 from bus.event_bus import EventBus
 
 
-class BeforeStepPhase(GatePhase[BeforeStepInput, BeforeStepCtx, BeforeStepCtx]):
+@dataclass
+class BeforeStepFrame(PhaseFrame[BeforeStepInput, BeforeStepCtx]):
+    pass
 
-    def __init__(self, bus: EventBus) -> None:
-        super().__init__(bus)
 
-    async def _setup(self, input: BeforeStepInput) -> BeforeStepCtx:
-        return BeforeStepCtx(
+BeforeStepModules: TypeAlias = list[PhaseModule[BeforeStepFrame]]
+
+
+_CTX_SLOT = "step:ctx"
+_estimate_messages_tokens = cast(
+    Callable[[list[dict[str, Any]]], int],
+    getattr(support, "estimate_messages_tokens"),
+)
+
+
+class _BuildBeforeStepCtxModule:
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
+        input = frame.input
+        frame.slots[_CTX_SLOT] = BeforeStepCtx(
             session_key=input.session_key,
             channel=input.channel,
             chat_id=input.chat_id,
             iteration=input.iteration,
-            input_tokens_estimate=support.estimate_messages_tokens(input.messages),
+            input_tokens_estimate=_estimate_messages_tokens(input.messages),
             visible_tool_names=(
                 frozenset(input.visible_names)
                 if input.visible_names is not None
                 else None
             ),
         )
+        return frame
 
-    async def _finalize(
-        self,
-        ctx: BeforeStepCtx,
-        input: BeforeStepInput,
-    ) -> BeforeStepCtx:
+
+class _EmitBeforeStepCtxModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+
+    async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
+        ctx = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
+        frame.slots[_CTX_SLOT] = await self._bus.emit(ctx)
+        return frame
+
+
+class _InjectHintsModule:
+    requires = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
+        ctx = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
         if ctx.extra_hints:
-            input.messages.append(
+            frame.input.messages.append(
                 support.build_context_hint_message(
                     "plugin_hints",
                     "\n".join(ctx.extra_hints),
                 )
             )
-        return ctx
+        return frame
+
+
+class _ReturnBeforeStepCtxModule:
+    requires = (_CTX_SLOT,)
+
+    async def run(self, frame: BeforeStepFrame) -> BeforeStepFrame:
+        frame.output = cast(BeforeStepCtx, frame.slots[_CTX_SLOT])
+        return frame
+
+
+def default_before_step_modules(bus: EventBus) -> BeforeStepModules:
+    return [
+        _BuildBeforeStepCtxModule(),
+        _EmitBeforeStepCtxModule(bus),
+        _InjectHintsModule(),
+        _ReturnBeforeStepCtxModule(),
+    ]
+
+
+class BeforeStepPhase(Phase[BeforeStepInput, BeforeStepCtx, BeforeStepFrame]):
+    def __init__(self, bus: EventBus) -> None:
+        super().__init__(default_before_step_modules(bus))
+
+    def _build_frame(self, input: BeforeStepInput) -> BeforeStepFrame:
+        return BeforeStepFrame(input=input)
