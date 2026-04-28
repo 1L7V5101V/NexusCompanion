@@ -11,6 +11,7 @@ from agent.core.types import ToolCall, ToolCallGroup
 from agent.core.runtime_support import TurnRunResult
 from agent.looping.core import AgentLoop, _supports_stream_events
 from agent.looping.interrupt import TurnInterruptState
+from agent.lifecycle.facade import TurnLifecycle
 from agent.looping.lifecycle_consumers import register_turn_committed_consumers
 from agent.looping.ports import AgentLoopConfig, AgentLoopDeps
 from agent.memory import MemoryStore
@@ -27,6 +28,7 @@ from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryIngestRequest
 from core.memory.port import DefaultMemoryPort
+from bootstrap.wiring import wire_turn_lifecycle
 
 
 class _NoopTool(Tool):
@@ -570,52 +572,17 @@ async def test_resumed_interrupt_state_survives_timeout(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_interrupt_state_carries_partial_progress(tmp_path: Path):
-    loop = _make_loop(tmp_path)
-    session_key = "telegram:123"
-    msg = InboundMessage(
-        channel="telegram",
-        sender="1",
-        chat_id="123",
-        content="原始消息 A",
-    )
-    loop._active_turn_states[session_key] = TurnInterruptState(  # type: ignore[attr-defined]
-        session_key=session_key,
-        original_user_message=msg.content,
-    )
-    from agent.lifecycle.types import AfterStepCtx
-    await loop._on_after_step(AfterStepCtx(  # type: ignore[attr-defined]
-        session_key=session_key,
-        channel="telegram",
-        chat_id="123",
-        iteration=0,
-        tools_called=("shell",),
-        partial_reply="工具阶段说明",
-        tools_used_so_far=("shell",),
-        tool_chain_partial=({"text": "tool", "calls": []},),
-        partial_thinking="思考片段",
-        has_more=True,
-    ))
-    loop._append_partial_reply(session_key, " + 流式增量")  # type: ignore[attr-defined]
-    pending = _PendingTask()
-    loop._active_tasks[session_key] = pending  # type: ignore[attr-defined]
-
-    loop.request_interrupt(session_key)
-    state = loop._interrupt_states[session_key]  # type: ignore[attr-defined]
-
-    assert state.partial_reply == "工具阶段说明 + 流式增量"
-    assert state.partial_thinking == "思考片段"
-    assert state.tools_used == ["shell"]
-    assert state.tool_chain_partial == [{"text": "tool", "calls": []}]
-
-
-@pytest.mark.asyncio
-async def test_agent_loop_configures_step_observer_and_afterstep_fires(tmp_path: Path):
+async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: Path):
     loop = _make_loop(tmp_path)
     session_key = "cli:123"
     loop._active_turn_states[session_key] = TurnInterruptState(
         session_key=session_key,
         original_user_message="hello",
+    )
+    wire_turn_lifecycle(
+        lifecycle=TurnLifecycle(loop._event_bus),
+        meme_decorator=cast(Any, None),
+        active_turn_states=loop.active_turn_states,
     )
     msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
     session = SimpleNamespace(

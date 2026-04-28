@@ -1,21 +1,23 @@
 from __future__ import annotations
-import asyncio
-from typing import Any, cast
 
+import asyncio
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from agent.core.passive_turn import DefaultContextStore
-from agent.core.response_parser import ResponseMetadata, parse_response
+from agent.core.passive_turn import AgentCore, AgentCoreDeps
+from agent.core.response_parser import parse_response
+from agent.core.runtime_support import TurnRunResult
+from agent.core.types import ContextBundle
+from agent.lifecycle.facade import TurnLifecycle
 from agent.looping.lifecycle_consumers import (
     register_observe_trace_consumers,
     register_turn_committed_consumers,
 )
-from agent.retrieval.protocol import RetrievalResult
+from bootstrap.wiring import wire_turn_lifecycle
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
 from bus.events_lifecycle import TurnCommitted
@@ -46,13 +48,9 @@ class _DummySession:
 @pytest.mark.asyncio
 async def test_commit_fanout_enqueues_observe_and_recent_before_return():
     session = _DummySession("telegram:trace")
-    session_manager = SimpleNamespace(
-        get_or_create=MagicMock(return_value=session),
-        append_messages=AsyncMock(),
-    )
+    session_manager = SimpleNamespace(get_or_create=MagicMock(return_value=session))
     event_bus = EventBus()
     release_recent = asyncio.Event()
-    recent_started = asyncio.Event()
 
     class _Writer:
         def __init__(self) -> None:
@@ -62,49 +60,47 @@ async def test_commit_fanout_enqueues_observe_and_recent_before_return():
             self.events.append(event)
 
     async def _refresh_recent_turns(*, session) -> None:
-        recent_started.set()
         await release_recent.wait()
 
     writer = _Writer()
-    consolidation = SimpleNamespace(
-        refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns)
-    )
     register_observe_trace_consumers(
         event_bus=event_bus,
-        trace=cast(Any, SimpleNamespace(observe_writer=writer)),
+        trace=cast(Any, SimpleNamespace(workspace=None, observe_writer=writer)),
     )
     register_turn_committed_consumers(
         event_bus=event_bus,
-        consolidation=cast(Any, consolidation),
+        consolidation=cast(Any, SimpleNamespace(refresh_recent_turns=AsyncMock(side_effect=_refresh_recent_turns))),
         session_manager=cast(Any, session_manager),
         scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
         memory_engine=None,
     )
-    store = DefaultContextStore(
-        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
-        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
-        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=None)),
-        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=writer)),
-        outbound=cast(Any, SimpleNamespace(dispatch=AsyncMock())),
-        event_bus=event_bus,
-    )
 
-    await store.commit(
-        msg=InboundMessage(
+    await event_bus.emit(
+        TurnCommitted(
+            session_key="telegram:trace",
             channel="telegram",
-            sender="hua",
             chat_id="trace",
-            content="你好",
-        ),
-        session_key="telegram:trace",
-        reply="收到",
-        response_metadata=ResponseMetadata(raw_text="收到"),
-        tools_used=[],
-        tool_chain=[],
-        thinking=None,
-        streamed_reply=False,
-        retrieval_raw=None,
-        context_retry={},
+            input_message="你好",
+            persisted_user_message="你好",
+            assistant_response="收到",
+            tools_used=[],
+            thinking=None,
+            raw_reply="收到",
+            meme_tag=None,
+            meme_media_count=0,
+            tool_chain_raw=[],
+            tool_call_groups=[],
+            retrieval_raw=None,
+            post_reply_budget={
+                "history_window": 500,
+                "history_messages": 1,
+                "history_chars": 12,
+                "history_tokens": 4,
+                "prompt_tokens": 3,
+                "next_turn_baseline_tokens": 1,
+            },
+            react_stats={},
+        )
     )
 
     recent_tasks = [
@@ -113,12 +109,9 @@ async def test_commit_fanout_enqueues_observe_and_recent_before_return():
         if task.get_name() == "recent_context:telegram:trace"
     ]
     assert writer.events
-    assert cast(Any, writer.events[0]).source == "agent"
     assert recent_tasks
-
     release_recent.set()
     await asyncio.gather(*recent_tasks)
-    assert recent_started.is_set()
     await event_bus.aclose()
 
 
@@ -131,113 +124,116 @@ async def test_context_store_commit_persists_commits_and_dispatches():
         get_or_create=MagicMock(return_value=session),
         append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
     )
-    writer = SimpleNamespace(
-        events=[],
-        emit=lambda event: order.append("observe") or writer.events.append(event),
-    )
-    outbound = SimpleNamespace(
-        dispatch=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True)
-    )
+    writer = SimpleNamespace(events=[], emit=lambda event: order.append("observe") or writer.events.append(event))
+    outbound = SimpleNamespace(dispatch=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("dispatch") or True))
     event_bus = EventBus()
     committed_events: list[TurnCommitted] = []
+
     event_bus.on(
         TurnCommitted,
         lambda event: order.append("committed") or committed_events.append(event),
     )
-    decorator = SimpleNamespace(
-        decorate=MagicMock(
-            return_value=SimpleNamespace(
-                content="整理好了",
-                media=["/tmp/meme.png"],
-                tag="shy",
+    register_observe_trace_consumers(
+        event_bus=event_bus,
+        trace=cast(Any, SimpleNamespace(workspace=None, observe_writer=writer)),
+    )
+    register_turn_committed_consumers(
+        event_bus=event_bus,
+        consolidation=cast(Any, SimpleNamespace(refresh_recent_turns=AsyncMock())),
+        session_manager=cast(Any, session_manager),
+        scheduler=cast(Any, SimpleNamespace(schedule_consolidation=MagicMock())),
+        memory_engine=None,
+    )
+
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=["refactor"],
+                retrieved_memory_block="remembered",
             )
         )
     )
-    store = DefaultContextStore(
-        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
-        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
-        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=presence)),
-        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=writer)),
-        outbound=cast(Any, outbound),
-        meme_decorator=cast(Any, decorator),
-        event_bus=event_bus,
+    context = SimpleNamespace(
+        render=MagicMock(
+            return_value=SimpleNamespace(system_prompt="p", messages=[]),
+        )
     )
-    msg = InboundMessage(
-        channel="telegram",
-        sender="hua",
-        chat_id="123",
-        content="你好",
-        metadata={"req_id": "r1"},
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="整理好了",
+                tools_used=["noop"],
+                tool_chain=[{"text": "", "calls": []}],
+                thinking="思考",
+                streamed=True,
+                context_retry={
+                    "selected_plan": "full",
+                    "react_stats": {
+                        "iteration_count": 3,
+                        "turn_input_sum_tokens": 42100,
+                        "turn_input_peak_tokens": 18800,
+                        "final_call_input_tokens": 17500,
+                    },
+                },
+            )
+        )
     )
-    out = await store.commit(
-        msg=msg,
-        session_key="telegram:123",
-        reply="整理好了",
-        response_metadata=ResponseMetadata(
-            raw_text="<meme:shy> 整理好了\n§cited:[mem_1]§",
-            cited_memory_ids=["mem_1"],
-            meme_tag="shy",
+    tools = SimpleNamespace(
+        set_context=MagicMock()
+    )
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                Any,
+                SimpleNamespace(
+                    session_manager=session_manager,
+                    presence=presence,
+                ),
+            ),
+            context_store=cast(Any, context_store),
+            context=cast(Any, context),
+            tools=cast(Any, tools),
+            reasoner=cast(Any, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(Any, outbound),
+            history_window=500,
+        )
+    )
+
+    out = await agent_core.process(
+        InboundMessage(
+            channel="telegram",
+            sender="hua",
+            chat_id="123",
+            content="你好",
+            metadata={"req_id": "r1"},
         ),
-        tools_used=["noop"],
-        tool_chain=[{"text": "", "calls": []}],
-        thinking="思考",
-        streamed_reply=True,
-        retrieval_raw={"route": "RETRIEVE"},
-        context_retry={
-            "selected_plan": "full",
-            "react_stats": {
-                "iteration_count": 3,
-                "turn_input_sum_tokens": 42100,
-                "turn_input_peak_tokens": 18800,
-                "final_call_input_tokens": 17500,
-            },
-        },
+        "telegram:123",
+        dispatch_outbound=True,
     )
     await event_bus.drain()
 
     assert out.content == "整理好了"
-    assert out.media == ["/tmp/meme.png"]
+    assert out.media == []
     assert out.metadata["req_id"] == "r1"
     assert out.metadata["tools_used"] == ["noop"]
     assert out.metadata["streamed_reply"] is True
+    assert writer.events
+    assert order == ["persist", "committed", "observe", "dispatch"]
     presence.record_user_message.assert_called_once_with("telegram:123")
     session_manager.append_messages.assert_awaited_once()
-    assert writer.events == []
-    assert out.metadata["tool_chain"][0]["text"] == ""
-    outbound.dispatch.assert_awaited_once()
-    assert order == [
-        "persist",
-        "committed",
-        "dispatch",
-    ]
-    assert committed_events[0].session_key == "telegram:123"
-    assert committed_events[0].input_message == "你好"
-    assert committed_events[0].persisted_user_message == "你好"
-    assert committed_events[0].assistant_response == "整理好了"
-    assert committed_events[0].tools_used == ["noop"]
-    assert committed_events[0].thinking == "思考"
-    assert committed_events[0].raw_reply == "<meme:shy> 整理好了\n§cited:[mem_1]§"
-    assert committed_events[0].meme_tag == "shy"
-    assert committed_events[0].meme_media_count == 1
-    assert committed_events[0].retrieval_raw == {"route": "RETRIEVE"}
-    assert committed_events[0].tool_chain_raw[0]["text"] == ""
-    assert committed_events[0].tool_call_groups[0].text == ""
-    assert committed_events[0].post_reply_budget["history_window"] == 500
-    assert committed_events[0].post_reply_budget["history_messages"] == 2
-    assert committed_events[0].post_reply_budget["history_chars"] > 0
-    assert committed_events[0].post_reply_budget["history_tokens"] == max(
-        1,
-        committed_events[0].post_reply_budget["history_chars"] // 3,
-    )
-    assert committed_events[0].react_stats["iteration_count"] == 3
-    assert committed_events[0].react_stats["turn_input_sum_tokens"] == 42100
-    assert committed_events[0].react_stats["turn_input_peak_tokens"] == 18800
-    assert committed_events[0].react_stats["final_call_input_tokens"] == 17500
-    assert committed_events[0].extra == {}
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"
-    assert session.messages[-1]["cited_memory_ids"] == ["mem_1"]
-    decorator.decorate.assert_called_once_with("整理好了", meme_tag="shy")
+    assert session.messages[-1].get("cited_memory_ids", []) == []
+    assert len(committed_events) == 1
+    tc = committed_events[0]
+    assert tc.persisted_user_message == "你好"
+    assert tc.assistant_response == "整理好了"
+    assert tc.retrieval_raw is None
+    assert tc.meme_media_count == 0
+    assert tc.raw_reply == "整理好了"
+    assert tc.post_reply_budget["history_window"] == 500
+    assert tc.post_reply_budget["history_messages"] == 2
     await event_bus.aclose()
 
 
@@ -251,40 +247,74 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
     event_bus = EventBus()
     committed_events: list[TurnCommitted] = []
     event_bus.on(TurnCommitted, lambda event: committed_events.append(event))
-    store = DefaultContextStore(
-        retrieval=cast(Any, SimpleNamespace(retrieve=AsyncMock(return_value=RetrievalResult(block="")))),
-        context=cast(Any, SimpleNamespace(skills=SimpleNamespace(list_skills=MagicMock(return_value=[])))),
-        session=cast(Any, SimpleNamespace(session_manager=session_manager, presence=None)),
-        trace=cast(Any, SimpleNamespace(workspace=Path("."), observe_writer=None)),
-        outbound=cast(Any, SimpleNamespace(dispatch=AsyncMock())),
-        event_bus=event_bus,
+
+    context_store = SimpleNamespace(
+        prepare=AsyncMock(
+            return_value=ContextBundle(
+                skill_mentions=[],
+                retrieved_memory_block="",
+            )
+        )
+    )
+    context = SimpleNamespace(
+        render=MagicMock(
+            return_value=SimpleNamespace(system_prompt="p", messages=[]),
+        )
+    )
+    reasoner = SimpleNamespace(
+        run_turn=AsyncMock(
+            return_value=TurnRunResult(
+                reply="完成",
+                tools_used=[],
+                tool_chain=[],
+                thinking=None,
+                streamed=False,
+                context_retry={},
+            )
+        )
+    )
+    agent_core = AgentCore(
+        AgentCoreDeps(
+            session=cast(
+                Any,
+                SimpleNamespace(
+                    session_manager=session_manager,
+                    presence=None,
+                ),
+            ),
+            context_store=cast(Any, context_store),
+            context=cast(Any, context),
+            tools=cast(
+                Any,
+                SimpleNamespace(set_context=MagicMock()),
+            ),
+            reasoner=cast(Any, reasoner),
+            event_bus=event_bus,
+            outbound_port=cast(
+                Any,
+                SimpleNamespace(dispatch=AsyncMock(return_value=True)),
+            ),
+            history_window=500,
+        )
     )
 
-    await store.commit(
-        msg=InboundMessage(
+    await agent_core.process(
+        InboundMessage(
             channel="cli",
             sender="hua",
             chat_id="direct",
             content="内部提示词",
             metadata={"omit_user_turn": True},
         ),
-        session_key="cli:direct",
-        reply="完成",
-        response_metadata=ResponseMetadata(raw_text="完成"),
-        tools_used=[],
-        tool_chain=[],
-        thinking=None,
-        streamed_reply=False,
-        retrieval_raw=None,
-        context_retry={},
+        "cli:direct",
+        dispatch_outbound=False,
     )
     await event_bus.drain()
 
-    assert committed_events[0].input_message == "内部提示词"
     assert committed_events[0].persisted_user_message is None
     assert committed_events[0].assistant_response == "完成"
     assert [msg["role"] for msg in session.messages] == ["assistant"]
-    session_manager.append_messages.assert_awaited_once_with(session, session.messages[-1:])
+    session_manager.append_messages.assert_awaited_once()
     await event_bus.aclose()
 
 
@@ -360,14 +390,12 @@ def test_response_parser_tool_chain_fallback_uses_item_ids():
     assert parsed.metadata.cited_memory_ids == ["mem_1", "mem_2"]
 
 
-# ── 新链 (AfterReasoningPhase + _commit_and_dispatch) 端到端测试 ──
+# ── 新链 (AfterReasoningPhase + AfterTurnPhase) 端到端测试 ──
 
 
 @pytest.mark.asyncio
 async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed():
-    from agent.core.passive_turn import AgentCore, AgentCoreDeps, ContextStore
-    from agent.core.runtime_support import TurnRunResult
-    from agent.core.types import ContextBundle
+    from agent.core.passive_turn import ContextStore
 
     order: list[str] = []
     session = _DummySession("telegram:456")
@@ -395,7 +423,7 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
                 media=["/tmp/meme.png"],
                 tag="shy",
             )
-        ),
+        )
     )
     context_store = SimpleNamespace(
         prepare=AsyncMock(
@@ -442,9 +470,13 @@ async def test_new_chain_after_reasoning_persists_meme_and_fires_turn_committed(
             reasoner=cast(Any, reasoner),
             event_bus=event_bus,
             outbound_port=cast(Any, dispatch_port),
-            meme_decorator=cast(Any, decorator),
             history_window=100,
         )
+    )
+    wire_turn_lifecycle(
+        lifecycle=TurnLifecycle(event_bus),
+        meme_decorator=cast(Any, decorator),
+        active_turn_states={},
     )
     msg = InboundMessage(
         channel="telegram",

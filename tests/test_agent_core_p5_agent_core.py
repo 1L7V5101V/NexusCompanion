@@ -248,7 +248,6 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
     session = _DummySession("telegram:123")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
@@ -288,9 +287,8 @@ async def test_before_turn_abort_skips_reasoner_and_commit_and_dispatches():
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "blocked by policy"
-    # 不经过 reasoner 和 commit
+    # 不经过 reasoner 和持久化
     reasoner.run_turn.assert_not_called()
-    context_store.commit.assert_not_called()
     # 通过 outbound_port 实际 dispatch
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]
@@ -302,7 +300,6 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
     session = _DummySession("telegram:123")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
@@ -343,7 +340,6 @@ async def test_before_reasoning_abort_skips_reasoner_and_commit_and_dispatches()
 
     assert out.content == "rate limited"
     reasoner.run_turn.assert_not_called()
-    context_store.commit.assert_not_called()
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]
     assert dispatched.content == "rate limited"
@@ -354,7 +350,6 @@ async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
     session = _DummySession("telegram:123")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
@@ -395,7 +390,6 @@ async def test_abort_does_not_dispatch_when_dispatch_outbound_false():
 
     assert out.content == "quiet abort"
     reasoner.run_turn.assert_not_called()
-    context_store.commit.assert_not_called()
     dispatch_port.dispatch.assert_not_called()
 
 
@@ -404,7 +398,6 @@ async def test_reasoner_exception_turn_returns_control_outbound():
     session = _DummySession("telegram:123")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),
@@ -440,7 +433,6 @@ async def test_reasoner_exception_turn_returns_control_outbound():
     out = await agent_core.process(msg, "telegram:123", dispatch_outbound=True)
 
     assert out.content == "处理消息时出错，请稍后再试。"
-    context_store.commit.assert_not_called()
     dispatch_port.dispatch.assert_awaited_once()
     dispatched = dispatch_port.dispatch.await_args.args[0]
     assert dispatched.content == "处理消息时出错，请稍后再试。"
@@ -451,7 +443,6 @@ async def test_after_turn_dispatch_exception_is_not_wrapped_by_control_outbound(
     session = _DummySession("telegram:123")
     context_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle()),
-        commit=AsyncMock(),
     )
     context = SimpleNamespace(
         render=MagicMock(return_value=SimpleNamespace(system_prompt="p", messages=[])),

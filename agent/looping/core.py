@@ -13,7 +13,6 @@ from agent.core.passive_turn import (
     DefaultContextStore,
     DefaultReasoner,
 )
-from agent.lifecycle.types import AfterStepCtx
 from agent.looping.interrupt import InterruptResult, TurnInterruptState
 from agent.core.runner import CoreRunner, CoreRunnerDeps
 from agent.core.runtime_support import ToolDiscoveryState
@@ -45,8 +44,6 @@ from agent.turns.outbound import BusOutboundPort
 __all__ = [
     "AgentLoop",
 ]
-from agent.memes.catalog import MemeCatalog
-from agent.memes.decorator import MemeDecorator
 from bus.event_bus import EventBus
 from bus.events import InboundItem, InboundMessage, OutboundMessage, SpawnCompletionItem
 from bus.events_lifecycle import (
@@ -163,7 +160,6 @@ class AgentLoop:
             hyde_enhancer=hyde_enhancer,
         )
         self._configure_stream_events()
-        self._configure_interrupt_progress_tracking()
 
     def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -174,11 +170,6 @@ class AgentLoop:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
             _ = setter(self._build_stream_event_sink)
-
-    def _configure_interrupt_progress_tracking(self) -> None:
-        step_register = getattr(self._reasoner, "register_step_observer", None)
-        if callable(step_register):
-            _ = step_register(self._on_after_step)
 
     def _wrap_stream_sink_factory(
         self,
@@ -241,17 +232,6 @@ class AgentLoop:
             )
 
         return _push
-
-    async def _on_after_step(self, ctx: AfterStepCtx) -> None:
-        state = self._active_turn_states.get(ctx.session_key)
-        if state is None:
-            return
-        if ctx.partial_reply:
-            state.partial_reply = ctx.partial_reply
-        if ctx.partial_thinking:
-            state.partial_thinking = ctx.partial_thinking
-        state.tools_used = list(ctx.tools_used_so_far)
-        state.tool_chain_partial = list(ctx.tool_chain_partial)
 
     def _append_partial_reply(self, session_key: str, delta: str) -> None:
         state = self._active_turn_states.get(session_key)
@@ -415,16 +395,10 @@ class AgentLoop:
             scheduler=self._scheduler,
             memory_engine=memory_svc.engine,
         )
-        passive_meme_decorator = MemeDecorator(MemeCatalog(deps.workspace / "memes"))
         passive_context_store = DefaultContextStore(
             retrieval=retrieval_pipeline,
             context=self._context,
             history_window=config.memory.keep_count,
-            session=session_svc,
-            trace=trace_svc,
-            outbound=BusOutboundPort(self.bus),
-            meme_decorator=passive_meme_decorator,
-            event_bus=self._event_bus,
         )
         agent_core = AgentCore(
             AgentCoreDeps(
@@ -435,7 +409,6 @@ class AgentLoop:
                 reasoner=self._reasoner,
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
-                meme_decorator=passive_meme_decorator,
                 history_window=config.memory.keep_count,
             )
         )
@@ -518,6 +491,10 @@ class AgentLoop:
     @property
     def processing_state(self) -> ProcessingState | None:
         return self._processing_state
+
+    @property
+    def active_turn_states(self) -> dict[str, TurnInterruptState]:
+        return self._active_turn_states
 
     def stop(self) -> None:
         self._running = False

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from memory2.profile_extractor import ProfileFactExtractor
     from memory2.query_rewriter import QueryRewriter
     from memory2.sufficiency_checker import SufficiencyChecker
+    from agent.memes.decorator import MemeDecorator
     from proactive_v2.presence import PresenceStore
     from session.manager import SessionManager
 
@@ -134,6 +135,7 @@ class AgentLoopDeps:
     consolidation_service: "ConsolidationService | None" = None
     scheduler: "TurnScheduler | None" = None
     core_runner: "CoreRunner | None" = None
+    meme_decorator: "MemeDecorator | None" = None
 
 
 @dataclass

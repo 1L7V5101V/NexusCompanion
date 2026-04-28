@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -8,14 +7,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
-from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
     ContextRequest,
     LLMToolCall,
     ReasonerResult,
-    to_tool_call_groups,
 )
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
@@ -28,11 +25,8 @@ from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import (
-    BeforeDispatch,
     ToolCallCompleted,
     ToolCallStarted,
-    TurnCommitted,
-    TurnCompleted,
 )
 from agent.lifecycle.phases.after_reasoning import AfterReasoningPhase
 from agent.lifecycle.phases.after_turn import AfterTurnPhase
@@ -50,11 +44,13 @@ from agent.lifecycle.types import (
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
     from agent.core.runtime_support import SessionLike, TurnRunResult
-    from agent.looping.ports import LLMConfig, LLMServices, ObservabilityServices, SessionServices
-    from agent.memes.decorator import MemeDecorator
+    from agent.looping.ports import LLMConfig, LLMServices, SessionServices
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from session.manager import SessionManager
     from agent.tools.registry import ToolRegistry
+
+# 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
+logger = logging.getLogger(__name__)
 
 # 被动链路 god 文件：只集中组织核心实现，不改变运行行为。
 #
@@ -66,7 +62,7 @@ if TYPE_CHECKING:
 # │        ├─ Reasoner.run_turn
 # │        │  └─ Reasoner.run
 # │        ├─ parse_response
-# │        └─ ContextStore.commit
+# │        └─ AfterReasoningPhase + AfterTurnPhase
 # │           └─ outbound.dispatch
 # └─ done
 
@@ -80,9 +76,6 @@ _INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输
 2) 目前还缺什么信息或步骤；
 3) 下一步你会怎么继续。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
-
-from agent.core.passive_support import context_logger
-
 
 class _NoopOutboundPort:
     async def dispatch(self, outbound: OutboundDispatch) -> bool:
@@ -98,7 +91,6 @@ class AgentCoreDeps:
     reasoner: "Reasoner"
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
-    meme_decorator: "MemeDecorator | None" = None
     history_window: int = 500
 
 
@@ -138,11 +130,11 @@ class PassiveTurnPipeline:
     ┌──────────────────────────────────────┐
     │ PassiveTurnPipeline                  │
     ├──────────────────────────────────────┤
-    │ 1. 准备上下文                        │
-    │ 2. 触发 BeforeReasoning              │
-    │ 3. 渲染 prompt 预览                  │
-    │ 4. 执行 reasoner                     │
-    │ 5. 提交 ContextStore                 │
+    │ 1. BeforeTurn（会话准备）             │
+    │ 2. BeforeReasoning                   │
+    │ 3. 执行 reasoner（含 BeforeStep/AfterStep）│
+    │ 4. AfterReasoning（parse + 持久化 + 构建出站消息）│
+    │ 5. AfterTurn（TurnCommitted + dispatch） │
     │ 6. 返回出站消息                      │
     └──────────────────────────────────────┘
     """
@@ -179,20 +171,6 @@ class PassiveTurnPipeline:
             context=deps.context,
             history_window=deps.history_window,
         )
-
-        # 注册内置 AfterReasoning chain handler: meme 装饰
-        if deps.meme_decorator is not None:
-            _meme = deps.meme_decorator
-            from agent.lifecycle.types import AfterReasoningCtx
-
-            async def _meme_handler(ctx: AfterReasoningCtx) -> AfterReasoningCtx:
-                decorated = _meme.decorate(ctx.reply, meme_tag=ctx.response_metadata.meme_tag)
-                ctx.reply = decorated.content
-                ctx.media.extend(decorated.media)
-                ctx.meme_tag = decorated.tag
-                return ctx
-
-            bus.on(AfterReasoningCtx, _meme_handler)
 
     # 处理一条普通被动消息，并提交最终出站结果。
     async def run(
@@ -342,24 +320,6 @@ class ContextStore(ABC):
     ) -> ContextBundle:
         """准备本轮对话需要的上下文。"""
 
-    @abstractmethod
-    async def commit(
-        self,
-        *,
-        msg: "InboundMessage",
-        session_key: str,
-        reply: str,
-        response_metadata: ResponseMetadata,
-        tools_used: list[str],
-        tool_chain: list[dict],
-        thinking: str | None,
-        streamed_reply: bool,
-        retrieval_raw: object | None,
-        context_retry: dict[str, object],
-        dispatch_outbound: bool = True,
-    ) -> OutboundMessage:
-        """提交本轮被动 turn，并返回最终出站消息。"""
-
 
 class DefaultContextStore(ContextStore):
     def __init__(
@@ -368,20 +328,10 @@ class DefaultContextStore(ContextStore):
         retrieval: "MemoryRetrievalPipeline",
         context: "ContextBuilder",
         history_window: int = 500,
-        session: "SessionServices | None" = None,
-        trace: "ObservabilityServices | None" = None,
-        outbound: "OutboundPort | None" = None,
-        meme_decorator: "MemeDecorator | None" = None,
-        event_bus: EventBus | None = None,
     ) -> None:
         self._retrieval = retrieval
         self._context = context
         self._history_window = max(1, int(history_window))
-        self._session = session
-        self._trace = trace
-        self._outbound = outbound
-        self._meme_decorator = meme_decorator
-        self._event_bus = event_bus
 
     async def prepare(
         self,
@@ -432,192 +382,7 @@ class DefaultContextStore(ContextStore):
             history_messages=history_messages,
         )
 
-    async def commit(
-        self,
-        *,
-        msg: "InboundMessage",
-        session_key: str,
-        reply: str,
-        response_metadata: ResponseMetadata,
-        tools_used: list[str],
-        tool_chain: list[dict],
-        thinking: str | None,
-        streamed_reply: bool,
-        retrieval_raw: object | None,
-        context_retry: dict[str, object],
-        dispatch_outbound: bool = True,
-    ) -> OutboundMessage:
-        if self._session is None or self._outbound is None:
-            raise RuntimeError("ContextStore.commit requires session/outbound")
-
-        cited_memory_ids = list(response_metadata.cited_memory_ids)
-
-        # 1. 先做 meme decorate，并准备最终回复文本。
-        final_content = reply
-        meme_media: list[str] = []
-        meme_tag = response_metadata.meme_tag
-        if self._meme_decorator is not None:
-            decorated = self._meme_decorator.decorate(
-                final_content,
-                meme_tag=meme_tag,
-            )
-            final_content = decorated.content
-            meme_media = decorated.media
-            meme_tag = decorated.tag
-
-        # 2. 再把 user/assistant 两条消息持久化到 session。
-        session = self._session.session_manager.get_or_create(session_key)
-        omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
-        if not omit_user_turn:
-            if self._session.presence:
-                self._session.presence.record_user_message(session.key)
-            user_kwargs: dict[str, object] = {}
-            llm_user_content = context_retry.get("llm_user_content")
-            if isinstance(llm_user_content, (str, list)):
-                user_kwargs["llm_user_content"] = llm_user_content
-            llm_context_frame = context_retry.get("llm_context_frame")
-            if isinstance(llm_context_frame, str) and llm_context_frame.strip():
-                user_kwargs["llm_context_frame"] = llm_context_frame
-            session.add_message(
-                "user",
-                msg.content,
-                media=msg.media if msg.media else None,
-                **user_kwargs,
-            )
-        _assistant_kwargs: dict = {
-            "tools_used": tools_used if tools_used else None,
-            "tool_chain": tool_chain if tool_chain else None,
-        }
-        if thinking is not None:
-            _assistant_kwargs["reasoning_content"] = thinking
-        if cited_memory_ids:
-            _assistant_kwargs["cited_memory_ids"] = cited_memory_ids
-        session.add_message("assistant", final_content, **_assistant_kwargs)
-        support.update_session_runtime_metadata(
-            session,
-            tools_used=tools_used,
-            tool_chain=tool_chain,
-        )
-        persist_count = 1 if omit_user_turn else 2
-        await self._session.session_manager.append_messages(
-            session,
-            session.messages[-persist_count:],
-        )
-        post_reply_budget = support.build_post_reply_context_budget(
-            context=self._context,
-            history=session.get_history(max_messages=self._history_window),
-            history_window=self._history_window,
-        )
-        react_stats = support.extract_react_stats(context_retry)
-        persisted_user_message = None if omit_user_turn else msg.content
-        tool_chain_raw = copy.deepcopy(tool_chain)
-        extra: dict[str, object] = (
-            {"skip_post_memory": True}
-            if (msg.metadata or {}).get("skip_post_memory")
-            else {}
-        )
-        if self._event_bus is not None:
-            await self._event_bus.fanout(
-                TurnCommitted(
-                    session_key=session_key,
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    input_message=msg.content,
-                    persisted_user_message=persisted_user_message,
-                    assistant_response=final_content,
-                    tools_used=list(tools_used),
-                    thinking=thinking,
-                    raw_reply=response_metadata.raw_text,
-                    meme_tag=meme_tag,
-                    meme_media_count=len(meme_media),
-                    tool_chain_raw=copy.deepcopy(tool_chain_raw),
-                    tool_call_groups=to_tool_call_groups(tool_chain_raw),
-                    timestamp=msg.timestamp,
-                    retrieval_raw=retrieval_raw,
-                    post_reply_budget=dict(post_reply_budget),
-                    react_stats=dict(react_stats),
-                    extra=dict(extra),
-                )
-            )
-            context_logger.info(
-                "[commit] TurnCommitted fanout 完成 source=passive session=%s channel=%s tools=%d",
-                session_key,
-                msg.channel,
-                len(tools_used),
-            )
-        support.log_post_reply_context_budget(
-            session_key=session_key,
-            budget=post_reply_budget,
-        )
-        support.log_react_context_budget(session_key=session_key, react_stats=react_stats)
-
-        # 3. 发出成功完成事件，再给出站消息留出最后干预点。
-        if self._event_bus is not None:
-            await self._event_bus.observe(
-                TurnCompleted(
-                    session_key=session_key,
-                    channel=msg.channel,
-                    chat_id=msg.chat_id,
-                    reply=final_content,
-                    tools_used=list(tools_used),
-                    thinking=thinking,
-                )
-            )
-        dispatch_event = BeforeDispatch(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            thinking=thinking,
-            media=list(meme_media),
-            metadata={
-                **(msg.metadata or {}),
-                "tools_used": tools_used,
-                "tool_chain": tool_chain,
-                "context_retry": context_retry,
-                "streamed_reply": streamed_reply,
-            },
-        )
-        if self._event_bus is not None:
-            dispatch_event = await self._event_bus.emit(dispatch_event)
-
-        # 5. 最后构造 outbound，并按需 dispatch。
-        outbound = OutboundMessage(
-            channel=dispatch_event.channel,
-            chat_id=dispatch_event.chat_id,
-            content=dispatch_event.content,
-            thinking=dispatch_event.thinking,
-            media=list(dispatch_event.media),
-            metadata=dict(dispatch_event.metadata),
-        )
-        if dispatch_outbound:
-            await self._outbound.dispatch(
-                OutboundDispatch(
-                    channel=outbound.channel,
-                    chat_id=outbound.chat_id,
-                    content=outbound.content,
-                    thinking=outbound.thinking,
-                    metadata=outbound.metadata,
-                    media=outbound.media,
-                )
-            )
-        return outbound
-
-
-logger = logging.getLogger("agent.core.passive_turn.reasoner")
-
-
 class Reasoner(ABC):
-    """
-    ┌──────────────────────────────────────┐
-    │ Reasoner                             │
-    ├──────────────────────────────────────┤
-    │ 1. append preflight                  │
-    │ 2. call llm                          │
-    │ 3. execute tool calls                │
-    │ 4. append tool results               │
-    │ 5. return final reply                │
-    └──────────────────────────────────────┘
-    """
 
     @abstractmethod
     async def run(
@@ -696,12 +461,6 @@ class DefaultReasoner(Reasoner):
         | None,
     ) -> None:
         self._stream_sink_factory = factory
-
-    def register_step_observer(
-        self,
-        handler: Callable[["AfterStepCtx"], Awaitable[None]],
-    ) -> None:
-        self._bus.on(AfterStepCtx, handler)
 
     async def run_turn(
         self,
