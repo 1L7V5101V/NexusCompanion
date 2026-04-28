@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import agent.core.passive_support as support
 from agent.core.response_parser import parse_response
-from agent.lifecycle.phase import GatePhase
+from agent.lifecycle.phase import Phase, PhaseFrame, PhaseModule
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterReasoningInput,
@@ -21,33 +23,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AfterReasoningPhase(
-    GatePhase[AfterReasoningInput, AfterReasoningCtx, AfterReasoningResult]
-):
+@dataclass
+class AfterReasoningFrame(PhaseFrame[AfterReasoningInput, AfterReasoningResult]):
+    pass
 
-    def __init__(
-        self,
-        bus: EventBus,
-        session_services: SessionServices,
-    ) -> None:
-        super().__init__(bus)
-        self._session_services = session_services
 
-    async def _setup(self, input: AfterReasoningInput) -> AfterReasoningCtx:
+AfterReasoningModules: TypeAlias = list[PhaseModule[AfterReasoningFrame]]
+
+
+_CTX_SLOT = "reasoning:ctx"
+_OUTBOUND_SLOT = "reasoning:outbound"
+_update_session_runtime_metadata = cast(
+    Callable[..., None],
+    getattr(support, "update_session_runtime_metadata"),
+)
+
+
+class _BuildAfterReasoningCtxModule:
+    produces = (_CTX_SLOT,)
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        input = frame.input
         msg = input.state.msg
         turn_result = input.turn_result
-
-        # 1. None reply fallback
         raw_reply = turn_result.reply
         if raw_reply is None:
             raw_reply = "I've completed processing but have no response to give."
-
-        tool_chain = cast(list[dict[str, object]], turn_result.tool_chain)
-
-        # 2. parse_response: clean text + extract metadata
+        tool_chain = cast(list[dict[str, object]], getattr(turn_result, "tool_chain"))
         parsed = parse_response(raw_reply, tool_chain=tool_chain)
-
-        return AfterReasoningCtx(
+        frame.slots[_CTX_SLOT] = AfterReasoningCtx(
             session_key=input.state.session_key,
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -66,66 +70,125 @@ class AfterReasoningPhase(
                 "streamed_reply": turn_result.streamed,
             },
         )
+        return frame
 
-    async def _finalize(
-        self,
-        ctx: AfterReasoningCtx,
-        input: AfterReasoningInput,
-    ) -> AfterReasoningResult:
-        state = input.state
+
+class _EmitAfterReasoningCtxModule:
+    requires = (_CTX_SLOT,)
+    produces = (_CTX_SLOT,)
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        frame.slots[_CTX_SLOT] = await self._bus.emit(ctx)
+        return frame
+
+
+class _PersistUserMessageModule:
+    requires = (_CTX_SLOT,)
+
+    def __init__(self, session_services: SessionServices) -> None:
+        self._session_services = session_services
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        state = frame.input.state
         msg = state.msg
         raw_session = state.session
         if raw_session is None:
             raise RuntimeError("AfterReasoning requires TurnState.session")
         session = cast("Session", raw_session)
-
-        cited_memory_ids = list(ctx.response_metadata.cited_memory_ids)
-
-        # 1. persist user message
         omit_user_turn = bool((msg.metadata or {}).get("omit_user_turn"))
-        if not omit_user_turn:
-            if self._session_services.presence:
-                self._session_services.presence.record_user_message(session.key)
-            user_kwargs: dict[str, object] = {}
-            llm_user_content = ctx.context_retry.get("llm_user_content")
-            if isinstance(llm_user_content, (str, list)):
-                user_kwargs["llm_user_content"] = llm_user_content
-            llm_context_frame = ctx.context_retry.get("llm_context_frame")
-            if isinstance(llm_context_frame, str) and llm_context_frame.strip():
-                user_kwargs["llm_context_frame"] = llm_context_frame
-            session.add_message(
-                "user",
-                msg.content,
-                media=msg.media if msg.media else None,
-                **user_kwargs,
-            )
+        if omit_user_turn:
+            return frame
+        if self._session_services.presence:
+            self._session_services.presence.record_user_message(session.key)
+        user_kwargs: dict[str, object] = {}
+        llm_user_content = ctx.context_retry.get("llm_user_content")
+        if isinstance(llm_user_content, (str, list)):
+            user_kwargs["llm_user_content"] = llm_user_content
+        llm_context_frame = ctx.context_retry.get("llm_context_frame")
+        if isinstance(llm_context_frame, str) and llm_context_frame.strip():
+            user_kwargs["llm_context_frame"] = llm_context_frame
+        session.add_message(
+            "user",
+            msg.content,
+            media=msg.media if msg.media else None,
+            **user_kwargs,
+        )
+        return frame
 
-        # 2. persist assistant message
+
+class _PersistAssistantMessageModule:
+    requires = (_CTX_SLOT,)
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        raw_session = frame.input.state.session
+        if raw_session is None:
+            raise RuntimeError("AfterReasoning requires TurnState.session")
+        session = cast("Session", raw_session)
         assistant_kwargs: dict[str, Any] = {
             "tools_used": list(ctx.tools_used) if ctx.tools_used else None,
             "tool_chain": list(ctx.tool_chain) if ctx.tool_chain else None,
         }
         if ctx.thinking is not None:
             assistant_kwargs["reasoning_content"] = ctx.thinking
+        cited_memory_ids = list(ctx.response_metadata.cited_memory_ids)
         if cited_memory_ids:
             assistant_kwargs["cited_memory_ids"] = cited_memory_ids
         session.add_message("assistant", ctx.reply, **assistant_kwargs)
+        return frame
 
-        # 3. update_session_runtime_metadata BEFORE append_messages
-        support.update_session_runtime_metadata(
+
+class _UpdateSessionMetadataModule:
+    requires = (_CTX_SLOT,)
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        raw_session = frame.input.state.session
+        if raw_session is None:
+            raise RuntimeError("AfterReasoning requires TurnState.session")
+        session = cast("Session", raw_session)
+        _update_session_runtime_metadata(
             session,
             tools_used=list(ctx.tools_used),
             tool_chain=list(ctx.tool_chain),
         )
+        return frame
 
-        persist_count = 1 if omit_user_turn else 2
-        await self._session_services.session_manager.append_messages(
-            session,
-            session.messages[-persist_count:],
+
+class _AppendMessagesModule:
+    def __init__(self, session_services: SessionServices) -> None:
+        self._session_services = session_services
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        state = frame.input.state
+        raw_session = state.session
+        if raw_session is None:
+            raise RuntimeError("AfterReasoning requires TurnState.session")
+        session = cast("Session", raw_session)
+        persist_count = 1 if bool((state.msg.metadata or {}).get("omit_user_turn")) else 2
+        append_messages = cast(
+            Callable[[object, list[dict[str, Any]]], Awaitable[None]],
+            getattr(self._session_services.session_manager, "append_messages"),
         )
+        await append_messages(
+            session,
+            cast(list[dict[str, Any]], session.messages[-persist_count:]),
+        )
+        return frame
 
-        # 4. build outbound (do NOT dispatch here)
-        outbound = OutboundMessage(
+
+class _BuildOutboundMessageModule:
+    requires = (_CTX_SLOT,)
+    produces = (_OUTBOUND_SLOT,)
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
+        frame.slots[_OUTBOUND_SLOT] = OutboundMessage(
             channel=ctx.channel,
             chat_id=ctx.chat_id,
             content=ctx.reply,
@@ -133,5 +196,50 @@ class AfterReasoningPhase(
             media=list(ctx.media),
             metadata=dict(ctx.outbound_metadata),
         )
+        return frame
 
-        return AfterReasoningResult(ctx=ctx, outbound=outbound)
+
+class _ReturnAfterReasoningResultModule:
+    requires = (_CTX_SLOT, _OUTBOUND_SLOT)
+
+    async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
+        frame.output = AfterReasoningResult(
+            ctx=cast(AfterReasoningCtx, frame.slots[_CTX_SLOT]),
+            outbound=cast(OutboundMessage, frame.slots[_OUTBOUND_SLOT]),
+        )
+        return frame
+
+
+def default_after_reasoning_modules(
+    bus: EventBus,
+    session_services: SessionServices,
+) -> AfterReasoningModules:
+    return [
+        _BuildAfterReasoningCtxModule(),
+        _EmitAfterReasoningCtxModule(bus),
+        _PersistUserMessageModule(session_services),
+        _PersistAssistantMessageModule(),
+        _UpdateSessionMetadataModule(),
+        _AppendMessagesModule(session_services),
+        _BuildOutboundMessageModule(),
+        _ReturnAfterReasoningResultModule(),
+    ]
+
+
+class AfterReasoningPhase(
+    Phase[AfterReasoningInput, AfterReasoningResult, AfterReasoningFrame]
+):
+    def __init__(
+        self,
+        bus: EventBus,
+        session_services: SessionServices,
+    ) -> None:
+        super().__init__(
+            default_after_reasoning_modules(
+                bus,
+                session_services,
+            )
+        )
+
+    def _build_frame(self, input: AfterReasoningInput) -> AfterReasoningFrame:
+        return AfterReasoningFrame(input=input)
