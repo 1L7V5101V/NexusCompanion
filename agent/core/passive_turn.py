@@ -5,7 +5,6 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
@@ -19,7 +18,7 @@ from agent.core.types import (
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
 from agent.provider import ContentSafetyError, ContextLengthError
 from agent.retrieval.protocol import RetrievalRequest
-from agent.tool_hooks import ShellRmToRestoreHook, ToolExecutionRequest, ToolExecutor
+from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_runtime import append_assistant_tool_calls, append_tool_result, tool_call_signature
 from agent.tools.base import normalize_tool_result
 from agent.tools.tool_search import ToolSearchTool
@@ -45,10 +44,12 @@ from agent.lifecycle.types import (
     AfterReasoningInput,
     AfterReasoningResult,
     AfterStepCtx,
+    AfterToolResultCtx,
     BeforeReasoningCtx,
     BeforeReasoningInput,
     BeforeStepCtx,
     BeforeStepInput,
+    BeforeToolCallCtx,
     BeforeTurnCtx,
     TurnSnapshot,
     TurnState,
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike, TurnRunResult
     from agent.looping.ports import LLMConfig, LLMServices, SessionServices
     from agent.retrieval.protocol import MemoryRetrievalPipeline
+    from agent.tool_hooks.base import ToolHook
     from session.manager import SessionManager
     from agent.tools.registry import ToolRegistry
 
@@ -112,7 +114,8 @@ class AgentCoreDeps:
     event_bus: "EventBus | None" = None
     outbound_port: "OutboundPort | None" = None
     history_window: int = 500
-    observe_db_path: Path | None = None
+    before_turn_plugin_modules_early: list[object] | None = None
+    before_turn_plugin_modules_late: list[object] | None = None
 
 
 class AgentCore:
@@ -131,6 +134,13 @@ class AgentCore:
     @property
     def pipeline(self) -> "PassiveTurnPipeline":
         return self._passive_pipeline
+
+    def add_before_turn_plugin_modules(
+        self,
+        early: list[object],
+        late: list[object],
+    ) -> None:
+        self._passive_pipeline.add_before_turn_plugin_modules(early, late)
 
     async def process(
         self,
@@ -167,18 +177,12 @@ class PassiveTurnPipeline:
         self._tools = deps.tools
         self._reasoner = deps.reasoner
         self._outbound_port = deps.outbound_port
+        self._before_turn_plugin_modules_early = list(deps.before_turn_plugin_modules_early or [])
+        self._before_turn_plugin_modules_late = list(deps.before_turn_plugin_modules_late or [])
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
-        self._before_turn: Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame] = Phase(
-            default_before_turn_modules(
-                bus,
-                self._session.session_manager,
-                deps.context_store,
-                observe_db_path=deps.observe_db_path,
-            ),
-            frame_factory=BeforeTurnFrame,
-        )
+        self._before_turn = self._build_before_turn_phase()
         self._before_reasoning: Phase[
             BeforeReasoningInput,
             BeforeReasoningCtx,
@@ -209,6 +213,27 @@ class PassiveTurnPipeline:
                 deps.history_window,
             ),
             frame_factory=AfterTurnFrame,
+        )
+
+    def add_before_turn_plugin_modules(
+        self,
+        early: list[object],
+        late: list[object],
+    ) -> None:
+        self._before_turn_plugin_modules_early.extend(early)
+        self._before_turn_plugin_modules_late.extend(late)
+        self._before_turn = self._build_before_turn_phase()
+
+    def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
+        return Phase(
+            default_before_turn_modules(
+                self._bus,
+                self._session.session_manager,
+                self._context_store,
+                plugin_modules_early=cast("list[Any]", self._before_turn_plugin_modules_early),
+                plugin_modules_late=cast("list[Any]", self._before_turn_plugin_modules_late),
+            ),
+            frame_factory=BeforeTurnFrame,
         )
 
     # 核心方法：处理一条普通被动消息，并提交最终出站结果。
@@ -447,6 +472,9 @@ class Reasoner(ABC):
     ) -> "TurnRunResult":
         """执行完整被动 turn，包括 retry / trim / tool loop。"""
 
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
+        """子类可重写以注入 tool hooks。默认 no-op。"""
+
 
 class DefaultReasoner(Reasoner):
     def __init__(
@@ -477,7 +505,7 @@ class DefaultReasoner(Reasoner):
         self._tool_search_tool: ToolSearchTool | None = (
             _ts if isinstance(_ts, ToolSearchTool) else None
         )
-        self._tool_executor = ToolExecutor([ShellRmToRestoreHook()])
+        self._tool_executor = ToolExecutor([])
         self._stream_sink_factory: Callable[
             [object], Callable[[dict[str, str] | str], Awaitable[None]] | None
         ] | None = None
@@ -500,6 +528,9 @@ class DefaultReasoner(Reasoner):
             default_after_step_modules(bus),
             frame_factory=AfterStepFrame,
         )
+
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
+        self._tool_executor.add_hooks(hooks)
 
     def set_stream_sink_factory(
         self,
@@ -892,6 +923,13 @@ class DefaultReasoner(Reasoner):
                     )
                     # 工具调用统一先过 ToolExecutor：
                     # pre_hook 可改参/拒绝，真实执行后再补 post_hook trace。
+                    await self._bus.fanout(BeforeToolCallCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        tool_name=tool_call.name,
+                        arguments=dict(tool_call.arguments),
+                    ))
                     exec_result = await self._tool_executor.execute(
                         ToolExecutionRequest(
                             call_id=tool_call.id,
@@ -909,6 +947,15 @@ class DefaultReasoner(Reasoner):
                     if exec_result.status == "success":
                         tools_used.append(tool_call.name)
                     result = exec_result.output
+                    await self._bus.fanout(AfterToolResultCtx(
+                        session_key=tool_event_session_key,
+                        channel=tool_event_channel,
+                        chat_id=tool_event_chat_id,
+                        tool_name=tool_call.name,
+                        arguments=dict(exec_result.final_arguments),
+                        result=str(result),
+                        status=exec_result.status,
+                    ))
                     normalized = normalize_tool_result(result)
                     _result_preview = support.log_preview(normalized.preview())
                     _result_len = len(normalized.preview() or "")

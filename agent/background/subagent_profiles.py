@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
 from agent.provider import LLMProvider
 from agent.subagent import SubAgent
+from agent.tool_hooks.base import ToolHook
 from agent.tool_bundles import build_readonly_research_tools
 from agent.tools.base import Tool
 from agent.tools.filesystem import (
@@ -27,6 +29,7 @@ class SubagentRuntime:
     provider: LLMProvider
     model: str
     max_tokens: int
+    tool_hooks: list[ToolHook] = field(default_factory=list)
 
 
 @dataclass
@@ -37,7 +40,7 @@ class SubagentSpec:
     mandatory_exit_tools: Sequence[str] = field(default_factory=tuple)
 
     def build(self, runtime: SubagentRuntime) -> SubAgent:
-        return SubAgent(
+        agent = SubAgent(
             provider=runtime.provider,
             model=runtime.model,
             tools=self.tools,
@@ -46,6 +49,9 @@ class SubagentSpec:
             max_tokens=runtime.max_tokens,
             mandatory_exit_tools=self.mandatory_exit_tools,
         )
+        if runtime.tool_hooks:
+            agent.add_tool_hooks(runtime.tool_hooks)
+        return agent
 
 
 def build_research_spec(

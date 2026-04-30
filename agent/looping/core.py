@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from core.memory.port import MemoryPort
     from core.memory.runtime import MemoryRuntime
     from memory2.hyde_enhancer import HyDEEnhancer
+    from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
 _MAX_PROCEDURE_RETRIEVE_K = 3
@@ -409,9 +410,9 @@ class AgentLoop:
                 event_bus=self._event_bus,
                 outbound_port=BusOutboundPort(self.bus),
                 history_window=config.memory.keep_count,
-                observe_db_path=deps.workspace / "observe" / "observe.db",
             )
         )
+        self._agent_core = agent_core
         self._core_runner = deps.core_runner or CoreRunner(
             CoreRunnerDeps(
                 agent_core=agent_core,
@@ -499,6 +500,16 @@ class AgentLoop:
     def stop(self) -> None:
         self._running = False
         logger.info("AgentLoop 停止")
+
+    def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
+        self._reasoner.add_tool_hooks(hooks)
+
+    def add_before_turn_plugin_modules(
+        self,
+        early: list[object],
+        late: list[object],
+    ) -> None:
+        self._agent_core.add_before_turn_plugin_modules(early, late)
 
     # ── 中断控制面 ────────────────────────────────────────────────
 
