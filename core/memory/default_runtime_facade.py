@@ -1148,6 +1148,8 @@ def _build_rag_query_log(
             score=float(item.get("score", 0.0) or 0.0),
             summary=str(item.get("summary", "") or "")[:120],
             injected=bool(item_id and item_id in injected_id_set),
+            confidence_label=str(item.get("confidence_label", "") or ""),
+            forced=bool(item.get("forced", False)),
         ))
 
     return RagQueryLog(

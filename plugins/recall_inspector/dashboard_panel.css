@@ -1,0 +1,87 @@
+.recall-item-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.recall-item-list {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  overflow: hidden;
+}
+
+.recall-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.recall-item:last-child {
+  border-bottom: none;
+}
+
+.recall-item-context,
+.recall-item-inject,
+.recall-item-recall {
+  box-shadow: none;
+}
+
+.recall-item-head code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-soft);
+}
+
+.recall-summary {
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.recall-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-soft);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.recall-tag-injected {
+  color: var(--text-soft);
+  border-color: var(--line-strong);
+  font-weight: 500;
+}
+
+.recall-tag-type {
+  font-weight: 500;
+  text-transform: lowercase;
+}
+
+.recall-type-profile   { background: var(--blue-soft);   color: #276489; border-color: #c2d5e8; }
+.recall-type-preference{ background: var(--accent-soft);  color: var(--accent); border-color: #e0c0b0; }
+.recall-type-event     { background: var(--green-soft);   color: var(--green); border-color: #b0d8c4; }
+.recall-type-procedure { background: var(--yellow-soft);  color: #8b6b09; border-color: #e0d090; }
+
+.recall-tag-forced {
+  color: #8b6b09;
+  border-color: #e0d090;
+  background: var(--yellow-soft);
+  font-weight: 500;
+}
+
+.recall-tag-score {
+  color: var(--text-soft);
+  border-color: var(--line-soft);
+  font-family: var(--mono);
+}
