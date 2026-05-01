@@ -1,8 +1,16 @@
+import asyncio
+from contextlib import suppress
+import json
 import sqlite3
 
+import pytest
+
 from core.observe.db import open_db
-from core.observe.events import ProactiveDecisionTrace, TurnTrace
+from core.observe.events import ProactiveDecisionTrace, RagHitLog, RagQueryLog, TurnTrace
+from core.observe.migrate_legacy_rag import migrate_legacy_rag_tables
+from core.observe.retention import _run_cleanup
 from core.observe.writer import _write_proactive_decision, _write_turn
+from core.observe.writer import TraceWriter
 
 
 def test_write_proactive_decision_backfills_legacy_columns_for_gate_and_sense(tmp_path):
@@ -223,3 +231,222 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_final_input_tokens" in cols
     assert "react_cache_prompt_tokens" in cols
     assert "react_cache_hit_tokens" in cols
+
+
+@pytest.mark.asyncio
+async def test_trace_writer_drain_waits_for_rag_query(tmp_path):
+    db_path = tmp_path / "observe.db"
+    writer = TraceWriter(db_path)
+    task = asyncio.create_task(writer.run())
+    row = None
+    try:
+        writer.emit(
+            RagQueryLog(
+                caller="passive",
+                session_key="telegram:1",
+                query="改写问题",
+                orig_query="原问题",
+                aux_queries=[],
+                hits=[
+                    RagHitLog(
+                        item_id="m1",
+                        memory_type="event",
+                        score=0.9,
+                        summary="记忆",
+                        injected=True,
+                    )
+                ],
+                injected_count=1,
+                route_decision="RETRIEVE",
+            )
+        )
+        await writer.drain()
+        conn = sqlite3.connect(str(db_path))
+        try:
+            row = conn.execute(
+                """
+                select caller, session_key, query, orig_query, injected_count,
+                       route_decision, hits_json
+                from rag_queries
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    assert row is not None
+    assert row[0] == "passive"
+    assert row[1] == "telegram:1"
+    assert row[2] == "改写问题"
+    assert row[3] == "原问题"
+    assert row[4] == 1
+    assert row[5] == "RETRIEVE"
+    assert '"id": "m1"' in row[6]
+
+
+def test_open_db_does_not_create_legacy_rag_tables(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "select name from sqlite_master where type = 'table'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert "rag_queries" in tables
+    assert "rag_events" not in tables
+    assert "rag_items" not in tables
+
+
+def test_migrate_legacy_rag_tables_moves_events_into_rag_queries(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        with conn:
+            conn.executescript(
+                """
+                create table rag_events (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    source text not null,
+                    session_key text not null,
+                    original_query text not null,
+                    query text not null,
+                    route_decision text,
+                    hyde_hypothesis text,
+                    error text
+                );
+                create table rag_items (
+                    id integer primary key autoincrement,
+                    rag_event_id integer not null references rag_events (id),
+                    item_id text not null,
+                    memory_type text not null,
+                    score real not null,
+                    summary text not null,
+                    retrieval_path text not null,
+                    injected integer not null default 0
+                );
+                """
+            )
+            event_id = conn.execute(
+                """
+                insert into rag_events (
+                    ts, source, session_key, original_query, query,
+                    route_decision, hyde_hypothesis
+                ) values (
+                    '2026-04-01T00:00:00+00:00', 'agent', 'cli:1',
+                    '原问题', '改写问题', 'RETRIEVE', '假想答案'
+                )
+                """
+            ).lastrowid
+            conn.execute(
+                """
+                insert into rag_items (
+                    rag_event_id, item_id, memory_type, score, summary,
+                    retrieval_path, injected
+                ) values (?, 'm1', 'event', 0.8, '旧记忆', 'history_raw', 1)
+                """,
+                (event_id,),
+            )
+    finally:
+        conn.close()
+
+    result = migrate_legacy_rag_tables(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            """
+            select ts, caller, session_key, query, orig_query,
+                   aux_queries, hits_json, injected_count, route_decision
+            from rag_queries
+            """
+        ).fetchone()
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "select name from sqlite_master where type = 'table'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert result.migrated_events == 1
+    assert result.migrated_hits == 1
+    assert row[0] == "2026-04-01T00:00:00+00:00"
+    assert row[1] == "passive"
+    assert row[2] == "cli:1"
+    assert row[3] == "改写问题"
+    assert row[4] == "原问题"
+    assert json.loads(row[5]) == ["假想答案"]
+    assert json.loads(row[6]) == [
+        {
+            "id": "m1",
+            "type": "event",
+            "score": 0.8,
+            "summary": "旧记忆",
+            "injected": True,
+        }
+    ]
+    assert row[7] == 1
+    assert row[8] == "RETRIEVE"
+    assert "rag_events" not in tables
+    assert "rag_items" not in tables
+
+
+def test_migrate_legacy_rag_tables_is_noop_without_legacy_tables(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    conn.close()
+
+    result = migrate_legacy_rag_tables(db_path)
+
+    assert result.migrated_events == 0
+    assert result.migrated_hits == 0
+    assert result.dropped_tables == ()
+
+
+def test_retention_cleans_rag_queries(tmp_path):
+    db_path = tmp_path / "observe.db"
+    conn = open_db(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                insert into rag_queries (
+                    ts, caller, session_key, query
+                ) values (
+                    datetime('now', '-91 days'), 'passive', 'cli:1', '旧问题'
+                )
+                """
+            )
+            conn.execute(
+                """
+                insert into rag_queries (
+                    ts, caller, session_key, query, error
+                ) values (
+                    datetime('now', '-91 days'), 'passive', 'cli:1', '错误问题', 'failed'
+                )
+                """
+            )
+    finally:
+        conn.close()
+
+    _run_cleanup(db_path)
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "select query from rag_queries order by query"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [("错误问题",)]

@@ -1,6 +1,6 @@
 -- Observe DB schema
 -- Agent Loop + Proactive Loop 可观测性数据库
--- 版本：3 (2026-03-14)
+-- 版本：4 (2026-05-01)
 
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous  = NORMAL;
@@ -39,62 +39,27 @@ CREATE INDEX IF NOT EXISTS ix_turns_sk_ts ON turns (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_turns_source ON turns (source, ts);
 
 -- ─────────────────────────────────────────────
--- 2. rag_events  每次 memory 检索事件
+-- 2. rag_queries  当前 memory 检索记录
 -- ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS rag_events (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts                  TEXT    NOT NULL,
-    source              TEXT    NOT NULL,   -- 'agent' | 'proactive'
-    session_key         TEXT    NOT NULL,
-    tick_id             TEXT,               -- proactive: 关联 proactive_decisions.tick_id
-    -- query 链路
-    original_query      TEXT    NOT NULL,   -- agent: user_msg; proactive: build_proactive_memory_query 输出前的原始 query
-    query               TEXT    NOT NULL,   -- 实际用于检索的 query（route decision 改写后）
-    gate_type           TEXT,
-    route_decision      TEXT,               -- 'RETRIEVE' | 'NO_RETRIEVE'（仅 agent）
-    route_latency_ms    INTEGER,
-    -- HyDE
-    hyde_hypothesis     TEXT,               -- HyDE 生成的假设文本（NULL = 未使用 HyDE）
-    -- history 检索元信息
-    history_scope_mode  TEXT,               -- scoped / global / global-fallback / disabled
-    history_gate_reason TEXT,               -- 仅 proactive
-    -- 最终注入内容（完整，不截断）
-    injected_block      TEXT,
-    preference_block    TEXT,
-    preference_query    TEXT,
-    sufficiency_check_json TEXT,
-    fallback_reason     TEXT,
-    error               TEXT
+CREATE TABLE IF NOT EXISTS rag_queries (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts             TEXT    NOT NULL,
+    caller         TEXT    NOT NULL,    -- passive | proactive | explicit
+    session_key    TEXT    NOT NULL,
+    query          TEXT    NOT NULL,    -- rewrite 后的检索 query
+    orig_query     TEXT,               -- 改写前原文，NULL = 未改写
+    aux_queries    TEXT,               -- JSON: ["hypothesis1", ...]  HyDE 假想条目
+    hits_json      TEXT,               -- JSON: [{id, type, score, summary, injected}]
+    injected_count INTEGER NOT NULL DEFAULT 0,
+    route_decision TEXT,               -- "RETRIEVE" | "NO_RETRIEVE" | NULL
+    error          TEXT
 );
 
-CREATE INDEX IF NOT EXISTS ix_re_sk_ts   ON rag_events (session_key, ts);
-CREATE INDEX IF NOT EXISTS ix_re_source  ON rag_events (source, ts);
-CREATE INDEX IF NOT EXISTS ix_re_tick_id ON rag_events (tick_id);
+CREATE INDEX IF NOT EXISTS ix_rq_sk_ts  ON rag_queries (session_key, ts);
+CREATE INDEX IF NOT EXISTS ix_rq_caller ON rag_queries (caller, ts);
 
 -- ─────────────────────────────────────────────
--- 3. rag_items  每个检索到的 item 展开一行（raw data）
--- ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS rag_items (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    rag_event_id    INTEGER NOT NULL REFERENCES rag_events (id),
-    -- vector_search 原始返回字段，不加工
-    item_id         TEXT    NOT NULL,
-    memory_type     TEXT    NOT NULL,       -- event | profile | procedure | preference
-    score           REAL    NOT NULL,
-    summary         TEXT    NOT NULL,       -- 完整 summary
-    happened_at     TEXT,
-    extra_json      TEXT,                   -- 原始 extra_json 序列化为 JSON string
-    -- 检索路径（区分来源）
-    retrieval_path  TEXT    NOT NULL,
-    -- procedure | history_raw | history_hyde | preference
-    injected        INTEGER NOT NULL DEFAULT 0  -- 1 = 最终注入到 context
-);
-
-CREATE INDEX IF NOT EXISTS ix_ri_event ON rag_items (rag_event_id);
-CREATE INDEX IF NOT EXISTS ix_ri_item  ON rag_items (item_id);
-
--- ─────────────────────────────────────────────
--- 4. memory_writes  post-response 记忆写入记录
+-- 3. memory_writes  post-response 记忆写入记录
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory_writes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,7 +77,7 @@ CREATE INDEX IF NOT EXISTS ix_mw_sk_ts ON memory_writes (session_key, ts);
 CREATE INDEX IF NOT EXISTS ix_mw_action ON memory_writes (action, ts);
 
 -- ─────────────────────────────────────────────
--- 5. proactive_decisions  主动链路关键决策
+-- 4. proactive_decisions  主动链路关键决策
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS proactive_decisions (
     id                               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,8 +130,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_pd_tick_id ON proactive_decisions (tick_id)
 
 -- ─────────────────────────────────────────────
 -- 淘汰策略（由 retention.py 执行，不在 schema 里 enforce）
--- turns:      180 天
--- rag_events:  90 天
--- rag_items:   90 天（随 rag_events 级联）
+-- turns:               180 天
+-- rag_queries:          90 天
+-- proactive_decisions:  90 天
 -- 例外：error IS NOT NULL 的行永久保留
 -- ─────────────────────────────────────────────
