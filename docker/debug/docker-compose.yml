@@ -1,0 +1,24 @@
+services:
+  nexus-debug:
+    build:
+      context: ../..
+      dockerfile: docker/debug/Dockerfile
+    image: NexusCompanion-debug:latest
+    working_dir: /app
+    environment:
+      NEXUS_DEBUG_CONFIG: /sandbox/config.toml
+      NEXUS_DEBUG_WORKSPACE: /sandbox/workspace
+      NEXUS_DASHBOARD_HOST: 0.0.0.0
+      NEXUS_DASHBOARD_PORT: "2236"
+      NEXUS_HOST_GID: "${GID:-1000}"
+      NEXUS_HOST_UID: "${UID:-1000}"
+      NEXUS_DEBUG_PROFILE: "${NEXUS_DEBUG_PROFILE:-default}"
+      HOME: /sandbox/home
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../..:/app
+      - ./profiles/${NEXUS_DEBUG_PROFILE:-default}:/sandbox
+    ports:
+      - "2237:2236"
+    stdin_open: true
+    tty: true
