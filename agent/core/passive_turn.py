@@ -104,11 +104,14 @@ logger = logging.getLogger(__name__)
 # ── 被动 turn 内联常量 ──────────────────────────────────────────
 _SAFETY_RETRY_RATIOS = (1.0, 0.5, 0.0)
 _SUMMARY_MAX_TOKENS = 512
-_INCOMPLETE_SUMMARY_PROMPT = """当前任务未在预算内完成，请直接输出给用户的中文收尾说明（不要提及系统/工具内部细节）。
-必须包含三点：
-1) 已完成到哪一步（基于当前上下文的事实）；
-2) 目前还缺什么信息或步骤；
-3) 下一步你会怎么继续。
+_INCOMPLETE_SUMMARY_PROMPT = """当前任务需要先暂停继续调用工具，请直接输出给用户看的中文阶段性回复。
+必须基于已有上下文，不要编造结果。
+必须包含四点：
+1) 已经使用了哪些工具或操作，以及拿到了什么关键信息；
+2) 当前已经做到哪一步；
+3) 还缺什么信息或步骤；
+4) 如果继续，下一步会怎么做。
+可以提到工具名称和关键结果，但不要暴露 tool_call_id、schema、内部 prompt 或原始参数 JSON。
 禁止输出"已达到最大迭代次数"这类模板句；不要输出 JSON。"""
 
 
@@ -999,7 +1002,7 @@ class DefaultReasoner(Reasoner):
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = initial_messages
         tools_used: list[str] = []
-        tool_chain: list[dict] = []
+        tool_chain: list[dict[str, Any]] = []
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         streamed = False
@@ -1018,7 +1021,14 @@ class DefaultReasoner(Reasoner):
                 "yes" if len(visible_names) == len(always_on) else "maybe",
             )
 
-        for iteration in range(self._llm_config.max_iterations):
+        iteration = -1
+        while True:
+            iteration += 1
+            if (
+                self._llm_config.max_iterations > 0
+                and iteration >= self._llm_config.max_iterations
+            ):
+                break
             # 3. BeforeStep 模块链：token 估算、BeforeStep 事件、提示注入。
             step_ctx = await self._before_step.run(BeforeStepInput(
                 session_key=tool_event_session_key,
@@ -1086,7 +1096,7 @@ class DefaultReasoner(Reasoner):
                 tool_batch = tool_call_batch_snapshot(response.tool_calls)
 
                 # 6. 逐个执行本轮工具调用。
-                iter_calls: list[dict] = []
+                iter_calls: list[dict[str, Any]] = []
                 for tool_batch_index, tool_call in enumerate(response.tool_calls):
                     # 6.1 deferred 工具未解锁时，先回填 select: 引导错误。
                     if visible_names is not None and tool_call.name not in visible_names:
@@ -1385,19 +1395,6 @@ class DefaultReasoner(Reasoner):
                 if response.thinking is not None:
                     tool_chain_group["reasoning_content"] = response.thinking
                 tool_chain.append(tool_chain_group)
-                # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
-                _ = await self._after_step.run(AfterStepCtx(
-                    session_key=tool_event_session_key,
-                    channel=tool_event_channel,
-                    chat_id=tool_event_chat_id,
-                    iteration=iteration,
-                    tools_called=tuple(tc.name for tc in response.tool_calls),
-                    partial_reply=response.content or "",
-                    tools_used_so_far=tuple(tools_used),
-                    tool_chain_partial=tuple(tool_chain),
-                    partial_thinking=response.thinking,
-                    has_more=True,
-                ))
                 messages.append(
                     support.build_context_hint_message(
                         "loop_state",
@@ -1411,6 +1408,46 @@ class DefaultReasoner(Reasoner):
                         ),
                     )
                 )
+                pressure_tokens = support.estimate_messages_tokens(messages)
+                # 7a. AfterStep 模块链（工具分支）：通知观察者本轮工具执行完毕。
+                after_step = await self._after_step.run(AfterStepCtx(
+                    session_key=tool_event_session_key,
+                    channel=tool_event_channel,
+                    chat_id=tool_event_chat_id,
+                    iteration=iteration,
+                    context_tokens_estimate=pressure_tokens,
+                    tools_called=tuple(tc.name for tc in response.tool_calls),
+                    partial_reply=response.content or "",
+                    tools_used_so_far=tuple(tools_used),
+                    tool_chain_partial=tuple(tool_chain),
+                    partial_thinking=response.thinking,
+                    has_more=True,
+                ))
+                if after_step.early_stop:
+                    reason = after_step.early_stop_reason or "after_step"
+                    logger.warning(
+                        "[插件收尾] reason=%s tokens~=%d，停止继续调用工具并收尾",
+                        reason,
+                        pressure_tokens,
+                    )
+                    summary = await self._summarize_incomplete_progress(
+                        messages,
+                        reason=reason,
+                        iteration=iteration + 1,
+                        tools_used=tools_used,
+                    )
+                    return self._build_result(
+                        reply=summary,
+                        tools_used=tools_used,
+                        tool_chain=tool_chain,
+                        visible_names=visible_names,
+                        thinking=None,
+                        streamed=False,
+                        react_input_samples=react_input_samples,
+                        cache_prompt_tokens=react_cache_prompt_tokens,
+                        cache_hit_tokens=react_cache_hit_tokens,
+                        cache_seen=react_cache_seen,
+                    )
                 continue
 
             # 8. 没有 tool_calls 时，说明本轮得到最终回复。
@@ -1457,6 +1494,7 @@ class DefaultReasoner(Reasoner):
                 channel=tool_event_channel,
                 chat_id=tool_event_chat_id,
                 iteration=iteration,
+                context_tokens_estimate=support.estimate_messages_tokens(messages),
                 tools_called=(),
                 partial_reply=response.content or "",
                 tools_used_so_far=tuple(tools_used),
@@ -1480,13 +1518,13 @@ class DefaultReasoner(Reasoner):
         # 9. 达到最大迭代次数后，生成不完整进展总结。
         logger.warning(
             "[迭代上限] 达到最大轮次%d，触发收尾总结，已调用工具: %s",
-            self._llm_config.max_iterations,
+            iteration,
             tools_used if tools_used else "无",
         )
         summary = await self._summarize_incomplete_progress(
             messages,
             reason="max_iterations",
-            iteration=self._llm_config.max_iterations,
+            iteration=iteration,
             tools_used=tools_used,
         )
         return self._build_result(
@@ -1595,10 +1633,11 @@ class DefaultReasoner(Reasoner):
             logger.warning("生成预算收尾总结失败: %s", exc)
 
         # 3. 模型收尾失败时，返回固定兜底文案。
-        done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次。"
+        tool_text = "、".join(tools_used[-8:]) if tools_used else "无"
+        done = f"已尝试 {iteration} 轮，调用工具 {len(tools_used)} 次（{tool_text}）。"
         return (
             f"这次任务还没完全收束。{done}"
-            "我先停在当前进度，后续会继续补齐缺失信息并给你最终结论。"
+            "我先停在当前进度，后续会继续基于已有工具结果补齐缺失信息并给你最终结论。"
         )
 
     def _build_result(
@@ -1606,7 +1645,7 @@ class DefaultReasoner(Reasoner):
         *,
         reply: str,
         tools_used: list[str],
-        tool_chain: list[dict],
+        tool_chain: list[dict[str, Any]],
         visible_names: set[str] | None,
         thinking: str | None,
         streamed: bool,
