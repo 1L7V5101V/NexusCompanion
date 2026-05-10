@@ -10,6 +10,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import PromptRenderCtx, PromptRenderInput, PromptRenderResult
 from agent.prompting import PromptSectionRender
@@ -35,6 +36,8 @@ _EXTRA_HINT_PREFIX = "prompt:extra_hint:"
 
 
 class _BuildPromptRenderCtxModule:
+    slot = "prompt_render.build_ctx"
+    requires: tuple[str, ...] = ()
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
@@ -57,7 +60,8 @@ class _BuildPromptRenderCtxModule:
 
 
 class _EmitPromptRenderCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.emit"
+    requires = ("prompt_render.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -70,7 +74,8 @@ class _EmitPromptRenderCtxModule:
 
 
 class _RenderPromptModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.render"
+    requires = ("prompt_render.collect_exports", _CTX_SLOT)
     produces = (_RESULT_SLOT,)
 
     def __init__(self, context: ContextBuilder) -> None:
@@ -107,7 +112,8 @@ class _RenderPromptModule:
 
 
 class _CollectPromptExportSlotsModule:
-    requires = (_CTX_SLOT,)
+    slot = "prompt_render.collect_exports"
+    requires = ("prompt_render.emit", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
@@ -128,7 +134,8 @@ class _CollectPromptExportSlotsModule:
 
 
 class _ReturnPromptRenderResultModule:
-    requires = (_RESULT_SLOT,)
+    slot = "prompt_render.return"
+    requires = ("prompt_render.render", _RESULT_SLOT)
 
     async def run(self, frame: PromptRenderFrame) -> PromptRenderFrame:
         frame.output = cast(PromptRenderResult, frame.slots[_RESULT_SLOT])
@@ -138,20 +145,19 @@ class _ReturnPromptRenderResultModule:
 def default_prompt_render_modules(
     bus: EventBus,
     context: ContextBuilder,
-    plugin_modules_top: PromptRenderModules | None = None,
-    plugin_modules_bottom: PromptRenderModules | None = None,
+    plugin_modules: PromptRenderModules | None = None,
 ) -> PromptRenderModules:
-    top_modules = plugin_modules_top or []
-    bottom_modules = plugin_modules_bottom or []
-    return [
+    builtins: PromptRenderModules = [
         _BuildPromptRenderCtxModule(),
         _EmitPromptRenderCtxModule(bus),
-        *top_modules,
-        *bottom_modules,
         _CollectPromptExportSlotsModule(),
         _RenderPromptModule(context),
         _ReturnPromptRenderResultModule(),
     ]
+    return cast(
+        PromptRenderModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
 
 
 def _append_sections(

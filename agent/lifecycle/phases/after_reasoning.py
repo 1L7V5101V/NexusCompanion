@@ -11,6 +11,7 @@ from agent.lifecycle.phase import (
     PhaseModule,
     append_string_exports,
     collect_prefixed_slots,
+    topo_sort_modules,
 )
 from agent.lifecycle.types import (
     AfterReasoningCtx,
@@ -46,6 +47,8 @@ _USER_FIXED_FIELDS = {"media"}
 
 
 class _BuildAfterReasoningCtxModule:
+    slot = "after_reasoning.build_ctx"
+    requires: tuple[str, ...] = ()
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
@@ -81,7 +84,8 @@ class _BuildAfterReasoningCtxModule:
 
 
 class _EmitAfterReasoningCtxModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_reasoning.emit"
+    requires = ("after_reasoning.build_ctx", _CTX_SLOT)
     produces = (_CTX_SLOT,)
 
     def __init__(self, bus: EventBus) -> None:
@@ -94,7 +98,8 @@ class _EmitAfterReasoningCtxModule:
 
 
 class _PersistUserMessageModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_reasoning.persist_user"
+    requires = ("after_reasoning.emit", _CTX_SLOT)
 
     def __init__(self, session_services: SessionServices) -> None:
         self._session_services = session_services
@@ -130,7 +135,8 @@ class _PersistUserMessageModule:
 
 
 class _PersistAssistantMessageModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_reasoning.persist_asst"
+    requires = ("after_reasoning.persist_user", _CTX_SLOT)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
@@ -150,7 +156,8 @@ class _PersistAssistantMessageModule:
 
 
 class _UpdateSessionMetadataModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_reasoning.update_meta"
+    requires = ("after_reasoning.persist_asst", _CTX_SLOT)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         ctx = cast(AfterReasoningCtx, frame.slots[_CTX_SLOT])
@@ -167,6 +174,9 @@ class _UpdateSessionMetadataModule:
 
 
 class _AppendMessagesModule:
+    slot = "after_reasoning.append_messages"
+    requires = ("after_reasoning.update_meta",)
+
     def __init__(self, session_services: SessionServices) -> None:
         self._session_services = session_services
 
@@ -185,7 +195,8 @@ class _AppendMessagesModule:
 
 
 class _BuildOutboundMessageModule:
-    requires = (_CTX_SLOT,)
+    slot = "after_reasoning.build_outbound"
+    requires = ("after_reasoning.append_messages", _CTX_SLOT)
     produces = (_OUTBOUND_SLOT,)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
@@ -206,7 +217,8 @@ class _BuildOutboundMessageModule:
 
 
 class _ReturnAfterReasoningResultModule:
-    requires = (_CTX_SLOT, _OUTBOUND_SLOT)
+    slot = "after_reasoning.return"
+    requires = ("after_reasoning.build_outbound", _CTX_SLOT, _OUTBOUND_SLOT)
 
     async def run(self, frame: AfterReasoningFrame) -> AfterReasoningFrame:
         frame.output = AfterReasoningResult(
@@ -219,16 +231,11 @@ class _ReturnAfterReasoningResultModule:
 def default_after_reasoning_modules(
     bus: EventBus,
     session_services: SessionServices,
-    plugin_modules_before_emit: AfterReasoningModules | None = None,
-    plugin_modules_before_persist: AfterReasoningModules | None = None,
+    plugin_modules: AfterReasoningModules | None = None,
 ) -> AfterReasoningModules:
-    before_emit = plugin_modules_before_emit or []
-    before_persist = plugin_modules_before_persist or []
-    return [
+    builtins: AfterReasoningModules = [
         _BuildAfterReasoningCtxModule(),
-        *before_emit,
         _EmitAfterReasoningCtxModule(bus),
-        *before_persist,
         _PersistUserMessageModule(session_services),
         _PersistAssistantMessageModule(),
         _UpdateSessionMetadataModule(),
@@ -236,6 +243,10 @@ def default_after_reasoning_modules(
         _BuildOutboundMessageModule(),
         _ReturnAfterReasoningResultModule(),
     ]
+    return cast(
+        AfterReasoningModules,
+        topo_sort_modules(builtins + list(plugin_modules or [])),
+    )
 
 
 def _collect_persist_assistant_slots(slots: dict[str, object]) -> dict[str, object]:

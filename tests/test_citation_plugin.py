@@ -15,8 +15,8 @@ from agent.lifecycle.types import AfterReasoningCtx, PromptRenderCtx
 
 
 def _load_citation_plugin_module() -> Any:
-    path = Path(__file__).parents[1] / "plugins" / "01_citation" / "plugin.py"
-    spec = importlib.util.spec_from_file_location("test_01_citation_plugin", path)
+    path = Path(__file__).parents[1] / "plugins" / "citation" / "plugin.py"
+    spec = importlib.util.spec_from_file_location("test_citation_plugin", path)
     if spec is None or spec.loader is None:
         raise ImportError(str(path))
     module = importlib.util.module_from_spec(spec)
@@ -32,6 +32,7 @@ ProtocolTagCleanupModule = _citation_module.ProtocolTagCleanupModule
 extract_cited_ids = _citation_module.extract_cited_ids
 extract_cited_ids_from_tool_chain = _citation_module.extract_cited_ids_from_tool_chain
 strip_trailing_protocol_tags = _citation_module.strip_trailing_protocol_tags
+strip_inline_memory_refs = _citation_module.strip_inline_memory_refs
 
 
 def test_citation_extracts_ascii_marker_only_at_end() -> None:
@@ -110,6 +111,18 @@ def test_citation_keeps_body_when_leftover_tag_is_not_trailing() -> None:
     assert strip_trailing_protocol_tags(text) == text
 
 
+def test_citation_strips_inline_memory_refs() -> None:
+    text = "第一段。 [§d0e3e6cf128a][§5557c1e640ce]\n第二段 [§mem_1]"
+
+    assert strip_inline_memory_refs(text) == "第一段。\n第二段"
+
+
+def test_citation_keeps_cited_protocol_text_in_body() -> None:
+    text = "我们讨论过 §cited 标签协议，但这不是内联记忆 id。"
+
+    assert strip_inline_memory_refs(text) == text
+
+
 def test_citation_tool_chain_fallback_uses_recall_memory_cited_item_ids() -> None:
     tool_chain = [
         {
@@ -149,7 +162,7 @@ def test_citation_tool_chain_fallback_uses_item_ids() -> None:
 @pytest.mark.asyncio
 async def test_citation_prompt_module_injects_prompt_section() -> None:
     plugin = CitationPlugin()
-    module = plugin.prompt_render_modules_bottom()[0]
+    module = plugin.prompt_render_modules()[0]
     ctx = PromptRenderCtx(
         session_key="telegram:1",
         channel="telegram",
@@ -185,6 +198,31 @@ async def test_citation_after_reasoning_writes_persist_slot() -> None:
         tool_chain=(),
         context_retry={},
         reply="答复正文\n§cited:[mem_1]§",
+    )
+    frame = SimpleNamespace(slots={"reasoning:ctx": ctx})
+
+    await module.run(frame)
+
+    assert ctx.reply == "答复正文"
+    assert frame.slots["persist:assistant:cited_memory_ids"] == ["mem_1"]
+
+
+@pytest.mark.asyncio
+async def test_citation_after_reasoning_strips_inline_memory_refs() -> None:
+    module = CitationAfterReasoningModule()
+    ctx = AfterReasoningCtx(
+        session_key="telegram:1",
+        channel="telegram",
+        chat_id="1",
+        tools_used=(),
+        thinking=None,
+        response_metadata=ResponseMetadata(
+            raw_text="答复正文 [§mem_1]\n§cited:[mem_1]§"
+        ),
+        streamed=False,
+        tool_chain=(),
+        context_retry={},
+        reply="答复正文 [§mem_1]\n§cited:[mem_1]§",
     )
     frame = SimpleNamespace(slots={"reasoning:ctx": ctx})
 

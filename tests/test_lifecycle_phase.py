@@ -9,7 +9,7 @@ import pytest
 from bus.event_bus import EventBus
 from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.facade import TurnLifecycle
-from agent.lifecycle.phase import Phase, PhaseFrame
+from agent.lifecycle.phase import Phase, PhaseFrame, topo_sort_modules
 from agent.lifecycle.types import (
     AfterReasoningCtx,
     AfterStepCtx,
@@ -68,6 +68,30 @@ class _NeedsMissingSlotModule:
         return frame
 
 
+class _NeedsMissingModuleSlotModule:
+    slot = "plugin.consumer"
+    requires = ("plugin.provider",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = "disabled module ran"
+        return frame
+
+
+class _PassThroughFinalizeModule:
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = frame.input
+        return frame
+
+
+class _NeedsDisabledModuleSlotModule:
+    slot = "plugin.after_consumer"
+    requires = ("plugin.consumer",)
+
+    async def run(self, frame: _TextFrame) -> _TextFrame:
+        frame.output = "dependent module ran"
+        return frame
+
+
 @pytest.mark.asyncio
 async def test_phase_modules_run_in_order():
     phase = Phase[str, str, _TextFrame](
@@ -109,6 +133,47 @@ def test_phase_warns_when_slot_not_closed(caplog: pytest.LogCaptureFixture):
             frame_factory=_TextFrame,
         )
     assert "Phase slot 未闭合" in caplog.text
+
+
+def test_phase_warns_when_module_dependency_missing(
+    caplog: pytest.LogCaptureFixture,
+):
+    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+        Phase[str, str, _TextFrame](
+            [_NeedsMissingModuleSlotModule()],
+            frame_factory=_TextFrame,
+        )
+    assert "Phase 模块依赖不存在" in caplog.text
+    assert "Phase slot 未闭合" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_phase_disables_module_with_missing_module_dependency(
+    caplog: pytest.LogCaptureFixture,
+):
+    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+        phase = Phase[str, str, _TextFrame](
+            [_NeedsMissingModuleSlotModule(), _PassThroughFinalizeModule()],
+            frame_factory=_TextFrame,
+        )
+    result = await phase.run("hello")
+    assert result == "hello"
+    assert "已禁用模块" in caplog.text
+
+
+def test_topo_sort_disables_missing_module_dependency_recursively(
+    caplog: pytest.LogCaptureFixture,
+):
+    with caplog.at_level("WARNING", logger="agent.lifecycle.phase"):
+        modules = topo_sort_modules(
+            [
+                _NeedsMissingModuleSlotModule(),
+                _NeedsDisabledModuleSlotModule(),
+            ]
+        )
+    assert modules == []
+    assert "plugin.consumer" in caplog.text
+    assert "plugin.after_consumer" in caplog.text
 
 
 _now = datetime.now()
