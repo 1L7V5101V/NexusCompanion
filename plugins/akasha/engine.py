@@ -34,6 +34,7 @@ from plugins.akasha.core import (
     turn_key,
     # Algorithm functions (aliased with _ prefix for internal convention)
     activation_edge_updates as _activation_edge_updates,
+    local_residual as _local_residual,
     activation_updates as _activation_updates,
     compute_candidates as _core_compute_candidates,
     compute_candidates_from_snapshot as _core_compute_candidates_from_snapshot,
@@ -46,7 +47,7 @@ from plugins.akasha.core import (
     bounded_add as _bounded_add,
     reinforce_boost_from_payload as _reinforce_boost_from_payload,
 )
-from agent.config_models import Config
+from agent.config_models import Config  # noqa: F401
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import (
     EngineProfile,
@@ -91,6 +92,7 @@ class PendingActivation:
     seq: int          # 仅作 query_log 标识用
     ts: float         # 用于 EdgeUpdate / last_used_ts
     items: list[AkashaCandidate]
+    query_vec: np.ndarray
 
 
 class AkashaMemoryEngine:
@@ -230,9 +232,10 @@ class AkashaMemoryEngine:
                 MemoryToolSpec(
                     name="reinforce_memory",
                     description=(
-                        "加强记忆。当用户纠正你刚才依据记忆给的答案/做法,或明确强调某事该被记牢时调用。"
-                        "把当前情境的记忆绑得更牢,影响未来召回(纯加强,不删除、不改写其它记忆)。"
-                        "例:用户说'查睡眠该用 snapshot 不是 sleep report'后,调用本工具加强这条理解。"
+                        "加强当前轮的 Akasha 记忆信号。仅当用户纠正你刚才的回答/工具选择,或明确说以后要记住某条做法时调用。"
+                        "本工具强化的是当前对话轮,不需要也不能填写上一轮 source_ref;不要为了普通闲聊、新事实、已知偏好重复调用。"
+                        "常见用法:用户说'昨晚睡眠要用 fitbit_health_snapshot/snapshot,不是 sleep_report'时,加强正确工具选择。"
+                        "也适合强化流程纠正:例如'要先 fetch_messages(source_ref) 看原文再下结论'。调用后仍要正常回复用户。"
                     ),
                     parameters={
                         "type": "object",
@@ -242,7 +245,10 @@ class AkashaMemoryEngine:
                         "required": [],
                     },
                     risk="write",
-                    search_hint="纠正 强调 记牢 加强记忆",
+                    search_hint=(
+                        "纠正 强调 记牢 加强记忆 当前轮 source_ref "
+                        "snapshot fitbit_health_snapshot sleep_report fetch_messages"
+                    ),
                 ),
             ),
         )
@@ -283,7 +289,7 @@ class AkashaMemoryEngine:
             update_state=stateful,
         )
         if stateful and request.intent in {"context", "answer"}:
-            self._remember_pending_activation(request, result.activation_items, now_ts=now_ts)
+            self._remember_pending_activation(request, result.activation_items, query_vec, now_ts=now_ts)
 
         # 4. context 注入按 Akasha 配置展示 topK；工具查询继续尊重调用方 limit。
         dense_limit = self._akasha_config.dense_top_k
@@ -603,6 +609,7 @@ class AkashaMemoryEngine:
         self,
         request: MemoryQuery,
         items: list[AkashaCandidate],
+        query_vec: np.ndarray,
         *,
         now_ts: float,
     ) -> None:
@@ -615,6 +622,7 @@ class AkashaMemoryEngine:
             seq=seq,
             ts=now_ts,
             items=list(items),
+            query_vec=query_vec,
         )
 
     # TurnCommitted 后把真实 user/assistant 写入 sidecar，并补本轮共激活边。
@@ -642,22 +650,29 @@ class AkashaMemoryEngine:
         # 3. 用真实 current_key 建边，并记录激活诊断。
         #    reinforce 标记 = 本轮调用了 reinforce_memory 工具(记在 tool_chain)或 extra 回填；
         #    与离线重建(build._load_reinforce_boosts)读同一来源，live 与重放一致。
-        gain_boost = _reinforce_boost_for_turn(
+        reinforced = _reinforce_boost_for_turn(
             event.extra,
             event.tool_chain_raw,
-        )
+        ) > 1.0
         pending = self._pending_by_session.pop(event.session_key, None)
         if current_key and pending is not None:
-            self._commit_pending_activation(current_key, pending, gain_boost=gain_boost)
+            self._commit_pending_activation(current_key, pending, reinforced=reinforced)
 
     # 把 pending activation 转成边和事件。
     def _commit_pending_activation(
         self,
         current_key: str,
         pending: PendingActivation,
-        gain_boost: float = 1.0,
+        reinforced: bool = False,
     ) -> None:
-        edge_updates = _activation_edge_updates(current_key, pending.items, pending.ts, gain_boost)
+        query_residual = self._compute_query_residual(pending.query_vec, current_key)
+        edge_updates = _activation_edge_updates(
+            current_key,
+            pending.items,
+            pending.ts,
+            query_residual=query_residual,
+            reinforced=reinforced,
+        )
         self._store.upsert_edges(edge_updates)
         self._apply_edge_updates(edge_updates)
 
@@ -766,6 +781,22 @@ class AkashaMemoryEngine:
             self._message_embeddings[message.id] = np.array(embedding, dtype=np.float32)
             self._message_turn_keys[message.id] = turn_key_value
             self._message_index = build_dense_message_index(self._message_embeddings)
+
+    # ν_turn = 1 − max_{j<i} cos(query, prior_j)²；当前 turn 自身排除。
+    def _compute_query_residual(self, query_vec: np.ndarray, current_key: str) -> float:
+        with self._graph_lock:
+            embeddings = [
+                node.embedding
+                for key, node in self._nodes.items()
+                if key != current_key and node.embedding.size > 0
+            ]
+        if not embeddings:
+            return 1.0
+        prior = np.stack(embeddings).astype(np.float32)
+        norms = np.linalg.norm(prior, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        prior = prior / norms
+        return _local_residual(query_vec, prior)
 
     # 把新增或增强的边同步进内存图。
     def _apply_edge_updates(self, updates: list[EdgeUpdate]) -> None:
