@@ -24,6 +24,7 @@ RagQueryLog = getattr(_observe_events, "RagQueryLog")
 TurnTrace = getattr(_observe_events, "TurnTrace")
 GlobalErrorTrace = getattr(_observe_events, "GlobalErrorTrace")
 GlobalErrorCollector = getattr(_observe_collector, "GlobalErrorCollector")
+current_session_key = getattr(_observe_collector, "current_session_key")
 diagnostic_context = getattr(_diagnostic_log, "diagnostic_context")
 diagnostic_line = getattr(_diagnostic_log, "diagnostic_line")
 migrate_legacy_rag_tables = getattr(_observe_migration, "migrate_legacy_rag_tables")
@@ -181,33 +182,8 @@ def test_open_db_creates_react_budget_columns(tmp_path):
     assert "react_cache_hit_tokens" in cols
 
 
-def test_open_db_migrates_global_error_context_columns(tmp_path):
+def test_open_db_creates_global_error_schema(tmp_path):
     db_path = tmp_path / "observe.db"
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            """
-            CREATE TABLE global_errors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fingerprint TEXT NOT NULL,
-                bucket TEXT NOT NULL,
-                source TEXT NOT NULL,
-                logger_name TEXT,
-                error_type TEXT,
-                message TEXT,
-                traceback_text TEXT,
-                level TEXT,
-                first_ts TEXT NOT NULL,
-                last_ts TEXT NOT NULL,
-                count INTEGER NOT NULL DEFAULT 1,
-                session_keys TEXT
-            )
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
     conn = open_db(db_path)
     try:
         cols = {
@@ -216,7 +192,22 @@ def test_open_db_migrates_global_error_context_columns(tmp_path):
     finally:
         conn.close()
 
-    assert {"flow", "phase", "turn", "tick", "status"} <= cols
+    assert {
+        "fingerprint",
+        "bucket",
+        "source",
+        "logger_name",
+        "error_type",
+        "message",
+        "traceback_text",
+        "level",
+        "first_ts",
+        "last_ts",
+        "count",
+        "session_keys",
+        "status",
+    } <= cols
+    assert not {"flow", "phase", "turn", "tick"} & cols
 
 
 def test_write_global_error_upserts_count_and_sessions(tmp_path):
@@ -234,17 +225,15 @@ def test_write_global_error_upserts_count_and_sessions(tmp_path):
             level="ERROR",
             first_ts="2026-06-20T11:00:00+00:00",
             last_ts="2026-06-20T11:00:00+00:00",
+            count=1,
             session_keys=["telegram:1"],
-            flow="passive",
-            phase="reasoner",
-            turn="turn-a",
         )
         _observe_writer._write_global_error(conn, event)
         event.last_ts = "2026-06-20T11:01:00+00:00"
         event.session_keys = ["telegram:2"]
         _observe_writer._write_global_error(conn, event)
         row = conn.execute(
-            "SELECT count, session_keys, flow, phase FROM global_errors WHERE fingerprint = ?",
+            "SELECT count, session_keys FROM global_errors WHERE fingerprint = ?",
             ("fp1",),
         ).fetchone()
     finally:
@@ -252,8 +241,6 @@ def test_write_global_error_upserts_count_and_sessions(tmp_path):
 
     assert row[0] == 2
     assert json.loads(row[1]) == ["telegram:1", "telegram:2"]
-    assert row[2] == "passive"
-    assert row[3] == "reasoner"
 
 
 @pytest.mark.asyncio
@@ -318,26 +305,33 @@ async def test_global_error_collector_captures_error_log_with_context(tmp_path):
     collector = GlobalErrorCollector(writer)
     test_logger = logging.getLogger("tests.observe.collector")
     row = None
+    uninstalled = False
     try:
         collector.install()
-        with diagnostic_context(session="telegram:1", flow="passive", phase="reasoner", turn="turn-a"):
+        token = current_session_key.set("telegram:1")
+        try:
             try:
                 raise RuntimeError("provider failed 123")
             except RuntimeError:
                 test_logger.exception("provider failed 123")
+        finally:
+            current_session_key.reset(token)
+        await collector.uninstall()
+        uninstalled = True
         await writer.drain()
         conn = sqlite3.connect(str(db_path))
         try:
             row = conn.execute(
                 """
-                SELECT source, error_type, message, session_keys, flow, phase, turn
+                SELECT source, error_type, message, session_keys
                 FROM global_errors
                 """
             ).fetchone()
         finally:
             conn.close()
     finally:
-        collector.close()
+        if not uninstalled:
+            await collector.uninstall()
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -347,9 +341,6 @@ async def test_global_error_collector_captures_error_log_with_context(tmp_path):
     assert row[1] == "RuntimeError"
     assert row[2] == "provider failed 123"
     assert json.loads(row[3]) == ["telegram:1"]
-    assert row[4] == "passive"
-    assert row[5] == "reasoner"
-    assert row[6] == "turn-a"
 
 
 def test_open_db_does_not_create_legacy_rag_tables(tmp_path):
