@@ -118,6 +118,7 @@ def test_stream_event_sink_respects_suppression_flag():
 @pytest.mark.asyncio
 async def test_process_direct_suppresses_stream_and_memory_when_requested():
     loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
     loop._process = AsyncMock(
         return_value=OutboundMessage(
             channel="telegram",
@@ -148,6 +149,96 @@ async def test_process_direct_suppresses_stream_and_memory_when_requested():
         "disabled_tools": ["message_push"],
     }
     assert loop._process.await_args.kwargs["dispatch_outbound"] is False
+
+
+@pytest.mark.asyncio
+async def test_process_direct_waits_for_passive_runtime_admission():
+    loop = object.__new__(AgentLoop)
+    loop._passive_runtime_lock = asyncio.Lock()
+    events: list[str] = []
+
+    async def _process(
+        msg: InboundMessage,
+        session_key: str | None = None,
+        busy_session_key: str | None = None,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        key = session_key or msg.session_key
+        events.append(f"start:{key}")
+        if key == "cli:1":
+            await asyncio.sleep(0.02)
+        events.append(f"end:{key}")
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=key,
+        )
+
+    loop._process = _process
+    passive_msg = InboundMessage(
+        channel="cli",
+        sender="u",
+        chat_id="1",
+        content="hello",
+    )
+    passive_task = asyncio.create_task(
+        AgentLoop._process_with_runtime_admission(loop, passive_msg)
+    )
+    await asyncio.sleep(0)
+    direct_task = asyncio.create_task(
+        AgentLoop.process_direct(
+            loop,
+            content="天气",
+            session_key="scheduler:job",
+            channel="telegram",
+            chat_id="123",
+        )
+    )
+
+    await asyncio.gather(passive_task, direct_task)
+
+    assert events == [
+        "start:cli:1",
+        "end:cli:1",
+        "start:scheduler:job",
+        "end:scheduler:job",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path):
+    loop = _make_loop(tmp_path)
+    state = MagicMock()
+    loop._processing_state = state  # type: ignore[attr-defined]
+    loop._core_runner.process = AsyncMock(  # type: ignore[attr-defined]
+        return_value=OutboundMessage(
+            channel="telegram",
+            chat_id="123",
+            content="ok",
+        )
+    )
+    msg = InboundMessage(
+        channel="telegram",
+        sender="user",
+        chat_id="123",
+        content="天气",
+    )
+
+    outbound = await loop._process(
+        msg,
+        session_key="scheduler:job",
+        busy_session_key="telegram:123",
+        dispatch_outbound=False,
+    )
+
+    assert outbound.content == "ok"
+    state.enter.assert_called_once_with("telegram:123")
+    state.exit.assert_called_once_with("telegram:123")
+    loop._core_runner.process.assert_awaited_once_with(  # type: ignore[attr-defined]
+        msg,
+        "scheduler:job",
+        dispatch_outbound=False,
+    )
 
 
 def _make_loop(

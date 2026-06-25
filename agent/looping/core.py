@@ -124,6 +124,7 @@ class AgentLoop:
         self._running = False
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
+        self._passive_runtime_lock = asyncio.Lock()
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -377,7 +378,7 @@ class AgentLoop:
 
             key = item.session_key
             self._active_turn_states[key] = self._build_initial_turn_state(item, key)
-            task = asyncio.create_task(self._process(item))
+            task = asyncio.create_task(self._process_with_runtime_admission(item))
             self._active_tasks[key] = task
             try:
                 await task
@@ -393,6 +394,7 @@ class AgentLoop:
                     )
                 )
             finally:
+                await self.bus.complete_inbound(item)
                 self._active_tasks.pop(key, None)
                 self._active_turn_states.pop(key, None)
 
@@ -577,10 +579,12 @@ class AgentLoop:
         self,
         msg: InboundItem,
         session_key: str | None = None,
+        busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
         started = time.time()
         key = session_key or msg.session_key
+        busy_key = busy_session_key or key
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
         _ = current_session_key.set(key)
 
@@ -593,7 +597,7 @@ class AgentLoop:
 
         # 2. 再进入 busy 状态并执行核心处理。
         if self._processing_state:
-            self._processing_state.enter(key)
+            self._processing_state.enter(busy_key)
         try:
             outbound = await self._core_runner.process(
                 msg,
@@ -606,13 +610,32 @@ class AgentLoop:
         finally:
             # 3. 最后无论成功失败都直接释放 busy 状态。
             if self._processing_state:
-                self._processing_state.exit(key)
+                self._processing_state.exit(busy_key)
             _ = started
+
+    async def _process_with_runtime_admission(
+        self,
+        msg: InboundItem,
+        session_key: str | None = None,
+        busy_session_key: str | None = None,
+        dispatch_outbound: bool = True,
+    ) -> OutboundMessage:
+        key = session_key or msg.session_key
+        if self._passive_runtime_lock.locked():
+            logger.info("[runtime_admission] 等待 passive runtime session=%s", key)
+        async with self._passive_runtime_lock:
+            return await self._process(
+                msg,
+                session_key=session_key,
+                busy_session_key=busy_session_key,
+                dispatch_outbound=dispatch_outbound,
+            )
 
     async def process_direct(
         self,
         content: str,
         session_key: str = "cli:direct",
+        busy_session_key: str | None = None,
         channel: str = "cli",
         chat_id: str = "direct",
         omit_user_turn: bool = False,
@@ -639,9 +662,10 @@ class AgentLoop:
             content=content,
             metadata=metadata,
         )
-        response = await self._process(
+        response = await self._process_with_runtime_admission(
             msg,
             session_key=session_key,
+            busy_session_key=busy_session_key,
             dispatch_outbound=False,
         )
         return response.content if response else ""

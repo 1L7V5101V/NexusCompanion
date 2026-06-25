@@ -54,7 +54,9 @@ async def test_instant_push_receives_correct_args(
     await drain_tasks()
 
     mock_push.execute.assert_called_once_with(
-        channel="telegram", chat_id="999", message="喝水了"
+        channel="telegram",
+        chat_id="999",
+        message="喝水了",
     )
 
 
@@ -84,6 +86,7 @@ async def test_soft_calls_process_direct_not_push_directly(
     assert call_kwargs.kwargs["content"] == "查询北京天气"
     assert call_kwargs.kwargs["channel"] == "telegram"
     assert call_kwargs.kwargs["chat_id"] == "123"
+    assert call_kwargs.kwargs["busy_session_key"] == "telegram:123"
     assert call_kwargs.kwargs["skip_post_memory"] is True
     assert call_kwargs.kwargs["skip_memory_retrieval"] is True
     assert call_kwargs.kwargs["disabled_tools"] == [
@@ -110,7 +113,9 @@ async def test_soft_sends_ai_response_via_push(
     await drain_tasks()
 
     mock_push.execute.assert_called_once_with(
-        channel=job.channel, chat_id=job.chat_id, message="北京今天晴，15°C"
+        channel=job.channel,
+        chat_id=job.chat_id,
+        message="北京今天晴，15°C",
     )
 
 

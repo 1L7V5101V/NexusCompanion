@@ -488,6 +488,7 @@ class SchedulerService:
                 channel=job.channel,
                 chat_id=job.chat_id,
                 session_key=f"scheduler:{job.id}",
+                busy_session_key=f"{job.channel}:{job.chat_id}",
                 omit_user_turn=True,
                 skip_post_memory=True,
                 skip_memory_retrieval=True,
