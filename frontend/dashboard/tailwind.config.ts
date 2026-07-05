@@ -15,6 +15,7 @@ export default {
     resolve(here, "index.html"),
     resolve(here, "src/**/*.{ts,tsx}"),
     resolve(repoRoot, "plugins/**/*.{ts,tsx}"),
+    resolve(repoRoot, "nexus-plugin/**/*.{ts,tsx}"),
   ],
   theme: {
     extend: {
