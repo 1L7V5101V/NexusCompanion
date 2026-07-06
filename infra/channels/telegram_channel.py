@@ -98,12 +98,12 @@ class TelegramChannel:
             metadata_key="username",
             normalizer=lambda value: value.lower(),
         )
-        proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        # proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
         builder = Application.builder().token(token)
         if api_base_url:
             builder = builder.base_url(api_base_url)
-        if proxy_url:
-            builder = builder.proxy_url(proxy_url)
+        # if proxy_url:
+        #     builder = builder.proxy_url(proxy_url)
         self._app = builder.build()
         self._bot_commands = bot_commands or []
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
