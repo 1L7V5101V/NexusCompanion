@@ -175,6 +175,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                     str(u) for u in tg.get("allow_from", tg.get("allowFrom", []))
                 ],
                 channel_name=str(tg.get("channel_name", "telegram")),
+                api_base_url=_normalize_optional_config_text(
+                    str(tg.get("api_base_url", ""))
+                ) or None,
             )
 
     qq = None
