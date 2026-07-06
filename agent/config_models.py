@@ -12,6 +12,9 @@ class TelegramChannelConfig:
     token: str
     allow_from: list[str] = field(default_factory=list)
     channel_name: str = "telegram"
+    api_base_url: str | None = None
+    """自定义 Telegram Bot API 地址，用于国内反代等场景。
+    例如：https://tg.i-c.top/bot（无需尾随 /）"""
 
 
 @dataclass

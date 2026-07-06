@@ -8,6 +8,7 @@ import logging
 import asyncio
 import html
 import json
+import os
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,6 +81,7 @@ class TelegramChannel:
         event_bus: EventBus | None = None,
         interrupt_controller: InterruptController | None = None,
         channel_name: str = _CHANNEL,
+        api_base_url: str | None = None,
     ) -> None:
         self._bus = bus
         self._session_manager = session_manager
@@ -96,7 +98,13 @@ class TelegramChannel:
             metadata_key="username",
             normalizer=lambda value: value.lower(),
         )
-        self._app = Application.builder().token(token).build()
+        proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        builder = Application.builder().token(token)
+        if api_base_url:
+            builder = builder.base_url(api_base_url)
+        if proxy_url:
+            builder = builder.proxy_url(proxy_url)
+        self._app = builder.build()
         self._bot_commands = bot_commands or []
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
         self._app.add_handler(

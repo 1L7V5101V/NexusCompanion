@@ -66,6 +66,7 @@ async def start_channels(
             event_bus=event_bus,
             interrupt_controller=interrupt_controller,
             channel_name=tg.channel_name,
+            api_base_url=tg.api_base_url,
         ))
 
     if config.channels.qq and config.channels.qq.bot_uin:
