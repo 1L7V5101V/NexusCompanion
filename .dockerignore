@@ -1,4 +1,47 @@
-**
-!requirements.txt
-!requirements-dev.txt
-!docker/debug/entrypoint.sh
+# Git
+.git/
+.gitignore
+.gitattributes
+.gitmodules
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.uv/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime / temp
+workspace/
+logs/
+data/
+**/.kv.json
+_handbook/Untitled
+*.md~
+未命名*.md
+
+# Frontend build output
+node_modules/
+frontend/dashboard/static/
+static/dashboard/
+
+# Local config (not committed)
+config.toml
+config.json
+config.local.toml
+.env
+
+# Debug profiles
+docker/debug/profiles/
+docker/.env

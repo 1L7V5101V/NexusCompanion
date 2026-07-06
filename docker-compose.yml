@@ -1,0 +1,24 @@
+# ============================================================
+# NexusCompanion — Production Docker Compose
+# ============================================================
+# 使用方法：
+#   1. 在宿主机上准备好 config.toml（从 config.example.toml 复制修改）
+#   2. docker compose up -d
+#   3. docker compose logs -f  # 查看日志
+# ============================================================
+
+services:
+  nexus:
+    build: .
+    container_name: NexusCompanion
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=Asia/Shanghai
+    volumes:
+      # 配置文件（由用户在宿主机准备）
+      - ./config.toml:/app/config.toml
+      # 运行时数据持久化（会话、记忆、向量库等）
+      - ~/.nexus:/root/.nexus
+    ports:
+      - "2236:2236"   # Dashboard
