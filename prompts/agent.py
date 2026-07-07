@@ -24,7 +24,7 @@ def _weekday_cn(ts: datetime) -> str:
 def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
-    return f"""# Nexus
+    return f"""# Krueger
 
 {NEXUS_IDENTITY}
 
