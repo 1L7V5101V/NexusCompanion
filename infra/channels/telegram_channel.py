@@ -1,14 +1,9 @@
-"""
-Telegram Channel
-
-将 Telegram Bot 接入 MessageBus，支持 allowFrom 白名单。
-"""
-
 import logging
 import asyncio
 import html
 import json
 import os
+import re
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,7 +52,14 @@ _TOOL_LIVE_TAIL = 1000
 _REPLY_LIVE_TAIL = 1100
 _TOOL_PREVIEW_LIMIT = 80
 _LIVE_STREAM_MIN_INTERVAL_S = 2.5
-_LIVE_STREAM_MIN_CHARS = 200
+
+
+_CITATION_PATTERN = re.compile(r"§cited:\[[^\]]*\]§")
+
+
+def _strip_citation_markers(text: str) -> str:
+    """Remove citation markers (§cited:[...]§) from text."""
+    return _CITATION_PATTERN.sub("", text).strip()
 
 
 @dataclass
@@ -801,23 +803,27 @@ class TelegramChannel:
                 )
             await self._send_final_tool_snapshot(session_key, msg.chat_id)
         streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
-        if msg.content.strip():
+        
+        # Strip citation markers (§cited:[...]§) from final output
+        content = _strip_citation_markers(msg.content)
+        
+        if content.strip():
             if streamed_reply:
                 stream = self._active_streams.pop(str(msg.chat_id), None)
                 if stream is not None:
-                    await stream.finalize(msg.content)
+                    await stream.finalize(content)
                 else:
                     await send_markdown(
                         self._app.bot,
                         msg.chat_id,
-                        msg.content,
+                        content,
                         self._telegram_outbound_limiter,
                     )
             else:
                 await send_markdown(
                     self._app.bot,
                     msg.chat_id,
-                    msg.content,
+                    content,
                     self._telegram_outbound_limiter,
                 )
         if final_thinking and not had_live:
