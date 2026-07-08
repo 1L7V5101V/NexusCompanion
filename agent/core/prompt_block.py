@@ -128,7 +128,9 @@ class SelfModelPromptBlock:
         self_content = ctx.memory.read_self()
         if not self_content:
             return None
-        return f"## Nexus 自我认知\n\n{self_content}"
+        from agent.persona import get_identity_name
+        name = get_identity_name()
+        return f"## {name} Self-Perception\n\n{self_content}"
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None

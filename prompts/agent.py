@@ -4,7 +4,7 @@ import platform
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
+from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES, get_identity_name
 
 
 def _normalize_timestamp(message_timestamp: datetime | None = None) -> datetime:
@@ -24,7 +24,8 @@ def _weekday_cn(ts: datetime) -> str:
 def build_agent_static_identity_prompt(*, workspace: Path) -> str:
     workspace_path = str(workspace.expanduser().resolve())
 
-    return f"""# Krueger
+    name = get_identity_name()
+    return f"""# {name}
 
 {NEXUS_IDENTITY}
 

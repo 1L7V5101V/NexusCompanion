@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 from agent.config_models import Config
 from agent.looping.core import AgentLoop
+from agent.memory import DEFAULT_SELF_MD
+from agent.persona import get_identity_name
 from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
@@ -103,10 +105,13 @@ def build_memory_optimizer_task(
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
         return [], None
 
+    persona = config.persona
     mem_optimizer = MemoryOptimizer(
         memory=memory_store,
         provider=provider,
         model=config.model,
+        default_self_md=persona.self_model or DEFAULT_SELF_MD,
+        identity_name=get_identity_name(),
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")

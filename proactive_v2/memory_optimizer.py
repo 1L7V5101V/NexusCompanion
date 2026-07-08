@@ -152,9 +152,10 @@ tag 含义（与 consolidation 阶段一致）：
 {pending}
 """
 
-_SELF_SYSTEM = (
-    "你是 Nexus，只能更新 SELF.md 中现有的三个 section，不得新增其他 section。"
-)
+_SELF_SYSTEM_TEMPLATE = "你是 {name}，只能更新 SELF.md 中现有的三个 section，不得新增其他 section。"
+
+def _build_self_system(identity_name: str) -> str:
+    return _SELF_SYSTEM_TEMPLATE.format(name=identity_name)
 
 _SELF_PROMPT = """\
 你的任务是根据当前 SELF.md 和本轮待合并事实，整理一份新的 SELF.md。
@@ -206,11 +207,15 @@ class MemoryOptimizer:
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,
+        default_self_md: str | None = None,
+        identity_name: str = "Nexus",
     ) -> None:
         self._memory = memory
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
+        self._default_self_md = default_self_md or DEFAULT_SELF_MD
+        self._identity_name = identity_name
         self._lock = asyncio.Lock()
 
     # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
@@ -281,7 +286,7 @@ class MemoryOptimizer:
 
     async def _update_self(self, pending: str) -> None:
         """只更新 SELF.md 现有保留的三段，不新增 section。"""
-        self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
+        self_content = self._memory.read_self().strip() or self._default_self_md.strip()
         if not self_content:
             logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
             return
@@ -291,7 +296,7 @@ class MemoryOptimizer:
         )
         try:
             updated = await self._request_text_response(
-                system_content=_SELF_SYSTEM,
+                system_content=_build_self_system(self._identity_name),
                 user_content=prompt,
                 max_tokens=2048,
             )

@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
-from agent.memory import DEFAULT_SELF_MD, MemoryStore
+from agent.config_models import PersonaConfig
+from agent.memory import DEFAULT_SELF_MD, MemoryStore, get_default_self_md
 from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
 from proactive_v2.anyaction import QuotaStore
@@ -20,11 +21,13 @@ _EMPTY_FILES: dict[str, str] = {
     "memory/PENDING.md": "",
 }
 
-_TEXT_FILES: dict[str, str] = {
-    **_EMPTY_FILES,
-    "memory/SELF.md": DEFAULT_SELF_MD,
-    "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
-}
+
+def _build_text_files(self_model: str) -> dict[str, str]:
+    return {
+        **_EMPTY_FILES,
+        "memory/SELF.md": self_model,
+        "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
+    }
 
 _JSON_FILES: dict[str, object] = {
     "mcp_servers.json": {"servers": {}},
@@ -94,9 +97,12 @@ def _ensure_workspace_text_assets(
     *,
     force: bool,
     summary: InitSummary,
+    persona: PersonaConfig | None = None,
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    for rel_path, content in _TEXT_FILES.items():
+    self_model = get_default_self_md(persona)
+    text_files = _build_text_files(self_model)
+    for rel_path, content in text_files.items():
         _write_text_file(workspace / rel_path, content, force=force, summary=summary)
 
 
@@ -191,7 +197,12 @@ def init_workspace(
     _ensure_config(config_path, force=force, summary=summary)
 
     config = Config.load(config_path)
-    _ensure_workspace_text_assets(workspace, force=force, summary=summary)
+    _ensure_workspace_text_assets(
+        workspace,
+        force=force,
+        summary=summary,
+        persona=config.persona,
+    )
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
     _ensure_workspace_directories(workspace, summary=summary)
     _ensure_workspace_db_assets(
