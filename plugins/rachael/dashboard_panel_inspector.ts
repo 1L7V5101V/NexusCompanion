@@ -1,8 +1,8 @@
 /// <reference path="../../types/nexus-dashboard.d.ts" />
 
-// ???? Types ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+// ── Types ────────────────────────────────────────────────────────────────────
 
-interface RachaelCandidate {
+interface AkashaCandidate {
   key: string;
   user_message: string;
   assistant_preview: string;
@@ -21,13 +21,13 @@ interface RachaelCandidate {
   suppressed: string;
 }
 
-interface RachaelCard extends RachaelCandidate {
+interface AkashaCard extends AkashaCandidate {
   user_message: string;
   assistant_preview: string;
   source_ref: string;
 }
 
-interface RachaelQueryRow {
+interface AkashaQueryRow {
   query_id: string;
   session_key: string;
   seq: number;
@@ -44,10 +44,10 @@ interface RachaelQueryRow {
   source_ref_count: number;
 }
 
-interface AkashaQueryDetail extends RachaelQueryRow {
-  activation_items: RachaelCandidate[];
-  dense_items: RachaelCard[];
-  ripple_items: RachaelCard[];
+interface AkashaQueryDetail extends AkashaQueryRow {
+  activation_items: AkashaCandidate[];
+  dense_items: AkashaCard[];
+  ripple_items: AkashaCard[];
   text_block_preview: string;
 }
 
@@ -57,7 +57,7 @@ interface AkashaOverview {
   latest_at: string | null;
 }
 
-// ???? Helpers ??????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function ai_fmtScore(v: number | null | undefined): string {
   if (v == null) return "-";
@@ -93,7 +93,7 @@ function ai_suppressedTag(s: string): string {
 }
 
 function ai_shortKey(key: string): string {
-  // session_key:seq ??last 2 segments for readability
+  // session_key:seq → last 2 segments for readability
   const parts = key.split(":");
   if (parts.length >= 2) {
     const seq = parts[parts.length - 1];
@@ -122,8 +122,8 @@ function ai_renderFilters(container: HTMLElement, dispatch: PluginDispatch): voi
   }
   container.innerHTML = `
     <div class="filter-row">
-      <label class="search"><span>??/span><input type="text" placeholder="??? query / session" value="${escapeHtml(q)}" data-ai-search /></label>
-      <button class="ghost" type="button" data-ai-clear ${q ? "" : "disabled"}>???</button>
+      <label class="search"><span>⌕</span><input type="text" placeholder="搜索 query / session" value="${escapeHtml(q)}" data-ai-search /></label>
+      <button class="ghost" type="button" data-ai-clear ${q ? "" : "disabled"}>清空</button>
     </div>
   `;
   const input = container.querySelector<HTMLInputElement>("[data-ai-search]")!;
@@ -157,7 +157,7 @@ function ai_textExpander(text: string | null | undefined, isAssistant: boolean =
     <div class="ai-expander ${isAssistant ? 'ai-exp-asst' : ''}">
       <input type="checkbox" id="${id}" class="ai-exp-cb" style="display:none;" />
       <label for="${id}" class="ai-exp-header">
-        <span class="ai-exp-icon">??/span>
+        <span class="ai-exp-icon">▶</span>
         <span class="ai-exp-text-closed" style="font-size:${size}">${escapeHtml(text.replace(/\n/g, ' '))}</span>
         <span class="ai-exp-text-open">Collapse</span>
       </label>
@@ -185,9 +185,9 @@ function ai_sparkbar(label: string, v: number | null | undefined): string {
   `;
 }
 
-function ai_renderActivationTable(items: RachaelCandidate[]): string {
+function ai_renderActivationTable(items: AkashaCandidate[]): string {
   if (!items.length) {
-    return '<div class="ai-empty">????????/div>';
+    return '<div class="ai-empty">无激活节点</div>';
   }
   const rows = items.map((item) => `
     <div class="ai-act-card ${item.suppressed ? "ai-row-suppressed" : ""}">
@@ -213,11 +213,11 @@ function ai_renderActivationTable(items: RachaelCandidate[]): string {
   return `<div class="ai-act-list">${rows}</div>`;
 }
 
-// ???? Dense / Ripple card table ??????????????????????????????????????????????????????????????????????????????????????????
+// ── Dense / Ripple card table ─────────────────────────────────────────────
 
-function ai_renderCardTable(items: RachaelCard[], type: 'dense' | 'ripple'): string {
+function ai_renderCardTable(items: AkashaCard[], type: 'dense' | 'ripple'): string {
   if (!items.length) {
-    return '<div class="ai-empty">?????/div>';
+    return '<div class="ai-empty">无记录</div>';
   }
   const showPath = type === 'ripple';
 
@@ -247,13 +247,13 @@ function ai_renderCardTable(items: RachaelCard[], type: 'dense' | 'ripple'): str
   return `<div class="ai-cards-list">${cards}</div>`;
 }
 
-// ???? Detail renderer ??????????????????????????????????????????????????????????????????????????????????????????????????????????????
+// ── Detail renderer ───────────────────────────────────────────────────────
 
 function ai_renderEmpty(): string {
   return `
     <div class="detail-empty">
       <div class="detail-empty-title">Akasha Inspector</div>
-      <div class="detail-empty-text">????????????????????????????ense ????????ipple ????????????????/div>
+      <div class="detail-empty-text">点开一轮检索记录，这里会显示激活图、Dense 精确命中、Ripple 联想命中和注入预览。</div>
     </div>
   `;
 }
@@ -264,8 +264,8 @@ function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../front
     <div class="ai-inspector">
       <div class="ai-query-block">
         <div class="detail-title" style="display:flex; justify-content:space-between; align-items:flex-start;">
-          <span>Akasha ???????<span class="detail-subtext mono">(${escapeHtml(item.session_key)} ? seq ${item.seq})</span></span>
-          ${dispatch?.closePane ? `<button class="ai-close-btn" type="button" title="?????????">??/button>` : ""}
+          <span>Akasha 检索记录 <span class="detail-subtext mono">(${escapeHtml(item.session_key)} · seq ${item.seq})</span></span>
+          ${dispatch?.closePane ? `<button class="ai-close-btn" type="button" title="关闭详情面板">✕</button>` : ""}
         </div>
         <div class="ai-query-text">${escapeHtml(item.query_text)}</div>
         <div class="ai-meta-row">
@@ -338,17 +338,17 @@ function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../front
   `;
 }
 
-// ???? Plugin registration ??????????????????????????????????????????????????????????????????????????????????????????????????????
+// ── Plugin registration ───────────────────────────────────────────────────
 
 window.NexusDashboard.registerPlugin({
-  id: "rachael_inspector",
+  id: "akasha_inspector",
   label: "Akasha Inspector",
   viewLabel: "akasha inspector",
   pageSize: 25,
   rowKey: "query_id",
 
   countTitle(total: number): string {
-    return `${total} ?????;
+    return `${total} 轮检索`;
   },
 
   columns: [
@@ -362,7 +362,7 @@ window.NexusDashboard.registerPlugin({
 
   async getCount(): Promise<number | null> {
     try {
-      const r = await api<AkashaOverview>("/api/dashboard/rachael-inspector/overview");
+      const r = await api<AkashaOverview>("/api/dashboard/akasha-inspector/overview");
       return r.available ? (r.total ?? 0) : null;
     } catch {
       return null;
@@ -376,14 +376,14 @@ window.NexusDashboard.registerPlugin({
     if (filters?.["session_key"]) params.set("session_key", filters["session_key"]);
     if (filters?.["q"]) params.set("q", filters["q"]);
     const data = await api<{ items: Record<string, unknown>[]; total: number }>(
-      `/api/dashboard/rachael-inspector/turns?${params.toString()}`
+      `/api/dashboard/akasha-inspector/turns?${params.toString()}`
     );
     return { items: data.items || [], total: data.total || 0 };
   },
 
   async fetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
     const queryId = String(item["query_id"] ?? "");
-    return api(`/api/dashboard/rachael-inspector/turns/${encodePath(queryId)}`);
+    return api(`/api/dashboard/akasha-inspector/turns/${encodePath(queryId)}`);
   },
 
   renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): void {

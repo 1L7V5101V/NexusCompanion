@@ -85,25 +85,25 @@ function renderAkashaGraph(container: HTMLElement): void {
     <div class="ag-html">
       <canvas id="c"></canvas>
       <div id="hud">
-        <b>Akasha ????????/b><br>telegram ??? ? ????????br>
-        <span id="stat">????????..</span>
+        <b>Akasha 真实记忆图</b><br>telegram 子图 · 数据透明版<br>
+        <span id="stat">布局计算中...</span>
         <div style="position:relative;">
-          <input id="search" placeholder="???????????>
+          <input id="search" placeholder="搜索记忆正文…">
           <div id="search_results"></div>
         </div>
         <div id="slider-container">
           <input type="range" id="cc_slider" min="1" max="10" value="2">
-          <span style="font-size:11px">?????? &ge; <span id="cc_val" style="color:#fff;font-weight:bold;font-size:13px">2</span></span>
+          <span style="font-size:11px">共现频次 &ge; <span id="cc_val" style="color:#fff;font-weight:bold;font-size:13px">2</span></span>
         </div>
-        <div class="hint">????????? ????????? ???????????/div>
+        <div class="hint">远景看大岛 · 中景看子岛 · 近景看联想根系</div>
       </div>
       <div id="leg"></div>
       <div id="loading_card" class="ag-loading-card">
         <div class="ag-loading-kicker">Akasha Graph</div>
-        <div class="ag-loading-title">??????????????/div>
-        <div class="ag-loading-copy">??????????????snapshot?????????????????/div>
+        <div class="ag-loading-title">正在生成全量记忆图</div>
+        <div class="ag-loading-copy">第一次进入需要构建 snapshot，之后会直接读取缓存。</div>
         <div class="ag-loading-track"><div id="loading_bar"></div></div>
-        <div id="loading_note" class="ag-loading-note">????????????...</div>
+        <div id="loading_note" class="ag-loading-note">启动后台布局任务...</div>
       </div>
       <div id="tip"></div>
       <div id="node_detail"></div>
@@ -347,7 +347,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       if (bucket) bucket.push(i);
       else nodesByGroup.set(n.g, [i]);
       const old = groups.get(n.g);
-      const label = LEG[n.g]?.label || `??? ${n.g}`;
+      const label = LEG[n.g]?.label || `社区 ${n.g}`;
       if (!old) {
         groups.set(n.g, {
           c: n.c,
@@ -613,7 +613,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       ctx.font = `${Math.max(9 / scale, 7)}px sans-serif`;
       for (const comm of COMMUNITIES) {
         if (comm.size < 60) continue;
-        const label = comm.label.split(" ? ")[0] || `??? ${comm.g}`;
+        const label = comm.label.split(" · ")[0] || `社区 ${comm.g}`;
         ctx.fillStyle = getComputedStyle(document.body).getPropertyValue("--color-muted");
         ctx.fillText(`[${comm.size}] ${label.slice(0, 16)}`, comm.x - comm.r * 0.32, comm.y - comm.r - 8 / scale);
       }
@@ -867,12 +867,12 @@ function renderAkashaGraph(container: HTMLElement): void {
 
   function badgeHTML(t: GraphNode & { w: number; cc: number; sim: number }): string {
     const simClass = t.sim > 0.65 ? "ag-badge-success" : (t.sim > 0.45 ? "ag-badge-warning" : "ag-badge-danger");
-    const simText = t.sim > 0.65 ? "同义" : (t.sim > 0.45 ? "相关" : "潜意识跳转");
+    const simText = t.sim > 0.65 ? "同义" : (t.sim > 0.45 ? "相关" : "潜意识跳跃");
     const simPct = `${(t.sim * 100).toFixed(0)}%`;
     return `<div style="display:flex;flex-wrap:wrap;margin-top:2px;">
-      <span class="ag-badge ag-badge-outline">???:${t.cc}??/span>
-      <span class="ag-badge ag-badge-outline">???:${t.w.toFixed(2)}</span>
-      <span class="ag-badge ${simClass}">???:${simPct} (${simText})</span>
+      <span class="ag-badge ag-badge-outline">同框:${t.cc}次</span>
+      <span class="ag-badge ag-badge-outline">引力:${t.w.toFixed(2)}</span>
+      <span class="ag-badge ${simClass}">语义:${simPct} (${simText})</span>
     </div>`;
   }
 
@@ -897,22 +897,22 @@ function renderAkashaGraph(container: HTMLElement): void {
       else external.push(target);
     }
 
-    let html = '<div style="font-size:13px;color:#8b9eb5;margin-bottom:6px;">?????????</div>';
+    let html = '<div style="font-size:13px;color:#8b9eb5;margin-bottom:6px;">选中记忆切片</div>';
     html += `<div style="font-size:14px;padding:12px;background:linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%); border: 1px solid rgba(255,255,255,0.05); border-radius:8px; margin-bottom:16px;">${ghEscape(n.t)}</div>`;
     if (external.length > 0) {
-      html += `<div style="color:#ff5a78;font-weight:bold;margin-bottom:4px;border-bottom:1px solid rgba(255,90,120,0.3);padding-bottom:6px;">?????? / ?????? (${external.length})</div>`;
-      html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">?????????????????????????????????????????/div>';
+      html += `<div style="color:#ff5a78;font-weight:bold;margin-bottom:4px;border-bottom:1px solid rgba(255,90,120,0.3);padding-bottom:6px;">思想跳跃 / 跨界走神 (${external.length})</div>`;
+      html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：分属不同的话题岛屿，但在特定时间点被你跨界关联。</div>';
       for (const t of external) {
-        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="????????????" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
+        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="锁定这个记忆切片" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
           <div style="display:flex;flex-direction:column;flex:1;"><span style="opacity:0.95">${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
     }
     if (internal.length > 0) {
-      html += `<div style="color:#96c8ff;font-weight:bold;margin-bottom:4px;margin-top:20px;border-bottom:1px solid rgba(150,200,255,0.3);padding-bottom:6px;">?????? (${internal.length})</div>`;
-      html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">???????????????????????????????????????????/div>';
+      html += `<div style="color:#96c8ff;font-weight:bold;margin-bottom:4px;margin-top:20px;border-bottom:1px solid rgba(150,200,255,0.3);padding-bottom:6px;">核心圈层 (${internal.length})</div>`;
+      html += '<div style="font-size:11px;color:#737a88;margin-bottom:12px;line-height:1.4;">溯源：基于模块度算法，这些话题形成了高频同框的内聚孤岛。</div>';
       for (const t of internal) {
-        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="????????????" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
+        html += `<div class="detail-item" data-node="${t.nodeIndex}" title="锁定这个记忆切片" style="display:flex;gap:8px;align-items:flex-start;background:linear-gradient(90deg, rgba(255,255,255,0.05) 0%, transparent 100%); border-left: 2px solid ${t.c}; padding: 8px; margin-bottom: 8px; cursor:pointer;">
           <div style="display:flex;flex-direction:column;flex:1;"><span>${ghEscape(t.t)}</span>${badgeHTML(t)}</div>
         </div>`;
       }
@@ -1066,7 +1066,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       });
       resEl.style.display = "block";
     } else {
-      resEl.innerHTML = '<div style="padding:8px 10px;color:#737a88;">??????</div>';
+      resEl.innerHTML = '<div style="padding:8px 10px;color:#737a88;">无匹配项</div>';
       resEl.style.display = "block";
     }
     draw();
@@ -1094,7 +1094,7 @@ function renderAkashaGraph(container: HTMLElement): void {
   }
 
   function renderLegend(): void {
-    legEl.innerHTML = '<div class="grab">???</div><div class="content" style="padding-top:4px;"><div style="margin-bottom:12px;"><b style="color:#fff;font-size:13px;">??????</b> <span style="color:#737a88;">(?????? ? ???????????</span></div>'
+    legEl.innerHTML = '<div class="grab">岛屿</div><div class="content" style="padding-top:4px;"><div style="margin-bottom:12px;"><b style="color:#fff;font-size:13px;">记忆岛屿</b> <span style="color:#737a88;">(悬停预览 · 点击选代表记忆)</span></div>'
       + LEG.map((l) => `<div class="row" data-c="${ghEscape(l.c)}"><span class="dot" style="background:${ghEscape(l.c)}"></span><span><span style="color:#9aa3b5">[${l.size}]</span> ${ghEscape(l.label)}</span></div>`).join("")
       + "</div>";
     legEl.querySelectorAll<HTMLElement>(".row").forEach((row) => {
@@ -1144,19 +1144,19 @@ function renderAkashaGraph(container: HTMLElement): void {
     const elapsed = Math.max(0, Math.round((Date.now() - loadingStartedAt) / 1000));
     const progress = Math.min(92, 18 + loadingTick * 7 + elapsed * 2);
     loadingBar.style.width = `${progress}%`;
-    const state = payload?.meta?.rebuilding ? "??????????? : "????????????";
-    loadingNote.textContent = `${state} ? ${elapsed}s`;
+    const state = payload?.meta?.rebuilding ? "后台布局计算中" : "等待布局任务启动";
+    loadingNote.textContent = `${state} · ${elapsed}s`;
   }
 
   function applyPayload(payload: GraphPayload, refit: boolean): void {
     if (payload.meta?.missing) {
-      stat.textContent = payload.meta.rebuilding ? "???????????.." : "?????????...";
+      stat.textContent = payload.meta.rebuilding ? "快照后台生成中..." : "等待快照生成...";
       setLoadingCard(NODES.length === 0, payload);
       return;
     }
     const nextVersion = payload.meta?.version || "";
     if (!refit && nextVersion && nextVersion === currentVersion) {
-      stat.textContent = `${NODES.length} ??? ? ??${EDGES.length} ?????${payload.meta?.stale ? " ? ???????? : ""}`;
+      stat.textContent = `${NODES.length} 节点 · 共 ${EDGES.length} 候选边${payload.meta?.stale ? " · 后台刷新中" : ""}`;
       return;
     }
     currentVersion = nextVersion;
@@ -1171,17 +1171,17 @@ function renderAkashaGraph(container: HTMLElement): void {
     ccVal.textContent = "2";
     recomputeAdj();
     renderLegend();
-    stat.textContent = `${NODES.length} ??? ? ??${EDGES.length} ?????${payload.meta?.stale ? " ? ???????? : ""}`;
+    stat.textContent = `${NODES.length} 节点 · 共 ${EDGES.length} 候选边${payload.meta?.stale ? " · 后台刷新中" : ""}`;
     if (refit) fit();
     resize();
   }
 
   async function load(refit: boolean): Promise<void> {
     if (refit) {
-      stat.textContent = "?????????...";
+      stat.textContent = "加载全景快照...";
       setLoadingCard(NODES.length === 0);
     }
-    const payload = await api<GraphPayload>("/api/dashboard/rachael-graph/global");
+    const payload = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
     if (disposed) return;
     applyPayload(payload, refit);
   }
@@ -1197,7 +1197,7 @@ function renderAkashaGraph(container: HTMLElement): void {
 }
 
 window.NexusDashboard.registerPlugin({
-  id: "rachael_graph",
+  id: "akasha_graph",
   label: "Akasha Graph",
   viewLabel: "akasha graph",
   layout: "workbench",
@@ -1206,7 +1206,7 @@ window.NexusDashboard.registerPlugin({
   columns: [{ key: "id", label: "Graph", flex: true }],
   async getCount(): Promise<number | null> {
     try {
-      const data = await api<GraphPayload>("/api/dashboard/rachael-graph/global");
+      const data = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
       return data.nodes.length;
     } catch {
       return null;
