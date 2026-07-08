@@ -21,6 +21,7 @@ from agent.config_models import (
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
+    PersonaConfig,
     QQChannelConfig,
     QQGroupConfig,
     TelegramChannelConfig,
@@ -89,6 +90,15 @@ def load_config(path: str | Path = "config.toml") -> Config:
     fitbit = _load_fitbit_config(data)
     wiring = _load_wiring_config(data)
     plugins = _load_plugins_config(data)
+    persona_cfg = _as_dict(agent_cfg.get("persona"))
+    persona = PersonaConfig(
+        identity=str(persona_cfg.get("identity", "") or ""),
+        personality_rules=str(persona_cfg.get("personality_rules", "") or ""),
+        self_model=str(persona_cfg.get("self_model", "") or ""),
+    )
+
+    from agent.persona import apply_persona_config
+    apply_persona_config(persona)
 
     return Config(
         provider=provider,
@@ -159,6 +169,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         peer_agents=peer_agents,
         wiring=wiring,
         plugins=plugins,
+        persona=persona,
     )
 
 

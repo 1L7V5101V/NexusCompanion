@@ -69,6 +69,13 @@ class FitbitIntegrationConfig:
 
 
 @dataclass
+class PersonaConfig:
+    identity: str = ""
+    personality_rules: str = ""
+    self_model: str = ""
+
+
+@dataclass
 class PeerAgentConfig:
     name: str
     base_url: str
@@ -127,6 +134,7 @@ class Config:
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
+    persona: PersonaConfig = field(default_factory=PersonaConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -142,6 +150,7 @@ __all__ = [
     "MemoryConfig",
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",
+    "PersonaConfig",
     "QQChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",

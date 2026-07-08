@@ -4,7 +4,12 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from typing import TYPE_CHECKING
+
 from utils.helpers import ensure_dir
+
+if TYPE_CHECKING:
+    from agent.config_models import PersonaConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,12 @@ DEFAULT_SELF_MD = """# Nexus 的自我认知
 ## 我们关系的定义
 - 我与当前用户的关系以透明、尊重边界和持续协作为基础。
 """
+
+
+def get_default_self_md(persona: "PersonaConfig | None" = None) -> str:
+    if persona and persona.self_model:
+        return persona.self_model
+    return DEFAULT_SELF_MD
 
 
 class MemoryStore:
