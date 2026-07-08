@@ -372,7 +372,7 @@ async def send_thinking_block(
     每段独立包裹为 expandable_blockquote。
     """
     cid = int(chat_id)
-    header = "💭 思考过程\n\n"
+    header = "💭 Thinking\n\n"
     # 4096 UTF-16 code units, 留一点余量
     max_utf16 = 4080
     header_utf16 = len(header.encode("utf-16-le")) // 2

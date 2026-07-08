@@ -52,6 +52,7 @@ _TOOL_LIVE_TAIL = 1000
 _REPLY_LIVE_TAIL = 1100
 _TOOL_PREVIEW_LIMIT = 80
 _LIVE_STREAM_MIN_INTERVAL_S = 2.5
+_LIVE_STREAM_MIN_CHARS = 20
 
 
 _CITATION_PATTERN = re.compile(r"§cited:\[[^\]]*\]§")
@@ -895,7 +896,7 @@ def _format_turn_live(
     html_blocks: list[str] = []
     thinking_body = _tail_text(thinking.strip(), _THINKING_LIVE_TAIL)
     if thinking_body:
-        thinking_text = f"思考过程\n{thinking_body}"
+        thinking_text = f"Thinking\n{thinking_body}"
         blocks.append(thinking_text)
         html_blocks.append(f"<blockquote>{html.escape(thinking_text)}</blockquote>")
     if lines:
