@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sqlite3
@@ -17,28 +17,28 @@ from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
-from plugins.akasha.config import AkashaConfig
-from plugins.akasha.engine import (
+from plugins.rachael.config import RachaelConfig
+from plugins.rachael.engine import (
     ActivationTrace,
-    AkashaCandidate,
-    AkashaMemoryEngine,
+    RachaelCandidate,
+    RachaelMemoryEngine,
     PendingActivation,
-    _AkashaRetrieval,
+    _RachaelRetrieval,
     _compute_candidates,
     _load_turn_card,
 )
-from plugins.akasha.core import (
-    AkashaNode,
+from plugins.rachael.core import (
+    RachaelNode,
     activation_edge_updates,
     build_dense_message_index,
     dense_message_candidates,
     reinforce_boost_from_payload,
 )
-from plugins.akasha.plugin import AkashaPlugin
-from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage, _turn_messages
-from plugins.akasha.store import (
+from plugins.rachael.plugin import RachaelPlugin
+from plugins.rachael.replay import RachaelReplayRuntime, ReplayMessage, _turn_messages
+from plugins.rachael.store import (
     ActivationEventRow,
-    AkashaStore,
+    RachaelStore,
     EdgeUpdate,
     SourceMessage,
 )
@@ -82,8 +82,8 @@ class FakeEmbedder:
         return [1.0, 0.0]
 
 
-def _candidate(key: str, score: float) -> AkashaCandidate:
-    return AkashaCandidate(
+def _candidate(key: str, score: float) -> RachaelCandidate:
+    return RachaelCandidate(
         key=key,
         source="Dense",
         ripple=0.0,
@@ -103,11 +103,11 @@ def test_reinforce_boost_payload_uses_exact_tool_chain_call_name() -> None:
 
     assert reinforce_boost_from_payload({}, wrong_chain) == 1.0
     assert reinforce_boost_from_payload({}, json.dumps(reinforce_chain)) == 3.0
-    assert reinforce_boost_from_payload({"akasha_reinforce": {"boost": "4"}}, []) == 4.0
+    assert reinforce_boost_from_payload({"rachael_reinforce": {"boost": "4"}}, []) == 4.0
 
 
 def test_reinforce_memory_tool_description_states_current_turn_contract() -> None:
-    profile = AkashaMemoryEngine.__new__(AkashaMemoryEngine).tool_profile()
+    profile = RachaelMemoryEngine.__new__(RachaelMemoryEngine).tool_profile()
     reinforce = next(spec for spec in profile.tools if spec.name == "reinforce_memory")
 
     assert "当前轮" in reinforce.description
@@ -117,7 +117,7 @@ def test_reinforce_memory_tool_description_states_current_turn_contract() -> Non
     assert "fetch_messages(source_ref)" in reinforce.description
 
 
-def test_akasha_engine_passes_embedding_dimension_to_embedder(
+def test_rachael_engine_passes_embedding_dimension_to_embedder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -130,9 +130,9 @@ def test_akasha_engine_passes_embedding_dimension_to_embedder(
         async def aclose(self) -> None:
             return None
 
-    monkeypatch.setattr("plugins.akasha.engine.Embedder", _Embedder)
+    monkeypatch.setattr("plugins.rachael.engine.Embedder", _Embedder)
 
-    engine = AkashaMemoryEngine(
+    engine = RachaelMemoryEngine(
         config=Config(
             provider="openai",
             model="chat-model",
@@ -145,7 +145,7 @@ def test_akasha_engine_passes_embedding_dimension_to_embedder(
                 )
             ),
         ),
-        akasha_config=AkashaConfig(),
+        rachael_config=RachaelConfig(),
         workspace=tmp_path,
         http_resources=cast(Any, SimpleNamespace(external_default=object())),
     )
@@ -158,7 +158,7 @@ def test_akasha_engine_passes_embedding_dimension_to_embedder(
 
 def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
     nodes = {
-        "s:0": AkashaNode(
+        "s:0": RachaelNode(
             key="s:0",
             anchor_id="m0",
             session_key="s",
@@ -174,7 +174,7 @@ def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
             embedding=np.array([1.0, 0.0], dtype=np.float32),
             emb_count=1,
         ),
-        "s:2": AkashaNode(
+        "s:2": RachaelNode(
             key="s:2",
             anchor_id="m2",
             session_key="s",
@@ -190,7 +190,7 @@ def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
             embedding=np.array([0.0, 1.0], dtype=np.float32),
             emb_count=1,
         ),
-        "s:4": AkashaNode(
+        "s:4": RachaelNode(
             key="s:4",
             anchor_id="m4",
             session_key="s",
@@ -250,7 +250,7 @@ def test_dense_message_candidates_vectorized_preserves_turn_ranking() -> None:
 
 
 def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = RachaelStore(tmp_path / "rachael.db")
     try:
         store.upsert_message_node(
             SourceMessage("s:0", "s", 0, "user", "用户消息", "2026-01-01T00:00:00+00:00"),
@@ -272,7 +272,7 @@ def test_store_merges_user_and_assistant_into_turn_node(tmp_path: Path) -> None:
 
 
 def test_reset_schema_keeps_embedding_cache(tmp_path: Path) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = RachaelStore(tmp_path / "rachael.db")
     message = SourceMessage(
         "s:0",
         "s",
@@ -298,7 +298,7 @@ def test_reset_schema_keeps_embedding_cache(tmp_path: Path) -> None:
 def test_load_embeddings_from_cache_counts_hits_and_misses(
     tmp_path: Path,
 ) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = RachaelStore(tmp_path / "rachael.db")
     messages = [
         SourceMessage("s:0", "s", 0, "user", "已缓存", "2026-01-01T00:00:00+00:00"),
         SourceMessage("s:1", "s", 1, "assistant", "新消息", "2026-01-01T00:00:01+00:00"),
@@ -330,13 +330,13 @@ def test_replay_and_runtime_use_same_directional_stdp_edges(tmp_path: Path) -> N
         (item.src_key, item.dst_key): 0.12 * item.strength
         for item in activation_edge_updates("s:2", [candidate], ts)
     }
-    replay_store = AkashaStore(tmp_path / "replay.db")
-    runtime_store = AkashaStore(tmp_path / "runtime.db")
+    replay_store = RachaelStore(tmp_path / "replay.db")
+    runtime_store = RachaelStore(tmp_path / "runtime.db")
     try:
         with closing(sqlite3.connect(":memory:")) as source_db:
-            replay = AkashaReplayRuntime(
+            replay = RachaelReplayRuntime(
                 store=replay_store,
-                config=AkashaConfig(),
+                config=RachaelConfig(),
                 source_db_path=tmp_path / "sessions.db",
                 source_cursor=source_db.cursor(),
                 message_embeddings={},
@@ -359,7 +359,7 @@ def test_replay_and_runtime_use_same_directional_stdp_edges(tmp_path: Path) -> N
                 [candidate],
             )
 
-        engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+        engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
         engine._store = runtime_store
         engine._graph_lock = threading.RLock()
         engine._edges = {}
@@ -390,13 +390,13 @@ def test_replay_and_runtime_reinforce_previous_activation_cluster(tmp_path: Path
     prev = _candidate("s:0", 0.8)
     current = _candidate("s:2", 0.7)
     ts = QUERY_TS.timestamp()
-    replay_store = AkashaStore(tmp_path / "replay.db")
-    runtime_store = AkashaStore(tmp_path / "runtime.db")
+    replay_store = RachaelStore(tmp_path / "replay.db")
+    runtime_store = RachaelStore(tmp_path / "runtime.db")
     try:
         with closing(sqlite3.connect(":memory:")) as source_db:
-            replay = AkashaReplayRuntime(
+            replay = RachaelReplayRuntime(
                 store=replay_store,
-                config=AkashaConfig(),
+                config=RachaelConfig(),
                 source_db_path=tmp_path / "sessions.db",
                 source_cursor=source_db.cursor(),
                 message_embeddings={},
@@ -412,7 +412,7 @@ def test_replay_and_runtime_reinforce_previous_activation_cluster(tmp_path: Path
                 [current],
             )
 
-        engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+        engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
         engine._store = runtime_store
         engine._graph_lock = threading.RLock()
         engine._edges = {}
@@ -475,8 +475,8 @@ def test_replay_writes_query_log_with_activation_items(
 ) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
-    monkeypatch.setattr("plugins.akasha.core.get_jieba_keywords", lambda _: "")
-    replay_store = AkashaStore(tmp_path / "replay.db")
+    monkeypatch.setattr("plugins.rachael.core.get_jieba_keywords", lambda _: "")
+    replay_store = RachaelStore(tmp_path / "replay.db")
     old_messages = [
         SourceMessage("s:0", "s", 0, "user", "第一条用户消息需要完整展示", "2026-01-01T00:00:00+00:00"),
         SourceMessage("s:2", "s", 2, "user", "第二条用户消息只在联想块", "2026-01-01T00:00:02+00:00"),
@@ -485,9 +485,9 @@ def test_replay_writes_query_log_with_activation_items(
         replay_store.upsert_message_node(old_messages[0], [1.0, 0.0])
         replay_store.upsert_message_node(old_messages[1], [0.98, 0.02])
         with closing(sqlite3.connect(str(db_path))) as source_db:
-            replay = AkashaReplayRuntime(
+            replay = RachaelReplayRuntime(
                 store=replay_store,
-                config=AkashaConfig(dense_seed_threshold=0.1, nearby_dense_threshold=0.0),
+                config=RachaelConfig(dense_seed_threshold=0.1, nearby_dense_threshold=0.0),
                 source_db_path=db_path,
                 source_cursor=source_db.cursor(),
                 message_embeddings={
@@ -530,16 +530,16 @@ def test_replay_writes_query_log_with_activation_items(
 def test_replay_empty_query_commits_without_activation_or_query_log(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
-    replay_store = AkashaStore(tmp_path / "replay.db")
+    replay_store = RachaelStore(tmp_path / "replay.db")
     replay_store.upsert_message_node(
         SourceMessage("s:0", "s", 0, "user", "第一条用户消息需要完整展示", "2026-01-01T00:00:00+00:00"),
         [1.0, 0.0],
     )
     try:
         with closing(sqlite3.connect(str(db_path))) as source_db:
-            replay = AkashaReplayRuntime(
+            replay = RachaelReplayRuntime(
                 store=replay_store,
-                config=AkashaConfig(dense_seed_threshold=0.1, nearby_dense_threshold=0.0),
+                config=RachaelConfig(dense_seed_threshold=0.1, nearby_dense_threshold=0.0),
                 source_db_path=db_path,
                 source_cursor=source_db.cursor(),
                 message_embeddings={"s:0": np.array([1.0, 0.0], dtype=np.float32)},
@@ -596,7 +596,7 @@ def test_query_log_content_loader_allows_empty_user_message(tmp_path: Path) -> N
     assert assistant_preview == "assistant..."
 
 
-def test_akasha_rebuild_skips_scheduler_messages() -> None:
+def test_rachael_rebuild_skips_scheduler_messages() -> None:
     scheduler_user = SourceMessage(
         "scheduler:job:0",
         "scheduler:job",
@@ -610,7 +610,7 @@ def test_akasha_rebuild_skips_scheduler_messages() -> None:
         "telegram:1",
         0,
         "user",
-        "今天聊 Akasha",
+        "今天聊 Rachael",
         "2026-01-01T00:00:01+00:00",
     )
 
@@ -623,7 +623,7 @@ def test_akasha_rebuild_skips_scheduler_messages() -> None:
 async def test_runtime_skips_scheduler_turn_even_without_extra_flag(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
     engine._session_db_path = db_path
     engine._embedder = SimpleNamespace(embed_batch=AsyncMock(side_effect=AssertionError("should skip")))
 
@@ -669,14 +669,14 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
 
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(assistant_preview_chars=15)
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
+    engine._rachael_config = RachaelConfig(assistant_preview_chars=15)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda *_, **__: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _RachaelRetrieval(
         dense_items=[
-            AkashaCandidate(
+            RachaelCandidate(
                 key="s:0",
                 source="Dense",
                 ripple=0.0,
@@ -690,7 +690,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
             )
         ],
         ripple_items=[
-            AkashaCandidate(
+            RachaelCandidate(
                 key="s:0",
                 source="Dense",
                 ripple=0.6,
@@ -702,7 +702,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
                 fan=0,
                 score=0.8,
             ),
-            AkashaCandidate(
+            RachaelCandidate(
                 key="s:2",
                 source="Graph",
                 ripple=0.5,
@@ -731,7 +731,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
 
     assert "## 左脑记忆：精确回忆" in result.text_block
     assert "## 右脑联想：潜意识第一反应" in result.text_block
-    assert "# Akasha memory now=" in result.text_block
+    assert "# Rachael memory now=" in result.text_block
     assert '- user="第一条用户消息需要完整展示" assistant=' in result.text_block
     assert " t=01-01 source_ref=" in result.text_block
     assert " score=" not in result.text_block
@@ -746,8 +746,8 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
 
-    def candidate(key: str, score: float) -> AkashaCandidate:
-        return AkashaCandidate(
+    def candidate(key: str, score: float) -> RachaelCandidate:
+        return RachaelCandidate(
             key=key,
             source="Dense",
             ripple=0.0,
@@ -760,12 +760,12 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
             score=score,
         )
 
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10)
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
+    engine._rachael_config = RachaelConfig(dense_top_k=10, ripple_top_k=10)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda *_, **__: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _RachaelRetrieval(
         dense_items=[candidate("s:0", 0.9), candidate("s:2", 0.8)],
         ripple_items=[],
         activation_items=[],
@@ -815,8 +815,8 @@ def test_cards_from_keys_deduplicates_same_user_assistant_pair(tmp_path: Path) -
         )
         db.commit()
 
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(assistant_preview_chars=15)
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
+    engine._rachael_config = RachaelConfig(assistant_preview_chars=15)
     engine._session_db_path = db_path
 
     cards = engine._cards_from_keys(
@@ -835,7 +835,7 @@ def test_cards_from_keys_deduplicates_same_user_assistant_pair(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_context_query_uses_akasha_top_k_over_default_query_limit(
+async def test_context_query_uses_rachael_top_k_over_default_query_limit(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "sessions.db"
@@ -860,8 +860,8 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
         db.executemany("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?)", rows)
         db.commit()
 
-    def candidate(key: str, score: float) -> AkashaCandidate:
-        return AkashaCandidate(
+    def candidate(key: str, score: float) -> RachaelCandidate:
+        return RachaelCandidate(
             key=key,
             source="Dense",
             ripple=0.0,
@@ -874,12 +874,12 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
             score=score,
         )
 
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig(dense_top_k=10, ripple_top_k=10, inject_max_chars=20000)
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
+    engine._rachael_config = RachaelConfig(dense_top_k=10, ripple_top_k=10, inject_max_chars=20000)
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     engine._remember_pending_activation = lambda *_, **__: None
-    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _AkashaRetrieval(
+    engine._retrieve = lambda query, query_vec, request, *, now_ts, update_state: _RachaelRetrieval(
         dense_items=[candidate(f"s:{turn * 2}", 1.0 - turn * 0.01) for turn in range(12)],
         ripple_items=[candidate(f"s:{24 + turn * 2}", 0.8 - turn * 0.01) for turn in range(12)],
         activation_items=[],
@@ -903,7 +903,7 @@ async def test_context_query_uses_akasha_top_k_over_default_query_limit(
 
 
 def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: Path) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = RachaelStore(tmp_path / "rachael.db")
     try:
         for seq in range(30):
             _ = store.upsert_message_node(
@@ -928,7 +928,7 @@ def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: 
         nodes,
         {},
         100,
-        config=AkashaConfig(dense_top_k=30, activate_limit=8),
+        config=RachaelConfig(dense_top_k=30, activate_limit=8),
         fan={},
         soft_recall=False,
         return_limit=8,
@@ -940,11 +940,11 @@ def test_compute_candidates_uses_activation_limit_for_stateful_replay(tmp_path: 
 
 
 def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None:
-    store = AkashaStore(tmp_path / "akasha.db")
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+    store = RachaelStore(tmp_path / "rachael.db")
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
     engine._store = store
-    engine._akasha_config = AkashaConfig()
-    result = _AkashaRetrieval(
+    engine._rachael_config = RachaelConfig()
+    result = _RachaelRetrieval(
         dense_items=[],
         ripple_items=[],
         activation_items=[],
@@ -977,12 +977,12 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> None:
+async def test_read_only_query_skips_rachael_state_effects(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
 
-    engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
-    engine._akasha_config = AkashaConfig()
+    engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
+    engine._rachael_config = RachaelConfig()
     engine._session_db_path = db_path
     engine._embedder = FakeEmbedder()
     side_effects: list[str] = []
@@ -995,10 +995,10 @@ async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> Non
         *,
         now_ts: float,
         update_state: bool,
-    ) -> _AkashaRetrieval:
+    ) -> _RachaelRetrieval:
         _ = (query, query_vec, request, now_ts)
         update_state_values.append(update_state)
-        return _AkashaRetrieval(
+        return _RachaelRetrieval(
             dense_items=[_candidate("s:0", 0.9)],
             ripple_items=[],
             activation_items=[_candidate("s:2", 0.8)],
@@ -1026,10 +1026,10 @@ async def test_read_only_query_skips_akasha_state_effects(tmp_path: Path) -> Non
     assert result.records
 
 
-def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> None:
+def test_undo_removes_rachael_turn_state_after_session_delete(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _init_sessions_db(db_path)
-    store = AkashaStore(tmp_path / "akasha.db")
+    store = RachaelStore(tmp_path / "rachael.db")
     try:
         messages = [
             SourceMessage("s:0", "s", 0, "user", "第一条用户消息需要完整展示", "2026-01-01T00:00:00+00:00"),
@@ -1080,7 +1080,7 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
             text_block_preview="preview",
         )
 
-        engine = cast(Any, AkashaMemoryEngine.__new__(AkashaMemoryEngine))
+        engine = cast(Any, RachaelMemoryEngine.__new__(RachaelMemoryEngine))
         engine._store = store
         engine._session_db_path = db_path
         engine._config = SimpleNamespace(
@@ -1122,23 +1122,23 @@ def test_undo_removes_akasha_turn_state_after_session_delete(tmp_path: Path) -> 
         store.close()
 
 
-def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> None:
-    akasha = AkashaPlugin()
-    akasha.context = PluginContext(
+def test_rachael_last_command_only_registers_for_rachael_engine(tmp_path: Path) -> None:
+    rachael = RachaelPlugin()
+    rachael.context = PluginContext(
         event_bus=None,
         tool_registry=None,
-        plugin_id="akasha",
+        plugin_id="rachael",
         plugin_dir=tmp_path,
         data_dir=tmp_path / ".data",
-        kv_store=PluginKVStore(tmp_path / ".akasha-kv.json"),
+        kv_store=PluginKVStore(tmp_path / ".rachael-kv.json"),
         workspace=tmp_path,
-        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="rachael")),
     )
-    default = AkashaPlugin()
+    default = RachaelPlugin()
     default.context = PluginContext(
         event_bus=None,
         tool_registry=None,
-        plugin_id="akasha",
+        plugin_id="rachael",
         plugin_dir=tmp_path,
         data_dir=tmp_path / ".data",
         kv_store=PluginKVStore(tmp_path / ".default-kv.json"),
@@ -1146,14 +1146,14 @@ def test_akashalast_command_only_registers_for_akasha_engine(tmp_path: Path) -> 
         memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="default")),
     )
 
-    assert akasha.telegram_bot_commands() == [("akashalast", "查看上一轮 Akasha 检索诊断")]
-    assert len(akasha.before_turn_modules()) == 1
+    assert rachael.telegram_bot_commands() == [("rachael_last", "查看上一轮 Rachael 检索诊断")]
+    assert len(rachael.before_turn_modules()) == 1
     assert default.telegram_bot_commands() == []
     assert default.before_turn_modules() == []
 
 
-def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
-    store = AkashaStore(tmp_path / "memory" / "akasha.db")
+def test_rachael_last_renders_latest_query_log(tmp_path: Path) -> None:
+    store = RachaelStore(tmp_path / "memory" / "rachael.db")
     try:
         activation_items = json.dumps([
             {
@@ -1209,21 +1209,21 @@ def test_akashalast_renders_latest_query_log(tmp_path: Path) -> None:
     finally:
         store.close()
 
-    plugin = AkashaPlugin()
+    plugin = RachaelPlugin()
     plugin.context = PluginContext(
         event_bus=None,
         tool_registry=None,
-        plugin_id="akasha",
+        plugin_id="rachael",
         plugin_dir=tmp_path,
         data_dir=tmp_path / ".data",
         kv_store=PluginKVStore(tmp_path / ".kv.json"),
         workspace=tmp_path,
-        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="rachael")),
     )
 
     reply = plugin.render_last_query("s")
 
-    assert "🧠 Akasha 记忆检索诊断" in reply
+    assert "🧠 Rachael 记忆检索诊断" in reply
     assert "📍 会话: `s` | seq `2`" in reply
     assert "• 种子节点 (Seeds): `11` 个" in reply
     assert "🔥 本轮图激活节点 (Activated Nodes):" in reply

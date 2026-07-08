@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sqlite3
@@ -149,16 +149,16 @@ def test_plugin_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> None:
 def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
-    plugin_dir = _write_plugin_skill(plugin_root, "akasha", "memory")
+    plugin_dir = _write_plugin_skill(plugin_root, "rachael", "memory")
     manifest: dict[str, object] = {
         "skills": {
             "enabled_when": {
                 "kind": "memory_engine",
-                "engine": "akasha",
+                "engine": "rachael",
             }
         }
     }
-    plugin = _plugin_info("akasha", plugin_dir, manifest)
+    plugin = _plugin_info("rachael", plugin_dir, manifest)
 
     disabled = PluginSkillLinker(
         workspace=workspace,
@@ -168,7 +168,7 @@ def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     enabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
+        memory_engine=_memory_engine("rachael"),
     ).sync([plugin])
     removed = PluginSkillLinker(
         workspace=workspace,
@@ -179,7 +179,7 @@ def test_plugin_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     assert disabled.expected == 0
     assert enabled.expected == 1
     assert removed.removed == 1
-    assert not (workspace / "skills" / "akasha:memory").is_symlink()
+    assert not (workspace / "skills" / "rachael:memory").is_symlink()
 
 
 def test_aka_plugin_skill_is_exposed_with_bare_name(tmp_path: Path) -> None:
@@ -352,16 +352,16 @@ def test_plugin_drift_skill_linker_overwrites_user_skill_dir(tmp_path: Path) -> 
 def test_plugin_drift_skill_linker_filters_by_memory_engine(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     plugin_root = tmp_path / "plugins"
-    plugin_dir = _write_plugin_drift_skill(plugin_root, "akasha", "daily")
+    plugin_dir = _write_plugin_drift_skill(plugin_root, "rachael", "daily")
     manifest: dict[str, object] = {
         "drift_skills": {
             "enabled_when": {
                 "kind": "memory_engine",
-                "engine": "akasha",
+                "engine": "rachael",
             }
         }
     }
-    plugin = _plugin_info("akasha", plugin_dir, manifest)
+    plugin = _plugin_info("rachael", plugin_dir, manifest)
 
     disabled = PluginSkillLinker(
         workspace=workspace,
@@ -371,12 +371,12 @@ def test_plugin_drift_skill_linker_filters_by_memory_engine(tmp_path: Path) -> N
     enabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
+        memory_engine=_memory_engine("rachael"),
     ).sync([plugin])
 
     assert disabled.expected == 0
     assert enabled.expected == 1
-    assert (workspace / "drift" / "skills" / "akasha:daily").is_symlink()
+    assert (workspace / "drift" / "skills" / "rachael:daily").is_symlink()
 
 
 def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Path) -> None:
@@ -391,7 +391,7 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
     disabled = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
+        memory_engine=_memory_engine("rachael"),
     ).sync([plugin])
     enabled = PluginSkillLinker(
         workspace=workspace,
@@ -408,7 +408,7 @@ def test_default_memory_audit_drift_skill_is_gated_by_memory_engine(tmp_path: Pa
     removed = PluginSkillLinker(
         workspace=workspace,
         plugin_roots=[plugin_root],
-        memory_engine=_memory_engine("akasha"),
+        memory_engine=_memory_engine("rachael"),
     ).sync([plugin])
 
     assert removed.removed == 1

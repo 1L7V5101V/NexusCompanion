@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -442,7 +442,7 @@ async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_dif
         plugin_dirs=[Path(__file__).parents[1] / "plugins"],
         event_bus=bus,
         workspace=tmp_path,
-        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="akasha")),
+        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="rachael")),
     )
     await mgr.load_all()
 
@@ -450,7 +450,7 @@ async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_dif
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
 
     assert registry["plugins"]["default_memory"]["active"] is False
-    assert registry["plugins"]["akasha"]["active"] is True
+    assert registry["plugins"]["rachael"]["active"] is True
 
 
 @pytest.mark.asyncio

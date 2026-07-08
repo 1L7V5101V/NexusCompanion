@@ -1,4 +1,4 @@
-"""Akasha 快速重建默认路径回归。"""
+﻿"""Rachael 快速重建默认路径回归。"""
 from __future__ import annotations
 
 import sqlite3
@@ -11,16 +11,16 @@ import numpy as np
 import pytest
 
 try:
-    import plugins.akasha.core as core
-    import plugins.akasha.replay as replay
-    from plugins.akasha.config import AkashaConfig
-    from plugins.akasha.fast import fast_dense, graph_fast
-    from plugins.akasha.fast.dump import dump_to_db
-    from plugins.akasha.fast.mem_store import CapturingMemoryStore
-    from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
-    from plugins.akasha.store import AkashaStore
+    import plugins.rachael.core as core
+    import plugins.rachael.replay as replay
+    from plugins.rachael.config import RachaelConfig
+    from plugins.rachael.fast import fast_dense, graph_fast
+    from plugins.rachael.fast.dump import dump_to_db
+    from plugins.rachael.fast.mem_store import CapturingMemoryStore
+    from plugins.rachael.replay import RachaelReplayRuntime, ReplayMessage
+    from plugins.rachael.store import RachaelStore
 except Exception:  # pragma: no cover - host 依赖缺失时跳过
-    pytest.skip("akasha host 依赖缺失", allow_module_level=True)
+    pytest.skip("rachael host 依赖缺失", allow_module_level=True)
 
 
 T0 = 1_700_000_000.0
@@ -78,7 +78,7 @@ def _init_sessions(path: Path) -> None:
         db.commit()
 
 
-def _core_config(config: AkashaConfig) -> core.CoreConfig:
+def _core_config(config: RachaelConfig) -> core.CoreConfig:
     return core.CoreConfig(
         dense_top_k=config.dense_top_k,
         dense_seed_threshold=config.dense_seed_threshold,
@@ -104,9 +104,9 @@ def _message_embeddings() -> tuple[dict[str, np.ndarray], dict[str, str]]:
 
 def _replay(store, sessions_db: Path, embeddings, turn_keys) -> None:
     with closing(sqlite3.connect(str(sessions_db))) as source_db:
-        runtime = AkashaReplayRuntime(
+        runtime = RachaelReplayRuntime(
             store=store,
-            config=AkashaConfig(),
+            config=RachaelConfig(),
             source_db_path=sessions_db,
             source_cursor=source_db.cursor(),
             message_embeddings=embeddings,
@@ -137,7 +137,7 @@ def _build_fast(tmp_path: Path, tag: str) -> Path:
     sessions = tmp_path / f"sessions_{tag}.db"
     _init_sessions(sessions)
     db_path = tmp_path / f"fast_{tag}.db"
-    store = AkashaStore(db_path)
+    store = RachaelStore(db_path)
     mem = CapturingMemoryStore()
     graph_fast.install(mem)
     fast_dense.install()
@@ -156,10 +156,10 @@ def _build_online_path(tmp_path: Path) -> Path:
     sessions = tmp_path / "online_sessions.db"
     _init_sessions(sessions)
     db_path = tmp_path / "online.db"
-    store = AkashaStore(db_path)
-    config = AkashaConfig()
+    store = RachaelStore(db_path)
+    config = RachaelConfig()
     core_config = _core_config(config)
-    nodes: dict[str, core.AkashaNode] = {}
+    nodes: dict[str, core.RachaelNode] = {}
     edges: dict[tuple[str, str], float] = {}
     edges_meta: dict[tuple[str, str], float] = {}
     edges_by_src: dict[str, dict[str, float]] = {}
@@ -174,7 +174,7 @@ def _build_online_path(tmp_path: Path) -> Path:
                 user_message, user_vector = turn[0]
                 query_vec = np.array(user_vector, dtype=np.float32)
                 now_ts = core.parse_ts_unix(user_message.ts)
-                snapshot = core.AkashaActivationSnapshot(
+                snapshot = core.RachaelActivationSnapshot(
                     nodes=dict(nodes),
                     edges=dict(edges),
                     edges_meta=dict(edges_meta),
@@ -184,7 +184,7 @@ def _build_online_path(tmp_path: Path) -> Path:
                     message_turn_keys=dict(message_turn_keys),
                     message_index=message_index,
                 )
-                activation_items: list[core.AkashaCandidate] = []
+                activation_items: list[core.RachaelCandidate] = []
                 if snapshot.nodes:
                     graph_seed_keys = core.graph_seed_keys_from_snapshot(
                         query_vec,
@@ -274,21 +274,21 @@ def _build_online_path(tmp_path: Path) -> Path:
 
 
 def test_fast_matches_online_turn_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("plugins.akasha.core.get_jieba_keywords", lambda _: "")
+    monkeypatch.setattr("plugins.rachael.core.get_jieba_keywords", lambda _: "")
     online = _snapshot(_build_online_path(tmp_path))
     fast = _snapshot(_build_fast(tmp_path, "online"))
     assert fast == online
 
 
 def test_fast_rebuild_deterministic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("plugins.akasha.core.get_jieba_keywords", lambda _: "")
+    monkeypatch.setattr("plugins.rachael.core.get_jieba_keywords", lambda _: "")
     a = _snapshot(_build_fast(tmp_path, "a"))
     b = _snapshot(_build_fast(tmp_path, "b"))
     assert a == b
 
 
 def test_fast_rebuild_restores_global_patches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("plugins.akasha.core.get_jieba_keywords", lambda _: "")
+    monkeypatch.setattr("plugins.rachael.core.get_jieba_keywords", lambda _: "")
     originals = (
         core.graph_expand_candidates,
         core.has_user_turn,

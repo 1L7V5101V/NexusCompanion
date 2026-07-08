@@ -1,4 +1,4 @@
-# pyright: reportPrivateUsage=false, reportUnusedCallResult=false
+﻿# pyright: reportPrivateUsage=false, reportUnusedCallResult=false
 
 import asyncio
 import json
@@ -72,7 +72,7 @@ async def test_recall_memory_passes_current_timestamp_to_engine() -> None:
     )
     ts = datetime(2026, 4, 4, 22, 0, 0)
 
-    _ = await tool.execute(query="Akasha", current_timestamp=ts.isoformat())
+    _ = await tool.execute(query="Rachael", current_timestamp=ts.isoformat())
 
     assert memory.request.timestamp == ts
 

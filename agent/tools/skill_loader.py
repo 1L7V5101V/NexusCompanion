@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -20,7 +20,7 @@ class LoadSkillTool(Tool):
         "properties": {
             "skill": {
                 "type": "string",
-                "description": "要加载的 skill 名称，例如 memory 或 akasha:memory",
+                "description": "要加载的 skill 名称，例如 memory 或 rachael:memory",
             },
         },
         "required": ["skill"],

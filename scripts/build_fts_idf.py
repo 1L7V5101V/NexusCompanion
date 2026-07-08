@@ -1,5 +1,5 @@
-"""
-扫描 sessions.db 所有 message，用 jieba 切词算 IDF，写入 akasha.db 的 fts_token_idf 表。
+﻿"""
+扫描 sessions.db 所有 message，用 jieba 切词算 IDF，写入 rachael.db 的 fts_token_idf 表。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import jieba
 
-AKASHA_DB = Path.home() / ".nexus" / "workspace" / "memory" / "akasha.db"
+RACHAEL_DB = Path.home() / ".nexus" / "workspace" / "memory" / "rachael.db"
 SESSIONS_DB = Path.home() / ".nexus" / "workspace" / "sessions.db"
 
 
@@ -29,8 +29,8 @@ def tokenize(text: str) -> set[str]:
 
 
 def main() -> None:
-    if not AKASHA_DB.exists():
-        print(f"❌ {AKASHA_DB} 不存在"); sys.exit(1)
+    if not RACHAEL_DB.exists():
+        print(f"❌ {RACHAEL_DB} 不存在"); sys.exit(1)
     if not SESSIONS_DB.exists():
         print(f"❌ {SESSIONS_DB} 不存在"); sys.exit(1)
 
@@ -52,8 +52,8 @@ def main() -> None:
     for tok, freq in df.items():
         idf[tok] = math.log((n_docs + 1) / (freq + 1)) + 1
 
-    # 写入 akasha.db
-    aconn = sqlite3.connect(AKASHA_DB)
+    # 写入 rachael.db
+    aconn = sqlite3.connect(RACHAEL_DB)
     aconn.execute("""
         CREATE TABLE IF NOT EXISTS fts_token_idf (
             token TEXT PRIMARY KEY,
@@ -67,7 +67,7 @@ def main() -> None:
         [(t, df[t], idf[t]) for t in df],
     )
     aconn.commit()
-    print(f"  wrote {len(df)} tokens to akasha.db:fts_token_idf")
+    print(f"  wrote {len(df)} tokens to rachael.db:fts_token_idf")
 
     # 分布报告
     sorted_by_idf = sorted(idf.items(), key=lambda x: x[1])

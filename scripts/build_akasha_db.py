@@ -1,4 +1,4 @@
-# pyright: reportPrivateUsage=false
+﻿# pyright: reportPrivateUsage=false
 
 from __future__ import annotations
 
@@ -22,22 +22,22 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from agent.config_models import Config
-from plugins.akasha.config import (
-    AkashaConfig,
-    load_akasha_config,
-    resolve_akasha_db_path,
+from plugins.rachael.config import (
+    RachaelConfig,
+    load_rachael_config,
+    resolve_rachael_db_path,
 )
-from plugins.akasha.core import (
+from plugins.rachael.core import (
     SourceMessage,
     parse_ts_unix,
     reinforce_boost_from_payload,
     turn_key,
 )
-from plugins.akasha.fast import fast_dense, graph_fast
-from plugins.akasha.fast.mem_store import CapturingMemoryStore
-from plugins.akasha.replay import AkashaReplayRuntime, ReplayMessage
-from plugins.akasha.store import (
-    AkashaStore,
+from plugins.rachael.fast import fast_dense, graph_fast
+from plugins.rachael.fast.mem_store import CapturingMemoryStore
+from plugins.rachael.replay import RachaelReplayRuntime, ReplayMessage
+from plugins.rachael.store import (
+    RachaelStore,
     SourceSessionSnapshot,
 )
 
@@ -57,7 +57,7 @@ class MigrationStats:
 def _parse_args() -> argparse.Namespace:
     # 1. 只保留迁移必须参数，避免脚本变成另一套配置系统。
     parser = argparse.ArgumentParser(
-        description="从 workspace/sessions.db 重建 Akasha sidecar 数据库。"
+        description="从 workspace/sessions.db 重建 Rachael sidecar 数据库。"
     )
     _ = parser.add_argument("--config", default="config.toml", help="主配置文件路径")
     _ = parser.add_argument(
@@ -66,7 +66,7 @@ def _parse_args() -> argparse.Namespace:
         help="Nexus workspace 路径",
     )
     _ = parser.add_argument("--sessions-db", default="", help="原始 sessions.db 路径")
-    _ = parser.add_argument("--db-path", default="", help="输出 akasha.db 路径")
+    _ = parser.add_argument("--db-path", default="", help="输出 rachael.db 路径")
     _ = parser.add_argument("--progress-every", type=int, default=500, help="进度打印间隔")
     _ = parser.add_argument(
         "--embedding-model",
@@ -76,13 +76,13 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# 构造 Akasha 配置，并允许命令行覆盖 db_path。
+# 构造 Rachael 配置，并允许命令行覆盖 db_path。
 def _load_script_config(
     *,
     db_path: str,
-) -> AkashaConfig:
-    # 1. 插件配置仍从 plugins/akasha/config.local.toml 读取。
-    config = load_akasha_config()
+) -> RachaelConfig:
+    # 1. 插件配置仍从 plugins/rachael/config.local.toml 读取。
+    config = load_rachael_config()
     if db_path.strip():
         return replace(config, db_path=db_path)
     return config
@@ -154,7 +154,7 @@ def _load_session_snapshots(sessions_db: Path) -> list[SourceSessionSnapshot]:
     ]
 
 
-# 读取不应进入 Akasha 的消息。
+# 读取不应进入 Rachael 的消息。
 def _load_skip_message_ids(sessions_db: Path) -> set[str]:
     result: set[str] = set()
     with closing(sqlite3.connect(str(sessions_db))) as db:
@@ -175,7 +175,7 @@ def _load_reinforce_boosts(sessions_db: Path) -> dict[str, float]:
     留痕在 sessions.db(源头)→ 重建时确定性复现，图不丢。两个来源(等价):
 
       1. tool_chain 里有 reinforce_memory 工具调用(线上真实调用,自动记录)；
-      2. extra["akasha_reinforce"](历史纠错回填迁移用,可带 {"boost": N})。
+      2. extra["rachael_reinforce"](历史纠错回填迁移用,可带 {"boost": N})。
     """
     boosts: dict[str, float] = {}
     with closing(sqlite3.connect(str(sessions_db))) as db:
@@ -201,7 +201,7 @@ def _skip_message(message: SourceMessage, skip_message_ids: set[str]) -> bool:
     )
 
 
-# 备份已有 Akasha sidecar。
+# 备份已有 Rachael sidecar。
 def _backup_existing_db(db_path: Path) -> Path | None:
     # 1. 重建前保留旧库，避免迁移脚本误覆盖唯一状态。
     if not db_path.exists():
@@ -215,7 +215,7 @@ def _backup_existing_db(db_path: Path) -> Path | None:
 # 从 cache 读取回放需要的 embedding，缺失时跳过对应消息。
 def _load_embeddings_from_cache(
     *,
-    store: AkashaStore,
+    store: RachaelStore,
     model: str,
     messages: list[SourceMessage],
 ) -> tuple[dict[str, list[float]], int, int]:
@@ -257,20 +257,20 @@ def _iter_replay_turns(
         yield turn
 
 
-# 执行 Akasha sidecar 重建。
+# 执行 Rachael sidecar 重建。
 def _run() -> MigrationStats:
     # 1. 解析路径、配置和目标 sidecar。
     args = _parse_args()
     workspace = Path(str(args.workspace)).expanduser()
     sessions_db = Path(str(args.sessions_db)).expanduser() if args.sessions_db else workspace / "sessions.db"
-    akasha_config = _load_script_config(db_path=str(args.db_path or ""))
-    db_path = resolve_akasha_db_path(workspace=workspace, akasha_config=akasha_config)
+    rachael_config = _load_script_config(db_path=str(args.db_path or ""))
+    db_path = resolve_rachael_db_path(workspace=workspace, rachael_config=rachael_config)
     if not sessions_db.exists():
         raise FileNotFoundError(f"sessions.db 不存在: {sessions_db}")
 
     # 2. 备份旧 sidecar，并初始化本次迁移记录。
     backup_path = _backup_existing_db(db_path)
-    store = AkashaStore(db_path)
+    store = RachaelStore(db_path)
     if str(args.embedding_model).strip():
         embedding_model = str(args.embedding_model).strip()  # 离线重建：免读 config
     else:
@@ -284,13 +284,13 @@ def _run() -> MigrationStats:
     store.insert_session_snapshots(run_id=run_id, snapshots=snapshots)
     store.reset_schema()
 
-    # 2b. 用内存图重放，末尾一次性落库；AkashaStore 只负责 cache、迁移记录和 dump 连接。
+    # 2b. 用内存图重放，末尾一次性落库；RachaelStore 只负责 cache、迁移记录和 dump 连接。
     mem = CapturingMemoryStore()
     graph_install = cast("Callable[[CapturingMemoryStore], None]", getattr(graph_fast, "install"))
     dense_install = cast("Callable[[], None]", getattr(fast_dense, "install"))
     dump_to_db = cast(
-        "Callable[[AkashaStore, CapturingMemoryStore], dict[str, int]]",
-        getattr(importlib.import_module("plugins.akasha.fast.dump"), "dump_to_db"),
+        "Callable[[RachaelStore, CapturingMemoryStore], dict[str, int]]",
+        getattr(importlib.import_module("plugins.rachael.fast.dump"), "dump_to_db"),
     )
     graph_install(mem)
     dense_install()
@@ -328,9 +328,9 @@ def _run() -> MigrationStats:
             if message.id in embedding_map
         }
         with closing(sqlite3.connect(str(sessions_db))) as source_db:
-            runtime = AkashaReplayRuntime(
+            runtime = RachaelReplayRuntime(
                 store=mem,
-                config=akasha_config,
+                config=rachael_config,
                 source_db_path=sessions_db,
                 source_cursor=source_db.cursor(),
                 message_embeddings=message_embeddings,
@@ -388,7 +388,7 @@ def _run() -> MigrationStats:
 def main() -> None:
     stats = _run()
     print(
-        "Akasha 迁移完成: "
+        "Rachael 迁移完成: "
         f"run_id={stats.run_id} "
         f"messages={stats.messages} "
         f"activations={stats.activations} "
