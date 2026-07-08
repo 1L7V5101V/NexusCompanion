@@ -98,7 +98,7 @@ function ai_shortKey(key: string): string {
   if (parts.length >= 2) {
     const seq = parts[parts.length - 1];
     const sk = parts.slice(0, -1).join(":");
-    const short = sk.length > 20 ? "?? + sk.slice(-18) : sk;
+    const short = sk.length > 20 ? "…" + sk.slice(-18) : sk;
     return `${short}:${seq}`;
   }
   return key;

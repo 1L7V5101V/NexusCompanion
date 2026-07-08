@@ -867,7 +867,7 @@ function renderAkashaGraph(container: HTMLElement): void {
 
   function badgeHTML(t: GraphNode & { w: number; cc: number; sim: number }): string {
     const simClass = t.sim > 0.65 ? "ag-badge-success" : (t.sim > 0.45 ? "ag-badge-warning" : "ag-badge-danger");
-    const simText = t.sim > 0.65 ? "???" : (t.sim > 0.45 ? "???" : "????????);
+    const simText = t.sim > 0.65 ? "同义" : (t.sim > 0.45 ? "相关" : "潜意识跳转");
     const simPct = `${(t.sim * 100).toFixed(0)}%`;
     return `<div style="display:flex;flex-wrap:wrap;margin-top:2px;">
       <span class="ag-badge ag-badge-outline">???:${t.cc}??/span>
