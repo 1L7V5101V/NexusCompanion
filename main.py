@@ -107,6 +107,11 @@ async def serve(
     config_path: str = "config.toml",
     workspace: Path | None = None,
 ) -> None:
+    init_workspace(
+        config_path=config_path,
+        workspace=workspace or _default_workspace(),
+        force=False,
+    )
     config = Config.load(config_path)
     runtime = build_app_runtime(
         config,
