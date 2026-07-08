@@ -1,4 +1,4 @@
-/// <reference path="../../types/nexus-dashboard.d.ts" />
+﻿/// <reference path="../../types/nexus-dashboard.d.ts" />
 
 interface GraphNode {
   id?: string;
@@ -77,7 +77,7 @@ function ghEdges(edges: GraphEdgeObject[]): GraphEdge[] {
   return edges.map((edge) => [edge.s, edge.t, edge.w, edge.cc, edge.sim]);
 }
 
-function renderAkashaGraph(container: HTMLElement): void {
+function renderRachaelGraph(container: HTMLElement): void {
   const previous = (container as HTMLElement & { __agDispose?: () => void }).__agDispose;
   if (previous) previous();
 
@@ -85,7 +85,7 @@ function renderAkashaGraph(container: HTMLElement): void {
     <div class="ag-html">
       <canvas id="c"></canvas>
       <div id="hud">
-        <b>Akasha 真实记忆图</b><br>telegram 子图 · 数据透明版<br>
+        <b>Rachael 真实记忆图</b><br>telegram 子图 · 数据透明版<br>
         <span id="stat">布局计算中...</span>
         <div style="position:relative;">
           <input id="search" placeholder="搜索记忆正文…">
@@ -99,7 +99,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       </div>
       <div id="leg"></div>
       <div id="loading_card" class="ag-loading-card">
-        <div class="ag-loading-kicker">Akasha Graph</div>
+        <div class="ag-loading-kicker">Rachael Graph</div>
         <div class="ag-loading-title">正在生成全量记忆图</div>
         <div class="ag-loading-copy">第一次进入需要构建 snapshot，之后会直接读取缓存。</div>
         <div class="ag-loading-track"><div id="loading_bar"></div></div>
@@ -1181,7 +1181,7 @@ function renderAkashaGraph(container: HTMLElement): void {
       stat.textContent = "加载全景快照...";
       setLoadingCard(NODES.length === 0);
     }
-    const payload = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
+    const payload = await api<GraphPayload>("/api/dashboard/rachael-graph/global");
     if (disposed) return;
     applyPayload(payload, refit);
   }
@@ -1197,16 +1197,16 @@ function renderAkashaGraph(container: HTMLElement): void {
 }
 
 window.NexusDashboard.registerPlugin({
-  id: "akasha_graph",
-  label: "Akasha Graph",
-  viewLabel: "akasha graph",
+  id: "rachael_graph",
+  label: "Rachael Graph",
+  viewLabel: "rachael graph",
   layout: "workbench",
   pageSize: 1,
   rowKey: "id",
   columns: [{ key: "id", label: "Graph", flex: true }],
   async getCount(): Promise<number | null> {
     try {
-      const data = await api<GraphPayload>("/api/dashboard/akasha-graph/global");
+      const data = await api<GraphPayload>("/api/dashboard/rachael-graph/global");
       return data.nodes.length;
     } catch {
       return null;
@@ -1216,6 +1216,6 @@ window.NexusDashboard.registerPlugin({
     return { items: [], total: 0 };
   },
   renderMain(container: HTMLElement): void {
-    renderAkashaGraph(container);
+    renderRachaelGraph(container);
   },
 });

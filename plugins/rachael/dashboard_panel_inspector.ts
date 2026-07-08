@@ -1,8 +1,8 @@
-/// <reference path="../../types/nexus-dashboard.d.ts" />
+﻿/// <reference path="../../types/nexus-dashboard.d.ts" />
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-interface AkashaCandidate {
+interface RachaelCandidate {
   key: string;
   user_message: string;
   assistant_preview: string;
@@ -21,13 +21,13 @@ interface AkashaCandidate {
   suppressed: string;
 }
 
-interface AkashaCard extends AkashaCandidate {
+interface RachaelCard extends RachaelCandidate {
   user_message: string;
   assistant_preview: string;
   source_ref: string;
 }
 
-interface AkashaQueryRow {
+interface RachaelQueryRow {
   query_id: string;
   session_key: string;
   seq: number;
@@ -44,14 +44,14 @@ interface AkashaQueryRow {
   source_ref_count: number;
 }
 
-interface AkashaQueryDetail extends AkashaQueryRow {
-  activation_items: AkashaCandidate[];
-  dense_items: AkashaCard[];
-  ripple_items: AkashaCard[];
+interface RachaelQueryDetail extends RachaelQueryRow {
+  activation_items: RachaelCandidate[];
+  dense_items: RachaelCard[];
+  ripple_items: RachaelCard[];
   text_block_preview: string;
 }
 
-interface AkashaOverview {
+interface RachaelOverview {
   available: boolean;
   total: number;
   latest_at: string | null;
@@ -185,7 +185,7 @@ function ai_sparkbar(label: string, v: number | null | undefined): string {
   `;
 }
 
-function ai_renderActivationTable(items: AkashaCandidate[]): string {
+function ai_renderActivationTable(items: RachaelCandidate[]): string {
   if (!items.length) {
     return '<div class="ai-empty">无激活节点</div>';
   }
@@ -215,7 +215,7 @@ function ai_renderActivationTable(items: AkashaCandidate[]): string {
 
 // ── Dense / Ripple card table ─────────────────────────────────────────────
 
-function ai_renderCardTable(items: AkashaCard[], type: 'dense' | 'ripple'): string {
+function ai_renderCardTable(items: RachaelCard[], type: 'dense' | 'ripple'): string {
   if (!items.length) {
     return '<div class="ai-empty">无记录</div>';
   }
@@ -252,19 +252,19 @@ function ai_renderCardTable(items: AkashaCard[], type: 'dense' | 'ripple'): stri
 function ai_renderEmpty(): string {
   return `
     <div class="detail-empty">
-      <div class="detail-empty-title">Akasha Inspector</div>
+      <div class="detail-empty-title">Rachael Inspector</div>
       <div class="detail-empty-text">点开一轮检索记录，这里会显示激活图、Dense 精确命中、Ripple 联想命中和注入预览。</div>
     </div>
   `;
 }
 
-function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): string {
+function ai_renderDetail(item: RachaelQueryDetail, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): string {
   const threshold = (item.activation_threshold ?? 0).toFixed(3);
   return `
     <div class="ai-inspector">
       <div class="ai-query-block">
         <div class="detail-title" style="display:flex; justify-content:space-between; align-items:flex-start;">
-          <span>Akasha 检索记录 <span class="detail-subtext mono">(${escapeHtml(item.session_key)} · seq ${item.seq})</span></span>
+          <span>Rachael 检索记录 <span class="detail-subtext mono">(${escapeHtml(item.session_key)} · seq ${item.seq})</span></span>
           ${dispatch?.closePane ? `<button class="ai-close-btn" type="button" title="关闭详情面板">✕</button>` : ""}
         </div>
         <div class="ai-query-text">${escapeHtml(item.query_text)}</div>
@@ -341,9 +341,9 @@ function ai_renderDetail(item: AkashaQueryDetail, dispatch?: import("../../front
 // ── Plugin registration ───────────────────────────────────────────────────
 
 window.NexusDashboard.registerPlugin({
-  id: "akasha_inspector",
-  label: "Akasha Inspector",
-  viewLabel: "akasha inspector",
+  id: "rachael_inspector",
+  label: "Rachael Inspector",
+  viewLabel: "rachael inspector",
   pageSize: 25,
   rowKey: "query_id",
 
@@ -362,7 +362,7 @@ window.NexusDashboard.registerPlugin({
 
   async getCount(): Promise<number | null> {
     try {
-      const r = await api<AkashaOverview>("/api/dashboard/akasha-inspector/overview");
+      const r = await api<RachaelOverview>("/api/dashboard/rachael-inspector/overview");
       return r.available ? (r.total ?? 0) : null;
     } catch {
       return null;
@@ -376,14 +376,14 @@ window.NexusDashboard.registerPlugin({
     if (filters?.["session_key"]) params.set("session_key", filters["session_key"]);
     if (filters?.["q"]) params.set("q", filters["q"]);
     const data = await api<{ items: Record<string, unknown>[]; total: number }>(
-      `/api/dashboard/akasha-inspector/turns?${params.toString()}`
+      `/api/dashboard/rachael-inspector/turns?${params.toString()}`
     );
     return { items: data.items || [], total: data.total || 0 };
   },
 
   async fetchDetail(item: Record<string, unknown>): Promise<Record<string, unknown>> {
     const queryId = String(item["query_id"] ?? "");
-    return api(`/api/dashboard/akasha-inspector/turns/${encodePath(queryId)}`);
+    return api(`/api/dashboard/rachael-inspector/turns/${encodePath(queryId)}`);
   },
 
   renderDetail(item: Record<string, unknown> | null, container: HTMLElement, dispatch?: import("../../frontend/dashboard/src/types").PluginDispatch): void {
@@ -391,7 +391,7 @@ window.NexusDashboard.registerPlugin({
       container.innerHTML = ai_renderEmpty();
       return;
     }
-    container.innerHTML = ai_renderDetail(item as unknown as AkashaQueryDetail, dispatch);
+    container.innerHTML = ai_renderDetail(item as unknown as RachaelQueryDetail, dispatch);
     
     if (dispatch?.closePane) {
       const closeBtn = container.querySelector(".ai-close-btn");

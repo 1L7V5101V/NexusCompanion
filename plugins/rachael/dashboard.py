@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import sqlite3
@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
 
-from plugins.rachael.config import RachaelConfig, load_akasha_config, resolve_akasha_db_path
+from plugins.rachael.config import RachaelConfig, load_rachael_config, resolve_rachael_db_path
 from plugins.rachael.graph_snapshot import (
     EdgeRow,
     GraphSnapshotConfig,
@@ -89,7 +89,7 @@ class RachaelGraphReader:
         snapshot_path: Path,
     ) -> None:
         self._store = store
-        self._akasha_db_path = rachael_db_path
+        self._rachael_db_path = rachael_db_path
         self._sessions_db_path = sessions_db_path
         self._snapshot_path = snapshot_path
         self._lock = threading.RLock()
@@ -129,7 +129,7 @@ class RachaelGraphReader:
                 return snapshot
         with self._lock:
             return build_snapshot_to_file(
-                rachael_db_path=self._akasha_db_path,
+                rachael_db_path=self._rachael_db_path,
                 sessions_db_path=self._sessions_db_path,
                 snapshot_path=self._snapshot_path,
                 config=GraphSnapshotConfig(),
@@ -153,7 +153,7 @@ class RachaelGraphReader:
                 self._rebuild_thread = None
 
     def _snapshot_status(self, snapshot: dict[str, Any]) -> dict[str, object]:
-        current = read_graph_signature(self._akasha_db_path)
+        current = read_graph_signature(self._rachael_db_path)
         raw_meta = snapshot.get("meta", {})
         meta = cast(dict[str, object], raw_meta) if isinstance(raw_meta, dict) else {}
         old_signature = meta.get("signature")
@@ -345,11 +345,11 @@ class RachaelGraphReader:
 
 def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
     _ = plugin_dir
-    rachael_config = _load_akasha_config(workspace)
+    rachael_config = _load_rachael_config(workspace)
     if rachael_config is None:
         return []
 
-    rachael_db_path = resolve_akasha_db_path(workspace=workspace, rachael_config=rachael_config)
+    rachael_db_path = resolve_rachael_db_path(workspace=workspace, rachael_config=rachael_config)
     store = RachaelStore(rachael_db_path)
     reader = RachaelInspectorReader(store)
     graph_reader = RachaelGraphReader(
@@ -360,11 +360,11 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
     )
 
     @app.get("/api/dashboard/rachael-inspector/overview")
-    def get_akasha_inspector_overview() -> dict[str, Any]:
+    def get_rachael_inspector_overview() -> dict[str, Any]:
         return reader.get_overview()
 
     @app.get("/api/dashboard/rachael-inspector/turns")
-    def list_akasha_inspector_turns(
+    def list_rachael_inspector_turns(
         session_key: str = "",
         q: str = "",
         page: int = 1,
@@ -384,22 +384,22 @@ def register(app: FastAPI, plugin_dir: Path, workspace: Path) -> list[object]:
         }
 
     @app.get("/api/dashboard/rachael-inspector/turns/{query_id:path}")
-    def get_akasha_inspector_turn(query_id: str) -> dict[str, Any]:
+    def get_rachael_inspector_turn(query_id: str) -> dict[str, Any]:
         item = reader.get_turn(query_id)
         if item is None:
             raise HTTPException(status_code=404, detail="Rachael 检索记录不存在")
         return item
 
     @app.get("/api/dashboard/rachael-graph/global")
-    def get_akasha_graph_global() -> dict[str, Any]:
+    def get_rachael_graph_global() -> dict[str, Any]:
         return graph_reader.get_global_graph()
 
     @app.post("/api/dashboard/rachael-graph/rebuild")
-    def rebuild_akasha_graph_global() -> dict[str, Any]:
+    def rebuild_rachael_graph_global() -> dict[str, Any]:
         return graph_reader.rebuild_global_graph()
 
     @app.get("/api/dashboard/rachael-graph/query/{query_id:path}")
-    def get_akasha_graph_query(query_id: str) -> dict[str, Any]:
+    def get_rachael_graph_query(query_id: str) -> dict[str, Any]:
         try:
             return graph_reader.get_query_graph(query_id)
         except KeyError:
@@ -416,11 +416,11 @@ def _active_memory_engine(app: FastAPI) -> str:
     return str(getattr(describe(), "name", ""))
 
 
-def _load_akasha_config(workspace: Path) -> RachaelConfig | None:
+def _load_rachael_config(workspace: Path) -> RachaelConfig | None:
     _ = workspace
     try:
         plugin_dir = Path(__file__).resolve().parent
-        return load_akasha_config(plugin_dir=plugin_dir)
+        return load_rachael_config(plugin_dir=plugin_dir)
     except Exception:
         return RachaelConfig()
 
