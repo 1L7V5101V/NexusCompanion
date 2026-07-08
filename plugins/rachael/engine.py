@@ -1,4 +1,4 @@
-"""
+﻿"""
 rachael 记忆引擎 — 生产运行时层
 
 依赖 agent-framework 的基础设施（Config、Embedder、EventBus 等）。
@@ -67,7 +67,7 @@ from core.memory.engine import (
     MemoryToolSpec,
 )
 from memory2.embedder import Embedder
-from plugins.rachael.config import RachaelConfig, resolve_akasha_db_path
+from plugins.rachael.config import RachaelConfig, resolve_rachael_db_path
 from plugins.rachael.store import RachaelStore
 
 if TYPE_CHECKING:
@@ -123,11 +123,11 @@ class RachaelMemoryEngine:
     ) -> None:
         # 1. 初始化 sidecar store、原始消息库路径和 embedding 客户端。
         self._config = config
-        self._akasha_config = rachael_config
+        self._rachael_config = rachael_config
         self._workspace = workspace
         self._session_db_path = workspace / "sessions.db"
         self._store = RachaelStore(
-            resolve_akasha_db_path(
+            resolve_rachael_db_path(
                 workspace=workspace,
                 rachael_config=rachael_config,
             )
@@ -193,7 +193,7 @@ class RachaelMemoryEngine:
     ) -> None:
         # 1. 启动前只确保数据库和 schema 存在。
         store = RachaelStore(
-            resolve_akasha_db_path(
+            resolve_rachael_db_path(
                 workspace=workspace,
                 rachael_config=rachael_config,
             )
@@ -295,8 +295,8 @@ class RachaelMemoryEngine:
             self._remember_pending_activation(request, result.activation_items, query_vec, now_ts=now_ts)
 
         # 4. context 注入按 Rachael 配置展示 topK；工具查询继续尊重调用方 limit。
-        dense_limit = self._akasha_config.dense_top_k
-        ripple_limit = self._akasha_config.ripple_top_k
+        dense_limit = self._rachael_config.dense_top_k
+        ripple_limit = self._rachael_config.ripple_top_k
         if request.intent != "context":
             dense_limit = min(request.limit, dense_limit)
             ripple_limit = min(request.limit, ripple_limit)
@@ -556,35 +556,35 @@ class RachaelMemoryEngine:
                 snapshot.nodes,
                 snapshot.message_embeddings,
                 snapshot.message_turn_keys,
-                limit=max(self._akasha_config.dense_top_k, request.limit),
+                limit=max(self._rachael_config.dense_top_k, request.limit),
                 message_index=snapshot.message_index,
             )
             graph_seed_keys = _graph_seed_keys_from_snapshot(
                 query_vec,
                 snapshot,
-                limit=self._akasha_config.dense_top_k,
+                limit=self._rachael_config.dense_top_k,
             )
             activation_items, _, _ = _compute_candidates_from_snapshot(
                 query,
                 query_vec,
                 now_ts,
                 snapshot=snapshot,
-                config=self._akasha_config,
+                config=self._rachael_config,
                 source_cursor=source_cursor,
                 soft_recall=False,
-                return_limit=self._akasha_config.activate_limit,
+                return_limit=self._rachael_config.activate_limit,
                 graph_seed_keys=graph_seed_keys,
             )
             display_limit = max(
                 24,
-                max(self._akasha_config.ripple_top_k, request.limit) * 3,
+                max(self._rachael_config.ripple_top_k, request.limit) * 3,
             )
             ripple_items, _, trace = _compute_candidates_from_snapshot(
                 query,
                 query_vec,
                 now_ts,
                 snapshot=snapshot,
-                config=self._akasha_config,
+                config=self._rachael_config,
                 source_cursor=source_cursor,
                 soft_recall=True,
                 return_limit=display_limit,
@@ -912,7 +912,7 @@ class RachaelMemoryEngine:
             card = _load_turn_card(
                 self._session_db_path,
                 key,
-                assistant_preview_chars=self._akasha_config.assistant_preview_chars,
+                assistant_preview_chars=self._rachael_config.assistant_preview_chars,
                 score=score,
                 lane=lane,
                 signals=signals,
@@ -959,7 +959,7 @@ class RachaelMemoryEngine:
         activation_content = _load_messages_batch(
             session_db_path,
             [item.key for item in result.activation_items],
-            assistant_preview_chars=self._akasha_config.assistant_preview_chars,
+            assistant_preview_chars=self._rachael_config.assistant_preview_chars,
         )
 
         def _candidate_to_dict(item: RachaelCandidate) -> dict[str, object]:
@@ -1023,7 +1023,7 @@ class RachaelMemoryEngine:
             seed_count=result.trace.seed_count,
             pool_count=result.trace.pool_count,
             activated_count=len(result.activation_items),
-            activation_threshold=self._akasha_config.activation_threshold,
+            activation_threshold=self._rachael_config.activation_threshold,
             dense_count=len(dense_cards),
             ripple_count=len(ripple_cards),
             inject_chars=len(text_block),
@@ -1054,7 +1054,7 @@ class RachaelMemoryEngine:
 
         # 2. 应用字符预算，避免历史消息过长撑爆上下文。
         text = "\n\n".join(part for part in parts if part.strip())
-        max_chars = max(1, self._akasha_config.inject_max_chars)
+        max_chars = max(1, self._rachael_config.inject_max_chars)
         if len(text) <= max_chars:
             return text
         return text[:max_chars].rstrip() + f"\n...[Rachael 已截断 {len(text) - max_chars} 字]"

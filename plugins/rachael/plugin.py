@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from datetime import datetime
@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from agent.lifecycle.types import BeforeTurnCtx, TurnState
 from agent.plugins import Plugin
-from plugins.rachael.config import load_akasha_config, resolve_akasha_db_path
+from plugins.rachael.config import load_rachael_config, resolve_rachael_db_path
 from plugins.rachael.store import RachaelStore
 
 _CTX_SLOT = "session:ctx"
@@ -60,9 +60,9 @@ class RachaelPlugin(Plugin):
         if workspace is None:
             return "Rachael 诊断不可用：workspace 不存在。"
         store = RachaelStore(
-            resolve_akasha_db_path(
+            resolve_rachael_db_path(
                 workspace=workspace,
-                rachael_config=load_akasha_config(plugin_dir=Path(__file__).resolve().parent),
+                rachael_config=load_rachael_config(plugin_dir=Path(__file__).resolve().parent),
             )
         )
         try:

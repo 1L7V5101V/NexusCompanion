@@ -1,13 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 from agent.config_models import Config
 from core.memory.plugin import MemoryPluginBuildDeps, MemoryPluginRuntime
 from plugins.rachael.config import (
-    ensure_akasha_config_file,
-    load_akasha_config,
-    resolve_akasha_db_path,
+    ensure_rachael_config_file,
+    load_rachael_config,
+    resolve_rachael_db_path,
 )
 from plugins.rachael.engine import RachaelMemoryEngine
 
@@ -24,9 +24,9 @@ class MemoryPlugin:
     ) -> list[tuple[Path, bool]]:
         # 1. 确保插件配置存在，并按配置解析数据库路径。
         _ = config
-        _ = ensure_akasha_config_file()
-        rachael_config = load_akasha_config()
-        db_path = resolve_akasha_db_path(
+        _ = ensure_rachael_config_file()
+        rachael_config = load_rachael_config()
+        db_path = resolve_rachael_db_path(
             workspace=workspace,
             rachael_config=rachael_config,
         )
@@ -45,7 +45,7 @@ class MemoryPlugin:
         deps: MemoryPluginBuildDeps,
     ) -> MemoryPluginRuntime:
         # 1. Rachael 是独立 memory engine，不继承 default_memory 的 store/retriever。
-        rachael_config = load_akasha_config()
+        rachael_config = load_rachael_config()
         engine = RachaelMemoryEngine(
             config=deps.config,
             rachael_config=rachael_config,

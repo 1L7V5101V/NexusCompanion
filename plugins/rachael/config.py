@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
@@ -24,7 +24,7 @@ class RachaelConfig:
 
 
 # 读取 Rachael 插件配置文件。
-def load_akasha_config(
+def load_rachael_config(
     *,
     plugin_dir: Path | None = None,
 ) -> RachaelConfig:
@@ -51,7 +51,7 @@ def load_akasha_config(
 
 
 # 渲染默认 Rachael 配置。
-def render_akasha_config(config: RachaelConfig | None = None) -> str:
+def render_rachael_config(config: RachaelConfig | None = None) -> str:
     # 1. 使用传入配置或默认配置生成本地配置文本。
     cfg = config or RachaelConfig()
     return "\n".join([
@@ -73,17 +73,17 @@ def render_akasha_config(config: RachaelConfig | None = None) -> str:
 
 
 # 确保 Rachael 本地配置文件存在。
-def ensure_akasha_config_file(*, plugin_dir: Path | None = None) -> Path:
+def ensure_rachael_config_file(*, plugin_dir: Path | None = None) -> Path:
     # 1. 缺省时只写入默认配置，不覆盖用户已有配置。
     root = plugin_dir or Path(__file__).resolve().parent
     path = root / "config.local.toml"
     if not path.exists():
-        _ = path.write_text(render_akasha_config(), encoding="utf-8")
+        _ = path.write_text(render_rachael_config(), encoding="utf-8")
     return path
 
 
 # 解析 Rachael sidecar 数据库路径。
-def resolve_akasha_db_path(
+def resolve_rachael_db_path(
     *,
     workspace: Path,
     rachael_config: RachaelConfig,
