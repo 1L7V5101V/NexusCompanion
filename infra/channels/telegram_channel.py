@@ -787,14 +787,22 @@ class TelegramChannel:
     async def _on_response(self, msg: OutboundMessage) -> None:
         preview = msg.content[:60] + "..." if len(msg.content) > 60 else msg.content
         logger.info(f"[telegram] 发送回复  chat_id={msg.chat_id}  内容: {preview!r}")
-        cid = int(self._resolve_chat_id(msg.chat_id))
         session_key = f"{self._channel}:{msg.chat_id}"
         had_live = self._has_live_messages(session_key)
         if had_live:
             await self._cancel_live_tasks(session_key)
             await self._delete_live_message(session_key)
-        final_thinking = self._final_thinking_text(session_key, msg.thinking)
+
+        # ── Thinking 文本 ──────────────────────────────────────────
+        # had_live=True:  合并 streaming 缓冲区 + 模型 final thinking
+        # had_live=False: 只用模型的 thinking 输出（避免消费陈旧的缓冲区残留）
         if had_live:
+            final_thinking = self._final_thinking_text(session_key, msg.thinking)
+        else:
+            final_thinking = (msg.thinking or "").strip()
+
+        try:
+            # ⚠️ 始终先发 thinking block，再发 reply，确保 Telegram 中 thinking 在回复上方
             if final_thinking:
                 await send_thinking_block(
                     self._app.bot,
@@ -802,17 +810,27 @@ class TelegramChannel:
                     final_thinking,
                     self._telegram_outbound_limiter,
                 )
-            await self._send_final_tool_snapshot(session_key, msg.chat_id)
-        streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
-        
-        # Strip citation markers (§cited:[...]§) from final output
-        content = _strip_citation_markers(msg.content)
-        
-        if content.strip():
-            if streamed_reply:
-                stream = self._active_streams.pop(str(msg.chat_id), None)
-                if stream is not None:
-                    await stream.finalize(content)
+
+            if had_live:
+                await self._send_final_tool_snapshot(session_key, msg.chat_id)
+
+            streamed_reply = bool((msg.metadata or {}).get("streamed_reply"))
+
+            # Strip citation markers (§cited:[...]§) from final output
+            content = _strip_citation_markers(msg.content)
+
+            if content.strip():
+                if streamed_reply:
+                    stream = self._active_streams.pop(str(msg.chat_id), None)
+                    if stream is not None:
+                        await stream.finalize(content)
+                    else:
+                        await send_markdown(
+                            self._app.bot,
+                            msg.chat_id,
+                            content,
+                            self._telegram_outbound_limiter,
+                        )
                 else:
                     await send_markdown(
                         self._app.bot,
@@ -820,22 +838,16 @@ class TelegramChannel:
                         content,
                         self._telegram_outbound_limiter,
                     )
-            else:
-                await send_markdown(
-                    self._app.bot,
-                    msg.chat_id,
-                    content,
-                    self._telegram_outbound_limiter,
-                )
-        if final_thinking and not had_live:
-            await self._send_final_thinking(cid, msg.chat_id, final_thinking)
-        self._reply_buffers.pop(session_key, None)
-        self._thinking_buffers.pop(session_key, None)
-        for image in (msg.media or []):
-            try:
-                await self.send_image(str(msg.chat_id), image)
-            except Exception as e:
-                logger.warning(f"[telegram] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
+
+            for image in (msg.media or []):
+                try:
+                    await self.send_image(str(msg.chat_id), image)
+                except Exception as e:
+                    logger.warning(f"[telegram] meme 图片发送失败  chat_id={msg.chat_id}  path={image}  err={e}")
+        finally:
+            # 确保缓冲区始终被清理——即使发送失败也不残留
+            self._reply_buffers.pop(session_key, None)
+            self._thinking_buffers.pop(session_key, None)
 
     async def _safe_send_typing(
         self, context: ContextTypes.DEFAULT_TYPE, chat_id: int
