@@ -694,6 +694,8 @@ class TelegramChannel:
     ) -> str:
         streamed = self._thinking_buffers.get(session_key, "").strip()
         final = (thinking or "").strip()
+        if final and len(final) < 10:
+            logger.info("[telegram] _final_thinking_text short thinking: final=%r streamed=%r", final, streamed)
         if streamed and final:
             if final in streamed:
                 return streamed
