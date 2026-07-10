@@ -6,6 +6,7 @@ from typing import Any, Callable
 from agent.scheduler import LatencyTracker, SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tools.remind import RemindTool
 from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
@@ -34,6 +35,11 @@ class SchedulerToolsetProvider(ToolsetProvider):
             CancelScheduleTool(scheduler),
             risk="write",
             search_hint="删除提醒 取消任务",
+        )
+        registry.register(
+            RemindTool(scheduler),
+            risk="write",
+            search_hint="日程提醒 会议提醒 出门提醒 提前通知",
         )
         return build_registration_result(
             registry=registry,
