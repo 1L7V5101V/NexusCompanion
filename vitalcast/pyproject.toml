@@ -1,0 +1,12 @@
+[project]
+name = "vitalcast"
+version = "0.1.0"
+description = "Apple Watch Health Data Bridge — MCP server for VitalCast"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
