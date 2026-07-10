@@ -4,7 +4,7 @@
 AI 通过这三个工具注册、查询、取消定时任务。
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,7 +27,9 @@ class ScheduleTool(Tool):
         "  every — 循环，如 '1h' '30m' '0 9 * * *'（每天9点）\n\n"
         "两种执行模式：\n"
         "  instant — 到时直接推送固定消息，适合喝水提醒等固定文本\n"
-        "  soft    — 到时调用 AI 生成实时内容，适合天气/新闻等"
+        "  soft    — 到时调用 AI 生成实时内容，适合天气/新闻等\n\n"
+        "可选参数 advance_minutes：提前N分钟触发，适用于组会/日程提前提醒场景。\n"
+        "如需多个提前量（如提前30分钟 + 提前15分钟），多次调用本工具即可。"
     )
     parameters = {
         "type": "object",
@@ -75,6 +77,10 @@ class ScheduleTool(Tool):
                 "type": "string",
                 "description": "任务名，方便后续用 cancel_schedule 取消",
             },
+            "advance_minutes": {
+                "type": "integer",
+                "description": "提前N分钟触发，如 30 表示在 when 指定时间前30分钟触发。适合日程提前提醒。",
+            },
             "request_time": {
                 "type": "string",
                 "description": (
@@ -101,6 +107,7 @@ class ScheduleTool(Tool):
         tz = kwargs.get("timezone") or self._default_tz
         name = kwargs.get("name")
         request_time = kwargs.get("request_time")
+        advance_minutes = kwargs.get("advance_minutes")
 
         # ── validation ──
         if tier not in ("instant", "soft"):
@@ -124,6 +131,16 @@ class ScheduleTool(Tool):
             fire_at = compute_fire_at(trigger, when, tz, request_time)
         except ValueError as e:
             return f"错误：{e}"
+
+        # ── apply advance_minutes offset ──
+        if advance_minutes is not None:
+            try:
+                offset = int(advance_minutes)
+            except (TypeError, ValueError):
+                return f"错误：advance_minutes 须为整数，收到 {advance_minutes!r}"
+            if offset <= 0:
+                return f"错误：advance_minutes 须为正整数，收到 {offset}"
+            fire_at = fire_at - timedelta(minutes=offset)
 
         # ── parse every spec ──
         interval_seconds = None

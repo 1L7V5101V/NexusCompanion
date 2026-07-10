@@ -248,3 +248,72 @@ async def test_cancel_no_args_returns_error(tmp_path, mock_push, mock_loop):
     tool = CancelScheduleTool(svc)
     result = await tool.execute()
     assert "错误" in result
+
+
+# ── ScheduleTool: advance_minutes ────────────────────────────────
+
+
+async def test_advance_minutes_shifts_fire_at(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+    await tool.execute(
+        tier="instant",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="tg",
+        chat_id="1",
+        message="组会提醒",
+        advance_minutes=30,
+    )
+    job = list(svc._jobs.values())[0]
+    # fire_at should be 13:30, not 14:00
+    assert job.fire_at.hour == 13
+    assert job.fire_at.minute == 30
+
+
+async def test_advance_minutes_negative_returns_error(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+    result = await tool.execute(
+        tier="instant",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="tg",
+        chat_id="1",
+        message="组会提醒",
+        advance_minutes=-5,
+    )
+    assert "错误" in result
+    assert "正整数" in result
+
+
+async def test_advance_minutes_zero_returns_error(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+    result = await tool.execute(
+        tier="instant",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="tg",
+        chat_id="1",
+        message="组会提醒",
+        advance_minutes=0,
+    )
+    assert "错误" in result
+    assert "正整数" in result
+
+
+async def test_advance_minutes_non_int_returns_error(tmp_path, mock_push, mock_loop):
+    svc = make_svc(tmp_path, mock_push, mock_loop)
+    tool = ScheduleTool(svc, default_tz="UTC")
+    result = await tool.execute(
+        tier="instant",
+        trigger="at",
+        when="2025-06-01T14:00:00",
+        channel="tg",
+        chat_id="1",
+        message="组会提醒",
+        advance_minutes="abc",
+    )
+    assert "错误" in result
+    assert "整数" in result
