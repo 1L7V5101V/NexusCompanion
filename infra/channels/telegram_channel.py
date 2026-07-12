@@ -101,12 +101,18 @@ class TelegramChannel:
             metadata_key="username",
             normalizer=lambda value: value.lower(),
         )
-        # proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
         builder = Application.builder().token(token)
         if api_base_url:
             builder = builder.base_url(api_base_url)
-        # if proxy_url:
-        #     builder = builder.proxy_url(proxy_url)
+            # File downloads also need to go through the proxy.
+            # base_url (API):  https://cf-worker.workers.dev/bot
+            # base_file_url:    https://cf-worker.workers.dev/file/bot
+            base_url_clean = api_base_url.rstrip("/")
+            if base_url_clean.endswith("/bot"):
+                base_file_url = base_url_clean[: -len("/bot")] + "/file/bot"
+            else:
+                base_file_url = base_url_clean + "/file/bot"
+            builder = builder.base_file_url(base_file_url)
         self._app = builder.build()
         self._bot_commands = bot_commands or []
         self._app.add_handler(CommandHandler("stop", self._on_stop_command))
