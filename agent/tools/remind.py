@@ -76,7 +76,7 @@ class RemindTool(Tool):
         "required": ["when", "description", "channel", "chat_id"],
     }
 
-    def __init__(self, service: SchedulerService, default_tz: str = "UTC") -> None:
+    def __init__(self, service: SchedulerService, default_tz: str = "Asia/Shanghai") -> None:
         self._service = service
         self._default_tz = default_tz
 
