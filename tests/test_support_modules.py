@@ -736,13 +736,13 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     prompt = result.system_prompt
     context_frame = result.messages[-2]["content"]
     assert "identity" in prompt
-    assert "## 行为规范" in prompt
+    assert "## Behavior Rules" in prompt
     assert "retrieved" not in prompt
     assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "retrieved" in context_frame
     assert "memory block" in prompt
-    assert "Nexus 自我认知" in prompt
-    assert "## 环境" in prompt
+    assert "Nexus Self-Perception" in prompt
+    assert "## Environment" in prompt
     assert "# Memes" not in prompt
     assert "<meme:shy>" not in prompt
     assert "catalog:skill summary" in prompt
@@ -774,19 +774,19 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         )
     ).messages
     assert messages[0]["role"] == "system"
-    assert "## 环境" in messages[0]["content"]
+    assert "## Environment" in messages[0]["content"]
     assert "## Current Session" in messages[0]["content"]
     assert messages[-1]["role"] == "user"
     assert len(messages[-1]["content"]) == 3
     stamped_message = messages[-1]["content"][-1]["text"]
-    assert stamped_message.startswith("[当前消息时间:")
+    assert stamped_message.startswith("[Current message time:")
     assert "[附加媒体]" in stamped_message
     assert f"- 文件路径: {document}" in stamped_message
     assert "request_time=" in stamped_message
-    assert "今天=" in stamped_message
-    assert "昨天=" in stamped_message
-    assert "明天=" in stamped_message
-    assert "后天=" in stamped_message
+    assert "today=" in stamped_message
+    assert "yesterday=" in stamped_message
+    assert "tomorrow=" in stamped_message
+    assert "day_after_tomorrow=" in stamped_message
     assert "weekday=" in stamped_message
     assert builder.last_assembled_contexts["turn_injection_context"] == {}
 
@@ -831,9 +831,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         )
     ).messages
     media_only_text = media_only_messages[-1]["content"][-1]["text"]
-    assert media_only_text.startswith("[当前消息时间:")
+    assert media_only_text.startswith("[Current message time:")
     assert "request_time=" in media_only_text
-    assert "今天=" in media_only_text
+    assert "today=" in media_only_text
 
     text_media_builder = ContextBuilder(
         tmp_path,
@@ -930,20 +930,20 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
 
     assert "request_time=2026-04-08T17:57:00+08:00" not in system_prompt
     assert "local_date=2026-04-08" not in system_prompt
-    assert "今天=2026-04-08" not in system_prompt
-    assert "明天=2026-04-09" not in system_prompt
+    assert "today=2026-04-08" not in system_prompt
+    assert "tomorrow=2026-04-09" not in system_prompt
     assert context_frame.startswith(SYSTEM_CONTEXT_FRAME_MARKER)
     assert "用户表示明天下午三点有面试" in context_frame
     assert "准备次日下午三点的字节跳动面试" in context_frame
     assert "4 月 9 日（周四）下午 3 点" in context_frame
-    assert user_message.startswith("[当前消息时间: 2026-04-08 17:57:00")
+    assert user_message.startswith("[Current message time: 2026-04-08 17:57:00")
     assert "request_time=2026-04-08T17:57:00+08:00" in user_message
-    assert "今天=2026-04-08" in user_message
-    assert "昨天=2026-04-07" in user_message
-    assert "明天=2026-04-09" in user_message
-    assert "后天=2026-04-10" in user_message
+    assert "today=2026-04-08" in user_message
+    assert "yesterday=2026-04-07" in user_message
+    assert "tomorrow=2026-04-09" in user_message
+    assert "day_after_tomorrow=2026-04-10" in user_message
     assert "weekday=Wednesday" in user_message
-    assert "相对时间以此为准" in user_message
+    assert "relative times are based on this" in user_message
     assert user_message.endswith("你还记得明天什么时候面试吗")
 
 

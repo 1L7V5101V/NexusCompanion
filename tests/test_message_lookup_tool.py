@@ -366,36 +366,36 @@ def test_history_fact_guard_requires_fetch_after_search_preview():
     assert "search_messages" in prompt
     assert "fetch_messages" in prompt
     assert "source_ref" in prompt
-    assert "预览" in prompt
+    assert "search previews" in prompt
 
 
 def test_memory_correction_protocol_covers_soft_corrections_and_forget_memory():
     prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
-    assert "其实还好" in prompt
-    assert "并不反感" in prompt
+    assert "actually it's fine" in prompt
+    assert "don't mind it" in prompt
     assert "forget_memory" in prompt
-    assert "若用户这轮是在纠正你，而你本轮没有调用 `forget_memory`" in prompt
-    assert "在拿到 fetch_messages 结果前，禁止直接调用 `forget_memory`" in prompt
-    assert "调用了 `forget_memory` 却没有先调用 `fetch_messages`" in prompt
+    assert "If the user is correcting you this turn and you did not call `forget_memory`" in prompt
+    assert "Before getting fetch_messages results, you are forbidden from directly calling `forget_memory`" in prompt
+    assert "called `forget_memory` this turn without first calling `fetch_messages`" in prompt
 
 
 def test_behavior_rules_force_fact_questions_to_answer_directly():
     prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
-    assert "简单问题直接回答" in prompt
-    assert "时间线、日期、安排、是否记得、列事实、重新梳理" in prompt
-    assert "不要追加鼓励、睡觉建议、备战计划、陪伴式抚慰" in prompt
-    assert "当前这一问如果是事实整理或时间确认，也不要顺着前文继续输出情绪安慰" in prompt
-    assert "事实型问题答完事实就停" in prompt
-    assert "稳住就行" in prompt
+    assert "answer simple questions directly" in prompt
+    assert "timelines, dates, schedules, remembering, listing facts, or reorganizing" in prompt
+    assert "do not append encouragement, sleep suggestions, preparation plans, or companion-style reassurance" in prompt
+    assert "if the current question is about fact organization or time confirmation, do not continue emotional comfort from the previous context" in prompt
+    assert "After answering a fact-type question, stop" in prompt
+    assert "just hold steady" in prompt
 
 
 def test_behavior_rules_use_evidence_threshold_not_keyword_filtering():
     prompt = build_agent_behavior_rules_prompt(workspace=Path("."))
-    assert "知识截止时间" in prompt
-    assert "外部世界此刻是什么样" in prompt
-    assert "本轮外部证据" in prompt
-    assert "这里的判断看“证据门槛”，不是看字面关键词" in prompt
-    assert "如果答案取决于稳定知识" in prompt
-    assert "如果答案取决于本轮外部证据" in prompt
-    assert "我现在不能确认 / 我需要先查一下" in prompt
-    assert "没有本轮证据就只能说记忆里的旧信息" in prompt
+    assert "knowledge cutoff" in prompt
+    assert "what the external world looks like right now" in prompt
+    assert "this-turn external evidence" in prompt
+    assert 'This judgment is about "evidence threshold," not literal keywords' in prompt
+    assert "if the answer depends on stable knowledge" in prompt
+    assert "if the answer depends on this-turn external evidence" in prompt
+    assert "I can't confirm this right now / I need to look into this first" in prompt
+    assert "Without this-turn evidence, you can only state old information from memory" in prompt

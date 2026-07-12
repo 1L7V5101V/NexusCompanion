@@ -72,9 +72,9 @@ def test_build_current_message_time_envelope_contains_today_and_tomorrow():
     text = build_current_message_time_envelope(
         message_timestamp=datetime.fromisoformat("2026-04-08T17:57:00+08:00")
     )
-    assert "当前消息时间: 2026-04-08 17:57" in text
-    assert "今天=2026-04-08" in text
-    assert "明天=2026-04-09" in text
+    assert "Current message time: 2026-04-08 17:57" in text
+    assert "today=2026-04-08" in text
+    assert "tomorrow=2026-04-09" in text
 
 
 @pytest.mark.asyncio
