@@ -1062,18 +1062,24 @@ class MarkdownMemoryMaintenance:
                 if not queue:
                     return
                 _ = queue.popleft()
-                session = self._get_session(session_key) if self._get_session else None
-                if session is None:
-                    return
-                if self._should_consolidate_session(session):
-                    result = await self._consolidate_unlocked(
-                        ConsolidateRequest(session=session)
-                    )
-                    if result.trace.get("mode") == "markdown" and self._save_session:
-                        await self._save_session(session)
-                else:
-                    await self.refresh_recent_turns(
-                        RefreshRecentTurnsRequest(session=session)
+                try:
+                    session = self._get_session(session_key) if self._get_session else None
+                    if session is None:
+                        return
+                    if self._should_consolidate_session(session):
+                        result = await self._consolidate_unlocked(
+                            ConsolidateRequest(session=session)
+                        )
+                        if result.trace.get("mode") == "markdown" and self._save_session:
+                            await self._save_session(session)
+                    else:
+                        await self.refresh_recent_turns(
+                            RefreshRecentTurnsRequest(session=session)
+                        )
+                except Exception:
+                    logger.exception(
+                        "markdown memory maintenance iteration failed for session=%s — continuing queue",
+                        session_key,
                     )
 
     def _on_maintenance_done(
@@ -1141,7 +1147,13 @@ class MarkdownMemoryMaintenance:
                     "elapsed_ms": draft.elapsed_ms,
                 }
             )
-        await self._commit_markdown_draft(request.session, draft)
+        try:
+            await self._commit_markdown_draft(request.session, draft)
+        except Exception:
+            logger.exception(
+                "consolidation commit raised for session=%s — markdown files written, session.last_consolidated already advanced, still persisting",
+                getattr(request.session, "key", "?"),
+            )
         return ConsolidateResult(
             consolidated_count=len(draft.window.old_messages),
             trace={"mode": "markdown", "source_ref": draft.source_ref},
