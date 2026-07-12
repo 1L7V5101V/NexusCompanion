@@ -693,6 +693,11 @@ class TelegramChannel:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    @staticmethod
+    def _meaningful_thinking(text: str) -> bool:
+        """过短的 thinking 文本不包含实际推理内容，不应发送。"""
+        return len(text) >= 5
+
     def _final_thinking_text(
         self,
         session_key: str,
@@ -700,8 +705,6 @@ class TelegramChannel:
     ) -> str:
         streamed = self._thinking_buffers.get(session_key, "").strip()
         final = (thinking or "").strip()
-        if final and len(final) < 10:
-            logger.info("[telegram] _final_thinking_text short thinking: final=%r streamed=%r", final, streamed)
         if streamed and final:
             if final in streamed:
                 return streamed
@@ -808,6 +811,10 @@ class TelegramChannel:
             final_thinking = self._final_thinking_text(session_key, msg.thinking)
         else:
             final_thinking = (msg.thinking or "").strip()
+
+        # 过短的 thinking（如 deepseek-v4-flash 返回的占位词"用户"）没有实际推理内容
+        if final_thinking and not self._meaningful_thinking(final_thinking):
+            final_thinking = ""
 
         try:
             # ⚠️ 始终先发 thinking block，再发 reply，确保 Telegram 中 thinking 在回复上方
