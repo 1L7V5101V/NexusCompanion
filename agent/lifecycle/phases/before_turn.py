@@ -124,7 +124,7 @@ class _MemoryContextGuardModule:
                 )
             except Exception:
                 logger.exception(
-                    "memory context guard failed to consolidate: session=%s pending=%d threshold=%d",
+                    "memory context guard: consolidator raised for session=%s pending=%d threshold=%d — blocking turn",
                     state.session_key,
                     pending,
                     self._threshold,
@@ -132,6 +132,12 @@ class _MemoryContextGuardModule:
             else:
                 if triggered:
                     return frame
+                logger.warning(
+                    "memory context guard: consolidation returned False for session=%s pending=%d threshold=%d — blocking turn",
+                    state.session_key,
+                    pending,
+                    self._threshold,
+                )
 
         logger.error(
             "memory context guard blocked turn: session=%s pending=%d threshold=%d last_consolidated=%d total=%d",
