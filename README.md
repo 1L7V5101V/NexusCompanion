@@ -171,7 +171,7 @@ NexusCompanion 不把记忆当单纯的"搜索问题"来解，而是一个认知
 溯源（Provenance）：`[item_id]` 注入 → LLM 引用 `§cited:[id]§` → 提取 cited_memory_ids → 用于推送去重和审计。
 
 两种引擎可选（配置 `[memory] engine = "default" | "rachael"`）：
-- **default_memory**：基础的 Markdown 记忆引擎
+- **default_memory**：基础的 RAG（向量 + 关键词 + RRF 融合） 记忆引擎
 - **rachael**：高级记忆引擎，支持向量嵌入、图谱关系和快速检索
 
 ---
