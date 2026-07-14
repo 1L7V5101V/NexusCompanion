@@ -21,8 +21,9 @@ if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryRuntime
 
 
-# 统一插件构造入口，正常 runtime 和 dashboard 复用同一套路由。
+# 统一插件构造入口，参数化 engine_name 以支持多引擎构建。
 def _build_memory_plugin_runtime(
+    engine_name: str,
     *,
     config: Config,
     workspace: Path,
@@ -34,7 +35,6 @@ def _build_memory_plugin_runtime(
 ) -> MemoryPluginRuntime:
     from bootstrap.wiring import resolve_memory_plugin
 
-    engine_name = (config.memory.engine or "").strip() or "default"
     plugin = resolve_memory_plugin(engine_name)
     return plugin.build(
         MemoryPluginBuildDeps(
@@ -59,29 +59,28 @@ def ensure_memory_plugin_storage(
 ) -> list[tuple[Path, bool]]:
     if not _memory_plugin_enabled(config):
         return []
-    engine_name = (config.memory.engine or "").strip() or "default"
     from bootstrap.wiring import resolve_memory_plugin
 
-    plugin = resolve_memory_plugin(engine_name)
-    initializer = getattr(plugin, "ensure_workspace_storage", None)
-    if not callable(initializer):
-        return []
-    result: object = initializer(config=config, workspace=workspace)
-    if isinstance(result, list):
-        normalized: list[tuple[Path, bool]] = []
-        for item in cast(list[object], result):
-            if isinstance(item, tuple):
-                values = cast(tuple[object, ...], item)
-                if len(values) != 2:
-                    continue
-                raw_path, raw_existed = values
-                path = Path(str(raw_path))
-                normalized.append((path, bool(raw_existed)))
-            elif isinstance(item, str | Path):
-                path = Path(item)
-                normalized.append((path, path.exists()))
-        return normalized
-    return []
+    all_results: list[tuple[Path, bool]] = []
+    for engine_name in config.memory.engine_names:
+        plugin = resolve_memory_plugin(engine_name)
+        initializer = getattr(plugin, "ensure_workspace_storage", None)
+        if not callable(initializer):
+            continue
+        result: object = initializer(config=config, workspace=workspace)
+        if isinstance(result, list):
+            for item in cast(list[object], result):
+                if isinstance(item, tuple):
+                    values = cast(tuple[object, ...], item)
+                    if len(values) != 2:
+                        continue
+                    raw_path, raw_existed = values
+                    path = Path(str(raw_path))
+                    all_results.append((path, bool(raw_existed)))
+                elif isinstance(item, str | Path):
+                    path = Path(item)
+                    all_results.append((path, path.exists()))
+    return all_results
 
 
 def build_memory_runtime(
@@ -105,28 +104,36 @@ def build_memory_runtime(
     )
 
     closeables: list[object] = []
+    engines: dict[str, MemoryEngine] = {}
+    primary_engine: MemoryEngine | None = None
+
     if _memory_plugin_enabled(config):
-        plugin_runtime = _build_memory_plugin_runtime(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
-            markdown=markdown,
-            event_publisher=event_publisher,
-        )
-        engine = plugin_runtime.engine
-        closeables.extend(plugin_runtime.closeables)
-        register_memory_meta_tools(
-            tools,
-            engine,
-        )
-    else:
-        engine = DisabledMemoryEngine()
+        for engine_name in config.memory.engine_names:
+            plugin_runtime = _build_memory_plugin_runtime(
+                engine_name,
+                config=config,
+                workspace=workspace,
+                provider=provider,
+                light_provider=light_provider,
+                http_resources=http_resources,
+                markdown=markdown,
+                event_publisher=event_publisher,
+            )
+            engines[engine_name] = plugin_runtime.engine
+            closeables.extend(plugin_runtime.closeables)
+
+            # 仅为 default engine 注册内存工具（recall_memory / memorize / forget）
+            # Rachael 的写入是 TurnCommitted 自动触发，不需要显式工具
+            if engine_name == "default":
+                register_memory_meta_tools(tools, plugin_runtime.engine)
+
+        if engines:
+            primary_engine = next(iter(engines.values()))
 
     return MemoryRuntime(
         markdown=markdown,
-        engine=engine,
+        engine=primary_engine or DisabledMemoryEngine(),
+        engines=engines,
         closeables=closeables,
     )
 
@@ -139,7 +146,7 @@ def build_memory_admin_runtime(
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
 ) -> MemoryRuntime:
-    # dashboard 不注册工具，只需要同一套 engine admin 能力和关闭生命周期。
+    # dashboard 不注册工具，只需要 engine admin 能力和关闭生命周期。
     markdown = build_markdown_memory_runtime(
         workspace=workspace,
         provider=provider,
@@ -150,23 +157,31 @@ def build_memory_admin_runtime(
         recent_context_model=config.light_model or config.model,
     )
     closeables: list[object] = [http_resources]
+    engines: dict[str, MemoryEngine] = {}
+    primary_engine: MemoryEngine | None = None
+
     if _memory_plugin_enabled(config):
-        plugin_runtime = _build_memory_plugin_runtime(
-            config=config,
-            workspace=workspace,
-            provider=provider,
-            light_provider=light_provider,
-            http_resources=http_resources,
-            markdown=markdown,
-            event_publisher=event_publisher,
-        )
-        engine = plugin_runtime.engine
-        closeables[:0] = plugin_runtime.closeables
-    else:
-        engine = DisabledMemoryEngine()
+        for engine_name in config.memory.engine_names:
+            plugin_runtime = _build_memory_plugin_runtime(
+                engine_name,
+                config=config,
+                workspace=workspace,
+                provider=provider,
+                light_provider=light_provider,
+                http_resources=http_resources,
+                markdown=markdown,
+                event_publisher=event_publisher,
+            )
+            engines[engine_name] = plugin_runtime.engine
+            closeables[:0] = plugin_runtime.closeables
+
+        if engines:
+            primary_engine = next(iter(engines.values()))
+
     return MemoryRuntime(
         markdown=markdown,
-        engine=engine,
+        engine=primary_engine or DisabledMemoryEngine(),
+        engines=engines,
         closeables=closeables,
     )
 

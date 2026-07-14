@@ -1,69 +1,213 @@
+"""
+DefaultMemoryRetrievalPipeline — Agentic RAG 三步编排
+
+Router → RetrievalSandbox → Evaluator 质检闭环
+"""
+
 from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.core.types import RetrievalTrace
 from agent.looping.ports import MemoryServices
+from agent.retrieval.evaluator import Evaluator
+from agent.retrieval.fusion import ScoredItem
+from agent.retrieval.planner import QueryPlanner
 from agent.retrieval.protocol import (
     MemoryRetrievalPipeline,
     RetrievalRequest,
     RetrievalResult,
 )
-from core.memory.engine import (
-    MemoryQuery,
-    MemoryQueryFilters,
-    MemoryQueryResult,
-    MemoryScope,
-)
+from agent.retrieval.sandbox import RetrievalSandbox
+from core.memory.engine import MemoryQueryFilters, MemoryScope
+
+if TYPE_CHECKING:
+    from agent.provider import LLMProvider
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
 
 
-class DefaultMemoryRetrievalPipeline(MemoryRetrievalPipeline):
+class AgenticRAGPipeline(MemoryRetrievalPipeline):
+    """Agentic RAG 检索管线——Router → Sandbox → Evaluator。
+
+    分层:
+    1. Router: 规则 + light_provider 决策检索源
+    2. RetrievalSandbox: 并行检索 + RRF 融合（隔离草稿区）
+    3. Evaluator: light_provider 结构化评分 + 迭代重试
+
+    不在 ToolRegistry 中，LLM 不可见。所有中间结果留在 Sandbox 内。
+    """
+
     def __init__(
         self,
         memory: MemoryServices,
+        light_provider: LLMProvider | None = None,
+        web_search_fn: Callable[[str], Awaitable[str]] | None = None,
     ) -> None:
         self._memory = memory
+        self._light_provider = light_provider
 
-    # 被动预检索入口：只转换请求形状，检索语义统一交给 MemoryEngine。
+        self._planner = QueryPlanner(light_provider=light_provider)
+        self._evaluator = Evaluator(light_provider=light_provider)
+        self._sandbox = RetrievalSandbox(
+            rachael_engine=memory.engines.get("rachael"),
+            vector_engine=memory.engines.get("default"),
+            web_search_fn=web_search_fn,
+        )
+
     async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
-        # 1. 没有启用记忆引擎时，主链继续无记忆回复。
-        if self._memory.engine is None:
+        """三步编排: 路由 → 检索 → 质检。"""
+
+        # ── 0. 无引擎 → 空 ────────────────────────────────────
+        if not self._memory.engines:
             return RetrievalResult(block="", trace=None)
 
-        # 2. 把 agent loop 的上下文转成 engine 的稳定请求协议。
-        result = await self._memory.engine.query(
-            MemoryQuery(
-                text=request.message,
-                intent="context",
-                scope=MemoryScope(
-                    session_key=request.session_key,
-                    channel=request.channel,
-                    chat_id=request.chat_id,
-                ),
-                context={
-                    "history": request.history,
-                    "session_metadata": request.session_metadata,
-                },
-                filters=MemoryQueryFilters(hints=dict(request.extra or {})),
-                timestamp=request.timestamp,
+        # ── 1. 后向兼容: 单引擎 + 无 light_provider → 旧行为 ──
+        if len(self._memory.engines) == 1 and self._light_provider is None:
+            engine = next(iter(self._memory.engines.values()))
+            try:
+                result = await engine.query(self._build_query(request))
+                return RetrievalResult(
+                    block=result.text_block,
+                    trace=_build_trace(result),
+                )
+            except Exception as e:
+                logger.error("单引擎检索失败: %s", e)
+                return RetrievalResult(block="", trace=None)
+
+        # ── 2. Agentic RAG 管线 ──────────────────────────────
+        query = request.message
+        scope = MemoryScope(
+            session_key=request.session_key,
+            channel=request.channel,
+            chat_id=request.chat_id,
+        )
+        context: dict[str, Any] = {
+            "history": request.history,
+            "session_metadata": request.session_metadata,
+        }
+        filters = MemoryQueryFilters(hints=dict(request.extra or {}))
+        ts = request.timestamp
+
+        # 2a. Router: 决策检索源
+        plan = await self._planner.classify(query)
+        if not plan.sources:
+            return RetrievalResult(block="", trace=None)
+
+        logger.info(
+            "Router: sources=%s method=%s reason=%s",
+            plan.sources, plan.method, plan.reason,
+        )
+
+        # 2b. Sandbox + Evaluator 迭代
+        eval_result = None
+        block = ""
+        current_query = query
+
+        for retry in range(_MAX_RETRIES):
+            block = await self._sandbox.retrieve(
+                plan.sources,
+                query=current_query,
+                scope=scope,
+                context=context,
+                timestamp=ts,
+                filters=filters,
             )
+
+            if not block:
+                break
+
+            # Evaluator 质检
+            if self._light_provider is not None:
+                eval_result = await self._evaluator.evaluate(query, block)
+                if eval_result.verified:
+                    logger.info("检索通过质检 (第%d轮)", retry + 1)
+                    return RetrievalResult(block=block, verified=True)
+
+                logger.info(
+                    "检索未通过质检 (第%d轮): rel=%.2f com=%.2f %s",
+                    retry + 1,
+                    eval_result.relevance,
+                    eval_result.completeness,
+                    eval_result.missing_info,
+                )
+
+                # 最后一轮不再重试
+                if retry >= _MAX_RETRIES - 1:
+                    break
+
+                # Query Rewrite
+                current_query = await self._evaluator._rewrite_query(
+                    query, eval_result.missing_info,
+                )
+                if current_query == query:
+                    # 改写没变化 → 本轮是最后一次
+                    break
+            else:
+                # 无 Evaluator: 信任结果，直接返回
+                return RetrievalResult(block=block, verified=False)
+
+        # 2c. 重试耗尽 → meta block
+        meta = self._build_meta_block(query, plan.sources, retry_count=_MAX_RETRIES)
+        return RetrievalResult(block=meta, verified=False)
+
+    # ── 辅助 ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_query(request: RetrievalRequest) -> MemoryQuery:
+        from core.memory.engine import MemoryQuery, MemoryQueryFilters, MemoryScope
+
+        return MemoryQuery(
+            text=request.message,
+            intent="context",
+            scope=MemoryScope(
+                session_key=request.session_key,
+                channel=request.channel,
+                chat_id=request.chat_id,
+            ),
+            context={
+                "history": request.history,
+                "session_metadata": request.session_metadata,
+            },
+            filters=MemoryQueryFilters(hints=dict(request.extra or {})),
+            timestamp=request.timestamp,
         )
 
-        # 3. 只返回主链需要注入的文本块和可观测 trace。
-        return RetrievalResult(
-            block=result.text_block,
-            trace=_build_retrieval_trace(result),
+    @staticmethod
+    def _build_meta_block(query: str, sources: list[str], retry_count: int) -> str:
+        return (
+            "[检索说明]\n"
+            f"系统已从 {sources} 源尝试 {retry_count} 轮检索（含 query 重写），"
+            "未能找到高置信度相关信息。\n"
+            "若你认为需要进一步搜索，请使用 web_search 或 recall_memory。\n"
+            "---"
         )
 
 
-# 把 engine trace 收窄成 agent loop 认识的检索 trace。
-def _build_retrieval_trace(
-    result: MemoryQueryResult,
-) -> RetrievalTrace | None:
-    if not result.trace and not result.records and not result.text_block:
+# 为向后兼容保留别名
+DefaultMemoryRetrievalPipeline = AgenticRAGPipeline
+
+
+# ── Trace 构建 ──────────────────────────────────────────────
+
+
+def _build_trace(result: Any) -> RetrievalTrace | None:
+    """从 MemoryQueryResult 构建 trace（单引擎向后兼容用）。"""
+    trace = getattr(result, "trace", None)
+    records = getattr(result, "records", None) or []
+    raw = getattr(result, "raw", None) or {}
+    text_block = getattr(result, "text_block", None) or ""
+
+    if not trace and not records and not text_block:
         return None
     return RetrievalTrace(
-        gate_type=str(result.trace.get("gate_type") or "") or None,
-        route_decision=str(result.trace.get("route_decision") or "") or None,
-        rewritten_query=str(result.raw.get("rewritten_query") or "") or None,
-        injected_count=sum(1 for record in result.records if record.injected),
-        raw=result.raw.get("retrieval_event"),
+        gate_type=str(trace.get("gate_type") or "") if isinstance(trace, dict) else None,
+        route_decision=str(trace.get("route_decision") or "") if isinstance(trace, dict) else None,
+        rewritten_query=str(raw.get("rewritten_query") or "") or None,
+        injected_count=sum(1 for r in records if getattr(r, "injected", False)),
+        raw=raw.get("retrieval_event"),
     )
