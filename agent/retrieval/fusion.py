@@ -6,6 +6,8 @@ FusionEngine — 跨源 RRF 融合 + 新鲜度加权 + 语义去重
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import hashlib
 import logging
 from dataclasses import dataclass, field

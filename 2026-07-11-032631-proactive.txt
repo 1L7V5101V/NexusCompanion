@@ -1,0 +1,220 @@
+╭─── Claude Code v2.1.139 ─────────────────────────────────────────────────────╮
+│                                           │ Tips for getting started         │
+│               Welcome back!               │ Run /init to create a CLAUDE.md… │
+│                                           │ ──────────────────────────────── │
+│                  ▐▛███▜▌                  │ What's new                       │
+│                 ▝▜█████▛▘                 │ Fixed an issue when using Opus … │
+│                   ▘▘ ▝▝                   │ Opus 4.8 is here! Now defaults … │
+│                                           │ Introducing dynamic workflows: … │
+│   deepseek-v4-flash · API Usage Billing   │ /release-notes for more          │
+│        D:\.Projects\akashic-agent         │                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ 给我讲讲这个proactive链路的全局                                               
+
+● Explore(Explore proactive flow)
+  ⎿  Done (41 tool uses · 94.0k tokens · 1m 59s)
+  (ctrl+o to expand)
+
+● Proactive 链路全局解析
+
+  这是 akashic-agent 的"主动推送"系统——AI
+  不在被动等用户说话，而是根据外部信号（MCP
+  数据源）和空闲程度，自主决定要不要主动发起对话。
+
+  ---
+  一、整体架构
+
+  bootstrap/app.py
+    └─ build_proactive_runtime()          # 启动时组装
+         └─ ProactiveLoop (后台 asyncio task)
+              └─ ProactiveKernel
+                   └─ ProactivePhaseRunner
+                        └─ 五阶段管道 (ProactiveTurnPipeline)
+                             ├─ Gate    → 准入控制
+                             ├─ Fetch   → 数据采集
+                             ├─ Judge   → LLM 评估
+                             ├─ Resolve → 决策去重
+                             └─ Deliver → 发送交付
+
+  ---
+  二、启动流程 (bootstrap/proactive.py)
+
+  1. 检查 config.proactive.enabled——总开关
+  2. 创建 ProactiveStateStore（SQLite proactive.db）
+  3. 构建独立 LLM provider（禁用 thinking chain，给主动系统专用）
+  4. 注入：session 管理器、push
+  工具、memory、presence、passive_busy_fn、插件模块、MCP 配置
+  5. 注册为后台 asyncio task 随主应用启动
+
+  关键连接：passive_busy_fn 来自
+  AgentLoop.processing_state.is_busy，确保被动回复进行时不会触发主动 tick。
+
+  ---
+  三、调度循环 (proactive_v2/loop.py)
+
+  while running:
+      interval = scheduler.next_interval(last_base_score)
+      await asyncio.sleep(interval)
+      last_base_score = await tick()
+
+  自适应调度 (ProactiveScheduler):
+
+  - 能量模型（三时间尺度指数衰减）：
+  E(t) = 0.50·exp(-t/30min) + 0.35·exp(-t/240min) + 0.15·exp(-t/2880min)
+  - 短时（对话余温）+ 中时（当天语境）+ 长时（关系连续性）
+  - 能量越低 → "饥饿感"越强 → tick 频率越高
+  - base_score > 0.20 时 ~40 分钟间隔，<= 0.20 时 ~80 分钟（加抖动）
+
+  ---
+  四、单次 Tick 的五阶段管道
+
+  阶段 0：Gate — 准入控制 (modules_gate.py)
+
+  链式检查，任一关卡不通过就直接跳过 tick：
+
+  1. no_target — 没有默认聊天目标
+  2. busy — 被动循环正在处理消息
+  3. cooldown — N 小时内已推送过（delivery_cooldown_hours）
+  4. presence — AnyActionGate.should_act() 基于日配额、空闲衰减概率表
+  5. context_fallback — 低概率情况下允许无外部数据时也输出
+
+  阶段 1：Fetch — 数据采集 (proactive_turn.py + gateway.py)
+
+  DataGateway 并行预取三路数据：
+
+  alerts  ─── 高优先级告警事件
+  content ─── 内容事件（含并行 web_fetch）
+  context ─── 上下文数据
+
+  - 有数据 → 继续下游
+  - 无数据 + context_fallback 关 → 尝试 Drift（空闲活动模式），否则跳过
+
+  阶段 2：Judge — LLM 评估 (modules_judge.py)
+
+  构建 system prompt + runtime context frame，进入 LLM 工具调用循环：
+
+  可用工具：
+
+  工具: get_alert_events / get_content_events / get_context_data
+  用途: 读取预取数据
+  ────────────────────────────────────────
+  工具: recall_memory
+  用途: 正反假设记忆检索
+  ────────────────────────────────────────
+  工具: web_fetch / web_search
+  用途: 外部验证
+  ────────────────────────────────────────
+  工具: mark_interesting / mark_not_interesting
+  用途: 内容分类
+  ────────────────────────────────────────
+  工具: message_push
+  用途: 暂存草稿
+  ────────────────────────────────────────
+  工具: finish_turn(reply|skip)
+  用途: 终止工具
+
+  关键机制：反射通道 — 如果 LLM 标记了 interesting 但没调用
+  reply，强制要求回复。
+
+  阶段 3：Resolve — 决策消歧 (modules_resolve.py)
+
+  - skip → 构建 skip result，运行丢弃确认副作用
+  - reply → 计算 delivery_key（内容 SHA），检查：
+    - delivery_dedupe — 过去 N 小时相同内容已发过？
+    - message_dedupe — LLM 驱动，与最近推送消息语义比较
+  - 构建带 success/failure 副作用的 TurnResult
+
+  阶段 4：Deliver — 执行发送 (modules_deliver.py)
+
+  1. 记录 tick 日志到 SQLite
+  2. TurnOrchestrator.handle_proactive_turn() → PushToolOutboundPort 实际发送
+  3. 消息标记 proactive=True，记录到 PresenceStore
+
+  ---
+  五、Drift：空闲活动模式 (drift_turn.py)
+
+  当外部无数据且回退关闭时，AI 自主决定做什么：
+
+  Scan → Prepare → Execute → Finish
+
+  1. Scan — 扫描可用 drift skills，过滤缺 MCP 的
+  2. Prepare — 构建工具注册表和初始消息（含运行时 context frame）
+  3. Execute — LLM 工具调用，先强制选 select_skill，选完后才能用该 skill
+  的工具，调了 message_push 后就只能 finish_drift
+  4. Finish — 记录最终状态
+
+  ---
+  六、配置体系
+
+  所有参数集中在 ProactiveConfig (proactive_v2/config.py):
+
+  ┌──────────────────────────────────────────┬────────────────────────────┐
+  │                   参数                   │            作用            │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ enabled                                  │ 总开关                     │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ interval_seconds                         │ 固定间隔（无 presence 时） │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ cooldown_hours                           │ 推送后冷却                 │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ delivery_dedupe_hours                    │ 内容去重窗口               │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ context_prob                             │ 无数据时回退概率           │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ drift_enabled / drift_min_interval_hours │ Drift 控制                 │
+  ├──────────────────────────────────────────┼────────────────────────────┤
+  │ tick_s0 / tick_s1                        │ 自适应间隔区间             │
+  └──────────────────────────────────────────┴────────────────────────────┘
+
+  config.toml → agent/config_models.py → ProactiveConfig
+
+  ---
+  七、事件 & 可观测性
+
+  - ProactiveFinished 事件 — 每次 tick 完成触发，含
+  tick_id、terminal_action、step_count、token 用量
+  - tick_log / tick_step_log — SQLite 持久化
+  - 策略追踪 — memory/proactive_config_trace.jsonl + proactive_rate_trace.jsonl
+  - Dashboard IPC — IpcServer.set_proactive_loop() 暴露运行状态给前端
+
+  ---
+  八、全景数据流
+
+  [PresenceStore]                    [MCP Sources]
+       │                                   │
+       ▼                                   ▼
+  ProactiveScheduler ←── energy ──→ DataGateway
+       │                                   │
+       ▼                                   ▼
+  ProactiveLoop ──tick──→ ProactiveTurnPipeline
+                            │
+                      ┌─────┴──────┐
+                      ▼            ▼
+                 Gate 阻断     Gate 通过
+                                 │
+                                 ▼
+                             Fetch (并行拉取)
+                                 │
+                      ┌──────────┴──────────┐
+                      ▼                     ▼
+                有内容/告警            无内容 + 允许
+                      │                     │
+                      ▼                 Drift管道
+                 Judge (LLM循环)
+                      │
+                 Resolve (去重)
+                      │
+                 Deliver (发送)
+                      │
+                      ▼
+             TurnOrchestrator → PushTool → 用户
+                      │
+                      ▼
+             ProactiveFinished Event → Dashboard
+
+  这就是整个 proactive 链路——从后台循环调度、到自适应频率控制、到数据采集、LLM
+  评估决策、去重消歧，最终把消息推到用户面前。核心设计理念是不打扰但有用：能量模
+  型控制频率，门控链确保不打断用户，Judge 阶段让 LLM 自主判断什么值得说。
+
+✻ Cooked for 2m 23s

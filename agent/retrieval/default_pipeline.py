@@ -6,6 +6,8 @@ Router → RetrievalSandbox → Evaluator 质检闭环
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
