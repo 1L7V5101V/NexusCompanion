@@ -721,6 +721,7 @@ class DefaultContextStore(ContextStore):
                 else None
             ),
             retrieval_metadata=dict(retrieval_result.metadata or {}),
+            retrieval_verified=retrieval_result.verified,
             history_messages=history_messages,
         )
 

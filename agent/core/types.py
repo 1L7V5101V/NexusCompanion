@@ -70,6 +70,7 @@ class ContextBundle:
     retrieved_memory_block: str = ""
     retrieval_trace_raw: Any | None = None
     retrieval_metadata: dict[str, Any] = field(default_factory=dict)
+    retrieval_verified: bool = False
     history_messages: list[Any] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 

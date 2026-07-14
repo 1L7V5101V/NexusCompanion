@@ -59,7 +59,14 @@ class LLMServices:
 
 @dataclass
 class MemoryServices:
-    engine: MemoryEngine | None = None
+    engines: dict[str, MemoryEngine] = field(default_factory=dict)
+
+    @property
+    def engine(self) -> MemoryEngine | None:
+        """向后兼容: 返回第一个可用的 engine。"""
+        if not self.engines:
+            return None
+        return next(iter(self.engines.values()))
 
 
 @dataclass
