@@ -62,6 +62,17 @@ class MemoryConfig:
     engine: str = ""
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
+    @property
+    def engine_names(self) -> list[str]:
+        """返回 engine 名称列表，支持逗号分隔（如 "default,rachael"）。
+
+        向后兼容: 空值或单值按原逻辑解析，空值等价于 ["default"]。
+        """
+        raw = (self.engine or "").strip()
+        if not raw:
+            return ["default"]
+        return [name.strip() for name in raw.split(",") if name.strip()]
+
 
 @dataclass
 class FitbitIntegrationConfig:

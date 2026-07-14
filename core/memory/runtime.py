@@ -31,6 +31,7 @@ class MemoryRuntime:
     markdown: "MarkdownMemoryRuntime"
     engine: "MemoryEngine"
     closeables: list[object] = field(default_factory=list[object])
+    engines: dict[str, "MemoryEngine"] = field(default_factory=dict)
 
     def read_long_term(self) -> str:
         return self.markdown.store.read_long_term()

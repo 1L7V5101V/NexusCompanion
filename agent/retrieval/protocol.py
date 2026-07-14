@@ -24,6 +24,7 @@ class RetrievalRequest:
 class RetrievalResult:
     block: str
     trace: RetrievalTrace | None = None
+    verified: bool = False
     metadata: dict[str, object] = field(default_factory=dict[str, object])
 
 
