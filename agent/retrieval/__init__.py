@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from agent.retrieval.default_pipeline import (
     AgenticRAGPipeline,
     DefaultMemoryRetrievalPipeline,

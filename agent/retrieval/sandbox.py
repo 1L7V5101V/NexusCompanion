@@ -14,6 +14,8 @@ RetrievalSandbox — 隔离的检索沙箱
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

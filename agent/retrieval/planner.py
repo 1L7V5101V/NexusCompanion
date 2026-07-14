@@ -13,6 +13,8 @@ QueryPlanner — 自适应检索路由
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import json
 import logging
 import re
