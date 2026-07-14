@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
+    from core.memory.engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +383,17 @@ def build_registered_tools(
     )
 
 
+def _runtime_engines(runtime: "MemoryRuntime") -> "dict[str, MemoryEngine]":
+    """从 MemoryRuntime 提取 engines dict。"""
+    e = getattr(runtime, "engines", None) or {}
+    if e:
+        return dict(e)
+    engine = getattr(runtime, "engine", None)
+    if engine is None:
+        return {}
+    return {"default": engine}
+
+
 def _build_loop_deps(
     *,
     config: Config,
@@ -406,10 +418,11 @@ def _build_loop_deps(
             multimodal=bool(getattr(config, "multimodal", True)),
             vl_available=bool(getattr(config, "vl_model", "")),
         )
-    memory_engine = memory_runtime.engine
     light = light_provider or provider
     llm_services = LLMServices(provider=provider, light_provider=light)
-    memory_services = MemoryServices(engine=memory_engine)
+    memory_services = MemoryServices(
+        engines=_runtime_engines(memory_runtime),
+    )
     session_services = SessionServices(
         session_manager=session_manager, presence=presence
     )
@@ -419,6 +432,7 @@ def _build_loop_deps(
     )
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
+        light_provider=light,
     )
 
     return AgentLoopDeps(

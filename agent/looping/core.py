@@ -104,6 +104,24 @@ def _item_content(item: InboundItem) -> str:
     return f"[后台任务完成] {item.event.label or item.event.status or item.event.job_id}"
 
 
+def _runtime_engine_to_dict(
+    runtime: MemoryRuntime | None,
+) -> dict[str, MemoryEngine]:
+    """将 MemoryRuntime 的 engines 转为 dict。
+
+    优先取 runtime.engines（双引擎模式），
+    若无则向后兼容取 runtime.engine 以 "default" 为 key。
+    """
+    if runtime is None:
+        return {}
+    if hasattr(runtime, "engines") and runtime.engines:
+        return dict(runtime.engines)
+    engine = getattr(runtime, "engine", None)
+    if engine is None:
+        return {}
+    return {"default": engine}
+
+
 class AgentLoop:
     """
     主循环：从 MessageBus 消费 InboundMessage，
@@ -279,7 +297,7 @@ class AgentLoop:
         # 1. 先组基础 service ports。
         llm_svc = self._llm_services
         memory_svc = deps.memory_services or MemoryServices(
-            engine=getattr(deps.memory_runtime, "engine", None),
+            engines=_runtime_engine_to_dict(deps.memory_runtime),
         )
         session_svc = self._session_services
         # 2. 组执行层。
@@ -299,6 +317,7 @@ class AgentLoop:
         # 3. 最后串 passive prepare / execute / commit 主链。
         retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
             memory=memory_svc,
+            light_provider=llm_svc.light_provider if memory_svc.engines else None,
         )
         self._retrieval_pipeline = retrieval_pipeline
         passive_context_store = DefaultContextStore(
