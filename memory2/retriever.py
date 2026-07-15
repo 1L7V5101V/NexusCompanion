@@ -236,10 +236,31 @@ class Retriever:
         terms = _extract_terms(query)
         if not terms:
             return []
+        limit = max(_KEYWORD_LIMIT_FLOOR, actual_top_k * _KEYWORD_LIMIT_MULTIPLIER)
+        # FTS5 BM25 (trigram tokenizer 需要 3+ 字符词条). 只在 query
+        # 包含至少一个 3+ ASCII/CJK token 时启用, 否则纯 2 字 CJK
+        # 查询会空结果, 直接走 OR-LIKE 保底.
+        if self._store._fts_available and (
+            re.search(r"[a-zA-Z0-9_]{3,}", query)
+            or re.search(r"[\u4e00-\u9fff]{3,}", query)
+        ):
+            bm25_results = self._store.keyword_search_bm25(
+                terms,
+                memory_types=memory_types,
+                limit=limit,
+                time_start=time_start,
+                time_end=time_end,
+                scope_channel=scope_channel,
+                scope_chat_id=scope_chat_id,
+                require_scope_match=require_scope_match,
+                raw_query=query,
+            )
+            if bm25_results:
+                return bm25_results
         return self._store.keyword_search_summary(
             terms,
             memory_types=memory_types,
-            limit=max(_KEYWORD_LIMIT_FLOOR, actual_top_k * _KEYWORD_LIMIT_MULTIPLIER),
+            limit=limit,
             time_start=time_start,
             time_end=time_end,
             scope_channel=scope_channel,

@@ -45,6 +45,26 @@ _EmbeddingRow = tuple[
 _TIME_FILTER_MARGIN = timedelta(days=2)
 _TIME_FILTER_KEYWORD_CANDIDATE_LIMIT = 1000
 
+# FTS5 BM25 全文检索虚拟表 + 同步触发器
+FTS5_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+    summary,
+    content='memory_items',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
+    INSERT INTO memory_items_fts(rowid, summary) VALUES (new.rowid, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
+    INSERT INTO memory_items_fts(memory_items_fts, rowid, summary) VALUES('delete', old.rowid, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
+    INSERT INTO memory_items_fts(memory_items_fts, rowid, summary) VALUES('delete', old.rowid, old.summary);
+    INSERT INTO memory_items_fts(rowid, summary) VALUES (new.rowid, new.summary);
+END;
+"""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_items (
     id            TEXT PRIMARY KEY,
@@ -316,6 +336,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
             self._vec_init_error = "sqlite_vec 未安装"
             logger.debug("sqlite-vec 未安装，使用全表扫描")
 
+        # --- FTS5 BM25 全文检索初始化 ---
+        self._fts_available = False
+        try:
+            self._db.executescript(FTS5_SCHEMA)
+            self._migrate_existing_to_fts()
+            self._db.commit()
+            self._fts_available = True
+            logger.info("FTS5 BM25 全文检索已启用")
+        except Exception as exc:
+            logger.warning("FTS5 BM25 初始化失败（%s），降级到 OR-LIKE 关键词搜索", exc)
+
     # ------------------------------------------------------------------
     # vec_items 内部辅助
     # ------------------------------------------------------------------
@@ -344,6 +375,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         if migrated:
             self._db.commit()
             logger.info("sqlite-vec: 迁移了 %d 条历史 embedding", migrated)
+
+    def _migrate_existing_to_fts(self) -> None:
+        """启动时将存量 memory_items 的 summary 同步到 FTS5 索引。"""
+        try:
+            count = self._db.execute(
+                "SELECT COUNT(*) FROM memory_items_fts"
+            ).fetchone()[0]
+            if count > 0:
+                return  # 已迁移过，不需要重复同步（触发器会处理增量）
+        except Exception:
+            pass  # 表可能刚创建，还未有数据
+        self._db.execute(
+            "INSERT INTO memory_items_fts(rowid, summary) SELECT rowid, summary FROM memory_items"
+        )
 
     def _vec_insert(self, rowid: int, emb: list[float]) -> None:
         """向 vec_items 插入一条向量（幂等：先删再插）。维度不匹配时静默跳过。"""
@@ -1716,6 +1761,170 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 )
 
         return matched
+
+    @staticmethod
+    def _build_fts5_query(raw_query: str) -> str | None:
+        """从原始 query 构建 FTS5 trigram 兼容的 MATCH 查询。
+
+        trigram tokenizer 只索引 3+ 字符子串，所以 2 字 CJK bigram 单独无法命中。
+        策略：3+ ASCII token + CJK 3 字滑动窗口，最后补上 2 字 CJK 作为保底。
+        """
+        or_terms: list[str] = []
+
+        # 1. ASCII/latin 3+ 字符 token
+        for m in re.finditer(r"[a-zA-Z0-9_]{3,}", raw_query):
+            or_terms.append(m.group().lower())
+
+        # 2. CJK 连续序列：3 字滑动窗口 + 2 字保底
+        for m in re.finditer(r"[\u4e00-\u9fff]+", raw_query):
+            run = m.group()
+            if len(run) >= 3:
+                for i in range(len(run) - 2):
+                    or_terms.append(run[i : i + 3])
+            if len(run) >= 2:
+                # 2 字 CJK 作为保底（trigram 可能不命中，但不影响结果召回）
+                or_terms.append(run)
+
+        if not or_terms:
+            return None
+
+        return " OR ".join(f'"{t}"' for t in dict.fromkeys(or_terms))
+
+    def keyword_search_bm25(
+        self,
+        terms: list[str],
+        memory_types: list[str] | None = None,
+        limit: int = 20,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+        time_start: datetime | None = None,
+        time_end: datetime | None = None,
+        raw_query: str | None = None,
+    ) -> list[dict[str, object]]:
+        """FTS5 BM25 全文检索，返回格式与 keyword_search_summary 兼容。
+
+        BM25 分数被取反以符合"越高越匹配"的约定，存入 keyword_score。
+        FTS5 不可用时返回空列表，由调用方降级。
+
+        参数 raw_query 用于构建 trigram 兼容的 FTS5 MATCH 查询语（推荐）。
+        如果未提供，则回退用 terms 构建简单 OR 查询（2 字 CJK bigram 可能不命中）。
+        """
+        if not self._fts_available:
+            logger.debug("FTS5 不可用，BM25 检索跳过")
+            return []
+
+        # 1. 构建 FTS5 MATCH query
+        fts_query: str | None = None
+        if raw_query:
+            fts_query = self._build_fts5_query(raw_query)
+        if not fts_query:
+            # 回退：用 terms 构建简单 OR 查询（2 字 CJK bigram 对 trigram 可能不命中）
+            cleaned = [t for t in terms if t and len(t) >= 2]
+            if cleaned:
+                fts_query = " OR ".join(f'"{t}"' for t in cleaned)
+        if not fts_query:
+            return []
+
+        # 2. 过滤条件
+        type_filter = ""
+        type_params: list[str] = []
+        if memory_types:
+            placeholders = ",".join("?" for _ in memory_types)
+            type_filter = f" AND m.memory_type IN ({placeholders})"
+            type_params = list(memory_types)
+
+        scope_filter = ""
+        scope_params: list[str] = []
+        if require_scope_match:
+            scope_filter = (
+                " AND COALESCE(TRIM(json_extract(m.extra_json, '$.scope_channel')), '') = ?"
+                " AND COALESCE(TRIM(json_extract(m.extra_json, '$.scope_chat_id')), '') = ?"
+            )
+            scope_params = [(scope_channel or "").strip(), (scope_chat_id or "").strip()]
+
+        has_time_filter = time_start is not None or time_end is not None
+        time_filter = ""
+        time_params: list[object] = []
+        if has_time_filter:
+            time_clauses, time_params = _time_prefilter_clauses(
+                "m.happened_at", time_start, time_end
+            )
+            time_filter = " AND " + " AND ".join(time_clauses)
+
+        batch_size = (
+            max(limit, _TIME_FILTER_KEYWORD_CANDIDATE_LIMIT)
+            if has_time_filter
+            else limit * 4  # 多取一些候选补偿后续过滤截断
+        )
+
+        sql = f"""
+            SELECT m.id, m.memory_type, m.summary, m.source_ref, m.happened_at, m.created_at,
+                   fts_bm25.rank
+            FROM (
+                SELECT rowid, bm25(memory_items_fts) AS rank
+                FROM memory_items_fts
+                WHERE memory_items_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            ) fts_bm25
+            JOIN memory_items m ON m.rowid = fts_bm25.rowid
+            WHERE m.status = 'active' {type_filter} {scope_filter} {time_filter}
+            ORDER BY fts_bm25.rank ASC
+            LIMIT ?
+        """
+
+        try:
+            rows = cast(
+                list[tuple[object, ...]],
+                self._db.execute(
+                    sql,
+                    tuple(
+                        [fts_query, batch_size]
+                        + type_params
+                        + scope_params
+                        + time_params
+                        + [limit]
+                    ),
+                ).fetchall(),
+            )
+        except Exception as e:
+            logger.warning("FTS5 BM25 检索失败: %s", e)
+            return []
+
+        results: list[dict[str, object]] = []
+        for row in rows:
+            (
+                row_id,
+                mtype,
+                summary,
+                source_ref,
+                happened_at,
+                created_at,
+                rank,
+            ) = row
+            # bm25() 返回负值（越小越匹配），取反使分数越高越匹配
+            bm25_score = _coerce_float(rank)
+            keyword_score = -bm25_score if bm25_score < 0 else max(0.0, 1.0 - bm25_score * 0.1)
+
+            # 时间过滤（happened_at 字段可能比 time_filter 用的更精确）
+            if has_time_filter and not _is_memory_time_in_range(
+                happened_at, time_start, time_end
+            ):
+                continue
+
+            results.append({
+                "id": str(row_id),
+                "memory_type": str(mtype),
+                "summary": str(summary),
+                "source_ref": str(source_ref) if source_ref else "",
+                "happened_at": str(happened_at or created_at or ""),
+                "keyword_score": round(keyword_score, 4),
+            })
+            if len(results) >= limit:
+                break
+
+        return results
 
     def keyword_search_summary(
         self,
