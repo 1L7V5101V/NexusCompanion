@@ -103,6 +103,7 @@ class _StaticEmbedder:
 class _KeywordOnlyStore:
     def __init__(self) -> None:
         self.vector_search_called = False
+        self._fts_available = False
 
     def vector_search(self, *_args: object, **_kwargs: object) -> list[_MemoryHit]:
         self.vector_search_called = True
@@ -136,6 +137,7 @@ class _TimelineStore:
         self.keyword_search_called = False
         self.time_start: datetime | None = None
         self.time_end: datetime | None = None
+        self._fts_available = False
 
     def vector_search(self, *_args: object, **_kwargs: object) -> list[_MemoryHit]:
         self.vector_search_called = True
@@ -178,6 +180,7 @@ class _TimedSemanticStore:
         self.vector_batch_kwargs: list[dict[str, object]] = []
         self.vector_batch_vec_count = 0
         self.keyword_kwargs: list[dict[str, object]] = []
+        self._fts_available = False
 
     def vector_search(
         self, *_args: object, **kwargs: object
@@ -226,6 +229,7 @@ class _FusionStore:
         self.keyword_hits = keyword_hits
         self.vector_kwargs: list[dict[str, object]] = []
         self.keyword_kwargs: list[dict[str, object]] = []
+        self._fts_available = False  # 模拟 FTS5 不可用, 确保走 OR-LIKE 回退
 
     def vector_search_batch(
         self,
