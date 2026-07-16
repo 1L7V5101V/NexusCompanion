@@ -15,6 +15,7 @@ NexusCompanion 是一个**面向个人的 AI Agent 运行时框架**。它并非
 - **Python >= 3.12**，依赖 FastAPI (仪表盘)、APScheduler (定时)、SQLAlchemy (存储)
 - **多平台**：Telegram / QQ / CLI / TUI / Socket (IPC)
 - **三链路闭环**：被动回复 → 主动推送 → 空闲探索 (Drift)
+- **Agentic RAG**：Router → Sandbox → Evaluator 三步检索管线，多源（Graph/Vector/Web）混合 + LLM 质检闭环
 - **双模记忆**：Markdown 记忆文件（人类可读写）+ 向量嵌入（机器检索）
 
 ---
@@ -110,6 +111,11 @@ config.toml [agent.persona] self_model
 │    五层 Markdown 记忆 + 向量嵌入 + 优化器            │
 │    MEMORY.md / HISTORY.md / PENDING.md / SELF.md 等   │
 ├──────────────────────────────────────────────────────┤
+│                  Retrieval 层                         │
+│    Agentic RAG: Router → Sandbox → Evaluator          │
+│    Graph 检索 / Vector 检索 / Web 检索 / RRF 融合     │
+│    隐式意图改写 / CRAG 式质检 / Query Rewrite        │
+├──────────────────────────────────────────────────────┤
 │                  Infrastructure 层                    │
 │    LLM Provider 抽象 / 消息总线 / Session 管理        │
 │    事件总线 / IPC 服务器 / 持久化存储                 │
@@ -160,6 +166,62 @@ NexusCompanion 不把记忆当单纯的"搜索问题"来解，而是一个认知
 | `RECENT_CONTEXT.md` | 近期上下文快照 | 每次 Turn 后 |
 | `journal/YYYY-MM-DD.md` | 按天追加的事件时间线 | 每次 Turn 后 |
 
+### Agentic RAG 检索管线
+
+检索不是简单的"查向量库"，而是三层编排的 Agentic RAG 管线：
+
+```
+用户 Query
+    │
+    ▼
+┌─────────────────────┐
+│ 1. Router           │  QueryPlanner：规则打分 + LLM 兜底
+│   graph / vector    │  选择检索源（对话上下文/知识库/互联网）
+│   / web             │
+└─────────┬───────────┘
+          │  sources=["graph","vector"]
+          ▼
+┌─────────────────────┐
+│ 2. RetrievalSandbox │  并行调度各检索源
+│   Graph  Vector Web │  单源直出，多源 RRF 融合
+│   ──── RRF ────►   │  + 新鲜度加权 + 去重
+└─────────┬───────────┘
+          │  block text
+          ▼
+┌─────────────────────┐
+│ 3. Evaluator        │  轻量 LLM 质检 (CRAG 范式)
+│   relevance ≥ 0.5   │  不通过 → query rewrite → 重试
+│   completeness ≥ 0.5│  最多 3 轮，仍不通过 → meta block
+└─────────┬───────────┘
+          │  verified
+          ▼
+   注入 Prompt RetrievedMem 区块
+```
+
+- **Router（QueryPlanner）**：两层决策。先通过正则规则对 graph/vector/web 三个源分别打分（问候语→graph、实时信息→web、知识文档→vector）；规则模糊时（多源接近或全低分），用轻量 LLM 做分类兜底。
+- **Sandbox（RetrievalSandbox）**：隔离的检索沙箱，多源并行执行，中间产物不出沙箱。单源直出，多源通过 `FusionEngine` 做 RRF 融合 + 新鲜度加权（24h 内 1.5x，7 天内 1.2x）+ 内容去重。
+- **Evaluator**：遵循 CRAG/Self-RAG 设计范式，轻量 LLM 对检索结果打 `relevance` 和 `completeness` 两个分数，纯代码判定是否通过。不通过时自动 query rewrite 定向重试，最多 3 轮。
+
+### 存储层混合检索
+
+底层 `memory2/retriever.py` 实现向量 + 关键词双通道 RRF：
+
+```
+用户 query
+   │
+   ├── 向量 lane（多 query 并行 embedding → vector_search_batch）
+   │    支持 hotness 评分（sigmoid(log1p) 强化）+ 半衰期衰减（14天）
+   │
+   ├── 关键词 lane（CJK bigram 分词 + 停用词过滤）
+   │
+   └── RRF 融合（K=60, keyword 权重 0.5）
+         → top_k 输出
+```
+
+另有两层 Query Rewriting：
+- **隐式意图改写**（`memory2/query_rewriter.py`）：门控决策判断是否需要 episodc/procedure 改写，解决"那个工具"这类模糊指代
+- **反馈改写**（Evaluator）：根据 missing_info 定向重写 query
+
 ### 四大进化机制
 
 强化（Reinforcement）：内容 hash 去重 + 语义去重（cosine ≥ 0.92），重复命中自动 +1，通过 sigmoid(log1p) 变换为 hotness 分，与语义分线性融合。
@@ -170,8 +232,8 @@ NexusCompanion 不把记忆当单纯的"搜索问题"来解，而是一个认知
 
 溯源（Provenance）：`[item_id]` 注入 → LLM 引用 `§cited:[id]§` → 提取 cited_memory_ids → 用于推送去重和审计。
 
-两种引擎可选（配置 `[memory] engine = "default" | "rachael"`）：
-- **default_memory**：基础的 RAG（向量 + 关键词 + RRF 融合） 记忆引擎
+两种记忆引擎可选（配置 `[memory] engine = "default" | "rachael"`）：
+- **default_memory**：基础的 RAG（向量 + 关键词 + RRF 融合）记忆引擎
 - **rachael**：高级记忆引擎，支持向量嵌入、图谱关系和快速检索
 
 ---
@@ -234,6 +296,7 @@ docker compose up -d --build
 ```
 main.py              → 入口 (serve/cli/dashboard/setup/init/plugin-install)
 agent/               → 核心: Config, AgentLoop, 上下文组装, 工具执行
+agent/retrieval/     → Agentic RAG 管线: Router / Sandbox / Evaluator
 bootstrap/           → 装配: 频道、工具、Proactive、仪表盘
 infra/channels/      → Telegram / QQ / CLI IPC / 飞书
 bus/                 → MessageBus + EventBus
