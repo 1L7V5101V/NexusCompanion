@@ -1,6 +1,14 @@
 from agent.plugins.base import Plugin
 from agent.plugins.config import PluginConfig
 from agent.plugins.context import PluginContext, PluginKVStore
+from agent.plugins.scope import CleanupFailure, PluginScope
+from agent.plugins.generation import (
+    GateCheckResult,
+    GateResult,
+    PluginGeneration,
+    PluginReadinessContext,
+    PluginSemanticCheck,
+)
 from agent.plugins.decorators import (
     on_before_turn,
     on_before_reasoning,
@@ -20,16 +28,33 @@ from agent.plugins.jobs import (
     PluginJobContext,
     PluginJobSpec,
 )
+from agent.plugins.specs import (
+    ManagedServiceSpec,
+    McpServerSpec,
+    ProactiveSourceSpec,
+    RegisteredProactiveSource,
+)
 
 __all__ = [
     "Plugin",
     "PluginConfig",
     "PluginContext",
     "PluginKVStore",
+    "CleanupFailure",
+    "PluginScope",
+    "GateCheckResult",
+    "GateResult",
+    "PluginGeneration",
+    "PluginReadinessContext",
+    "PluginSemanticCheck",
     "EventTrigger",
     "IntervalTrigger",
     "PluginJobContext",
     "PluginJobSpec",
+    "McpServerSpec",
+    "ManagedServiceSpec",
+    "ProactiveSourceSpec",
+    "RegisteredProactiveSource",
     "on_before_turn",
     "on_before_reasoning",
     "on_before_step",
