@@ -191,7 +191,7 @@ if __name__ == "__main__":
         try:
             signal.signal(sig, _signal_handler)
         except (ValueError, OSError):
-            pass
+            logger.debug("无法注册信号处理器 %s: %s", sig.name, exc_info=True)
 
     try:
         asyncio.run(main())
