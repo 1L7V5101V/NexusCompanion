@@ -8,6 +8,7 @@ Rachael RAR（Ripple Activation & Recall）引擎的纯算法层。
 from __future__ import annotations
 
 import json
+import logging
 import math
 import struct
 import sqlite3
@@ -17,6 +18,8 @@ from datetime import datetime
 from typing import cast
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────────────────
 
@@ -507,7 +510,7 @@ def _best_device() -> str:
         if torch.backends.mps.is_available():
             return "mps"
     except Exception:
-        pass
+        logger.debug("torch 不可用或检测失败，回退到 cpu")
     return "cpu"
 
 

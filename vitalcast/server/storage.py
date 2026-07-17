@@ -176,7 +176,7 @@ class AlertsStore:
                         if num > max_id:
                             max_id = num
                     except ValueError:
-                        pass
+                        logger.debug("无法解析 alert ID: %r", eid)
             self._counter = max_id
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to load alerts from %s: %s", self._path, exc)

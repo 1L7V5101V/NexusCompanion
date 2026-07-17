@@ -211,6 +211,7 @@ class RetrievalSandbox:
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
+            logger.warning("Web 检索结果 JSON 解析失败")
             return None
 
         # 支持两种格式: 直接结果列表 或 嵌套在 result.text 里
