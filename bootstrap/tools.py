@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
-
 import logging
+import os
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
+    from agent.restart import RestartCoordinator
     from core.memory.engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,7 @@ from agent.looping.ports import (
     SessionServices,
 )
 from agent.mcp.registry import McpServerRegistry
+from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
@@ -57,6 +61,7 @@ from bootstrap.wiring import (
 from agent.lifecycle.facade import TurnLifecycle
 from agent.plugins.jobs import ProviderPluginLlmService
 from bootstrap.providers import build_providers, build_vl_provider
+from bootstrap.cleanup import run_cleanup_steps
 from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
@@ -65,6 +70,10 @@ from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
 from session.manager import Session, SessionManager
+
+
+async def _noop_async() -> None:
+    return None
 
 
 @dataclass
@@ -81,6 +90,8 @@ class CoreRuntime:
     provider: LLMProvider
     light_provider: LLMProvider | None
     mcp_registry: McpServerRegistry
+    workspace_mcp_watcher: WorkspaceMcpWatcher
+    workspace_mcp_watcher_task: asyncio.Task[None] | None
     memory_runtime: MemoryRuntime
     presence: PresenceStore
     peer_process_manager: PeerProcessManager | None
@@ -90,8 +101,12 @@ class CoreRuntime:
     workspace: Path | None = None
 
     async def start(self) -> None:
+        """启动外部连接、peer 资源和插件扩展。"""
+
+        # 1. MCP registry 后台连接
         self.mcp_registry.start_connect_all_background()
 
+        # 2. 仅在 peer 配置真实启用时发现工具并启动轮询。
         if (
             self.peer_poller is not None
             and self.peer_process_manager is not None
@@ -110,8 +125,14 @@ class CoreRuntime:
                     risk="external-side-effect",
                 )
             self.peer_poller.start()
+
+        # 3. workspace MCP 必须先原子发布，插件同名声明随后 fail-loud
+        await self.workspace_mcp_watcher.reconcile()
+
+        # 4. 加载插件后同步 skill，再绑定工具 hook。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
+            self.plugin_manager.assert_no_workspace_mcp_plugin_conflicts()
             if self.workspace is not None:
                 from agent.plugins.skill_links import PluginSkillLinker
 
@@ -165,7 +186,15 @@ class CoreRuntime:
                 if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
                     spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
+        # 5. 首次启动全部成功后才启动容错热重载 watcher
+        self.workspace_mcp_watcher_task = asyncio.create_task(
+            self.workspace_mcp_watcher.run(), name="workspace_mcp_watcher"
+        )
+
     async def inspect_modules(self) -> str:
+        """按实际运行时依赖生成各阶段模块图。"""
+
+        # 1. 先加载插件，确保展示的是当前快照。
         if self.plugin_manager is not None:
             await self.plugin_manager.load_all()
 
@@ -182,6 +211,7 @@ class CoreRuntime:
         from agent.lifecycle.phases.before_turn import default_before_turn_modules
         from agent.lifecycle.phases.prompt_render import default_prompt_render_modules
 
+        # 2. 收集各阶段插件贡献。
         manager = self.plugin_manager
         before_turn_modules = manager.before_turn_modules if manager is not None else []
         before_reasoning_modules = (
@@ -195,6 +225,7 @@ class CoreRuntime:
         )
         after_turn_modules = manager.after_turn_modules if manager is not None else []
 
+        # 3. 从 AgentLoop 的构造不变量取得阶段依赖。
         agent_core = cast(Any, getattr(self.loop, "_agent_core"))
         pipeline = agent_core.pipeline
         reasoner = getattr(self.loop, "_reasoner", None)
@@ -262,6 +293,7 @@ class CoreRuntime:
             ),
         ]
 
+        # 4. 统一渲染执行顺序和依赖树。
         parts: list[str] = []
         for phase_name, modules in phases:
             parts.append("=" * 60)
@@ -271,14 +303,59 @@ class CoreRuntime:
         return "\n".join(parts)
 
     async def stop(self) -> None:
-        if self.plugin_manager is not None:
-            await self.plugin_manager.terminate_all()
-        await self.mcp_registry.shutdown()
-        await self.event_bus.aclose()
-        if self.peer_poller is not None:
-            await self.peer_poller.stop()
-        if self.peer_process_manager is not None:
-            await self.peer_process_manager.shutdown_all()
+        """按所有权逆序关闭核心运行时资源。"""
+
+        # 1. 将动态 spawn 工具和同步 session close 适配为异步清理步骤。
+        async def _stop_spawn() -> None:
+            spawn_tool = self.tools.get_tool("spawn")
+            shutdown = getattr(spawn_tool, "shutdown", None)
+            if callable(shutdown):
+                result = shutdown()
+                if inspect.isawaitable(result):
+                    await cast(Awaitable[object], result)
+
+        async def _close_session_manager() -> None:
+            self.session_manager.close()
+
+        async def _stop_workspace_mcp_watcher() -> None:
+            self.workspace_mcp_watcher.stop()
+            task = self.workspace_mcp_watcher_task
+            if task is not None:
+                _ = task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if self.plugin_manager is not None:
+                await self.plugin_manager.discard_workspace_mcp_candidate()
+
+        async def _shutdown_mcp_registry() -> None:
+            await self.mcp_registry.shutdown()
+
+        # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
+        await run_cleanup_steps(
+            ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
+            ("mcp_registry.shutdown", _shutdown_mcp_registry),
+            ("spawn.shutdown", _stop_spawn),
+            ("event_bus.aclose", self.event_bus.aclose),
+            (
+                "plugin_manager.terminate_all",
+                self.plugin_manager.terminate_all
+                if self.plugin_manager is not None
+                else _noop_async,
+            ),
+            (
+                "peer_poller.stop",
+                self.peer_poller.stop if self.peer_poller is not None else _noop_async,
+            ),
+            (
+                "peer_process_manager.shutdown_all",
+                self.peer_process_manager.shutdown_all
+                if self.peer_process_manager is not None
+                else _noop_async,
+            ),
+            ("session_manager.close", _close_session_manager),
+        )
 
 
 def build_registered_tools(
@@ -294,6 +371,7 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
+    restart_coordinator: "RestartCoordinator | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -303,6 +381,8 @@ def build_registered_tools(
     PeerProcessManager | None,
     PeerAgentPoller | None,
 ]:
+    """按配置顺序构造并注册核心工具资源。"""
+
     from session.store import SessionStore
 
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
@@ -372,6 +452,26 @@ def build_registered_tools(
             tool_registry=tools,
         )
 
+    # 3. 自重启只在 supervisor 与 tool_search 两个边界都成立时注册。
+    if (
+        restart_coordinator is not None
+        and restart_coordinator.supervised
+        and config.tool_search_enabled
+    ):
+        try:
+            from agent.tools.agent_restart import AgentRestartTool
+
+            tools.register(
+                AgentRestartTool(restart_coordinator),
+                risk="external-side-effect",
+                always_on=False,
+                preloadable=False,
+                requires_turn_search=True,
+                search_hint="重启 nexus agent 服务 重新加载核心配置",
+            )
+        except ImportError:
+            logger.debug("AgentRestartTool 不可用，跳过注册")
+
     return (
         tools,
         push_tool,
@@ -408,6 +508,9 @@ def _build_loop_deps(
     event_bus: EventBus,
     memory_runtime: MemoryRuntime,
 ) -> AgentLoopDeps:
+    """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
+
+    # 1. 按 typed wiring 解析 context，并注入配置声明的媒体能力。
     wiring = getattr(config, "wiring", WiringConfig())
     context = resolve_context_factory(wiring.context)(
         workspace,
@@ -418,6 +521,8 @@ def _build_loop_deps(
             multimodal=bool(getattr(config, "multimodal", True)),
             vl_available=bool(getattr(config, "vl_model", "")),
         )
+
+    # 2. 绑定 memory/session service 与 retrieval pipeline。
     light = light_provider or provider
     llm_services = LLMServices(provider=provider, light_provider=light)
     memory_services = MemoryServices(
@@ -474,13 +579,16 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
+    restart_coordinator: "RestartCoordinator | None" = None,
 ) -> CoreRuntime:
+    """构造核心运行时及其插件快照依赖。"""
+
+    # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
     bus = MessageBus()
     event_bus = EventBus()
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)
-    # agent_provider is used for the AgentLoop (QA / tool calling).
-    # provider (llm.main) is used for consolidation event extraction.
+    # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
     session_manager = SessionManager(workspace)
@@ -497,6 +605,7 @@ def build_core_runtime(
             session_store=session_manager._store,
             event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
+            restart_coordinator=restart_coordinator,
         )
     )
     presence = PresenceStore(session_manager._store)
@@ -538,6 +647,8 @@ def build_core_runtime(
     )
 
     from agent.plugins.manager import PluginManager as _PluginManager
+
+    # 3. 创建插件 manager，并把 snapshot store 绑定到 loop。
     plugin_manager = _PluginManager(
         plugin_dirs=_resolve_plugin_dirs(workspace),
         event_bus=event_bus,
@@ -553,6 +664,51 @@ def build_core_runtime(
         plugin_configs=config.plugins,
         installed_cache_root=_resolve_installed_plugin_cache_root(),
     )
+    # bind_runtime_snapshot_store may not exist on AgentLoop in Nexus;
+    # the snapshot store is already bound to EventBus by PluginManager.
+    _bind_snapshot_store = getattr(loop, "bind_runtime_snapshot_store", None)
+    if callable(_bind_snapshot_store):
+        _bind_snapshot_store(plugin_manager.snapshot_store)
+
+    workspace_mcp_watcher = WorkspaceMcpWatcher(
+        plugin_manager,
+        workspace / "mcp" / "servers",
+        mcp_root=workspace / "mcp",
+    )
+    if config.tool_search_enabled:
+        try:
+            from agent.mcp.admin import WorkspaceMcpAdmin
+            from agent.tools.workspace_mcp import (
+                WorkspaceMcpApplyTool,
+                WorkspaceMcpRemoveTool,
+                WorkspaceMcpStatusTool,
+            )
+
+            workspace_mcp_admin = WorkspaceMcpAdmin(workspace, workspace_mcp_watcher)
+            tools.register(
+                WorkspaceMcpApplyTool(workspace_mcp_admin),
+                risk="external-side-effect",
+                always_on=False,
+                preloadable=False,
+                requires_turn_search=True,
+                search_hint="安装 注册 更新 添加 MCP server 常驻服务 热重载",
+            )
+            tools.register(
+                WorkspaceMcpRemoveTool(workspace_mcp_admin),
+                risk="external-side-effect",
+                always_on=False,
+                preloadable=False,
+                requires_turn_search=True,
+                search_hint="删除 卸载 移除 MCP server 停止常驻服务",
+            )
+            tools.register(
+                WorkspaceMcpStatusTool(workspace_mcp_admin),
+                risk="read-only",
+                always_on=False,
+                search_hint="查看 列出 诊断 MCP server generation 热加载错误",
+            )
+        except ImportError:
+            logger.debug("WorkspaceMcpAdmin tools 不可用，跳过注册")
 
     return CoreRuntime(
         config=config,
@@ -569,6 +725,8 @@ def build_core_runtime(
         light_provider=light_provider,
         agent_provider=agent_provider,
         mcp_registry=mcp_registry,
+        workspace_mcp_watcher=workspace_mcp_watcher,
+        workspace_mcp_watcher_task=None,
         memory_runtime=memory_runtime,
         presence=presence,
         peer_process_manager=peer_pm,
@@ -579,7 +737,14 @@ def build_core_runtime(
 
 def _resolve_plugin_dirs(workspace: Path) -> list[Path]:
     project_root = Path(__file__).resolve().parent.parent
-    return [project_root / "plugins"]
+    roots = [project_root / "plugins"]
+    extra = os.environ.get("NEXUS_EXTRA_PLUGIN_DIRS", os.environ.get("AKASHIC_EXTRA_PLUGIN_DIRS", ""))
+    roots.extend(
+        Path(item).expanduser()
+        for item in extra.split(os.pathsep)
+        if item.strip()
+    )
+    return roots
 
 
 def _resolve_installed_plugin_cache_root() -> Path:
