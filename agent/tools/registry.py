@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from collections.abc import Iterable, Set as AbstractSet
 from copy import deepcopy
@@ -165,6 +167,40 @@ class ToolRegistry:
 
     def get_tool(self, name: str) -> "Tool | None":
         return self._tools.get(name)
+
+    def fork(
+        self,
+        *,
+        excluded_source_types: set[str] | None = None,
+        excluded_sources: set[tuple[str, str]] | None = None,
+    ) -> ToolRegistry:
+        """创建当前 registry 的副本，排除指定来源的工具。
+
+        Args:
+            excluded_source_types: 排除整个来源类型（如 {"plugin"}）。
+            excluded_sources: 排除特定 (source_type, source_name) 组合。
+        """
+        fork_registry = ToolRegistry(backend=self._backend)
+        for name, tool in self._tools.items():
+            meta = self._metadata.get(name)
+            doc = self._documents.get(name)
+            if doc is None:
+                continue
+            # 排除整个来源类型
+            if excluded_source_types and doc.source_type in excluded_source_types:
+                continue
+            # 排除特定来源
+            if excluded_sources and (doc.source_type, doc.source_name) in excluded_sources:
+                continue
+            fork_registry.register(
+                tool,
+                risk=meta.risk if meta else "read-only",
+                always_on=meta.always_on if meta else False,
+                search_hint=meta.search_hint if meta else None,
+                source_type=doc.source_type,
+                source_name=doc.source_name,
+            )
+        return fork_registry
 
     def get_registered_names(self) -> set[str]:
         """返回当前已注册工具名集合。"""

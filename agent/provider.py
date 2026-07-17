@@ -54,6 +54,10 @@ class ContextLengthError(Exception):
     """LLM provider 因上下文超长拒绝请求"""
 
 
+class LLMNetworkTimeoutError(Exception):
+    """LLM provider 网络超时"""
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -431,6 +435,8 @@ class LLMProvider:
                 retryable = self._is_retryable(e)
                 exhausted = attempt >= self._max_retries
                 if (not retryable) or exhausted:
+                    if isinstance(e, TimeoutError):
+                        raise LLMNetworkTimeoutError(str(e)) from e
                     raise
                 wait_s = min(8.0, 1.0 * (2**attempt))
                 logger.warning(

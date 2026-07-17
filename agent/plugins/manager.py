@@ -151,6 +151,7 @@ class PluginManager:
         session_manager: Any = None,
         memory_engine: Any = None,
         llm: PluginLlmService | None = None,
+        plugin_configs: dict[str, Any] | None = None,
         installed_cache_root: Path | None = None,
     ) -> None:
         self._dirs = plugin_dirs
@@ -161,6 +162,7 @@ class PluginManager:
         self._memory_engine = memory_engine
         self._llm = llm
         self._installed_cache_root = installed_cache_root
+        self._plugin_configs = plugin_configs or {}
         self._channel_switcher: Callable[
             [str, tuple[Channel, ...], tuple[Channel, ...]],
             Awaitable[None],

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from infra.channels.web_chat_channel import WebChatChannel
+if TYPE_CHECKING:
+    from infra.channels.web_chat_channel import WebChatChannel
 
 
 def create_chat_app(
@@ -98,7 +99,7 @@ def create_chat_app(
 def build_chat_server(
     *,
     workspace: Path,
-    channel: WebChatChannel,
+    channel: "WebChatChannel",
     host: str = "127.0.0.1",
     port: int = 6322,
 ) -> uvicorn.Server:
@@ -123,7 +124,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _can_read_media(channel: WebChatChannel, path: Path) -> bool:
+def _can_read_media(channel: "WebChatChannel", path: Path) -> bool:
     if any(_is_relative_to(path, root.resolve()) for root in channel.upload_roots()):
         return True
     if channel.has_media(path):
