@@ -206,12 +206,16 @@ class MemoryOptimizer:
         provider: LLMProvider,
         model: str,
         max_tokens: int = 16384,
+        default_self_md: str = "",
+        identity_name: str = "",
     ) -> None:
         self._memory = memory
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
         self._lock = asyncio.Lock()
+        self._default_self_md = default_self_md
+        self._identity_name = identity_name
 
     # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
     _STEP_DELAY_SECONDS: int = 15

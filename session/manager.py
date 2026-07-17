@@ -304,6 +304,15 @@ class SessionManager:
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
 
+    @property
+    def control_store(self) -> SessionStore:
+        """控制面使用的 SessionStore 实例。"""
+        return self._store
+
+    def close(self) -> None:
+        """关闭 SessionStore 连接。"""
+        self._store.close()
+
     def _lock(self, key: str) -> asyncio.Lock:
         if key not in self._write_locks:
             self._write_locks[key] = asyncio.Lock()

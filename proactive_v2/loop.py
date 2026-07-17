@@ -81,6 +81,7 @@ class ProactiveLoop:
         proactive_runtime_factories: list[object] | None = None,
         proactive_sources: list[RegisteredProactiveSource] | None = None,
         runtime_snapshot_store: RuntimeSnapshotStore | None = None,
+        plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
         state_store_owned: bool = False,
     ) -> None:
         self._sessions = session_manager
@@ -105,6 +106,7 @@ class ProactiveLoop:
         self._plugin_proactive_runtime_factories = proactive_runtime_factories or []
         self._plugin_proactive_sources = proactive_sources or []
         self._runtime_snapshot_store = runtime_snapshot_store
+        self._plugin_mcp_servers = plugin_mcp_servers or {}
         self._active_snapshot_id: str | None = None
         self._kernel_started = False
         self._active_kernel_lease: RuntimeSnapshotLease | None = None
@@ -210,7 +212,6 @@ class ProactiveLoop:
         kernel = ProactiveKernel(
             modules,
             initial_slots_fn=self._build_initial_slots,
-            lifecycle=self._select_lifecycle(),
         )
         logger.info("[proactive] phase graph:\n%s", kernel.inspect())
         return kernel

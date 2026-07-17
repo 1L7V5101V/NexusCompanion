@@ -41,11 +41,20 @@ class QQBotGroupConfig:
 
 
 @dataclass
+class ChatChannelConfig:
+    enabled: bool = False
+    channel_name: str = "chat"
+    host: str = "127.0.0.1"
+    port: int = 6322
+
+
+@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     socket: str = "/tmp/nexus.sock"
     cli_session_key: str = ""
+    chat: ChatChannelConfig = field(default_factory=ChatChannelConfig)
 
 
 @dataclass
@@ -113,6 +122,16 @@ class WiringConfig:
 
 
 @dataclass
+class AppServerConfig:
+    enabled: bool = False
+    listen: str = "127.0.0.1:2236"
+    max_connections: int = 32
+    ingress_queue_size: int = 128
+    max_message_bytes: int = 2 * 1024 * 1024
+    outbound_queue_size: int = 512
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -146,6 +165,7 @@ class Config:
     wiring: WiringConfig = field(default_factory=WiringConfig)
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
+    app_server: AppServerConfig = field(default_factory=AppServerConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -155,7 +175,9 @@ class Config:
 
 
 __all__ = [
+    "AppServerConfig",
     "ChannelsConfig",
+    "ChatChannelConfig",
     "Config",
     "FitbitIntegrationConfig",
     "MemoryConfig",

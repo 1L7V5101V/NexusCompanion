@@ -11,6 +11,8 @@ from agent.provider import LLMProvider
 from agent.tool_hooks import ToolHook
 from agent.tools.message_push import MessagePushTool
 from bus.event_bus import EventBus
+from plugins.default_proactive.plugin import DefaultModuleFactory, DefaultRuntimeFactory
+from proactive_v2.lifecycle import ProactiveLifecycleSpec
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerLoop
 from proactive_v2.presence import PresenceStore
@@ -54,6 +56,9 @@ def build_proactive_runtime(
     event_bus: EventBus | None = None,
     tool_hooks: list[ToolHook] | None = None,
     proactive_modules: list[object] | None = None,
+    proactive_lifecycles: list[object] | None = None,
+    proactive_module_factories: list[object] | None = None,
+    proactive_runtime_factories: list[object] | None = None,
     plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
@@ -66,7 +71,27 @@ def build_proactive_runtime(
     proactive_cfg = config.proactive
     proactive_provider = _build_proactive_provider(config, provider)
 
-    # 3. 构建 ProactiveLoop。
+    # 3. 插件系统可能未加载内置插件，确保必需的生命周期/provider 存在。
+    if not proactive_lifecycles:
+        proactive_lifecycles = [
+            ProactiveLifecycleSpec(
+                id="default",
+                initial_slots=(
+                    "proactive:cfg",
+                    "proactive:session_key",
+                    "proactive:started_at",
+                    "proactive:last_user_at",
+                    "proactive:base_judge_send_threshold",
+                ),
+                terminal_slots=("run:next_wakeup",),
+            )
+        ]
+    if not proactive_module_factories:
+        proactive_module_factories = [DefaultModuleFactory()]
+    if not proactive_runtime_factories:
+        proactive_runtime_factories = [DefaultRuntimeFactory()]
+
+    # 4. 构建 ProactiveLoop。
     #    这里把主动链路需要的外部依赖一次性注入进去：
     #    session / provider / push_tool / memory / presence / passive_busy_fn。
     proactive_loop = ProactiveLoop(
@@ -86,6 +111,9 @@ def build_proactive_runtime(
         event_bus=event_bus,
         tool_hooks=tool_hooks,
         proactive_modules=proactive_modules,
+        proactive_lifecycles=proactive_lifecycles,
+        proactive_module_factories=proactive_module_factories,
+        proactive_runtime_factories=proactive_runtime_factories,
         plugin_mcp_servers=plugin_mcp_servers,
     )
 

@@ -4,7 +4,7 @@ import logging
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from proactive_v2.frame import new_proactive_frame
+from proactive_v2.frame import ProactiveTickResult, new_proactive_frame
 from proactive_v2.phases import ProactivePhaseRunner
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ class ProactiveKernel:
     ) -> None:
         self._runner = ProactivePhaseRunner(modules)
         self._initial_slots_fn = initial_slots_fn
+        self.last_result: ProactiveTickResult | None = None
 
     async def start(self) -> None:
         for module in self._all_modules():
@@ -39,6 +40,7 @@ class ProactiveKernel:
             else None
         )
         frame = await self._runner.run(new_proactive_frame(session_key, initial_slots))
+        self.last_result = frame.output
         if frame.output is None:
             return None
         return frame.output.base_score

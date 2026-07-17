@@ -459,6 +459,21 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
+                proactive_lifecycles=(
+                    list(plugin_manager.proactive_lifecycles)
+                    if plugin_manager
+                    else None
+                ),
+                proactive_module_factories=(
+                    list(plugin_manager.proactive_module_factories)
+                    if plugin_manager
+                    else None
+                ),
+                proactive_runtime_factories=(
+                    list(plugin_manager.proactive_runtime_factories)
+                    if plugin_manager
+                    else None
+                ),
                 plugin_mcp_servers=(
                     _collect_plugin_mcp_servers(plugin_manager)
                     if plugin_manager
