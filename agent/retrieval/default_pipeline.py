@@ -129,6 +129,15 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
             if not block:
                 break
 
+            # 日志：本轮检索内容（截取前 300 字，方便判断质检结果）
+            _block_preview = block[:300].replace("\n", " ")
+            logger.info(
+                "检索内容 (第%d轮, %s): %s",
+                retry + 1,
+                plan.sources,
+                _block_preview + ("..." if len(block) > 300 else ""),
+            )
+
             # Evaluator 质检（传入 Router 决策，供按场景调整严格度）
             if self._light_provider is not None:
                 eval_result = await self._evaluator.evaluate(
