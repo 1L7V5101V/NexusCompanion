@@ -161,6 +161,8 @@ class Config:
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     dev_mode: bool = False
+    router_mode: str = "rule"
+    """Router 模式: "rule" = 规则打分 + LLM 兜底, "llm" = LLM 直接路由"""
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)

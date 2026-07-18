@@ -173,6 +173,9 @@ def load_config(path: str | Path = "config.toml") -> Config:
         plugins=plugins,
         persona=persona,
         app_server=app_server,
+        router_mode=str(
+            data.get("router_mode", "rule")
+        ),
     )
 
 

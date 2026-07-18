@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from agent.core.types import RetrievalTrace
 from agent.looping.ports import MemoryServices
@@ -49,12 +49,18 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
         memory: MemoryServices,
         light_provider: LLMProvider | None = None,
         web_search_fn: Callable[[str], Awaitable[str]] | None = None,
+        light_model: str = "",
+        router_mode: Literal["rule", "llm"] = "rule",
     ) -> None:
         self._memory = memory
         self._light_provider = light_provider
 
-        self._planner = QueryPlanner(light_provider=light_provider)
-        self._evaluator = Evaluator(light_provider=light_provider)
+        self._planner = QueryPlanner(
+            light_provider=light_provider,
+            light_model=light_model,
+            router_mode=router_mode,
+        )
+        self._evaluator = Evaluator(light_provider=light_provider, light_model=light_model)
         self._sandbox = RetrievalSandbox(
             rachael_engine=memory.engines.get("rachael"),
             vector_engine=memory.engines.get("default"),

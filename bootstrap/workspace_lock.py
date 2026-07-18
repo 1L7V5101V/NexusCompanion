@@ -22,14 +22,22 @@ class WorkspaceInstanceLock:
             if os.name == "nt":
                 import msvcrt
 
+                # Windows: seek to 0 before locking, so the lock is on byte 0
+                # (a+ mode opens at EOF — locking at EOF then truncating removes
+                # the locked byte, causing PermissionError on flush())
+                stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
 
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            stream.seek(0)
-            owner = stream.read().strip() or "unknown"
+            try:
+                stream.seek(0)
+                owner = stream.read().strip() or "unknown"
+            except OSError:
+                # Windows 强制锁下被锁区域连读都不行，退回到"unknown"
+                owner = "unknown"
             stream.close()
             raise RuntimeError(
                 f"workspace 已由其他 runtime 占用: {self.path} owner={owner}"

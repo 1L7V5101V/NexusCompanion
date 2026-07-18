@@ -48,8 +48,9 @@ class Evaluator:
         verified = relevance >= 0.5 AND completeness >= 0.5
     """
 
-    def __init__(self, light_provider: LLMProvider | None = None) -> None:
+    def __init__(self, light_provider: LLMProvider | None = None, light_model: str = "") -> None:
         self._light_provider = light_provider
+        self._light_model = light_model
 
     async def evaluate(self, query: str, block: str) -> EvalResult:
         """单次评估。返回结构化评分 + verified 判定。"""
@@ -73,9 +74,8 @@ class Evaluator:
             response = await self._light_provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
-                model="",
+                model=self._light_model,
                 max_tokens=192,
-                temperature=0.1,
             )
             content = (response.content or "").strip()
             data = json.loads(content)
@@ -155,9 +155,8 @@ class Evaluator:
             response = await self._light_provider.chat(
                 messages=[{"role": "user", "content": prompt}],
                 tools=[],
-                model="",
+                model=self._light_model,
                 max_tokens=128,
-                temperature=0.3,
             )
             rewritten = (response.content or "").strip()
             return rewritten if rewritten else original_query
