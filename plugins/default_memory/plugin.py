@@ -34,7 +34,11 @@ class DefaultMemoryInspector(Plugin):
     name = "default_memory"
 
     async def initialize(self) -> None:
-        self._active = _is_memory_engine(self.context.memory_engine, "default")
+        self._active = _is_memory_engine(
+            self.context.memory_engine,
+            "default",
+            engine_names=getattr(self.context, "memory_engine_names", ()),
+        )
         self._lock = threading.RLock()
         self._active_turns: dict[str, str] = {}
         self._data_path = _data_path(
@@ -126,7 +130,10 @@ def _turn_id(session_key: str, timestamp: str, content: str) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _is_memory_engine(engine: object, name: str) -> bool:
+def _is_memory_engine(engine: object, name: str, *, engine_names: tuple[str, ...] = ()) -> bool:
+    # 优先检查 engine_names 列表（combined 模式下 engine 指向 primary，但 name 可能在列表中）
+    if name in engine_names:
+        return True
     if engine is None:
         return True
     describe = getattr(engine, "describe", None)

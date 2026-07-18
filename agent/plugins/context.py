@@ -30,6 +30,7 @@ class PluginContext:
     workspace: Path | None = None
     session_manager: Any = None
     memory_engine: Any = None
+    memory_engine_names: tuple[str, ...] = ()
     llm: "PluginLlmService | None" = None
     scope: "PluginScope | None" = None
     generation_id: str = ""

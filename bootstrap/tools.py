@@ -539,6 +539,11 @@ def _build_loop_deps(
         memory=memory_services,
         light_provider=light,
     )
+    logger.info(
+        "AgenticRAGPipeline（Agentic RAG: Router → Sandbox → Evaluator）已载入"
+        " | engines: %s",
+        ", ".join(memory_runtime.engines.keys()) if memory_runtime.engines else "none",
+    )
 
     return AgentLoopDeps(
         bus=bus,
@@ -656,6 +661,7 @@ def build_core_runtime(
         workspace=workspace,
         session_manager=session_manager,
         memory_engine=memory_runtime.engine,
+        memory_engine_names=tuple(memory_runtime.engines.keys()),
         llm=ProviderPluginLlmService(
             provider=provider,
             model=config.model,
