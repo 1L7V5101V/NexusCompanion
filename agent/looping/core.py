@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from core.error_context import current_session_key
+from agent.control.context import current_turn_id
+from agent.control.ids import new_turn_id
 from agent.context import ContextBuilder
 from agent.core.passive_turn import (
     AgentCore,
@@ -253,6 +255,7 @@ class AgentLoop:
                     session_key=session_key,
                     channel=channel,
                     chat_id=chat_id,
+                    turn_id=current_turn_id.get(),
                     content_delta=content_delta if isinstance(content_delta, str) else "",
                     thinking_delta=thinking_delta if isinstance(thinking_delta, str) else "",
                 )
@@ -320,6 +323,7 @@ class AgentLoop:
         retrieval_pipeline = deps.retrieval_pipeline or DefaultMemoryRetrievalPipeline(
             memory=memory_svc,
             light_provider=llm_svc.light_provider if memory_svc.engines else None,
+            light_model=config.llm.light_model,
         )
         self._retrieval_pipeline = retrieval_pipeline
         passive_context_store = DefaultContextStore(
@@ -618,6 +622,7 @@ class AgentLoop:
                 chat_id=msg.chat_id,
                 content=_item_content(msg),
                 timestamp=msg.timestamp,
+                turn_id=current_turn_id.get(),
             )
         )
 
@@ -630,36 +635,43 @@ class AgentLoop:
         busy_session_key: str | None = None,
         dispatch_outbound: bool = True,
     ) -> OutboundMessage:
-        started = time.time()
         key = session_key or msg.session_key
         busy_key = busy_session_key or key
         # 给本 turn task 打上 session 归属，供 observe 全局错误采集关联。
-        _ = current_session_key.set(key)
-
-        # 1. 先处理可能存在的续跑态，并发布 turn started。
-        msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
-        await self._observe_turn_started(msg, key)
-        content = _item_content(msg)
-        preview = content[:60] + "..." if len(content) > 60 else content
-        logger.info(f"Processing message from {msg.channel}: {preview}")
-
-        # 2. 再进入 busy 状态并执行核心处理。
-        if self._processing_state:
-            self._processing_state.enter(busy_key)
+        session_token = current_session_key.set(key)
+        inherited_turn_id = (
+            str(msg.metadata.get("control_turn_id") or "")
+            if isinstance(msg, InboundMessage)
+            else ""
+        )
+        turn_token = current_turn_id.set(inherited_turn_id or new_turn_id())
         try:
-            outbound = await self._core_runner.process(
-                msg,
-                key,
-                dispatch_outbound=dispatch_outbound,
-            )
-            if resumed_from_interrupt:
-                self._interrupt_states.pop(key, None)
-            return outbound
-        finally:
-            # 3. 最后无论成功失败都直接释放 busy 状态。
+            # 1. 先处理可能存在的续跑态，并发布 turn started。
+            msg, resumed_from_interrupt = await self._resume_interrupted_message(msg, key)
+            await self._observe_turn_started(msg, key)
+            content = _item_content(msg)
+            preview = content[:60] + "..." if len(content) > 60 else content
+            logger.info(f"Processing message from {msg.channel}: {preview}")
+
+            # 2. 再进入 busy 状态并执行核心处理。
             if self._processing_state:
-                self._processing_state.exit(busy_key)
-            _ = started
+                self._processing_state.enter(busy_key)
+            try:
+                outbound = await self._core_runner.process(
+                    msg,
+                    key,
+                    dispatch_outbound=dispatch_outbound,
+                )
+                if resumed_from_interrupt:
+                    self._interrupt_states.pop(key, None)
+                return outbound
+            finally:
+                # 3. 最后无论成功失败都直接释放 busy 状态。
+                if self._processing_state:
+                    self._processing_state.exit(busy_key)
+        finally:
+            current_session_key.reset(session_token)
+            current_turn_id.reset(turn_token)
 
     async def _process_with_runtime_admission(
         self,
@@ -679,6 +691,52 @@ class AgentLoop:
                 dispatch_outbound=dispatch_outbound,
             )
 
+    async def process_direct_message(
+        self,
+        content: str,
+        session_key: str = "programmatic:direct",
+        busy_session_key: str | None = None,
+        channel: str = "programmatic",
+        chat_id: str = "direct",
+        omit_user_turn: bool = False,
+        skip_post_memory: bool = False,
+        skip_memory_retrieval: bool = False,
+        stream_events: bool = False,
+        disabled_tools: list[str] | None = None,
+        sender: str = "user",
+        media: list[str] | None = None,
+        turn_id: str = "",
+    ) -> OutboundMessage:
+        """执行直接消息并保留渠道可观察的完整输出。"""
+        metadata: dict[str, object] = {}
+        if omit_user_turn:
+            metadata["omit_user_turn"] = True
+        if skip_post_memory:
+            metadata["skip_post_memory"] = True
+        if skip_memory_retrieval:
+            metadata["skip_memory_retrieval"] = True
+        if not stream_events:
+            metadata["suppress_stream_events"] = True
+        if disabled_tools:
+            metadata["disabled_tools"] = list(disabled_tools)
+        if turn_id:
+            metadata["control_turn_id"] = turn_id
+        msg = InboundMessage(
+            channel=channel,
+            sender=sender,
+            chat_id=chat_id,
+            content=content,
+            media=list(media or []),
+            metadata=metadata,
+        )
+        response = await self._process_with_runtime_admission(
+            msg,
+            session_key=session_key,
+            busy_session_key=busy_session_key,
+            dispatch_outbound=False,
+        )
+        return response
+
     async def process_direct(
         self,
         content: str,
@@ -692,29 +750,17 @@ class AgentLoop:
         stream_events: bool = False,
         disabled_tools: list[str] | None = None,
     ) -> str:
-        metadata: dict[str, object] = {}
-        if omit_user_turn:
-            metadata["omit_user_turn"] = True
-        if skip_post_memory:
-            metadata["skip_post_memory"] = True
-        if skip_memory_retrieval:
-            metadata["skip_memory_retrieval"] = True
-        if not stream_events:
-            metadata["suppress_stream_events"] = True
-        if disabled_tools:
-            metadata["disabled_tools"] = list(disabled_tools)
-        msg = InboundMessage(
-            channel=channel,
-            sender="user",
-            chat_id=chat_id,
-            content=content,
-            metadata=metadata,
-        )
-        response = await self._process_with_runtime_admission(
-            msg,
+        response = await self.process_direct_message(
+            content,
             session_key=session_key,
             busy_session_key=busy_session_key,
-            dispatch_outbound=False,
+            channel=channel,
+            chat_id=chat_id,
+            omit_user_turn=omit_user_turn,
+            skip_post_memory=skip_post_memory,
+            skip_memory_retrieval=skip_memory_retrieval,
+            stream_events=stream_events,
+            disabled_tools=disabled_tools,
         )
         return response.content if response else ""
 

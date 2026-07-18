@@ -538,6 +538,8 @@ def _build_loop_deps(
     retrieval_pipeline = DefaultMemoryRetrievalPipeline(
         memory=memory_services,
         light_provider=light,
+        light_model=config.light_model,
+        router_mode=getattr(config, "router_mode", "rule"),
     )
     logger.info(
         "AgenticRAGPipeline（Agentic RAG: Router → Sandbox → Evaluator）已载入"

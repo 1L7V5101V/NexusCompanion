@@ -46,7 +46,9 @@ def _dashboard_plugin_dirs(project_root: Path) -> dict[str, Path]:
                 continue
             result[plugin_dir.name] = plugin_dir
 
-    registry_path = Path.home() / ".nexus-plugin" / "registry.json"
+    # Respect $HOME on platforms where Path.home() ignores it (Windows).
+    _home_root = Path(os.environ["HOME"]) if "HOME" in os.environ else Path.home()
+    registry_path = _home_root / ".nexus-plugin" / "registry.json"
     if not registry_path.exists():
         return result
     try:

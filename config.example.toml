@@ -84,6 +84,11 @@ memory_window = 40
 [agent.tools]
 search_enabled = true
 
+# 可选：Agentic RAG 检索路由模式（默认 "rule"）。
+# "rule" - 规则打分 + 阈值决策，模糊时 LLM 兜底（默认）
+# "llm"  - 跳过规则打分，完全由 LLM 判断检索源
+# router_mode = "rule"
+
 # 可选：长期记忆整理任务（默认已启用，通常无需修改）
 # [agent.maintenance]
 # memory_optimizer_enabled = true

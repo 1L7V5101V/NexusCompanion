@@ -11,6 +11,7 @@ from agent.core.passive_support import (
     log_post_reply_context_budget,
     log_react_context_budget,
 )
+from agent.control.context import current_turn_id
 from agent.core.types import to_tool_call_groups
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -125,6 +126,7 @@ class _BuildTurnCommittedModule:
             persisted_user_message=None if omit_user_turn else msg.content,
             assistant_response=snap.ctx.reply,
             tools_used=list(snap.ctx.tools_used),
+            turn_id=current_turn_id.get(),
             thinking=snap.ctx.thinking,
             raw_reply=snap.ctx.response_metadata.raw_text,
             meme_tag=snap.ctx.meme_tag,

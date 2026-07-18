@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 import agent.core.passive_support as support
+from agent.control.context import current_turn_id
 from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
@@ -1730,6 +1731,7 @@ class DefaultReasoner(Reasoner):
                 call_id=call_id,
                 tool_name=tool_name,
                 arguments=dict(arguments),
+                turn_id=current_turn_id.get(),
             )
         )
 
@@ -1761,6 +1763,7 @@ class DefaultReasoner(Reasoner):
                 final_arguments=dict(final_arguments),
                 status=status,
                 result_preview=result_preview,
+                turn_id=current_turn_id.get(),
             )
         )
 
