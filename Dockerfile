@@ -5,6 +5,8 @@
 #   docker build --build-arg BASE_IMAGE=python:3.12-slim .
 # ============================================================
 
+ARG BASE_IMAGE=python:3.12-slim
+
 # ---- Frontend build stage ----
 FROM node:20-slim AS frontend-builder
 
@@ -22,7 +24,6 @@ RUN npm run build:dashboard
 
 
 # ---- Runtime stage ----
-ARG BASE_IMAGE=python:3.12-slim
 FROM ${BASE_IMAGE}
 
 LABEL description="NexusCompanion — 主动 AI 伙伴"
