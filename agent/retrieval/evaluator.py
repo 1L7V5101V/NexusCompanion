@@ -52,8 +52,22 @@ class Evaluator:
         self._light_provider = light_provider
         self._light_model = light_model
 
-    async def evaluate(self, query: str, block: str) -> EvalResult:
-        """单次评估。返回结构化评分 + verified 判定。"""
+    async def evaluate(
+        self,
+        query: str,
+        block: str,
+        router_sources: list[str] | None = None,
+        router_reason: str = "",
+    ) -> EvalResult:
+        """单次评估。返回结构化评分 + verified 判定。
+
+        Args:
+            query: 用户原始查询
+            block: 检索结果文本
+            router_sources: Router 选中的检索源列表，如 ["graph"]。传入后
+                            Evaluator 会根据源类型调整评估严格度。
+            router_reason: Router 的决策理由，用于给 LLM evaluator 做上下文。
+        """
         if not block.strip() or not query.strip():
             return EvalResult(
                 relevance=0.0, completeness=0.0,
@@ -69,7 +83,7 @@ class Evaluator:
                 verified=False,
             )
 
-        prompt = self._build_eval_prompt(query, block)
+        prompt = self._build_eval_prompt(query, block, router_sources=router_sources, router_reason=router_reason)
         try:
             response = await self._light_provider.chat(
                 messages=[{"role": "user", "content": prompt}],
@@ -165,7 +179,28 @@ class Evaluator:
             return original_query
 
     @staticmethod
-    def _build_eval_prompt(query: str, block: str) -> str:
+    def _build_eval_prompt(
+        query: str,
+        block: str,
+        router_sources: list[str] | None = None,
+        router_reason: str = "",
+    ) -> str:
+        # 路由上下文说明：帮助 LLM 按场景调整评估尺度
+        router_context = ""
+        if router_sources is not None:
+            router_context = (
+                "\n路由信息:\n"
+                f"- 检索源: {', '.join(router_sources)}\n"
+                f"- 路由理由: {router_reason or '(未提供)'}\n"
+            )
+            # graph 对话上下文本就是辅助信息，放宽标准
+            if router_sources == ["graph"]:
+                router_context += (
+                    "\n注意: 对话上下文检索是「有更好，没有也能聊」的辅助信息。\n"
+                    "检索内容即使不完全匹配用户当前话题，只要是对同一对话历史中\n"
+                    "相关交流片段的记录，就应视为有参考价值。relevance 可适当从宽。\n"
+                )
+
         return f"""你是一个检索质量评估员。评估检索内容是否能回答用户问题。
 
 用户问题: {query}
@@ -180,7 +215,7 @@ class Evaluator:
 注意:
 - relevance 低但 completeness 高: 内容详实但不相关 → 不合格
 - relevance 高但 completeness 低: 内容相关但漏掉了关键信息 → 可能需要补充检索
-
+{router_context}
 输出严格JSON格式,不要任何解释或Markdown:
 {{"relevance": 0.0, "completeness": 0.0, "missing_info": "简述缺什么"}}
 """

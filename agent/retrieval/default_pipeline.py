@@ -129,9 +129,13 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
             if not block:
                 break
 
-            # Evaluator 质检
+            # Evaluator 质检（传入 Router 决策，供按场景调整严格度）
             if self._light_provider is not None:
-                eval_result = await self._evaluator.evaluate(query, block)
+                eval_result = await self._evaluator.evaluate(
+                    query, block,
+                    router_sources=plan.sources,
+                    router_reason=plan.reason,
+                )
                 if eval_result.verified:
                     logger.info("检索通过质检 (第%d轮)", retry + 1)
                     return RetrievalResult(block=block, verified=True)
