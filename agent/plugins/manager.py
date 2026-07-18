@@ -150,6 +150,7 @@ class PluginManager:
         workspace: Path | None = None,
         session_manager: Any = None,
         memory_engine: Any = None,
+        memory_engine_names: tuple[str, ...] = (),
         llm: PluginLlmService | None = None,
         plugin_configs: dict[str, Any] | None = None,
         installed_cache_root: Path | None = None,
@@ -160,6 +161,7 @@ class PluginManager:
         self._workspace = workspace
         self._session_manager = session_manager
         self._memory_engine = memory_engine
+        self._memory_engine_names = memory_engine_names
         self._llm = llm
         self._installed_cache_root = installed_cache_root
         self._plugin_configs = plugin_configs or {}
@@ -1925,6 +1927,7 @@ class PluginManager:
             instance.context.kv_store = PluginKVStore(data_dir / ".kv.json")
             instance.context.session_manager = self._session_manager
             instance.context.memory_engine = self._memory_engine
+            instance.context.memory_engine_names = self._memory_engine_names
             instance.context.llm = self._llm
             instance.context.scope = scope
             instance.context.tool_registry = generation.runtime_snapshot.tool_registry
