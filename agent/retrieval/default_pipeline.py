@@ -74,8 +74,9 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
         if not self._memory.engines:
             return RetrievalResult(block="", trace=None)
 
-        # ── 1. 后向兼容: 单引擎 + 无 light_provider → 旧行为 ──
-        if len(self._memory.engines) == 1 and self._light_provider is None:
+        # ── 1. 单引擎 → 旧行为（直接调 engine.query()，跳过 Agentic RAG 管线） ──
+        #     双引擎（如 "default,rachael"）才走完整的 Agentic RAG 管线。
+        if len(self._memory.engines) == 1:
             engine = next(iter(self._memory.engines.values()))
             try:
                 result = await engine.query(self._build_query(request))
