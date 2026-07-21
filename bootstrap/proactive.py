@@ -60,6 +60,7 @@ def build_proactive_runtime(
     proactive_module_factories: list[object] | None = None,
     proactive_runtime_factories: list[object] | None = None,
     plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
+    turn_logger: Any | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -115,6 +116,7 @@ def build_proactive_runtime(
         proactive_module_factories=proactive_module_factories,
         proactive_runtime_factories=proactive_runtime_factories,
         plugin_mcp_servers=plugin_mcp_servers,
+        turn_logger=turn_logger,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
