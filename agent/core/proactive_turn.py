@@ -24,7 +24,7 @@ import random as _random_module
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from agent.tool_hooks import ToolExecutor, ToolHook
 from agent.turns.orchestrator import TurnOrchestrator
@@ -50,6 +50,9 @@ from proactive_v2.modules_resolve import (
     build_delivery_key,
 )
 from proactive_v2.tools import ToolDeps
+
+if TYPE_CHECKING:
+    from logging.turn_logger import RoutingTurnLogger
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,8 @@ class ProactiveTurnPipelineDeps:
     drift_pipeline: DriftTurnPipeline | None
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
+    turn_logger: Any | None = None
+    """RoutingTurnLogger: 日志记录器（运行时组装，避免循环导入）"""
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -155,6 +160,7 @@ class ProactiveTurnPipeline:
         self._drift_pipeline = deps.drift_pipeline
         self._event_bus = deps.event_bus
         self._tool_executor = ToolExecutor(deps.tool_hooks or [])
+        self._turn_logger = deps.turn_logger
         self._proactive_slots: dict[str, Any] = {}
         self._proactive_prompt_sections: list[str] = []
         self._proactive_effect_logs: list[dict[str, Any]] = []
@@ -314,6 +320,33 @@ class ProactiveTurnPipeline:
                 counts=f"steps:{ctx.steps_taken},interesting:{len(ctx.interesting_item_ids)},discarded:{len(ctx.discarded_item_ids)}",
             )
         )
+        # 6. 日志记录
+        if self._turn_logger is not None:
+            from logging.models import TurnLogData
+
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_data = TurnLogData(
+                session_key=self._session_key,
+                turn_type="proactive",
+                timestamp=ctx.now_utc.isoformat(),
+                turn_duration_ms=elapsed_ms,
+                messages=feed.messages,
+                metadata={
+                    "tick_id": ctx.tick_id,
+                    "gate_reason": gate.reason if hasattr(gate, "reason") else None,
+                    "decision": decision.action,
+                    "skip_reason": ctx.skip_reason,
+                    "base_score": score,
+                    "steps_taken": ctx.steps_taken,
+                    "drift_entered": feed.drift_entered,
+                    "alert_count": len(ctx.fetched_alerts),
+                    "content_count": len(ctx.fetched_contents),
+                    "interesting_ids": sorted(ctx.interesting_item_ids),
+                    "discarded_ids": sorted(ctx.discarded_item_ids),
+                    "llm_call_count": ctx.llm_call_count,
+                },
+            )
+            await self._turn_logger.log(log_data)
         ctx.content_store.clear()
         return score
 

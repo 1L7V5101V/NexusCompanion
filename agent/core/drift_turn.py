@@ -41,6 +41,7 @@ from proactive_v2.drift_tools import (
 
 if TYPE_CHECKING:
     from core.memory.markdown import MemoryProfileApi
+    from logging.turn_logger import RoutingTurnLogger
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 StepRecorder = Callable[[AgentTickContext, str, str, str, dict[str, Any], str], None]
@@ -60,6 +61,8 @@ class DriftTurnPipelineDeps:
     max_steps: int = 20
     step_recorder: StepRecorder | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
+    turn_logger: Any | None = None
+    """RoutingTurnLogger: 日志记录器（运行时组装，避免循环导入）"""
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ class DriftTurnPipeline:
         self._max_steps = deps.max_steps
         self.step_recorder = deps.step_recorder
         self._tool_executor = ToolExecutor(deps.tool_hooks)
+        self._turn_logger = deps.turn_logger
 
     # ── 入口 ──────────────────────────────────────────────────────────
 
@@ -107,6 +111,31 @@ class DriftTurnPipeline:
 
         # 4. Execute — LLM 工具调用循环。
         await self._execute_loop(ctx, llm_fn, tools, messages)
+
+        # 4.5 日志记录
+        if self._turn_logger is not None:
+            from logging.models import TurnLogData
+
+            elapsed_ms = 0
+            log_data = TurnLogData(
+                session_key=ctx.session_key,
+                turn_type="drift",
+                timestamp=ctx.now_utc.isoformat(),
+                turn_duration_ms=elapsed_ms,
+                messages=messages,
+                metadata={
+                    "tick_id": ctx.tick_id,
+                    "drift_finished": ctx.drift_finished,
+                    "drift_message_sent": ctx.drift_message_sent,
+                    "drift_selected_skill": ctx.drift_selected_skill,
+                    "drift_entered": ctx.drift_entered,
+                    "steps_taken": ctx.steps_taken,
+                    "skill_count": len(skills),
+                    "skill_names": [s.name for s in skills],
+                    "llm_call_count": ctx.llm_call_count,
+                },
+            )
+            await self._turn_logger.log(log_data)
 
         # 5. Finish — 记录退出。
         self._finish(ctx)

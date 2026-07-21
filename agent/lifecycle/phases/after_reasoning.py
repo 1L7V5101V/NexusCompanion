@@ -79,6 +79,8 @@ class _BuildAfterReasoningCtxModule:
                 "context_retry": dict(turn_result.context_retry),
                 "streamed_reply": turn_result.streamed,
             },
+            initial_messages=turn_result.initial_messages,
+            tools_schema=turn_result.tools_schema,
         )
         return frame
 
