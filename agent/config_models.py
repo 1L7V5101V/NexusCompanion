@@ -122,6 +122,17 @@ class WiringConfig:
 
 
 @dataclass
+class LoggingConfig:
+    passive_db: str = ""
+    proactive_db: str = ""
+    drift_db: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.passive_db)
+
+
+@dataclass
 class AppServerConfig:
     enabled: bool = False
     listen: str = "127.0.0.1:2236"
@@ -168,6 +179,7 @@ class Config:
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
