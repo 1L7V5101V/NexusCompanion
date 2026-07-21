@@ -52,6 +52,7 @@ from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
 )
+from logging import RoutingTurnLogger, TurnLogger
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -99,9 +100,14 @@ class CoreRuntime:
     agent_provider: LLMProvider | None = None
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
+    turn_logger: RoutingTurnLogger | None = None
 
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
+
+        # 0. 日志系统后台 flush
+        if self.turn_logger is not None:
+            self.turn_logger.start()
 
         # 1. MCP registry 后台连接
         self.mcp_registry.start_connect_all_background()
@@ -289,6 +295,7 @@ class CoreRuntime:
                     cast(Any, context),
                     cast(int, getattr(pipeline, "_history_window", 500)),
                     plugin_modules=cast(Any, after_turn_modules),
+                    turn_logger=self.turn_logger,
                 ),
             ),
         ]
@@ -355,6 +362,12 @@ class CoreRuntime:
                 else _noop_async,
             ),
             ("session_manager.close", _close_session_manager),
+            (
+                "turn_logger.close",
+                self.turn_logger.close
+                if self.turn_logger is not None
+                else _noop_async,
+            ),
         )
 
 
@@ -507,6 +520,7 @@ def _build_loop_deps(
     processing_state: ProcessingState,
     event_bus: EventBus,
     memory_runtime: MemoryRuntime,
+    turn_logger: RoutingTurnLogger | None = None,
 ) -> AgentLoopDeps:
     """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
 
@@ -563,6 +577,7 @@ def _build_loop_deps(
         llm_services=llm_services,
         memory_services=memory_services,
         session_services=session_services,
+        turn_logger=turn_logger,
     )
 
 
@@ -617,6 +632,13 @@ def build_core_runtime(
     )
     presence = PresenceStore(session_manager._store)
     processing_state = ProcessingState()
+
+    # ── 日志系统 ──────────────────────────────────────────────────────
+    turn_logger: RoutingTurnLogger | None = None
+    logging_cfg = config.logging
+    if logging_cfg.enabled:
+        turn_logger = _build_turn_logger(logging_cfg, workspace)
+
     loop_deps = _build_loop_deps(
         config=config,
         workspace=workspace,
@@ -629,6 +651,7 @@ def build_core_runtime(
         processing_state=processing_state,
         event_bus=event_bus,
         memory_runtime=memory_runtime,
+        turn_logger=turn_logger,
     )
     loop = AgentLoop(
         loop_deps,
@@ -740,6 +763,44 @@ def build_core_runtime(
         peer_process_manager=peer_pm,
         peer_poller=peer_poller,
         plugin_manager=plugin_manager,
+        turn_logger=turn_logger,
+    )
+
+
+def _build_turn_logger(
+    logging_cfg: Any,
+    workspace: Path,
+) -> TurnLogger:
+    """根据配置创建 TurnLogger 实例。三条链路共用一个 logger，
+    内部通过 turn_type 字段区分写入哪个库。"""
+    from logging.turn_logger import TurnLoggerConfig
+
+    log_dir = (workspace / "logs").expanduser().resolve()
+    passive_db = log_dir / "passive.db"
+    proactive_db = log_dir / "proactive.db"
+    drift_db = log_dir / "drift.db"
+
+    # 如果配置指定了路径，优先使用
+    if logging_cfg.passive_db:
+        passive_db = Path(logging_cfg.passive_db).expanduser().resolve()
+    if logging_cfg.proactive_db:
+        proactive_db = Path(logging_cfg.proactive_db).expanduser().resolve()
+    if logging_cfg.drift_db:
+        drift_db = Path(logging_cfg.drift_db).expanduser().resolve()
+
+    logger.info(
+        "日志目录: passive=%s proactive=%s drift=%s",
+        passive_db,
+        proactive_db,
+        drift_db,
+    )
+
+    from logging.turn_logger import RoutingTurnLogger
+
+    return RoutingTurnLogger(
+        passive=TurnLoggerConfig(db_path=passive_db),
+        proactive=TurnLoggerConfig(db_path=proactive_db),
+        drift=TurnLoggerConfig(db_path=drift_db),
     )
 
 

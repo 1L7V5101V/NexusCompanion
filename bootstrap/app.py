@@ -479,6 +479,7 @@ class AppRuntime:
                     if plugin_manager
                     else None
                 ),
+                turn_logger=self.core.turn_logger if self.core else None,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:

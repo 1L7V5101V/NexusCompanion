@@ -83,7 +83,9 @@ class ProactiveLoop:
         runtime_snapshot_store: RuntimeSnapshotStore | None = None,
         plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
         state_store_owned: bool = False,
+        turn_logger: Any | None = None,
     ) -> None:
+        self._turn_logger = turn_logger
         self._sessions = session_manager
         self._provider = provider
         self._push = push_tool
@@ -171,6 +173,7 @@ class ProactiveLoop:
             proactive_sources=self._plugin_proactive_sources,
             tool_hooks=self._tool_hooks,
             schedule_fn=self._scheduler.next_interval,
+            turn_logger=self._turn_logger,
         )
 
     def _build_plugin_runtime(self) -> object:

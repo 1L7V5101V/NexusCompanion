@@ -486,6 +486,150 @@ class ProactiveDashboardReader:
         return value if isinstance(value, dict) else {}
 
 
+class LogDashboardReader:
+    """读取三个 turn_log SQLite 数据库的日志查询器。"""
+
+    def __init__(self, workspace: Path) -> None:
+        self._dbs: dict[str, sqlite3.Connection] = {}
+        log_dir = (workspace / "logs").expanduser().resolve()
+        for turn_type in ("passive", "proactive", "drift"):
+            db_path = log_dir / f"{turn_type}.db"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path), check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                self._dbs[turn_type] = conn
+
+    def close(self) -> None:
+        for conn in self._dbs.values():
+            conn.close()
+        self._dbs.clear()
+
+    def list_logs(
+        self,
+        *,
+        turn_type: str = "",
+        session_key: str = "",
+        ts_from: str = "",
+        ts_to: str = "",
+        page: int = 1,
+        page_size: int = 50,
+        sort_order: str = "desc",
+    ) -> tuple[list[dict[str, Any]], int]:
+        safe_page = max(1, page)
+        safe_size = max(1, min(page_size, 200))
+        offset_val = (safe_page - 1) * safe_size
+        safe_order = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+
+        # Determine which DBs to query
+        types_to_query: list[str] = list(self._dbs.keys())
+        if turn_type and turn_type in self._dbs:
+            types_to_query = [turn_type]
+
+        all_items: list[dict[str, Any]] = []
+        total = 0
+
+        for ttype in types_to_query:
+            conn = self._dbs[ttype]
+            where_clauses: list[str] = []
+            params: list[Any] = []
+            if session_key:
+                where_clauses.append("session_key = ?")
+                params.append(session_key)
+            if ts_from:
+                where_clauses.append("timestamp >= ?")
+                params.append(ts_from)
+            if ts_to:
+                where_clauses.append("timestamp <= ?")
+                params.append(ts_to)
+            where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+            count_row = conn.execute(
+                f"SELECT COUNT(*) FROM turn_logs{where_sql}",
+                params,
+            ).fetchone()
+            total += int(count_row[0]) if count_row else 0
+
+            rows = conn.execute(
+                f"""
+                SELECT id, session_key, channel, chat_id, turn_type, timestamp,
+                       llm_model, input_tokens, output_tokens, cache_hit_tokens,
+                       turn_duration_ms, error, created_at
+                FROM turn_logs{where_sql}
+                ORDER BY timestamp {safe_order}, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, safe_size, offset_val),
+            ).fetchall()
+
+            for row in rows:
+                item = {
+                    "id": row["id"],
+                    "session_key": row["session_key"],
+                    "channel": row["channel"],
+                    "chat_id": row["chat_id"],
+                    "turn_type": row["turn_type"],
+                    "timestamp": row["timestamp"],
+                    "llm_model": row["llm_model"],
+                    "input_tokens": row["input_tokens"],
+                    "output_tokens": row["output_tokens"],
+                    "cache_hit_tokens": row["cache_hit_tokens"],
+                    "turn_duration_ms": row["turn_duration_ms"],
+                    "error": row["error"],
+                    "created_at": row["created_at"],
+                }
+                all_items.append(item)
+
+        # Sort combined results
+        reverse = safe_order == "DESC"
+        all_items.sort(key=lambda x: str(x.get("timestamp", "") or ""), reverse=reverse)
+
+        # Apply page on combined result
+        paged = all_items[offset_val : offset_val + safe_size]
+        return paged, total
+
+    def get_log_detail(self, turn_type: str, log_id: int) -> dict[str, Any] | None:
+        conn = self._dbs.get(turn_type)
+        if conn is None:
+            return None
+        row = conn.execute(
+            """
+            SELECT id, session_key, channel, chat_id, turn_type, timestamp,
+                   skill_names, retry_attempts, messages, tools_schema,
+                   llm_model, llm_response, tool_calls,
+                   input_tokens, output_tokens, cache_hit_tokens,
+                   turn_duration_ms, error, metadata, created_at
+            FROM turn_logs
+            WHERE id = ?
+            """,
+            (log_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_key": row["session_key"],
+            "channel": row["channel"],
+            "chat_id": row["chat_id"],
+            "turn_type": row["turn_type"],
+            "timestamp": row["timestamp"],
+            "skill_names": row["skill_names"],
+            "retry_attempts": row["retry_attempts"],
+            "messages": row["messages"],
+            "tools_schema": row["tools_schema"],
+            "llm_model": row["llm_model"],
+            "llm_response": row["llm_response"],
+            "tool_calls": row["tool_calls"],
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "cache_hit_tokens": row["cache_hit_tokens"],
+            "turn_duration_ms": row["turn_duration_ms"],
+            "error": row["error"],
+            "metadata": row["metadata"],
+            "created_at": row["created_at"],
+        }
+
+
 _pending_plugins: list[tuple[Path, Path]] = []
 _pending_plugins_lock = threading.Lock()
 
@@ -704,6 +848,7 @@ def create_dashboard_app(
     workspace.mkdir(parents=True, exist_ok=True)
     store = SessionStore(workspace / "sessions.db")
     proactive_reader: ProactiveDashboardReader | None = None
+    log_reader: LogDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
     optimizer_last_error: str | None = None
@@ -717,6 +862,12 @@ def create_dashboard_app(
             ProactiveStateStore(workspace / "proactive.db").close()
             proactive_reader = ProactiveDashboardReader(workspace / "proactive.db")
         return proactive_reader
+
+    def get_log_reader() -> LogDashboardReader:
+        nonlocal log_reader
+        if log_reader is None:
+            log_reader = LogDashboardReader(workspace)
+        return log_reader
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -735,6 +886,8 @@ def create_dashboard_app(
                 _close_dashboard_value(closeable)
             if proactive_reader is not None:
                 get_proactive_reader().close()
+            if log_reader is not None:
+                get_log_reader().close()
 
     app = FastAPI(title="Nexus Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
@@ -1277,6 +1430,42 @@ def create_dashboard_app(
             "total": len(steps),
             "tick_id": tick_id,
         }
+
+    @app.get("/api/dashboard/logs")
+    def list_turn_logs(
+        turn_type: str = Query(default="", pattern="^(|passive|proactive|drift)$"),
+        session_key: str = "",
+        ts_from: str = "",
+        ts_to: str = "",
+        page: int = 1,
+        page_size: int = 50,
+        sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    ) -> dict[str, Any]:
+        items, total = get_log_reader().list_logs(
+            turn_type=turn_type,
+            session_key=session_key,
+            ts_from=ts_from,
+            ts_to=ts_to,
+            page=page,
+            page_size=page_size,
+            sort_order=sort_order,
+        )
+        return {
+            "items": items,
+            "total": total,
+            "page": max(1, page),
+            "page_size": max(1, min(page_size, 200)),
+        }
+
+    @app.get("/api/dashboard/logs/{turn_type}/{log_id}")
+    def get_turn_log_detail(
+        turn_type: str,
+        log_id: int,
+    ) -> dict[str, Any]:
+        item = get_log_reader().get_log_detail(turn_type, log_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="log 不存在")
+        return item
 
     return app
 

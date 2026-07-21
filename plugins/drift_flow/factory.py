@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from plugins.drift_flow.runtime import DriftTurnPipeline, DriftTurnPipelineDeps
 from plugins.drift_flow.state import DriftStateStore
 from plugins.drift_flow.tools import DriftToolDeps
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
+
+if TYPE_CHECKING:
+    from logging.turn_logger import RoutingTurnLogger
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +79,7 @@ def build_drift_recent_chat_fn(scope: ProactiveRuntimeScope) -> RecentChatFn:
 def build_drift_pipeline(
     scope: ProactiveRuntimeScope,
     recent_chat_fn: RecentChatFn,
+    turn_logger: Any | None = None,
 ) -> DriftTurnPipeline | None:
     """用统一依赖构造 Default 与 Wake 共用的完整 Drift pipeline。"""
 
@@ -114,5 +118,6 @@ def build_drift_pipeline(
             ),
             max_steps=scope.cfg.drift_max_steps,
             tool_hooks=scope.tool_hooks,
+            turn_logger=turn_logger,
         )
     )

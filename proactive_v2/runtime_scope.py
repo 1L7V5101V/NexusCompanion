@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from agent.plugins.specs import RegisteredProactiveSource
 from agent.tool_hooks import ToolHook
@@ -9,6 +9,9 @@ from agent.tools.registry import ToolRegistry
 from agent.turns.orchestrator import TurnOrchestrator
 from bus.event_bus import EventBus
 from proactive_v2.mcp_sources import McpGateway
+
+if TYPE_CHECKING:
+    from logging.turn_logger import RoutingTurnLogger
 
 
 @dataclass
@@ -33,3 +36,5 @@ class ProactiveRuntimeScope:
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] = field(default_factory=list)
     schedule_fn: Callable[[float | None], int] | None = None
+    turn_logger: Any | None = None
+    """RoutingTurnLogger: 日志记录器（运行时组装，避免循环导入）"""

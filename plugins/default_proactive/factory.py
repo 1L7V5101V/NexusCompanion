@@ -136,4 +136,8 @@ class AgentTickFactory:
         return lambda: self._deps.sense.collect_recent_proactive(recent_n)
 
     def _build_drift_pipeline(self) -> DriftTurnPipeline | None:
-        return build_drift_pipeline(self._deps, self._build_recent_chat_fn())
+        return build_drift_pipeline(
+            self._deps,
+            self._build_recent_chat_fn(),
+            turn_logger=self._deps.turn_logger,
+        )
