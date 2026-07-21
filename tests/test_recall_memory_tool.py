@@ -109,6 +109,9 @@ class _KeywordOnlyStore:
         self.vector_search_called = True
         return []
 
+    def insert_query_log(self, **kwargs: object) -> None:
+        return None
+
     def keyword_search_summary(
         self,
         terms: list[str],
@@ -181,6 +184,9 @@ class _TimedSemanticStore:
         self.vector_batch_vec_count = 0
         self.keyword_kwargs: list[dict[str, object]] = []
         self._fts_available = False
+
+    def insert_query_log(self, **kwargs: object) -> None:
+        return None
 
     def vector_search(
         self, *_args: object, **kwargs: object

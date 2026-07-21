@@ -12,7 +12,26 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.memory.markdown import ConsolidateRequest
+
 logger = logging.getLogger(__name__)
+
+
+class _ConsolidationAdapter:
+    """Adapter from current MarkdownMemoryMaintenance API to the
+    ``consolidate(session, archive_all)`` interface used by ingest.
+
+    The old ``ConsolidationService`` was removed in a refactor; consolidation
+    is now embedded in ``memory_runtime.markdown.maintenance``.
+    """
+
+    def __init__(self, maintenance) -> None:
+        self._maintenance = maintenance
+
+    async def consolidate(self, session, *, archive_all: bool = False) -> None:
+        await self._maintenance.consolidate(
+            ConsolidateRequest(session=session, archive_all=archive_all),
+        )
 
 _BENCHMARK_SELF_MD = """\
 # Identity
@@ -74,11 +93,9 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
         workspace: Temp directory; will be initialised on first call.
     """
     from agent.config import load_config
-    from agent.looping.consolidation import ConsolidationService
     from bootstrap.init_workspace import init_workspace
     from bootstrap.tools import build_core_runtime
     from core.net.http import SharedHttpResources
-    from memory2.profile_extractor import ProfileFactExtractor
 
     config = load_config(config_path)
 
@@ -95,33 +112,14 @@ async def create_runtime(config_path: Path, workspace: Path) -> BenchmarkRuntime
     http = SharedHttpResources()
     core = build_core_runtime(config, workspace, http)
 
-    # 4. Build a ConsolidationService that shares the same memory port.
-    #    This is used during ingest; the AgentLoop has its own internal
-    #    instance but we need explicit control over consolidation timing.
-    light = core.light_provider or core.provider
-    light_model = config.light_model or config.model
-    profile_extractor = ProfileFactExtractor(
-        llm_client=light,
-        model=light_model,
-    )
-    keep_count = max(1, config.memory_window // 2)
-    consolidation = ConsolidationService(
-        memory_port=core.memory_runtime.port,
-        profile_maint=getattr(core.memory_runtime, "profile_maint", None)
-        or core.memory_runtime.port,
-        provider=core.provider,
-        model=config.model,
-        keep_count=keep_count,
-        profile_extractor=profile_extractor,
-        recent_context_provider=light,
-        recent_context_model=light_model,
-    )
+    # 4. Wrap consolidation via the current MarkdownMemoryMaintenance API.
+    #    (ConsolidationService was removed in a refactor; consolidation is
+    #     now embedded in memory_runtime.markdown.maintenance.)
+    consolidation = _ConsolidationAdapter(core.memory_runtime.markdown.maintenance)
 
     logger.info(
-        "BenchmarkRuntime ready: workspace=%s keep_count=%d model=%s",
+        "BenchmarkRuntime ready: workspace=%s",
         workspace,
-        keep_count,
-        config.model,
     )
     return BenchmarkRuntime(core=core, consolidation=consolidation, workspace=workspace)
 

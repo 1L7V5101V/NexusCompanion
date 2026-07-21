@@ -325,6 +325,26 @@ class RachaelMemoryEngine:
         )
         cards = [*dense_cards, *ripple_cards]
 
+        # 5b. Python logger: 精简版检索摘要。
+        _dense_preview = "; ".join(
+            f"[{c.score:.2f}] {c.user_message[:40]}"
+            for c in dense_cards[:3]
+        )
+        _ripple_preview = "; ".join(
+            f"[{c.score:.2f}] {c.user_message[:40]}"
+            for c in ripple_cards[:3]
+        )
+        logger.info(
+            "[Rachael] query=%r intent=%s dense=%d<%s> ripple=%d<%s> inject=%dchars",
+            query_text[:80],
+            request.intent,
+            len(dense_cards),
+            _dense_preview,
+            len(ripple_cards),
+            _ripple_preview,
+            len(text_block),
+        )
+
         # 5. 记录检索诊断日志（context/answer intent 才有意义）。
         if stateful and request.intent in {"context", "answer"} and request.scope.session_key:
             self._write_query_log(

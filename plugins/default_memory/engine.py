@@ -774,6 +774,32 @@ class DefaultMemoryEngine:
             time_end=request.filters.time_end,
         )
         text_block, injected_ids = retriever.build_injection_block(items)
+
+        # Python logger: 精简版检索摘要。
+        _summaries = "; ".join(
+            f"[{item.get('score', 0.0):.2f}] {item.get('summary', '')[:40]}"
+            for item in items[:3]
+        )
+        logger.info(
+            "[DefaultMemory] query=%r intent=%s hits=%d%s inject=%dchars",
+            request.text[:80],
+            request.intent,
+            len(items),
+            f" <{_summaries}>" if _summaries else "",
+            len(text_block),
+        )
+
+        # SQLite: 详细检索日志。
+        store = getattr(self, "_v2_store", None)
+        if store is not None:
+            store.insert_query_log(
+                query_text=request.text.strip(),
+                intent=request.intent,
+                hit_count=len(items),
+                items=items,
+                preview=text_block[:200],
+            )
+
         records = [
             self._build_record(item, injected_ids=injected_ids)
             for item in items
@@ -1160,6 +1186,31 @@ class DefaultMemoryEngine:
             keyword_enabled=True,
         )
         sliced = list(hits)[: request.limit]
+
+        # Python logger: 精简版检索摘要。
+        _summaries = "; ".join(
+            f"[{item.get('score', 0.0):.2f}] {item.get('summary', '')[:40]}"
+            for item in sliced[:3]
+        )
+        logger.info(
+            "[DefaultMemory] query=%r intent=%s hits=%d%s",
+            request.text[:80],
+            request.intent,
+            len(sliced),
+            f" <{_summaries}>" if _summaries else "",
+        )
+
+        # SQLite: 详细检索日志。
+        store = getattr(self, "_v2_store", None)
+        if store is not None:
+            store.insert_query_log(
+                query_text=request.text.strip(),
+                intent=request.intent,
+                hit_count=len(sliced),
+                items=sliced,
+                preview="",
+            )
+
         return MemoryQueryResult(
             records=[self._build_record(item) for item in sliced if isinstance(item, dict)],
             trace={

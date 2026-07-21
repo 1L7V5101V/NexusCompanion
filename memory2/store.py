@@ -110,6 +110,15 @@ CREATE INDEX IF NOT EXISTS ix_memory_replacements_old_item
     ON memory_replacements (old_item_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_memory_replacements_new_item
     ON memory_replacements (new_item_id, created_at);
+CREATE TABLE IF NOT EXISTS memory_query_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_text    TEXT NOT NULL,
+    intent        TEXT NOT NULL DEFAULT '',
+    hit_count     INTEGER NOT NULL DEFAULT 0,
+    items_json    TEXT,
+    preview       TEXT,
+    created_at    TEXT NOT NULL
+);
 """
 
 # VEC_SCHEMA 在 MemoryStore2.__init__ 中按 vec_dim 动态生成
@@ -1699,6 +1708,35 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 (source_ref,),
             ).fetchone()
         return row is not None
+
+    def insert_query_log(
+        self,
+        *,
+        query_text: str,
+        intent: str,
+        hit_count: int,
+        items: list[dict[str, object]],
+        preview: str,
+    ) -> None:
+        """写入一条检索日志到 memory_query_log 表。"""
+        items_dump = json.dumps(
+            [
+                {
+                    "summary": item.get("summary", ""),
+                    "score": item.get("score", 0.0),
+                    "memory_type": item.get("memory_type", ""),
+                }
+                for item in items
+            ],
+            ensure_ascii=False,
+        )
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO memory_query_log (query_text, intent, hit_count, items_json, preview, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (query_text, intent, hit_count, items_dump, preview, _now_iso()),
+            )
+            self._db.commit()
 
     def keyword_match_procedures(self, action_tokens: list[str]) -> list[dict[str, object]]:
         """对 trigger_tags 做纯关键字匹配，无需向量检索。
