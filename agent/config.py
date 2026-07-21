@@ -19,6 +19,7 @@ from agent.config_models import (
     ChannelsConfig,
     Config,
     FitbitIntegrationConfig,
+    LoggingConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
@@ -92,6 +93,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     wiring = _load_wiring_config(data)
     plugins = _load_plugins_config(data)
     app_server = _load_app_server_config(data)
+    logging_cfg = _load_logging_config(data)
     persona_cfg = _as_dict(agent_cfg.get("persona"))
     persona = PersonaConfig(
         identity=str(persona_cfg.get("identity", "") or ""),
@@ -173,6 +175,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         plugins=plugins,
         persona=persona,
         app_server=app_server,
+        logging=logging_cfg,
         router_mode=str(
             data.get("router_mode", "rule")
         ),
@@ -302,6 +305,18 @@ def _load_fitbit_config(data: dict) -> FitbitIntegrationConfig:
     fitbit = _as_dict(integrations.get("fitbit"))
     return FitbitIntegrationConfig(
         enabled=bool(fitbit.get("enabled", False)),
+    )
+
+
+def _load_logging_config(data: dict) -> LoggingConfig:
+    raw = _as_dict(data.get("logging"))
+    passive_db = str(raw.get("passive_db", "") or "").strip()
+    proactive_db = str(raw.get("proactive_db", "") or "").strip()
+    drift_db = str(raw.get("drift_db", "") or "").strip()
+    return LoggingConfig(
+        passive_db=passive_db or "",
+        proactive_db=proactive_db or "",
+        drift_db=drift_db or "",
     )
 
 
