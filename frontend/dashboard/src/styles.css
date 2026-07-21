@@ -801,6 +801,11 @@ body {
     grid-template-columns: 108px 96px 84px 1fr 36px;
   }
 
+  .table-head.mode-logs,
+  .table-row.mode-logs {
+    grid-template-columns: 64px 108px 120px 1fr 60px 72px;
+  }
+
   /* Machined header strip: hairline top highlight, defined bottom edge */
   .table-head {
     @apply sticky top-0 z-[1] min-h-[36px] px-5 font-mono text-[10px] uppercase tracking-[0.14em] text-subtle;

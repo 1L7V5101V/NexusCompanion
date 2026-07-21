@@ -21,6 +21,7 @@ import { exposeRuntime } from "./design/runtime";
 import { PluginDetail, PluginMain } from "./PluginDetail";
 import type {
   DashboardColumn,
+  LogRow,
   MessageRow,
   PageResult,
   PluginBatchAction,
@@ -189,6 +190,11 @@ function App(): React.ReactElement {
   const [activeProactiveKey, setActiveProactiveKey] = useState<string | null>(null);
   const [activeProactiveDetail, setActiveProactiveDetail] = useState<ProactiveTick | null>(null);
   const [activeProactiveSteps, setActiveProactiveSteps] = useState<ProactiveStep[]>([]);
+  const [logItems, setLogItems] = useState<LogRow[]>([]);
+  const [logPage, setLogPage] = useState(1);
+  const [logTurnType, setLogTurnType] = useState("");
+  const [logTotal, setLogTotal] = useState(0);
+  const [activeLogDetail, setActiveLogDetail] = useState<Record<string, unknown> | null>(null);
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -261,6 +267,21 @@ function App(): React.ReactElement {
     setActiveProactiveKey((current) => current && payload.items.some((item) => item.tick_id === current) ? current : null);
   }, [proactivePage, proactiveSection, proactiveSessionFilter, proactiveSortBy, proactiveSortOrder]);
 
+  const loadLogPanel = useCallback(async () => {
+    const params = new URLSearchParams();
+    params.set("page", String(logPage));
+    params.set("page_size", "50");
+    if (logTurnType) params.set("turn_type", logTurnType);
+    const payload = asPageResult(await api<PageResult<LogRow>>(`/api/dashboard/logs?${params.toString()}`));
+    setLogItems(payload.items);
+    setLogTotal(payload.total);
+    setActiveLogDetail((current) => {
+      if (!current) return null;
+      const found = payload.items.find((item) => item.id === (current as Record<string, unknown>).id);
+      return (found ?? null) as unknown as Record<string, unknown> | null;
+    });
+  }, [logPage, logTurnType]);
+
   const loadPluginPanel = useCallback(async (pluginId: string) => {
     const plugin = plugins.find((item) => item.id === pluginId);
     const state = pluginState[pluginId];
@@ -287,12 +308,14 @@ function App(): React.ReactElement {
     if (viewMode === "proactive") {
       await loadProactiveOverview();
       await loadProactivePanel();
+    } else if (viewMode === "logs") {
+      await loadLogPanel();
     } else if (viewMode.startsWith("plugin:")) {
       await loadPluginPanel(viewMode.slice(7));
     } else {
       await loadMessages();
     }
-  }, [loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadLogPanel, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -361,6 +384,8 @@ function App(): React.ReactElement {
       else if (next === "proactive") {
         await loadProactiveOverview();
         await loadProactivePanel();
+      } else if (next === "logs") {
+        await loadLogPanel();
       } else await loadPluginPanel(next.slice(7));
     });
   };
@@ -400,13 +425,22 @@ function App(): React.ReactElement {
     if (viewMode === "proactive") void run(loadProactivePanel);
   }, [loadProactivePanel, run, viewMode]);
 
+  useEffect(() => {
+    if (viewMode === "logs") void run(loadLogPanel);
+  }, [loadLogPanel, run, viewMode]);
+
   const currentPageCount = currentPluginState
     ? pageCount(currentPluginState.total, currentPluginState.pageSize)
     : viewMode === "proactive"
       ? pageCount(proactiveTotal, proactivePageSize)
-      : pageCount(totalMessages, messagePageSize);
+      : viewMode === "logs"
+        ? pageCount(logTotal, 50)
+        : pageCount(totalMessages, messagePageSize);
 
-  const currentPage = currentPluginState?.page ?? (viewMode === "proactive" ? proactivePage : messagePage);
+  const currentPage = currentPluginState?.page
+    ?? (viewMode === "proactive" ? proactivePage
+      : viewMode === "logs" ? logPage
+      : messagePage);
 
   const changePage = (delta: number): void => {
     if (currentPage + delta < 1 || currentPage + delta > currentPageCount) return;
@@ -430,6 +464,7 @@ function App(): React.ReactElement {
         }));
       });
     } else if (viewMode === "proactive") setProactivePage((page) => page + delta);
+    else if (viewMode === "logs") setLogPage((page) => page + delta);
     else setMessagePage((page) => page + delta);
   };
 
@@ -517,6 +552,10 @@ function App(): React.ReactElement {
               <span className="section-tab-label">Proactive</span>
               <span className="section-tab-count">{proactiveOverview?.counts.tick_logs ?? proactiveTotal}</span>
             </button>
+            <button type="button" className={`section-tab ${viewMode === "logs" ? "active" : ""}`} onClick={() => { setLogPage(1); selectView("logs"); }}>
+              <span className="section-tab-label">Logs</span>
+              <span className="section-tab-count">{logTotal}</span>
+            </button>
             {plugins.filter((p) => !hiddenPlugins[p.id]).map((plugin) => (
               <button key={plugin.id} type="button" className={`section-tab ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} onClick={() => selectView(`plugin:${plugin.id}`)}>
                 <span className="section-tab-label">{plugin.label}</span>
@@ -585,6 +624,17 @@ function App(): React.ReactElement {
               </div>
             )}
 
+            {viewMode === "logs" && (
+              <div className="filters-stack">
+                <select value={logTurnType} onChange={(event) => { setLogTurnType(event.target.value); setLogPage(1); }}>
+                  <option value="">全部 type</option>
+                  <option value="passive">passive</option>
+                  <option value="proactive">proactive</option>
+                  <option value="drift">drift</option>
+                </select>
+              </div>
+            )}
+
             {viewMode.startsWith("plugin:") && currentPlugin && currentPluginState && currentPlugin.renderNavBody && (
               <PluginNavBody
                 plugin={currentPlugin}
@@ -637,13 +687,20 @@ function App(): React.ReactElement {
                 <Rows
                   viewMode={viewMode}
                   messages={messages}
+                  logItems={logItems}
                   proactiveItems={proactiveItems}
                   plugin={currentPlugin}
                   pluginState={currentPluginState}
                   selectedMessageIds={selectedMessageIds}
                   activeMessage={activeMessage}
                   activeProactiveKey={activeProactiveKey}
+                  activeLogId={activeLogDetail?.id as number ?? null}
                   onSelectMessage={(msg) => setActiveMessage((current) => current?.id === msg.id ? null : msg)}
+                  onSelectLog={(item) => void run(async () => {
+                    setActiveLogDetail((current) => (current as Record<string, unknown> | null)?.id === item.id ? null : item as unknown as Record<string, unknown>);
+                    const detail = await api<Record<string, unknown>>(`/api/dashboard/logs/${encodePath(item.turn_type)}/${item.id}`).catch(() => null);
+                    if (detail) setActiveLogDetail(detail);
+                  })}
                   onSelectProactive={(item) => void run(async () => {
                     setActiveProactiveKey((current) => {
                       if (current === item.tick_id) return null;
@@ -686,7 +743,7 @@ function App(): React.ReactElement {
                 />
               </div>
               <footer className="table-foot">
-                <div>{tableMeta(viewMode, totalMessages, proactiveTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
+                <div>{tableMeta(viewMode, totalMessages, proactiveTotal, logTotal, currentPlugin, currentPluginState, proactiveSessionFilter)}</div>
                 <div className="pager">
                   <button className="ghost" type="button" disabled={currentPage <= 1} onClick={() => changePage(-1)}>‹</button>
                   <span>{currentPage} / {currentPageCount}</span>
@@ -700,6 +757,7 @@ function App(): React.ReactElement {
                 viewMode={viewMode}
                 activeSession={activeSession}
                 activeMessage={activeMessage}
+                activeLogDetail={activeLogDetail}
                 activeProactiveDetail={activeProactiveDetail}
                 activeProactiveSteps={activeProactiveSteps}
                 plugin={currentPlugin}
@@ -710,6 +768,7 @@ function App(): React.ReactElement {
                   setActiveSession(null);
                   setActiveMessage(null);
                   setActiveProactiveKey(null);
+                  setActiveLogDetail(null);
                   if (currentPlugin) {
                     setPluginState(c => {
                       const ps = c[currentPlugin.id];
@@ -878,6 +937,16 @@ function TableHead(props: {
       <div>Summary</div><div />
     </div>;
   }
+  if (props.viewMode === "logs") {
+    return <div className="table-head mode-logs">
+      <div>Type</div>
+      <div>Session</div>
+      <div>Timestamp</div>
+      <div>Model</div>
+      <div>Tokens</div>
+      <div>Duration</div>
+    </div>;
+  }
   return <div className="table-head mode-messages">
     <div />
     <SortHead label="Session Key" active={props.messageSortBy === "session_key"} order={props.messageSortOrder} onClick={() => props.onSort("messages", "session_key")} />
@@ -896,14 +965,17 @@ function SortHead(props: { label: string; active: boolean; order: SortOrder; onC
 function Rows(props: {
   viewMode: ViewMode;
   messages: MessageRow[];
+  logItems: LogRow[];
   proactiveItems: ProactiveTick[];
   plugin: PluginConfig | null;
   pluginState: PluginState | null;
   selectedMessageIds: Set<string>;
   activeMessage: MessageRow | null;
   activeProactiveKey: string | null;
+  activeLogId: number | null;
   onSelectMessage(item: MessageRow): void;
   onSelectProactive(item: ProactiveTick): void;
+  onSelectLog(item: LogRow): void;
   onSelectPluginRow(row: Record<string, unknown>): void;
   onTogglePluginRow(id: string): void;
   setSelectedMessageIds(value: Set<string>): void;
@@ -939,6 +1011,22 @@ function Rows(props: {
       <div />
     </div>)}</>;
   }
+  if (props.viewMode === "logs") {
+    return <>{props.logItems.map((item) => (
+      <div
+        key={item.id}
+        className={`table-row mode-logs ${props.activeLogId === item.id ? "active" : ""}`}
+        onClick={() => props.onSelectLog(item)}
+      >
+        <div><span className="type-pill">{item.turn_type}</span></div>
+        <div className="cell-session mono">{formatSessionKeyForTable(item.session_key)}</div>
+        <div className="cell-time mono">{shortTs(item.timestamp)}</div>
+        <div className="cell-model">{item.llm_model ?? "-"}</div>
+        <div className="cell-tokens mono">{(item.input_tokens ?? 0) + (item.output_tokens ?? 0)}</div>
+        <div className="cell-duration mono">{item.turn_duration_ms != null ? `${item.turn_duration_ms}ms` : "-"}</div>
+      </div>
+    ))}</>;
+  }
   return <>{props.messages.map((item) => <div key={item.id} className={`table-row mode-messages ${props.activeMessage?.id === item.id ? "active" : ""} ${props.selectedMessageIds.has(item.id) ? "selected" : ""}`} onClick={() => props.onSelectMessage(item)}>
     <label className="checkbox-cell" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={props.selectedMessageIds.has(item.id)} onChange={(event) => toggleSet(item.id, event.target.checked, props.selectedMessageIds, props.setSelectedMessageIds)} /></label>
     <div className="cell-session mono" title={item.session_key}>{formatSessionKeyForTable(item.session_key)}</div>
@@ -954,6 +1042,7 @@ function DetailPane(props: {
   viewMode: ViewMode;
   activeSession: SessionRow | null;
   activeMessage: MessageRow | null;
+  activeLogDetail: Record<string, unknown> | null;
   activeProactiveDetail: ProactiveTick | null;
   activeProactiveSteps: ProactiveStep[];
   plugin: PluginConfig | null;
@@ -964,6 +1053,26 @@ function DetailPane(props: {
 }): React.ReactElement {
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
+  }
+  if (props.viewMode === "logs") {
+    const log = props.activeLogDetail;
+    if (!log) return <EmptyDetail text="点开日志条目后，这里会显示完整 LLM 调用记录、提示词和响应。" />;
+    return <div className="detail-wrap">
+      <div className="detail-toolbar"><div><div className="detail-title">Turn Log 详情</div><div className="detail-subtext">{String(log.session_key ?? "")} · {String(log.turn_type ?? "")}</div></div><button className="ai-close-btn" type="button" title="关闭面板" onClick={props.onClose}>✕</button></div>
+      <div className="detail-grid">
+        {detailRow("type", <code>{String(log.turn_type ?? "")}</code>)}
+        {detailRow("session", <code>{String(log.session_key ?? "")}</code>)}
+        {detailRow("timestamp", <code>{String(log.timestamp ?? "")}</code>)}
+        {detailRow("model", <code>{String(log.llm_model ?? "-")}</code>)}
+        {detailRow("input_tokens", <code>{(log.input_tokens ?? "?") as number}</code>)}
+        {detailRow("output_tokens", <code>{(log.output_tokens ?? "?") as number}</code>)}
+        {detailRow("duration", <code>{log.turn_duration_ms != null ? `${String(log.turn_duration_ms)}ms` : "-"}</code>)}
+      </div>
+      {log.user_prompt != null && <div className="detail-block"><div className="detail-label">User Prompt</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(log.user_prompt as string) }} /></div>}
+      {log.system_prompt != null && <div className="detail-block"><div className="detail-label">System Prompt</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(log.system_prompt as string) }} /></div>}
+      {log.messages != null && <div className="detail-block"><div className="detail-label">Messages</div><JsonTreeBlock data={log.messages} /></div>}
+      {log.llm_response != null && <div className="detail-block"><div className="detail-label">LLM Response</div><div className="detail-content" dangerouslySetInnerHTML={{ __html: renderMarkdown(log.llm_response as string) }} /></div>}
+    </div>;
   }
   if (props.viewMode === "proactive") {
     const item = props.activeProactiveDetail;
@@ -1054,9 +1163,10 @@ function columnCellClass(column: DashboardColumn): string {
   return classes.filter(Boolean).join(" ");
 }
 
-function tableMeta(viewMode: ViewMode, totalMessages: number, proactiveTotal: number, plugin: PluginConfig | null, pluginState: PluginState | null, proactiveSessionFilter: string): string {
+function tableMeta(viewMode: ViewMode, totalMessages: number, proactiveTotal: number, logTotal: number, plugin: PluginConfig | null, pluginState: PluginState | null, proactiveSessionFilter: string): string {
   if (plugin && pluginState) return plugin.countTitle ? plugin.countTitle(pluginState.total) : `共 ${pluginState.total} 条`;
   if (viewMode === "proactive") return proactiveSessionFilter ? `共 ${proactiveTotal} 条 tick · session: ${proactiveSessionFilter}` : `共 ${proactiveTotal} 条 tick`;
+  if (viewMode === "logs") return `共 ${logTotal} 条日志`;
   return `共 ${totalMessages} 条`;
 }
 
@@ -1071,6 +1181,7 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
 function viewLabel(viewMode: ViewMode, plugin: PluginConfig | null): string {
   if (plugin) return plugin.viewLabel || plugin.label;
   if (viewMode === "proactive") return "proactive";
+  if (viewMode === "logs") return "logs";
   return "messages";
 }
 

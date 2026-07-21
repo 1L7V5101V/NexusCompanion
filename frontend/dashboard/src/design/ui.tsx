@@ -8,6 +8,10 @@ import { cn } from "./cn";
 // is exposed to runtime-injected plugin panels (see pluginRuntime.ts).
 // ---------------------------------------------------------------------------
 
+export function Grid({ columns, children, className }: { columns: number; children: ReactNode; className?: string }) {
+  return <div className={cn("grid", `grid-cols-${columns}`, "gap-4", className)}>{children}</div>;
+}
+
 export function ShortcutKey({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <kbd
