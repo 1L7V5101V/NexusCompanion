@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
     from agent.tools.registry import ToolRegistry
+    from logging.turn_logger import RoutingTurnLogger
     from session.manager import SessionManager
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 
@@ -349,6 +350,7 @@ class PassiveTurnPipeline:
                 self._context,
                 self._history_window,
                 plugin_modules=cast("list[Any]", self._after_turn_plugin_modules),
+                turn_logger=self._turn_logger,
             ),
             frame_factory=AfterTurnFrame,
         )
@@ -799,6 +801,7 @@ class DefaultReasoner(Reasoner):
         context: "ContextBuilder | None" = None,
         session_manager: "SessionManager | None" = None,
         event_bus: "EventBus | None" = None,
+        turn_logger: "RoutingTurnLogger | None" = None,
     ) -> None:
         self._llm = llm
         self._llm_config = llm_config
@@ -809,6 +812,7 @@ class DefaultReasoner(Reasoner):
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
+        self._turn_logger = turn_logger
         self._prompt_render_plugin_modules: list[object] = []
         self._before_step_plugin_modules: list[object] = []
         self._after_step_plugin_modules: list[object] = []
@@ -1048,6 +1052,8 @@ class DefaultReasoner(Reasoner):
                     thinking=result.thinking,
                     streamed=result.streamed,
                     context_retry=retry_trace,
+                    initial_messages=result.initial_messages,
+                    tools_schema=result.tools_schema,
                 )
             except ContentSafetyError:
                 if attempt < len(attempts) - 1:
@@ -1108,6 +1114,8 @@ class DefaultReasoner(Reasoner):
         tools_used: list[str] = []
         tools_unlocked: list[str] = []
         tool_chain: list[dict[str, Any]] = []
+        self._log_initial_messages = list(initial_messages)
+        self._log_tools_schema = self._tools.get_schemas()
         # 2. 初始化本轮可见工具集合。
         visible_names: set[str] | None = None
         visible_order: list[str] | None = None
@@ -1825,6 +1833,8 @@ class DefaultReasoner(Reasoner):
         cache_hit_tokens: int,
         cache_seen: bool,
         tools_unlocked: list[str] | None = None,
+        initial_messages: list[dict] | None = None,
+        tools_schema: list[dict] | None = None,
     ) -> ReasonerResult:
         # 1. 先把 tool_chain 扁平化成 invocations。
         invocations: list[LLMToolCall] = []
@@ -1875,6 +1885,10 @@ class DefaultReasoner(Reasoner):
             thinking=thinking,
             streamed=streamed,
             metadata=metadata,
+            initial_messages=initial_messages
+                or getattr(self, "_log_initial_messages", []),
+            tools_schema=tools_schema
+                or getattr(self, "_log_tools_schema", []),
         )
 
     @staticmethod

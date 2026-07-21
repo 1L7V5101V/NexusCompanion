@@ -24,9 +24,11 @@ from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from bus.events_lifecycle import TurnCommitted
+from logging.models import TurnLogData
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
+    from logging.turn_logger import RoutingTurnLogger
     from session.manager import Session
 
 logger = logging.getLogger(__name__)
@@ -261,12 +263,74 @@ class _ReturnOutboundMessageModule:
         return frame
 
 
+class _LogTurnModule:
+    """在 turn 完成后, 将 turn 数据写入对应的 SQLite 日志库。"""
+
+    slot = "after_turn.log_turn"
+    requires: tuple[str, ...] = ()
+
+    def __init__(self, turn_logger: RoutingTurnLogger | None = None) -> None:
+        self._turn_logger = turn_logger
+
+    async def run(self, frame: AfterTurnFrame) -> AfterTurnFrame:
+        if self._turn_logger is None:
+            return frame
+
+        snap = frame.input
+        state = snap.state
+        msg = state.msg
+        ctx = snap.ctx
+
+        # 从 context_retry 中提取 token 统计
+        react_stats: dict[str, int] = {}
+        if ctx.context_retry:
+            react_stats = cast(
+                dict[str, int], ctx.context_retry.get("react_stats") or {}
+            )
+
+        retry_attempts_raw: list[dict[str, object]] = (
+            cast(list[dict[str, object]], ctx.context_retry.get("attempts"))
+            if ctx.context_retry
+            else []
+        )
+
+        data = TurnLogData(
+            session_key=state.session_key,
+            turn_type="passive",
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            timestamp=(
+                msg.timestamp.isoformat()
+                if hasattr(msg.timestamp, "isoformat")
+                else str(msg.timestamp)
+            ),
+            messages=ctx.initial_messages,
+            tools_schema=ctx.tools_schema,
+            llm_response=ctx.reply,
+            tool_calls=list(ctx.tool_chain),
+            input_tokens=react_stats.get("turn_input_sum_tokens", 0),
+            cache_hit_tokens=react_stats.get("cache_hit_tokens", 0),
+            retry_attempts=list(retry_attempts_raw),
+            metadata={
+                "thinking": ctx.thinking,
+                "tools_used": list(ctx.tools_used),
+                "streamed": ctx.streamed,
+                "raw_text": ctx.response_metadata.raw_text if ctx.response_metadata else "",
+                "meme_tag": ctx.meme_tag,
+            },
+        )
+
+        await self._turn_logger.log(data)
+        return frame
+
+
 def default_after_turn_modules(
     bus: EventBus,
     outbound: OutboundPort,
     context: ContextBuilder,
     history_window: int = 500,
     plugin_modules: AfterTurnModules | None = None,
+    turn_logger: RoutingTurnLogger | None = None,
 ) -> AfterTurnModules:
     builtins: AfterTurnModules = [
         _BuildTurnWorkModule(context, history_window),
@@ -274,6 +338,7 @@ def default_after_turn_modules(
         _BuildTurnCommittedModule(),
         _FanoutTurnCommittedModule(bus),
         _LogBudgetModule(),
+        _LogTurnModule(turn_logger),
         _BuildAfterTurnCtxModule(),
         _CollectAfterTurnTelemetrySlotsModule(),
         _FanoutAfterTurnCtxModule(bus),

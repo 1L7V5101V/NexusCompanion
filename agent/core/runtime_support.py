@@ -122,6 +122,8 @@ class TurnRunResult:
     thinking: str | None = None
     streamed: bool = False
     context_retry: dict[str, object] = field(default_factory=dict)
+    initial_messages: list[dict] = field(default_factory=list)
+    tools_schema: list[dict] = field(default_factory=list)
 
 
 class AgentLoopRunner(Protocol):
