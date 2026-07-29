@@ -236,7 +236,6 @@ class MemoryOptimizer:
 
         # 1. 冻结本轮 pending 并读取当前长期记忆
         pending = self._memory.snapshot_pending()
-        # 2. MEMORY 阶段完成明确提交或回滚后才离开事务
         try:
             current_memory = self._memory.read_long_term().strip()
             if not current_memory and not pending:
@@ -244,7 +243,14 @@ class MemoryOptimizer:
                 logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
                 return
 
-            merged_memory = await self._merge_memory(current_memory, pending)
+            # 2. 间隔延迟后并行启动 MEMORY 合并和 SELF 更新
+            await asyncio.sleep(self._STEP_DELAY_SECONDS)
+            merged_memory, _ = await asyncio.gather(
+                self._merge_memory(current_memory, pending),
+                self._update_self(pending),
+            )
+
+            # 3. 两路都成功，统一处理 snapshot
             if merged_memory:
                 if current_memory:
                     self._memory.backup_long_term()
@@ -264,10 +270,6 @@ class MemoryOptimizer:
         except BaseException:
             self._memory.rollback_pending_snapshot()
             raise
-
-        # 3. 使用同一批 pending 更新自我认知
-        await asyncio.sleep(self._STEP_DELAY_SECONDS)
-        await self._update_self(pending)
 
     async def _merge_memory(self, memory: str, pending: str) -> str:
         today = datetime.now().strftime("%Y-%m-%d")
