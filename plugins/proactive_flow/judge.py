@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
+from agent.prompting import is_context_frame
 from agent.tool_hooks import ToolExecutionRequest
 from core.common.diagnostic_log import diagnostic_line
 from proactive_v2.config import ProactiveConfig
@@ -38,6 +40,11 @@ class ProactiveJudge:
         messages: list[dict],
         gw_result: GatewayResult | None,
     ) -> None:
+        # 硬编码 Alert 快速路径：有 alert 就跳过 LLM 工具循环
+        if ctx.fetched_alerts:
+            await self._execute_alert_path(ctx, messages, gw_result)
+            return
+
         if self._llm_fn is None:
             return
 
@@ -98,6 +105,111 @@ class ProactiveJudge:
                 ok = await self._run_tool_step(messages, ctx, loop_tag="reflect", tool_choice="auto")
                 if not ok:
                     break
+
+    async def _execute_alert_path(
+        self,
+        ctx: AgentTickContext,
+        messages: list[dict],
+        gw_result: GatewayResult | None,
+    ) -> None:
+        """Alert 快速路径：有 alert 时走一次 LLM 生成消息，跳过分类工具循环。
+
+        复用已构建好的 messages（含身份/记忆/规则等上下文），
+        追加 alert 数据和一条简短指令，调一次 llm_fn 即收尾。
+        """
+        # 1. user_busy 检查
+        if self._tool_deps.recent_chat_fn:
+            try:
+                recent_raw = await self._tool_deps.recent_chat_fn(n=20)
+            except Exception:
+                recent_raw = []
+            recent_messages: list[dict] = []
+            for m in recent_raw or []:
+                content = str(m.get("content") or "")
+                if is_context_frame(content):
+                    continue
+                if m.get("role") == "user" or (
+                    m.get("role") == "assistant" and not m.get("proactive")
+                ):
+                    recent_messages.append(m)
+            user_busy = False
+            last_user_idx: int | None = None
+            for i in range(len(recent_messages) - 1, -1, -1):
+                if recent_messages[i].get("role") == "user":
+                    last_user_idx = i
+                    break
+            if last_user_idx is not None:
+                last_msg = recent_messages[last_user_idx]
+                ts_str = str(last_msg.get("timestamp") or "")
+                if ts_str:
+                    try:
+                        ts = datetime.fromisoformat(ts_str)
+                        if ts.tzinfo is None:
+                            ts = ts.replace(tzinfo=timezone.utc)
+                        elapsed = (ctx.now_utc - ts).total_seconds()
+                        if 0 <= elapsed <= 1800:
+                            has_reply_after = any(
+                                recent_messages[j].get("role") == "assistant"
+                                for j in range(last_user_idx + 1, len(recent_messages))
+                            )
+                            if has_reply_after:
+                                user_busy = True
+                    except (ValueError, TypeError):
+                        pass
+            if user_busy:
+                ctx.terminal_action = "skip"
+                ctx.skip_reason = "user_busy"
+                return
+
+        # 2. 提取 evidence
+        cited: list[str] = []
+        for alert in ctx.fetched_alerts:
+            ack_server = str(alert.get("ack_server") or "?")
+            event_id = str(alert.get("event_id") or alert.get("id") or "?")
+            cited.append(f"{ack_server}:{event_id}")
+        ctx.cited_item_ids = cited
+
+        # 3. 复用已有的 messages，追加 alert 数据和收尾指令
+        alert_lines: list[str] = []
+        for i, alert in enumerate(ctx.fetched_alerts, 1):
+            title = str(alert.get("title") or "").strip()
+            content = str(alert.get("content") or alert.get("body") or "").strip()
+            if title and content:
+                alert_lines.append(f"[{i}] {title}：{content}")
+            elif title:
+                alert_lines.append(f"[{i}] {title}")
+            elif content:
+                alert_lines.append(f"[{i}] {content}")
+        messages.append({
+            "role": "user",
+            "content": "【本轮 Alert】\n" + "\n".join(alert_lines),
+        })
+        messages.append({
+            "role": "user",
+            "content": (
+                f"本轮有 {len(ctx.fetched_alerts)} 条告警，"
+                "请基于上面已有的所有上下文和你的身份风格，"
+                "将它们整合成一条自然的推送消息发给用户，"
+                "然后调用 finish_turn(decision=reply) 结束。"
+                "不要调用除 finish_turn 以外的任何工具。"
+            ),
+        })
+
+        # 4. 一次 LLM 调用生成消息文本（无工具，纯文本生成）
+        llm_response = await self._llm_fn(messages, schemas=[])
+        final_text = ""
+        if llm_response is not None and isinstance(llm_response, dict):
+            final_text = str(llm_response.get("content") or "").strip()
+        if not final_text:
+            logger.warning(
+                "[proactive_v2] alert_path: llm_fn returned no content, using fallback"
+            )
+            titles = [str(a.get("title", "") or "").strip() for a in ctx.fetched_alerts if a.get("title")]
+            contents = [str(a.get("content") or a.get("body") or "").strip() for a in ctx.fetched_alerts if a.get("content") or a.get("body")]
+            parts = titles or contents or ["有新的通知"]
+            final_text = "；".join(parts)
+        ctx.final_message = final_text
+        ctx.terminal_action = "reply"
 
     async def _run_tool_step(
         self,
