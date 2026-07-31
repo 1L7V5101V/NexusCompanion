@@ -1,0 +1,144 @@
+graph TB
+    %% ====== 样式 ======
+    classDef mem fill:#ffe082,color:#e65100
+    classDef step fill:#fff8e1,color:#e65100,stroke:#ffe082,stroke-width:1px
+    classDef gate fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef file fill:#ffffff,color:#bf360c,stroke:#ffcc80,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+
+    %% ──── 触发层 ────
+    subgraph TRIGGER[同步触发层]
+        direction TB
+        BT[PassiveTurnPipeline P1 BeforeTurn<br/>_MemoryContextGuardModule] --> BT_CHECK
+        BT_CHECK{MemoryContextGuard<br/>pending 堆积 >= threshold?}
+        BT_CHECK -->|否, 跳过| BT_SKIP["放行 turn<br/>不触发合并<br/>→ pending 不足，无需阻塞"]
+        BT_CHECK -->|是| BT_TRIGGER["调用 consolidator.trigger()<br/>→ _consolidate_unlocked()<br/>走 LLM 提取 + 文件写入<br/>（与下方 ASYNC 层同一段代码）"]
+        BT_TRIGGER --> BT_RES{成功?}
+        BT_RES -->|成功, 返回 True| BT_PASS["放行 turn<br/>consolidate 已同步完成<br/>→ 文件已写入, 不阻塞用户"]
+        BT_RES -->|失败 / 超时 / 异常| BT_BLOCK["阻塞 turn<br/>返回 abort_reply<br/>要求先修复 consolidation<br/>→ 防止 pending 无限堆积"]
+        BT_RES -->|consolidator 为空| BT_BLOCK
+    end
+
+    BT_BLOCK["阻塞 turn<br/>返回 abort_reply<br/>→ 防止 pending 无限堆积"] -->|绕过后续阶段| MBO[MBO MessageBus outbound]
+
+    BT_PASS -->|合并成功<br/>放行| AT
+    BT_SKIP -->|不触发合并<br/>放行| AT
+
+    AT[AfterTurn 执行完<br/>Fanout TurnCommitted] --> AT_EVENT
+
+    %% ──── 异步写文件层 ────
+    subgraph ASYNC[异步文件写入层 — MarkdownMemoryMaintenance]
+        direction TB
+        AT_EVENT[TurnCommitted 事件] -.-> SUB
+        SUB["on_turn_committed<br/>检查 event.extra.skip_post_memory<br/>→ 为 true 时跳过本轮维护"] --> SUB_SKIP{skip_post_memory?}
+        SUB_SKIP -->|是| SUB_DROP["丢弃, 不处理<br/>→ skip_post_memory 标记跳过<br/>（调试/测试/调度器内部消息）"]
+        %% event.extra.get("skip_post_memory")。这个标记来源：
+        %% InboundMessage 的 metadata 携带 skip_post_memory: true
+        %% 插件可在 AfterReasoning / AfterTurn 阶段通过 EventBus 设置
+        %% 设了这个标记的场景通常是：不需要记忆归档的内部消息（如系统提示、ping 等）。
+        SUB_SKIP -->|否| ENQUEUE["enqueue _maintenance_queue<br/>按 session_key 入队<br/>→ 将任务加入异步队列等待处理"]
+        ENQUEUE --> WORKER["异步 _run_maintenance_queue<br/>按 session 加锁串行<br/>→ 串行处理同一 session 的维护请求"]
+
+        WORKER --> CHECK_CONS{_should_consolidate?<br/>pending 够多?}
+        CHECK_CONS -->|否, 仅刷新| REFRESH["refresh_recent_turns<br/>替换 RECENT_CONTEXT.md 中<br/>Recent Turns 区块（其余不变）"]
+        CHECK_CONS -->|是, 执行合并| PREPARE
+
+        subgraph PREPARE[consolidate — LLM 提取阶段]
+            direction TB
+            PREP_MSG["session.messages<br/>当前 session 全部对话历史<br/>格式: list[dict] 每条含:<br/>role(user/assistant) + content + timestamp"]
+            PREP_MSG --> PREP_WIN
+            PREP_MSG --> PREP_TURNS
+            PREP_WIN["_select_consolidation_window<br/>取 [last_consolidated → total - keep_count]<br/>之间未归档的旧消息归档<br/>保留最近 K 条不被处理"]
+            PREP_WIN -->|window.old_messages<br/>格式化为对话文本| PREP_LLM1
+            PREP_WIN -->|compact_source<br/>格式化为对话文本| PREP_LLM2
+
+            PREP_LLM1["LLM 调用 #1: event_extract<br/>prompt：记忆提取代理<br/>→ 返回 JSON"]
+            %% 只返回合法 JSON
+            PREP_LLM1 -->|"LLM 输出的 pending_items<br/>带 tag (identity / preference / key_info<br/>health_long_term / requested_memory<br/>correction / agent_context)"| PREP_PA["格式化 pending_items<br/>(tag过滤 + 去重)"]
+            %% prompt: d:\.Projects\NexusCompanion\core\memory\markdown.py (lines 836-855)
+            PREP_LLM1 -->|"LLM 输出的 history_entries<br/>带 summary (1-2 句主题摘要)<br/>+ emotional_weight (0-10)"| PREP_HE["格式化 history_entries<br/>(内容校验 + 转标准日志格式)"]
+            %% prompt: d:\.Projects\NexusCompanion\core\memory\markdown.py (lines 796-831)
+            PREP_PA --> PREP_DONE
+            PREP_HE --> PREP_DONE
+
+            PREP_LLM2["LLM 调用 #2: recent_context<br/>prompt：近期语境压缩代理<br/>→ 返回 JSON"]
+            PREP_LLM2 -->|"active_topics → 最近持续关注<br/>user_preferences → 最近明确偏好<br/>follow_ups → 最近待延续话题<br/>avoidances → 最近避免事项"| PREP_COMP[Compression 区块]
+            PREP_LLM2 -->|ongoing_threads<br/>→ Ongoing Threads| PREP_THREAD[Ongoing Threads 区块]
+            PREP_COMP --> PREP_RC
+            PREP_THREAD -->  PREP_RC
+            PREP_TURNS[Recent Turns 区块<br/>取 session 尾部最近 K 条消息<br/>纯格式化, 无 LLM 调用] --> PREP_RC
+            PREP_RC[组装 recent_context 全文] --> PREP_DONE
+
+            PREP_DONE["_ConsolidationDraft<br/>合并草案<br/>→ 包含 pending_items + history_entries + recent_context"]
+        end
+
+        PREP_DONE --> PREP_FAIL{LLM 成功?}
+        PREP_FAIL -->|失败| PREP_ERR["记录失败 trace<br/>不写文件<br/>→ LLM 提取失败，跳过本轮写入"]
+        PREP_FAIL -->|成功| COMMIT_H
+
+        subgraph COMMIT[commit — 物理写入]
+            direction TB
+            COMMIT_H["append_history_once<br/>← draft.history_entry_payloads<br/>→ HISTORY.md（统一追加）"] --> COMMIT_P
+            COMMIT_P["append_pending_once<br/>← draft.pending_items<br/>→ PENDING.md"] --> COMMIT_J
+            COMMIT_J["append_journal<br/>← draft.history_entry_payloads 按日期分片<br/>→ journal/YYYY-MM-DD.md"] --> COMMIT_R
+            COMMIT_R["write_recent_context<br/>← draft.recent_context_text<br/>→ 覆写RECENT_CONTEXT.md"] --> COMMIT_L
+            COMMIT_L["更新 session.last_consolidated<br/>= draft.window.consolidate_up_to<br/>→ 下次从此开始"] --> COMMIT_E
+            COMMIT_E["Emit ConsolidationCommitted<br/>→ 通知 Rachael / 其他引擎"]
+        end
+
+        REFRESH --> DONE
+        COMMIT --> DONE
+        DONE[异步写文件完成]
+    end
+
+    %% ──── 后台优化层 ────
+    subgraph OPT[MemoryOptimizer — 后台定时任务]
+        direction TB
+        OPT_START["MemoryOptimizerLoop.run()<br/>while True: sleep(secs)<br/>secs = (now//interval+1)*interval - now<br/>例: interval=3600, 14:37 触发后<br/>sleep 到 15:00 再跑下一次<br/>默认 64800s = 18h"] --> OPT_CHECK
+        OPT_CHECK{PENDING.md 有内容?}
+        OPT_CHECK -->|空, 跳过| OPT_SKIP[等下一 tick]
+        OPT_CHECK -->|有| OPT_READ["读取 PENDING 增量事实<br/>+ MEMORY.md（用户档案）<br/>+ SELF.md（自我认知）"]
+        OPT_READ -->|PENDING.md + MEMORY.md| OPT_MERGE["LLM 合并 PENDING 到 MEMORY.md<br/>backup 旧 MEMORY → 覆写"]
+        OPT_READ -->|PENDING.md + SELF.md| OPT_SELF["LLM 更新 SELF.md<br/>调整自我认知"]
+        OPT_MERGE --> OPT_CLEAR
+        OPT_SELF --> OPT_CLEAR
+        OPT_CLEAR["两路完成后<br/>提交 snapshot（清空 PENDING）<br/>任一失败则回滚"]
+    end
+
+    %% ──── 文件参照 ────
+    subgraph FILES[记忆文件系统]
+        direction TB
+        F_MEM[MEMORY.md<br/>长期用户档案]
+        F_SELF[SELF.md<br/>Nexus 自我认知]
+        F_PENDING[PENDING.md<br/>待合并的增量事实]
+        F_HISTORY[HISTORY.md<br/>可 grep 事件日志]
+        F_RECENT[RECENT_CONTEXT.md<br/>近期上下文摘要<br/>最近 K 条消息: user 全文<br/>+ assistant 截 60 字预览]
+        F_JOURNAL[journal/YYYY-MM-DD.md<br/>每日时间线]
+    end
+
+    %% ──── 连线 ────
+    COMMIT_H -.->|追加| F_HISTORY
+    COMMIT_P -.->|追加| F_PENDING
+    COMMIT_J -.->|追加| F_JOURNAL
+    COMMIT_R -.->|覆写| F_RECENT
+    REFRESH -.->|覆写| F_RECENT
+    OPT_READ -.->|读取| F_PENDING
+    OPT_READ -.->|读取| F_MEM
+    OPT_READ -.->|读取| F_SELF
+    OPT_MERGE -.->|覆写| F_MEM
+    OPT_SELF -.->|覆写| F_SELF
+    OPT_CLEAR -.->|清空| F_PENDING
+
+    %% ====== 样式 ======
+    class BT,BT_CHECK,BT_TRIGGER,BT_RES,BT_SKIP,BT_PASS,BT_BLOCK gate
+    class AT step
+    class AT_EVENT,SUB,SUB_SKIP,SUB_DROP,ENQUEUE step
+    class WORKER,CHECK_CONS,REFRESH step
+    class PREPARE,PREP_WIN,PREP_MSG,PREP_LLM1,PREP_LLM2,PREP_PA,PREP_HE,PREP_RC,PREP_DONE,PREP_FAIL,PREP_ERR,PREP_COMP,PREP_THREAD,PREP_TURNS step
+    class COMMIT,COMMIT_H,COMMIT_P,COMMIT_J,COMMIT_R,COMMIT_L,COMMIT_E step
+    class DONE step
+    class OPT_START,OPT_CHECK,OPT_SKIP,OPT_READ,OPT_MERGE,OPT_SELF,OPT_CLEAR async
+    class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
+    class MBO final
