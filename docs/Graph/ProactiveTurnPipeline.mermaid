@@ -1,0 +1,276 @@
+%%{
+init: {
+  "flowchart": {
+    "padding": 8,
+    "htmlLabels": true,
+    "nodeSpacing": 10,
+    "rankSpacing": 50
+  }
+}
+}%%
+
+
+graph TB
+    %% ====== 样式 ======
+    classDef proPhase fill:#f8bbd0,color:#880e4f
+    classDef subphase fill:#fce4ec,color:#880e4f
+    classDef module fill:#ffffff,color:#ad1457,stroke:#f8bbd0,stroke-width:1px
+    classDef decision fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef skip fill:#e0e0e0,color:#616161,stroke:#9e9e9e,stroke-width:2px,stroke-dasharray:5 3
+    classDef file fill:#ffffff,color:#bf360c,stroke:#ffcc80,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef platform fill:#e8f5e9,color:#1b5e20,stroke:#a5d6a7,stroke-width:1px
+    classDef mem fill:#ffe082,color:#e65100
+    classDef driftPhase fill:#a5d6a7,color:#1b5e20
+    classDef proFile fill:#fce4ec,color:#880e4f,stroke:#f8bbd0,stroke-width:1px
+
+    %% ═══════════════════════════════════════════
+    %% 框架调度层（非 Pipeline Phase）
+    %% ═══════════════════════════════════════════
+    subgraph L0[框架调度 — ProactiveLoop]
+        direction TB
+        L_BASE["Energy 电量: compute_energy(last_user_at)<br/>3 尺度指数衰减: τ₁=30min / τ₂=240min / τ₃=2880min<br/>→ d_energy=1-energy → base_score"] --> L_INTERVAL
+        L_INTERVAL["ProactiveScheduler.next_interval<br/>base_score ≥ 0.20 → 2400s（40min）<br/>base_score < 0.20 → 4800s（80min）<br/>±30% jitter"] --> L_WAIT
+        L_WAIT["asyncio.wait_for(wake, timeout)<br/>等待间隔或被外部唤醒"] --> L_TICK
+        L_TICK["ProactiveKernel.run_tick(session_key)<br/>→ 进入 Pipeline"] --> BEGIN
+    end
+
+    BEGIN["AgentTickContext 初始化<br/>tick_id / session_key / now_utc"] --> PHASE1
+
+    %% ═══════════════════════════════════════════
+    %% Phase 1: Gate
+    %% ═══════════════════════════════════════════
+    subgraph PHASE1[Phase 1 — Gate 准入检查]
+        direction TB
+        G1{default_chat_id 有值?}
+        G1 -->|无| G_B1[阻塞: no_target]
+        G1 -->|有| G2{passive_busy?<br/>被动链路正在处理消息?}
+        G2 -->|是| G_B2[阻塞: busy]
+        G2 -->|否| G3{"delivery_cooldown?<br/>agent_tick_delivery_cooldown_hours 内已有发送? (默认1小时)"}
+        G3 -->|否| G_B3[阻塞: cooldown]
+        G3 -->|是| G4{"any_action_gate.should_act?<br/>①每日配额(默认 24 次)<br/>②距上次推送时间(默认5 min)<br/>③用户沉默时长越长，推送概率越高(3%~45%)"}
+        G4 -->|不通过| G_B4[阻塞: presence]
+        G4 -->|通过| G_OK[Gate 通过<br/>context_as_fallback_open 标记]
+    end
+
+    G_OK -->|四道Gate都通过| PHASE2
+    G_B4 -->|不通过| G_BLOCKED[gate_exit → 结束]
+    G_BLOCKED -.->|"Gate 阻断，本轮跳过"| P_END
+
+    %% ═══════════════════════════════════════════
+    %% Phase 2: Fetch 拉取数据
+    %% ═══════════════════════════════════════════
+    subgraph PHASE2[Phase 2 — Fetch 拉取数据]
+        direction TB
+        F_GW["DataGateway.run()<br/>asyncio.gather 并行预取"] --> F_A
+        
+        F_GW --> F_X
+        F_GW --> F_C
+        F_A["_fetch_alerts<br/>MCP 源推送的高优先级告警<br/>（如系统通知/监控告警）<br/>LLM 走快速路径直接回复"] --> F_INJ_A["fetched_alerts ← gw_result.alerts"]
+        F_C["_fetch_context<br/>用户状态数据<br/>（sleep_prob / awake_prob）<br/>→ 作为参考上下文"] --> F_INJ_X["fetched_context ← gw_result.context<br/>（用户状态，参考用，非推送候选）"]
+        F_X["_fetch_content<br/>feed_fn → content_events<br/>+ asyncio.gather 并行 web_fetch 正文"] --> F_X_OUT
+        F_X_OUT["产出两路"] --> F_X_META["content_meta<br/>轻量元数据目录(id/title/source/url)<br/>→ LLM 按需浏览"]
+        F_X_OUT --> F_X_STORE["content_store<br/>{compound_key: 正文全文}<br/>→ get_content 工具按需读取"]
+        F_X_META --> F_INJ_C["ctx.fetched_contents<br/>= content_meta 解析后<br/>（id/ack_server/title/source/url）<br/>ctx.content_store<br/>= {compound_key: 全文}"]
+        F_X_STORE --> F_INJ_C
+        F_INJ_A & F_INJ_C & F_INJ_X --> F_ROUTE{"路由判断"}
+        
+        F_ROUTE -->|"三路皆空"| F_DRIFT_OK{drift_enabled?}
+        F_DRIFT_OK -->|是| F_DRIFT_CHECK{"drift_min_interval_hours<br/>已过冷却?"}
+        F_DRIFT_CHECK -->|是| F_DRIFT["drift → DriftTurnPipeline.run()"]
+        F_DRIFT_CHECK -->|否| F_DRIFT_SKIP["跳过（冷却中）"]
+        F_DRIFT_OK -->|否| F_DRIFT_SKIP
+        F_DRIFT_SKIP --> F_SKIP["skip<br/>terminal_action=skip"]
+        F_ROUTE -->|"alerts / content_meta 有值<br/>或 context_as_fallback_open"| F_ROUTE_OK["→ Prepare"]
+    end
+
+    F_ROUTE_OK -->|"有数据 → 构建 Prompt"| PHASE3
+    F_SKIP -.->|"无数据，跳过"| P_END
+    F_DRIFT -.->|"drift 完成后<br/>→ 进入 Resolve 发或丢"| PHASE5
+
+    %% ═══════════════════════════════════════════
+    %% Phase 3: Prepare 构建 messages
+    %% ═══════════════════════════════════════════
+    subgraph PHASE3[Phase 3 — Prepare 构建 messages]
+        direction TB
+
+        PLUGIN_WRITE["其他插件 Module<br/>(如 drift_flow 等)<br/>在前序步骤中<br/>写入 frame.slots"] -.->|"proactive:prompt:system_bottom:*<br/>proactive:effect:*"| F_COLLECT
+
+        F_COLLECT["扫描 frame.slots 按前缀匹配"] --> F_PICK{匹配前缀}
+        F_PICK -->|"proactive:prompt:system_bottom:*"| F_PROMPT["追加到 system prompt"]
+        F_PICK -->|"proactive:effect:*"| F_EFFECT["写入 tick_log.effects"]
+        F_PICK -->|其他| F_SLOT_IGN[忽略]
+        F_PROMPT & F_EFFECT & F_SLOT_IGN --> F_BUILD
+
+        subgraph F_BUILD[ProactivePromptBuilder 构建三段 messages]
+            direction TB
+            F_SYS_OUT["build_system_prompt()"] --> F_SYS_1["NEXUS_IDENTITY"]
+            F_SYS_OUT --> F_SYS_2["PERSONALITY_RULES"]
+            F_SYS_OUT --> F_SYS_3["插件收集的 prompt 段落"]
+            F_SYS_OUT --> F_SYS_4["主动推送决策模式prompt<br/>身份+规则+分类要求+Content 路径<br/>+ Context-fallback 路径+发送要求"]
+            %% plugins/proactive_flow/prompt.py 第 42-131 行 🔔 模式切换：告诉 LLM "你现在是主动决策Agent" + 三路径规则
+            F_SYS_1 & F_SYS_2 & F_SYS_3 & F_SYS_4 --> F_SYS_DONE["messages[0] role: system"]
+
+            F_CTX_OUT["build_runtime_context_message()"]
+            F_CTX_OUT --> F_CTX_1["tick_state<br/>context_fallback=允许/不允许<br/>alert_count / content_count / context_count"]
+            %% tick_state 是 context frame 中的第一个区块，内容就是四行文本：
+            %% context_fallback=允许
+            %% alert_count=3
+            %% content_count=5
+            %% context_count=0
+            %% context_fallback：来自 Gate 阶段的 context_as_fallback_open 标记。如果为"允许"，意味着本轮即使没有 alert 和 content，LLM 也可以靠 context 数据（记忆/最近聊天）主动发起对话
+            %% alert_count / content_count / context_count：本轮实际拉取到的数据量，让 LLM 知道有多少候选内容需要处理
+            F_CTX_OUT --> F_CTX_2["self_model<br/>← memory.read_self()<br/>→ SELF.md"]
+            F_CTX_OUT --> F_CTX_3["long_term_memory<br/>← memory.read_long_term()<br/>→ MEMORY.md"]
+            F_CTX_OUT --> F_CTX_4["recent_context<br/>← memory.read_recent_context()<br/>→ RECENT_CONTEXT.md"]
+            F_CTX_OUT --> F_CTX_5["alerts<br/>← gw_result.alerts"]
+            F_CTX_OUT --> F_CTX_6["content<br/>← gw_result.content_meta"]
+            F_CTX_OUT --> F_CTX_7["context<br/>← gw_result.context"]
+            F_CTX_OUT --> F_CTX_8["workspace 规则面板<br/>(用户自定义的白名单/黑名单/过滤条件)<br/>← PROACTIVE_CONTEXT.md"]
+            F_CTX_OUT --> F_CTX_9["runtime_clock<br/>(UTC + 本地时间)"]
+            F_CTX_1 & F_CTX_2 & F_CTX_3 & F_CTX_4 & F_CTX_5 & F_CTX_6 & F_CTX_7 & F_CTX_8 & F_CTX_9 --> F_CTX_DONE["messages[1] role: user  (context frame)"]
+
+            F_KICK_OUT["kickoff user_msg<br/>触发 LLM 开始推理，收尾要求"] --> F_KICK_DONE["messages[2] role: user"] %% 开始本轮 proactive 处理。<br/>请基于候选内容和规则，<br/>必须通过工具逐步完成分类，<br/>最后 finish_turn 收尾'
+
+            F_SYS_DONE & F_CTX_DONE & F_KICK_DONE --> F_FINAL["FeedResult<br/>messages = [system, ctx_frame, kickoff]"]
+        end
+    end
+
+    F_FINAL -->|完成message组装| PHASE4
+
+    %% ═══════════════════════════════════════════
+    %% Phase 4: Judge
+    %% ═══════════════════════════════════════════
+    subgraph PHASE4[Phase 4 — Judge LLM 多轮工具循环]
+        direction TB
+
+        J_HEAD["ProactiveJudge.evaluate<br/>ctx.steps_taken < agent_tick_max_steps(默认35 步)"]
+        J_HEAD --> J_ALERT{"有无alert"}
+        J_ALERT -->|"是 → _execute_alert_path"| J_ALERT_PATH["复用已组装好的 messages<br/>追加 alert 数据 + 收尾指令<br/>一次 llm_fn(schemas=[])<br/>纯文本生成，不调工具<br/>→ final_message / terminal_action=reply"]
+        J_ALERT -->|"否（走 Content 分类路径）"| J_LOOP
+
+        J_ALERT_PATH --> J_DONE
+
+        subgraph J_LOOP[Think-Act-Observe 循环]
+            direction TB
+            J_LLM["llm_fn(messages, TOOL_SCHEMAS)<br/>→ LLM 决策：直接回复或调用工具"] --> J_D{tool_calls?}
+            J_D -->|无| J_DONE_N["LLM 未调 finish_turn<br/>→ 走后处理兜底"]
+            J_D -->|有| J_EXEC["ToolExecutor.execute<br/>→ dispatch(name, args, ctx, deps)<br/>→ 执行工具并记录审计"]
+            J_EXEC --> J_AS["append_tool_result<br/>将工具返回结果追加到 messages<br/>→ 让 LLM 看到工具输出继续推理"]
+            J_AS -->|"terminal_action=None<br/>& iteration < max (默认35步)"| J_LLM
+            J_AS -->|"finish_turn 已调用<br/>→ terminal_action≠None"| J_END[循环结束]
+            J_DONE_N --> J_END
+        end
+
+        J_END --> J_C1{"completeness_check<br/>skip + 有未分类 content?"}
+        J_C1 -->|是，要求补充分类（≤5 步）| J_LLM
+        J_C1 -->|否| J_C2{"reflection_pass<br/>terminal_action=None<br/>但有mark_interesting?"}
+        J_C2 -->|是| J_C2_MSG["强制 message_push（≤3 步）"]
+        J_C2_MSG --> J_LLM
+        J_C2 -->|否| J_DONE["Judge 完成 → terminal_action 已定"]
+    end
+
+    J_DONE --> PHASE5
+
+    %% ═══════════════════════════════════════════
+    %% Phase 5: Resolve
+    %% ═══════════════════════════════════════════
+    subgraph PHASE5[Phase 5 — Resolve 决策去重]
+        direction TB
+        RT{terminal_action?}
+        RT -->|reply| RK["build_delivery_key(ctx)<br/>从 cited items 提取 URL/title/id<br/>→ SHA1[:16] 去重指纹"]
+        RK --> DD{"delivery_dedupe<br/>24h 内已推相同内容?"}
+        DD -->|命中| RD["delivery_dedupe<br/>reason=already_sent_similar<br/>→ ack_post_guard_fail"]
+        DD -->|未命中| RM{"message_dedupe?<br/>LLM 语义比较: 与最近<br/>N 条主动推送重复?"}
+        RM -->|命中| RS["message_dedupe<br/>reason=already_sent_similar<br/>→ ack_post_guard_fail"]
+        RM -->|未命中| RP["action=send<br/>TurnResult(decision=reply)"]
+        RT -->|skip| RX["action=skip<br/>TurnResult(decision=skip)<br/>→ ack_discarded"]
+    end
+
+    PHASE5 -.->|"不发送，仅写 tick_log + EventBus"| PHASE7
+    RP -->|执行发送| PHASE6
+
+    %% ═══════════════════════════════════════════
+    %% Phase 6: Send — 执行发送
+    %% ═══════════════════════════════════════════
+    subgraph PHASE6[Phase 6 — Send 执行发送]
+        direction TB
+        D_ORCH["TurnOrchestrator.handle_proactive_turn"]
+        D_ORCH --> D_PERSIST["_persist_proactive_session<br/>→ session.add_message('assistant')<br/>  (proactive=True, evidence, source_refs)<br/>→ append_messages → sessions.db"]
+        D_PERSIST --> D_DISPATCH["outbound.dispatch<br/>→ Channel 层发送给用户"]
+        D_DISPATCH -->|发送成功| D_SENT["presence.record_proactive_sent"]
+        D_SENT --> D_SUCC_EFF["run success_side_effects"]
+        D_SUCC_EFF --> D_MARK["mark_delivery<br/>写 deliveries 表<br/>→ 下次去重依据"]
+        D_SUCC_EFF --> D_CTX["mark_context_only_send<br/>记 context-only 次数<br/>→ Gate 限频依据"]
+        D_SUCC_EFF --> D_ACK["ack_on_success<br/>对 cited/interesting/discarded<br/>逐条通知 MCP 源处理结果"]
+        D_DISPATCH -.->|发送失败| D_FAIL_EFF["run failure_side_effects<br/>→ ack_discarded"]
+    end
+
+    PHASE6-->|发送成功，写入| PHASE7
+
+    %% ═══════════════════════════════════════════
+    %% Phase 7: Persist — 持久化 + 日志
+    %% ═══════════════════════════════════════════
+    subgraph PHASE7[Phase 7 — Persist 持久化 + 日志]
+        direction TB
+        P_LOG["record_tick_log_finish<br/>→ SQLite tick_log 表<br/>terminal_action / skip_reason<br/>steps_taken / interesting_ids / cited_ids"]
+        P_LOG --> P_EVT["EventBus.enqueue<br/>ProactiveFinished 事件<br/>→ 通知其他插件本 tick 结束"]
+    end
+
+    P_EVT -->|ProactiveTickResult| POST
+    POST -->|"ProactiveTickResult"| P_END
+    G_BLOCKED -.->|"Gate 阻断"| P_END
+    F_SKIP -.->|"无数据跳过"| P_END
+
+    P_END["本轮 tick 结束，回到 ProactiveLoop 顶层循环<br/>Scheduler.next_interval(base_score, last_user_at):<br/>• base_score=None（阻断）→ energy 重算<br/>• base_score=0.0（正常）→ 慢档 4800s<br/>• next_interval_seconds 非空 → 覆盖<br/>→ 算出 wait_for timeout → 等待 → 下一轮 tick"]
+
+    %% ====== 底部参考信息 ======
+    subgraph REF[Judge 工具集 — 11 种 LLM 可调用工具]
+        direction LR
+        R1["get_alert_events<br/>取告警列表（高优先级）"] --- R2["get_content_events<br/>取内容列表"] --- R3["get_context_data<br/>取上下文（≤1 次）"]
+        R4["recall_memory<br/>HyDE 假设 → 兴趣/雷点"] --- R5["get_content<br/>取预取缓存正文"] --- R6["web_fetch / web_search<br/>外部抓取 / 搜索"]
+        R7["get_recent_chat<br/>判断用户是否在忙"] --- R8["mark_interesting<br/>标记感兴趣"] --- R9["mark_not_interesting<br/>标记不感兴趣"]
+        R10["message_push<br/>暂存草稿到 ctx.draft"] --- R11["finish_turn<br/>【终止】提交决策<br/>reply → 发送消息到 Channel<br/>skip → 丢弃"]
+    end
+    REF --- PHASE3
+
+    subgraph MEM_FILES[记忆文件系统 — 与 Passive 共享]
+        direction TB
+        F_MEM[MEMORY.md<br/>长期用户档案]
+        F_SELF[SELF.md<br/>Nexus 自我认知]
+        F_RECENT[RECENT_CONTEXT.md<br/>近期上下文摘要]
+    end
+
+    subgraph PRO_FILES[Proactive 专用文件]
+        direction TB
+        F_PC[PROACTIVE_CONTEXT.md<br/>主动规则面板]
+        F_DB[proactive.db<br/>SQLite: deliveries / tick_log / tick_step_log]
+        F_TRACE[proactive_rate_trace.jsonl<br/>间隔决策跟踪]
+    end
+    %% ====== 数据访问边（浅色） ======    
+    PHASE3 -.->|读取| MEM_FILES
+    F_CTX_8 -.->|读取| F_PC
+    RK -.->|读取 deliveries 表| F_DB
+    L_INTERVAL -.->|追加到proactive_rate_trace.jsonl| F_TRACE
+
+    %% ====== 持久化写入 ======
+    P_LOG -->|写入 terminal_action / skip_reason<br/>steps_taken / counts / 等| F_DB
+
+    %% ====== 样式 ======
+    class G1,G2,G3,G4,F_ROUTE,F_DRIFT_OK,F_DRIFT_CHECK,F_PICK,J_D,J_C1,J_C2,RT,DD,RD,RM,J_ALERT decision
+    class L_BASE,L_INTERVAL,L_WAIT,L_TICK,BEGIN,G_OK,F_GW,F_A,F_C,F_X,F_X_OUT,F_X_META,F_X_STORE,F_INJ_A,F_INJ_C,F_INJ_X,F_ROUTE_OK,F_COLLECT,F_PROMPT,F_EFFECT,F_SLOT_IGN,J_HEAD,J_EXEC,J_DONE_N,J_AS,J_END,J_DONE,J_C1_MSG,J_C2_MSG,RK,RP,D_ORCH,D_PERSIST,D_DISPATCH,D_SENT,D_SUCC_EFF,D_MARK,D_CTX,D_ACK,P_LOG,P_EVT,POST,F_FINAL,J_ALERT_PATH module
+    class F_SYS_OUT,F_SYS_1,F_SYS_2,F_SYS_3,F_SYS_4,F_SYS_DONE,F_CTX_OUT,F_CTX_1,F_CTX_2,F_CTX_3,F_CTX_4,F_CTX_5,F_CTX_6,F_CTX_7,F_CTX_9,F_CTX_DONE,F_KICK_OUT,F_KICK_DONE module
+    class PLUGIN_WRITE async
+    class P_EVT event
+    class L0,PHASE1,PHASE2,PHASE3,PHASE4,PHASE5,PHASE6,PHASE7 proPhase
+    class G_B1,G_B2,G_B3,G_B4,G_BLOCKED,F_SKIP,RX,RS,RD,D_FAIL_EFF,P_END skip
+    class F_DRIFT driftPhase
+    class F_MEM,F_SELF,F_RECENT mem
+    class F_PC,F_DB,F_TRACE proFile
+    class F_CTX_8 proFile
+    class F_CTX_2,F_CTX_3,F_CTX_4 mem
+    class R1,R2,R3,R4,R5,R6,R7,R8,R9,R10,R11,R12 async
+
+    %% ====== 全局线加粗 ======
+    linkStyle default stroke-width:3px
