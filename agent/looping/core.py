@@ -343,6 +343,7 @@ class AgentLoop:
                 outbound_port=BusOutboundPort(self.bus),
                 history_window=config.memory.keep_count,
                 memory_consolidator=self,
+                turn_logger=deps.turn_logger,
             )
         )
         self._agent_core = agent_core
