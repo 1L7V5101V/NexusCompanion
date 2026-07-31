@@ -1,0 +1,129 @@
+graph TB
+    %% ============================================================
+    %% 多级结构化记忆系统 — 三级结构 + 数据流
+    %% 依据代码：memory2/store.py、memory2/models.py、memory2/memorizer.py、
+    %%          memory2/retriever.py、memory2/post_response_worker.py、
+    %%          plugins/default_memory/engine.py、_handbook/memory-markdown.md
+    %% ============================================================
+    %% ====== 样式 ======
+    classDef mem fill:#ffe082,color:#e65100
+    classDef step fill:#fff8e1,color:#e65100,stroke:#ffe082,stroke-width:1px
+    classDef gate fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef file fill:#ffffff,color:#bf360c,stroke:#ffcc80,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+    classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+
+    %% ═══════════════════════════════════════════
+    %% L0 会话工作记忆（短时）
+    %% ═══════════════════════════════════════════
+    subgraph L0["L0 — 会话工作记忆（原始对话，短时）"]
+        direction TB
+        L0_MSG["session.messages<br/>当前 session 全部对话历史<br/>每条: role(user/assistant) + content + timestamp"]
+        L0_RECENT["Recent Turns 滑动窗口<br/>session 尾部最近 K 条消息<br/>user 全文 + assistant 60 字预览<br/>纯格式化，无 LLM 调用"]
+        L0_MSG --> L0_RECENT
+    end
+
+    L0_MSG -->|"每轮 TurnCommitted 事件<br/>skip_post_memory 可跳过"| L1_CONS
+    L0_MSG -->|"语义查询"| RETR
+
+    %% ═══════════════════════════════════════════
+    %% L1 Markdown 文件层（人类可读全景）
+    %% ═══════════════════════════════════════════
+    subgraph L1["L1 — Markdown 文件层（人类可读全景，workspace/memory/）"]
+        direction TB
+        L1_CONS["MarkdownMemoryMaintenance<br/>consolidation + 异步文件写入<br/>→ 详见 PassiveTurnPipeline-MemoryConsolidation.mermaid"]
+        L1_OPT["MemoryOptimizer 后台定时任务<br/>默认 64800s = 18h 一次<br/>读 PENDING + MEMORY + SELF<br/>LLM 归档决策 → 覆写 MEMORY/SELF"]
+        L1_CONS --> F_HISTORY
+        L1_CONS --> F_PENDING
+        L1_CONS --> F_RECENT
+        L1_CONS --> F_JOURNAL
+        L1_OPT --> F_MEM
+        L1_OPT --> F_SELF
+        L1_OPT -->|"读 + 消费后清空"| F_PENDING
+        L1_OPT -->|"读"| F_MEM
+        L1_OPT -->|"读"| F_SELF
+
+        F_MEM["MEMORY.md 长期用户档案<br/>写者: Optimizer（覆写）<br/>system prompt 全量注入<br/>priority 35"]
+        F_SELF["SELF.md Nexus 自我认知<br/>写者: Optimizer<br/>全量注入<br/>priority 30"]
+        F_PENDING["PENDING.md 待归档缓冲<br/>写者: Consolidation（追加）<br/>snapshot 两阶段提交防丢<br/>不注入 prompt（保 prompt cache）"]
+        F_HISTORY["HISTORY.md 事件日志<br/>写者: Consolidation<br/>只追加不修改<br/>grep 检索 + consolidation 上下文"]
+        F_RECENT["RECENT_CONTEXT.md 近期上下文<br/>写者: Consolidation<br/>Compression + Ongoing Threads 注入<br/>priority 45"]
+        F_JOURNAL["journal/YYYY-MM-DD.md<br/>每日时间线，追加"]
+    end
+
+    L1_CONS -->|"ConsolidationCommitted 事件<br/>桥接 markdown → 向量层"| L2_WRITE
+
+    %% ═══════════════════════════════════════════
+    %% L2 SQLite v2 向量结构化层
+    %% ═══════════════════════════════════════════
+    subgraph L2["L2 — SQLite v2 向量结构化层（memory2.db，机器可搜细节）"]
+        direction TB
+        L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
+        L2_WRITE --> L2_EVT
+        L2_WRITE --> L2_LT
+        L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
+        L2_LT["_extract_implicit_long_term<br/>LLM 长时提取（一次调用）<br/>profile / preference / procedure<br/>→ save_item_with_supersede 写入"]
+        L2_EVT --> T_META
+        L2_LT --> T_META
+
+        T_META["memory_items 核心表字段<br/>id / memory_type / summary<br/>content_hash=sha256(摘要+类型)[:16]<br/>embedding 1024 维 float32<br/>reinforcement / emotional_weight<br/>extra_json / source_ref / happened_at<br/>status(active/superseded)<br/>created_at / updated_at"]
+        T_IDX["唯一索引 ux_items_hash<br/>(content_hash, memory_type)<br/>→ 内容重复 = 强化判定依据"]
+        T_META --> T_IDX
+
+        T_META --> T_TYPES
+        T_TYPES["四种类型（extra_json 承载类型专用字段）"]
+        T_PROC["procedure<br/>tool_requirement / steps[]<br/>rule_schema{required/forbidden/mentioned}<br/>trigger_tags 关键词触发"]
+        T_PREF["preference<br/>行为偏好（无专用字段）"]
+        T_EVENT["event<br/>scope_channel / scope_chat_id<br/>happened_at 时间戳"]
+        T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
+        T_TYPES --> T_PROC
+        T_TYPES --> T_PREF
+        T_TYPES --> T_EVENT
+        T_TYPES --> T_PROF
+
+        T_META -.->|"embedding 同步"| T_VEC["vec_items<br/>sqlite-vec vec0 虚拟表<br/>L2 归一化 KNN ≈ cosine"]
+        T_META -.->|"summary 同步触发器"| T_FTS["memory_items_fts<br/>FTS5 trigram 虚拟表<br/>BM25 全文检索"]
+        T_META -.-> T_CONS["consolidation_events<br/>source_ref → item_id<br/>幂等：同一来源只写一次"]
+        T_META -.-> T_REPL["memory_replacements<br/>old_item → new_item 谱系<br/>relation_type / source_ref"]
+        T_META -.-> T_QLOG["memory_query_log<br/>检索日志：query / intent<br/>hit_count / items_json"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% 写入入口（consolidation 之外）
+    %% ═══════════════════════════════════════════
+    subgraph WRITE["写入入口（除 consolidation 外）"]
+        direction TB
+        W_MEM["memorize 工具<br/>_remember → save_item_with_supersede<br/>写入门内先做相似 supersede"]
+        W_FORGET["forget_memory 工具<br/>_forget → 按 id mark_superseded<br/>软删除"]
+        W_POST["PostResponseMemoryWorker<br/>TurnIngested 事件 → 用户否定检测<br/>→ invalidation supersede"]
+        W_MEM --> T_META
+        W_FORGET --> T_META
+        W_POST --> T_META
+    end
+
+    %% ═══════════════════════════════════════════
+    %% 检索注入（读出路径）
+    %% ═══════════════════════════════════════════
+    subgraph READ["检索注入 — 读出路径（每轮回复前）"]
+        direction TB
+        RETR["Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane（多 query 并嵌）<br/>+ 关键词 lane（FTS5 BM25 / OR-LIKE）<br/>→ RRF 融合 top-k"]
+        RETR -->|"向量 lane"| T_META
+        RETR -->|"关键词 lane"| T_FTS
+        RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
+        INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → 向量块(55)"]
+        F_MEM --> INJECT
+        F_SELF --> INJECT
+        F_RECENT --> INJECT
+    end
+
+    %% ====== 样式应用 ======
+    class L0_MSG,L0_RECENT step
+    class L1_CONS,L1_OPT step
+    class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
+    class L2_WRITE,L2_EVT,L2_LT step
+    class T_META,T_IDX db
+    class T_PROC,T_PREF,T_EVENT,T_PROF,T_VEC,T_FTS,T_CONS,T_REPL,T_QLOG db
+    class W_MEM,W_FORGET,W_POST step
+    class RETR,INJ,INJECT step
