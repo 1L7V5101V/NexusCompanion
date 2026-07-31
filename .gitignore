@@ -46,7 +46,12 @@ plugins/**/.data/
 /evals/
 /tests/regression/
 /config.backup.20260301-063714.json
-/docs/
+/docs/*
+!/docs/Graph/
+!/docs/Graph/*.mermaid
+/docs/Graph/*.png
+/docs/Graph/*.svg
+/docs/Graph/*.drawio
 /.pytest_artifacts/
 /rss/
 
