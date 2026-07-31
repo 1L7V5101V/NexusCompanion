@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from logging.models import TurnLogData
-from logging.turn_logger import RoutingTurnLogger, TurnLogger
+from turn_logging.models import TurnLogData
+from turn_logging.turn_logger import RoutingTurnLogger, TurnLogger
 
 __all__ = [
     "TurnLogData",

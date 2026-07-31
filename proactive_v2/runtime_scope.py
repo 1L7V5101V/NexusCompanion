@@ -11,7 +11,7 @@ from bus.event_bus import EventBus
 from proactive_v2.mcp_sources import McpGateway
 
 if TYPE_CHECKING:
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
 
 
 @dataclass

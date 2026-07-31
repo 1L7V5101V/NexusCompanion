@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from bus.queue import MessageBus
     from core.memory.engine import MemoryEngine
     from core.memory.runtime import MemoryRuntime
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
     from proactive_v2.presence import PresenceStore
     from session.manager import SessionManager
 

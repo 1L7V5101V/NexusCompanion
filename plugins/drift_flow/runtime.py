@@ -42,7 +42,7 @@ from plugins.drift_flow.tools import (
 
 if TYPE_CHECKING:
     from core.memory.markdown import MemoryProfileApi
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
 StepRecorder = Callable[[AgentTickContext, str, str, str, dict[str, Any], str], None]
@@ -115,7 +115,7 @@ class DriftTurnPipeline:
 
         # 4.5 日志记录
         if self._turn_logger is not None:
-            from logging.models import TurnLogData
+            from turn_logging.models import TurnLogData
 
             log_data = TurnLogData(
                 session_key=ctx.session_key,

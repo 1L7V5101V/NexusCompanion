@@ -11,7 +11,7 @@ from plugins.drift_flow.tools import DriftToolDeps
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
 
 if TYPE_CHECKING:
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
 
 
 logger = logging.getLogger(__name__)

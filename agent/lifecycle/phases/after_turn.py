@@ -24,11 +24,11 @@ from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import OutboundMessage
 from bus.events_lifecycle import TurnCommitted
-from logging.models import TurnLogData
+from turn_logging.models import TurnLogData
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
     from session.manager import Session
 
 logger = logging.getLogger(__name__)
