@@ -52,7 +52,7 @@ from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
 )
-from logging import RoutingTurnLogger, TurnLogger
+from turn_logging import RoutingTurnLogger, TurnLogger
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -773,7 +773,7 @@ def _build_turn_logger(
 ) -> TurnLogger:
     """根据配置创建 TurnLogger 实例。三条链路共用一个 logger，
     内部通过 turn_type 字段区分写入哪个库。"""
-    from logging.turn_logger import TurnLoggerConfig
+    from turn_logging.turn_logger import TurnLoggerConfig
 
     log_dir = (workspace / "logs").expanduser().resolve()
     passive_db = log_dir / "passive.db"
@@ -795,7 +795,7 @@ def _build_turn_logger(
         drift_db,
     )
 
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
 
     return RoutingTurnLogger(
         passive=TurnLoggerConfig(db_path=passive_db),

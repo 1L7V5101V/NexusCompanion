@@ -79,7 +79,7 @@ if TYPE_CHECKING:
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
     from agent.tools.registry import ToolRegistry
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
     from session.manager import SessionManager
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
 

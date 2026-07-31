@@ -52,7 +52,7 @@ from proactive_v2.modules_resolve import (
 from proactive_v2.tools import ToolDeps
 
 if TYPE_CHECKING:
-    from logging.turn_logger import RoutingTurnLogger
+    from turn_logging.turn_logger import RoutingTurnLogger
 
 logger = logging.getLogger(__name__)
 
@@ -322,7 +322,7 @@ class ProactiveTurnPipeline:
         )
         # 6. 日志记录
         if self._turn_logger is not None:
-            from logging.models import TurnLogData
+            from turn_logging.models import TurnLogData
 
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             log_data = TurnLogData(

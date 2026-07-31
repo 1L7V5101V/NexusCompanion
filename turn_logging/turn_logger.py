@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from logging.models import TurnLogData
+from turn_logging.models import TurnLogData
 
 logger = logging.getLogger(__name__)
 
