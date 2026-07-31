@@ -1,0 +1,81 @@
+graph LR
+    %% ============================================================
+    %% 多级结构化记忆系统 — 强化/退休/合并/溯源 四类演化机制
+    %% 依据代码：memory2/store.py、memory2/memorizer.py、
+    %%          memory2/post_response_worker.py、memory2/retriever.py、
+    %%          plugins/default_memory/engine.py
+    %% ============================================================
+    %% ====== 样式 ======
+    classDef mem fill:#ffe082,color:#e65100
+    classDef step fill:#fff8e1,color:#e65100,stroke:#ffe082,stroke-width:1px
+    classDef gate fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef file fill:#ffffff,color:#bf360c,stroke:#ffcc80,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+    classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+
+    %% ═══════════════ ① 强化 ═══════════════
+    subgraph R["① 强化 — reinforcement 计数器 + 热度融合"]
+        direction TB
+        R_SRC1["upsert_item / upsert_consolidation_event<br/>content_hash 命中 ux_items_hash<br/>→ reinforcement+1<br/>status=superseded 则复活为 active"]
+        R_SRC2["event 向量语义去重<br/>相似 ≥ 0.92（7 天内）<br/>→ 新条目丢弃，强化最近似 1 条<br/>reinforce_items_batch"]
+        R_SRC3["merge_item_raw<br/>merge 目标 reinforcement+1"]
+        R_SRC1 --> R_COUNT
+        R_SRC2 --> R_COUNT
+        R_SRC3 --> R_COUNT
+        R_COUNT["reinforcement 计数<br/>emotional_weight 取 MAX"]
+        R_COUNT --> R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1 + 0.5×情感/10)"]
+        R_HOT --> R_FUSE["检索融合<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever 固定）"]
+    end
+
+    %% ═══════════════ ② 退休 ═══════════════
+    subgraph T["② 退休 — supersede 软删除"]
+        direction TB
+        T_SRC1["save_item_with_supersede<br/>procedure / preference<br/>相似 ≥ 0.90<br/>→ mark_superseded_batch"]
+        T_SRC2["profile 同类防堆积<br/>status / purchase 同 category<br/>相似 ≥ 0.90（情感≥7 时 0.92）"]
+        T_SRC3["PostResponseMemoryWorker<br/>用户否定旧行为<br/>预筛 ≥ 0.82 → light model 判定"]
+        T_SRC4["forget_memory 工具<br/>按 id mark_superseded_batch"]
+        T_SRC5["undo_by_message_sources<br/>消息删除 → 相关 source_ref 条目退休"]
+        T_SRC1 --> T_MAIN
+        T_SRC2 --> T_MAIN
+        T_SRC3 --> T_MAIN
+        T_SRC4 --> T_MAIN
+        T_SRC5 --> T_MAIN
+        T_MAIN["状态机<br/>active → superseded<br/>（软删除，不物理删）"]
+        T_MAIN --> T_EFFECT["检索过滤 status='active'<br/>superseded 不召回但保留可溯源<br/>同 content_hash 重写 → 复活为 active"]
+    end
+
+    %% ═══════════════ ③ 合并 ═══════════════
+    subgraph M["③ 合并 — merge"]
+        direction TB
+        M_TRIG["save_item_with_supersede<br/>procedure 分支<br/>_pick_explicit_merge_target<br/>新条目 tool_requirement == 库内 procedure<br/>且相似 ≥ 0.70 → 合并"]
+        M_TRIG --> M_ITEM["merge_item<br/>摘要拼接去重 _merge_summary_text<br/>steps 新旧去重合并<br/>rule_schema 重建<br/>trigger_tags 清除（防误触发）"]
+        M_ITEM --> M_RAW["merge_item_raw 原子落库<br/>summary + content_hash + embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items<br/>hash 冲突降级 supersede + upsert"]
+        M_RAW --> M_NOTE["_merge_note = 合并后摘要<br/>→ 写入 extra_json 供溯源"]
+        M_RAW -->|"返回 merged:id"| M_RET["调用方识别 merged 状态"]
+    end
+
+    %% ═══════════════ ④ 溯源 ═══════════════
+    subgraph P["④ 溯源 — source_ref / 谱系"]
+        direction TB
+        P_SRC["source_ref 写入每条记忆<br/>格式 '[\"id1\",\"id2\"]#h:digest'<br/>或 channel@seq1-seq2#tag"]
+        P_SRC --> P_EVT["consolidation_events 表<br/>source_ref → item_id<br/>同一来源只写一次（幂等）"]
+        P_SRC --> P_REPL["memory_replacements 表<br/>old_item → new_item 谱系<br/>relation_type / source_ref<br/>undo 据此恢复被替换旧条目"]
+        P_SRC --> P_NOTE["_merge_note 合并快照"]
+        P_SRC --> P_QLOG["memory_query_log 表<br/>检索日志：query/intent/命中"]
+        P_SRC --> P_EVID["注入证据标注<br/>_format_memory_meta<br/>证据：可回源原文 src: id<br/>或 证据：记忆摘要"]
+    end
+
+    %% ═══════════════ 跨机制联动 ═══════════════
+    T_EFFECT -.->|"复活即强化"| R_COUNT
+    M_RAW -.->|"merge 目标 +1"| R_COUNT
+    M_NOTE -.->|"写入溯源字段"| P_NOTE
+    T_MAIN -.->|"退休保留 source_ref<br/>供溯源与恢复"| P_SRC
+
+    %% ====== 样式应用 ======
+    class R_SRC1,R_SRC2,R_SRC3,R_COUNT,R_HOT,R_FUSE step
+    class T_SRC1,T_SRC2,T_SRC3,T_SRC4,T_SRC5,T_MAIN,T_EFFECT step
+    class M_TRIG,M_ITEM,M_RAW,M_NOTE,M_RET step
+    class P_SRC,P_EVT,P_REPL,P_NOTE,P_QLOG,P_EVID step
+    class T_EFFECT,R_COUNT,P_REPL,P_SRC,P_NOTE gate
