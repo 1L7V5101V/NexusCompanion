@@ -171,6 +171,7 @@ class AgentCoreDeps:
     after_step_plugin_modules: list[object] | None = None
     after_reasoning_plugin_modules: list[object] | None = None
     after_turn_plugin_modules: list[object] | None = None
+    turn_logger: "RoutingTurnLogger | None" = None
 
 
 class AgentCore:
@@ -265,6 +266,7 @@ class PassiveTurnPipeline:
             deps.after_reasoning_plugin_modules or []
         )
         self._after_turn_plugin_modules = list(deps.after_turn_plugin_modules or [])
+        self._turn_logger = deps.turn_logger
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
