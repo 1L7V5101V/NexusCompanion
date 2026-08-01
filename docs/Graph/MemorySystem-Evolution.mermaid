@@ -21,12 +21,12 @@ graph LR
         R_SRC1["upsert_item / upsert_consolidation_event<br/>content_hash 命中 ux_items_hash<br/>→ reinforcement+1<br/>status=superseded 则复活为 active"]
         R_SRC2["event 向量语义去重<br/>相似 ≥ 0.92（7 天内）<br/>→ 新条目丢弃，强化最近似 1 条<br/>reinforce_items_batch"]
         R_SRC3["merge_item_raw<br/>merge 目标 reinforcement+1"]
-        R_SRC1 --> R_COUNT
-        R_SRC2 --> R_COUNT
-        R_SRC3 --> R_COUNT
+        R_SRC1 -->|"写: 命中 content_hash<br/>→ 计数+1（重复写入变强化）"| R_COUNT
+        R_SRC2 -->|"写: 语义去重<br/>→ 强化最近似 1 条"| R_COUNT
+        R_SRC3 -->|"写: merge 目标<br/>→ 计数+1"| R_COUNT
         R_COUNT["reinforcement 计数<br/>emotional_weight 取 MAX"]
-        R_COUNT --> R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1 + 0.5×情感/10)"]
-        R_HOT --> R_FUSE["检索融合<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever 固定）"]
+        R_COUNT -->|"→ 计算热度分"| R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1 + 0.5×情感/10)"]
+        R_HOT -->|"→ 检索分数融合"| R_FUSE["检索融合<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever 固定）"]
     end
 
     %% ═══════════════ ② 退休 ═══════════════
@@ -37,22 +37,22 @@ graph LR
         T_SRC3["PostResponseMemoryWorker<br/>用户否定旧行为<br/>预筛 ≥ 0.82 → light model 判定"]
         T_SRC4["forget_memory 工具<br/>按 id mark_superseded_batch"]
         T_SRC5["undo_by_message_sources<br/>消息删除 → 相关 source_ref 条目退休"]
-        T_SRC1 --> T_MAIN
-        T_SRC2 --> T_MAIN
-        T_SRC3 --> T_MAIN
-        T_SRC4 --> T_MAIN
-        T_SRC5 --> T_MAIN
+        T_SRC1 -->|"写: 相似≥0.90 → 批量退休"| T_MAIN
+        T_SRC2 -->|"写: 同类防堆积 → 退休"| T_MAIN
+        T_SRC3 -->|"写: 用户否定 → 退休"| T_MAIN
+        T_SRC4 -->|"写: forget 工具 → 退休"| T_MAIN
+        T_SRC5 -->|"写: 消息删除 → 退休"| T_MAIN
         T_MAIN["状态机<br/>active → superseded<br/>（软删除，不物理删）"]
-        T_MAIN --> T_EFFECT["检索过滤 status='active'<br/>superseded 不召回但保留可溯源<br/>同 content_hash 重写 → 复活为 active"]
+        T_MAIN -->|"读: 检索过滤 status='active'"| T_EFFECT["检索过滤 status='active'<br/>superseded 不召回但保留可溯源<br/>同 content_hash 重写 → 复活为 active"]
     end
 
     %% ═══════════════ ③ 合并 ═══════════════
     subgraph M["③ 合并 — merge"]
         direction TB
         M_TRIG["save_item_with_supersede<br/>procedure 分支<br/>_pick_explicit_merge_target<br/>新条目 tool_requirement == 库内 procedure<br/>且相似 ≥ 0.70 → 合并"]
-        M_TRIG --> M_ITEM["merge_item<br/>摘要拼接去重 _merge_summary_text<br/>steps 新旧去重合并<br/>rule_schema 重建<br/>trigger_tags 清除（防误触发）"]
-        M_ITEM --> M_RAW["merge_item_raw 原子落库<br/>summary + content_hash + embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items<br/>hash 冲突降级 supersede + upsert"]
-        M_RAW --> M_NOTE["_merge_note = 合并后摘要<br/>→ 写入 extra_json 供溯源"]
+        M_TRIG -->|"触发: 同 tool_requirement<br/>且相似 ≥ 0.70"| M_ITEM["merge_item<br/>摘要拼接去重 _merge_summary_text<br/>steps 新旧去重合并<br/>rule_schema 重建<br/>trigger_tags 清除（防误触发）"]
+        M_ITEM -->|"→ 执行合并"| M_RAW["merge_item_raw 原子落库<br/>summary + content_hash + embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items<br/>hash 冲突降级 supersede + upsert"]
+        M_RAW -->|"写: _merge_note 快照"| M_NOTE["_merge_note = 合并后摘要<br/>→ 写入 extra_json 供溯源"]
         M_RAW -->|"返回 merged:id"| M_RET["调用方识别 merged 状态"]
     end
 
@@ -60,18 +60,18 @@ graph LR
     subgraph P["④ 溯源 — source_ref / 谱系"]
         direction TB
         P_SRC["source_ref 写入每条记忆<br/>格式 '[\'id1\',\'id2\']#h:digest'<br/>或 channel@seq1-seq2#tag"]
-        P_SRC --> P_EVT["consolidation_events 表<br/>source_ref → item_id<br/>同一来源只写一次（幂等）"]
-        P_SRC --> P_REPL["memory_replacements 表<br/>old_item → new_item 谱系<br/>relation_type / source_ref<br/>undo 据此恢复被替换旧条目"]
-        P_SRC --> P_NOTE["_merge_note 合并快照"]
-        P_SRC --> P_QLOG["memory_query_log 表<br/>检索日志：query/intent/命中"]
-        P_SRC --> P_EVID["注入证据标注<br/>_format_memory_meta<br/>证据：可回源原文 src: id<br/>或 证据：记忆摘要"]
+        P_SRC -->|"写: 幂等记录（同来源只写一次）"| P_EVT["consolidation_events 表<br/>source_ref → item_id<br/>同一来源只写一次（幂等）"]
+        P_SRC -->|"写: old→new 谱系"| P_REPL["memory_replacements 表<br/>old_item → new_item 谱系<br/>relation_type / source_ref<br/>undo 据此恢复被替换旧条目"]
+        P_SRC -->|"写: 合并快照"| P_NOTE["_merge_note 合并快照"]
+        P_SRC -->|"写: 检索日志"| P_QLOG["memory_query_log 表<br/>检索日志：query/intent/命中"]
+        P_SRC -->|"读: 注入证据标注"| P_EVID["注入证据标注<br/>_format_memory_meta<br/>证据：可回源原文 src: id<br/>或 证据：记忆摘要"]
     end
 
     %% ═══════════════ 跨机制联动 ═══════════════
-    T_EFFECT -.->|"复活即强化"| R_COUNT
-    M_RAW -.->|"merge 目标 +1"| R_COUNT
-    M_NOTE -.->|"写入溯源字段"| P_NOTE
-    T_MAIN -.->|"退休保留 source_ref<br/>供溯源与恢复"| P_SRC
+    T_EFFECT -.->|"写: 复活即强化"| R_COUNT
+    M_RAW -.->|"写: merge 目标 +1"| R_COUNT
+    M_NOTE -.->|"写: 同一 _merge_note 字段"| P_NOTE
+    T_MAIN -.->|"保留: source_ref 供溯源与恢复"| P_SRC
 
     %% ═══════════════ 定位标注 ═══════════════
     LEG_MEM["⚓ 定位：本图描述 AgenticRAG 多引擎检索中 vector 源（default_memory 引擎）的条目演化机制；<br/>graph 源（rachael）引擎另有实现"]
