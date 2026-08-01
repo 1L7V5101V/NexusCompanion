@@ -59,7 +59,7 @@ graph LR
     %% ═══════════════ ④ 溯源 ═══════════════
     subgraph P["④ 溯源 — source_ref / 谱系"]
         direction TB
-        P_SRC["source_ref 写入每条记忆<br/>格式 '[\"id1\",\"id2\"]#h:digest'<br/>或 channel@seq1-seq2#tag"]
+        P_SRC["source_ref 写入每条记忆<br/>格式 '[\'id1\',\'id2\']#h:digest'<br/>或 channel@seq1-seq2#tag"]
         P_SRC --> P_EVT["consolidation_events 表<br/>source_ref → item_id<br/>同一来源只写一次（幂等）"]
         P_SRC --> P_REPL["memory_replacements 表<br/>old_item → new_item 谱系<br/>relation_type / source_ref<br/>undo 据此恢复被替换旧条目"]
         P_SRC --> P_NOTE["_merge_note 合并快照"]
@@ -73,7 +73,11 @@ graph LR
     M_NOTE -.->|"写入溯源字段"| P_NOTE
     T_MAIN -.->|"退休保留 source_ref<br/>供溯源与恢复"| P_SRC
 
+    %% ═══════════════ 定位标注 ═══════════════
+    LEG_MEM["⚓ 定位：本图描述 AgenticRAG 多引擎检索中 vector 源（default_memory 引擎）的条目演化机制；<br/>graph 源（rachael）引擎另有实现"]
+
     %% ====== 样式应用 ======
+    class LEG_MEM async
     class R_SRC1,R_SRC2,R_SRC3,R_COUNT,R_HOT,R_FUSE step
     class T_SRC1,T_SRC2,T_SRC3,T_SRC4,T_SRC5,T_MAIN,T_EFFECT step
     class M_TRIG,M_ITEM,M_RAW,M_NOTE,M_RET step
