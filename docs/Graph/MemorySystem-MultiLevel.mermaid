@@ -127,18 +127,22 @@ flowchart TB
     %% ═══════════════════════════════════════════
     LEG_MEM["⚓ 定位：本图是 AgenticRAG 多引擎检索中的 vector 源（default_memory 引擎）内部结构；<br/>graph 源（rachael）与 web 源不在本图范围"]
 
-    subgraph LEGEND["记忆 ↔ 主链路 读写触点"]
-        direction LR
-        LEG_PASS["被动 Passive（蓝）<br/>读: BeforeTurn 检索<br/>写: AfterTurn → HISTORY/PENDING"]
-        LEG_PRO["主动 Proactive（粉）<br/>读: Fetch 近期上下文"]
-        LEG_DRIFT["Drift（绿）<br/>读: Prepare memory/briefing"]
-    end
+    PT_BEFORE["被动 BeforeTurn<br/>PassiveTurnPipeline ①"]
+    PT_AFTER["被动 AfterTurn<br/>PassiveTurnPipeline ⑥"]
+    PRO_FETCH["主动 Fetch<br/>ProactiveTurnPipeline ②"]
+    DR_PREP["Drift Prepare<br/>DriftTurnPipeline ②"]
+
+    RETR -.->|"读: 检索块注入 prompt"| PT_BEFORE
+    PT_AFTER -->|"写: TurnCommitted → consolidation<br/>追加 HISTORY / PENDING / journal"| L1_CONS
+    F_RECENT -.->|"读: 近期上下文摘要"| PRO_FETCH
+    RETR -.->|"读: memory / briefing 注入"| DR_PREP
 
     %% ====== 样式应用 ======
     class LEG_MEM async
-    class LEG_PASS passPhase
-    class LEG_PRO proPhase
-    class LEG_DRIFT driftPhase
+    class PT_BEFORE passPhase
+    class PT_AFTER passPhase
+    class PRO_FETCH proPhase
+    class DR_PREP driftPhase
     class L0_MSG,L0_RECENT step
     class L1_CONS,L1_OPT step
     class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
