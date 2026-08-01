@@ -1,4 +1,4 @@
-graph TB
+flowchart TB
     %% ============================================================
     %% 多级结构化记忆系统 — 三级结构 + 数据流
     %% 依据代码：memory2/store.py、memory2/models.py、memory2/memorizer.py、
@@ -14,6 +14,10 @@ graph TB
     classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
     classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
     classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+    %% 主链路配色（与 三链路-Passive+Proactive+Drift.mermaid 一致）
+    classDef passPhase fill:#90caf9,color:#0d47a1
+    classDef proPhase fill:#f8bbd0,color:#880e4f
+    classDef driftPhase fill:#a5d6a7,color:#1b5e20
 
     %% ═══════════════════════════════════════════
     %% L0 会话工作记忆（短时）
@@ -118,7 +122,23 @@ graph TB
         F_RECENT --> INJECT
     end
 
+    %% ═══════════════════════════════════════════
+    %% 定位标注 + 记忆 ↔ 主链路读写触点
+    %% ═══════════════════════════════════════════
+    LEG_MEM["⚓ 定位：本图是 AgenticRAG 多引擎检索中的 vector 源（default_memory 引擎）内部结构；<br/>graph 源（rachael）与 web 源不在本图范围"]
+
+    subgraph LEGEND["记忆 ↔ 主链路 读写触点"]
+        direction LR
+        LEG_PASS["被动 Passive（蓝）<br/>读: BeforeTurn 检索<br/>写: AfterTurn → HISTORY/PENDING"]
+        LEG_PRO["主动 Proactive（粉）<br/>读: Fetch 近期上下文"]
+        LEG_DRIFT["Drift（绿）<br/>读: Prepare memory/briefing"]
+    end
+
     %% ====== 样式应用 ======
+    class LEG_MEM async
+    class LEG_PASS passPhase
+    class LEG_PRO proPhase
+    class LEG_DRIFT driftPhase
     class L0_MSG,L0_RECENT step
     class L1_CONS,L1_OPT step
     class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
