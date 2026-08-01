@@ -134,7 +134,7 @@ graph TB
         EVAL --> MEM_RESULT["MemoryBlock<br/>检索结果注入"]
         MEM_SINGLE --> MEM_RESULT
 
-        MEM_FILES["物理存储层（各引擎共用 markdown 层）<br/>MEMORY.md / SELF.md<br/>PENDING.md / HISTORY.md<br/>RECENT_CONTEXT.md<br/>journal/YYYY-MM-DD.md"]
+        MEM_FILES["记忆文件系统（物理存储层 · 各引擎共用 markdown 层）<br/>MEMORY.md / SELF.md<br/>PENDING.md / HISTORY.md<br/>RECENT_CONTEXT.md<br/>journal/YYYY-MM-DD.md"]
         MEM_OPT(["MemoryOptimizer<br/>后台定时任务<br/>PENDING → MEMORY.md<br/>config.memory_optimizer_interval_seconds"])
 
         MEM_NOTE["引擎内部：default/vector 详见<br/>MemorySystem-MultiLevel + Evolution<br/>rachael/graph 待补"]
