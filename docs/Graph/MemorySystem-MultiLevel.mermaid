@@ -39,15 +39,15 @@ flowchart TB
         direction TB
         L1_CONS["MarkdownMemoryMaintenance<br/>consolidation + 异步文件写入<br/>→ 详见 PassiveTurnPipeline-MemoryConsolidation.mermaid"]
         L1_OPT["MemoryOptimizer 后台定时任务<br/>默认 64800s = 18h 一次<br/>读 PENDING + MEMORY + SELF<br/>LLM 归档决策 → 覆写 MEMORY/SELF"]
-        L1_CONS --> F_HISTORY
-        L1_CONS --> F_PENDING
-        L1_CONS --> F_RECENT
-        L1_CONS --> F_JOURNAL
-        L1_OPT --> F_MEM
-        L1_OPT --> F_SELF
-        L1_OPT -->|"读 + 消费后清空"| F_PENDING
-        L1_OPT -->|"读"| F_MEM
-        L1_OPT -->|"读"| F_SELF
+        L1_CONS -->|"写: 追加事件日志"| F_HISTORY
+        L1_CONS -->|"写: 追加待归档事实"| F_PENDING
+        L1_CONS -->|"写: Compression 覆写<br/>+ Recent Turns 刷新"| F_RECENT
+        L1_CONS -->|"写: 追加每日时间线"| F_JOURNAL
+        L1_OPT -->|"写: LLM 归档覆写"| F_MEM
+        L1_OPT -->|"写: 调整自我认知覆写"| F_SELF
+        F_PENDING -->|"读 + 消费后清空"| L1_OPT
+        F_MEM -->|"读: 作归档上下文"| L1_OPT
+        F_SELF -->|"读: 作归档上下文"| L1_OPT
 
         F_MEM["MEMORY.md 长期用户档案<br/>写者: Optimizer（覆写）<br/>system prompt 全量注入<br/>priority 35"]
         F_SELF["SELF.md Nexus 自我认知<br/>写者: Optimizer<br/>全量注入<br/>priority 30"]
@@ -117,9 +117,9 @@ flowchart TB
         RETR -->|"关键词 lane"| T_FTS
         RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
         INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → 向量块(55)"]
-        F_MEM --> INJECT
-        F_SELF --> INJECT
-        F_RECENT --> INJECT
+        F_MEM -->|"读: 全量注入 prompt"| INJECT
+        F_SELF -->|"读: 全量注入 prompt"| INJECT
+        F_RECENT -->|"读: Compression +<br/>Ongoing Threads 注入"| INJECT
     end
 
     %% ═══════════════════════════════════════════
