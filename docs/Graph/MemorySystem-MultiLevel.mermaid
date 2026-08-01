@@ -29,8 +29,8 @@ flowchart TB
         L0_MSG --> L0_RECENT
     end
 
-    L0_MSG -->|"每轮 TurnCommitted 事件<br/>skip_post_memory 可跳过"| L1_CONS
-    L0_MSG -->|"语义查询"| RETR
+    L0_MSG -->|"写: 每轮回复提交 → TurnCommitted 事件<br/>触发 consolidation 写文件（skip_post_memory 可跳过）"| L1_CONS
+    L0_MSG -->|"读: 语义查询 → 触发向量+关键词检索"| RETR
 
     %% ═══════════════════════════════════════════
     %% L1 Markdown 文件层（人类可读全景）
@@ -57,7 +57,7 @@ flowchart TB
         F_JOURNAL["journal/YYYY-MM-DD.md<br/>每日时间线，追加"]
     end
 
-    L1_CONS -->|"ConsolidationCommitted 事件<br/>桥接 markdown → 向量层"| L2_WRITE
+    L1_CONS -->|"写: ConsolidationCommitted 事件<br/>history_entry → 向量层 event 条目"| L2_WRITE
 
     %% ═══════════════════════════════════════════
     %% L2 SQLite v2 向量结构化层
@@ -102,9 +102,9 @@ flowchart TB
         W_MEM["memorize 工具<br/>_remember → save_item_with_supersede<br/>写入门内先做相似 supersede"]
         W_FORGET["forget_memory 工具<br/>_forget → 按 id mark_superseded<br/>软删除"]
         W_POST["PostResponseMemoryWorker<br/>TurnIngested 事件 → 用户否定检测<br/>→ invalidation supersede"]
-        W_MEM --> T_META
-        W_FORGET --> T_META
-        W_POST --> T_META
+        W_MEM -->|"写: memorize 工具 → memory_items 条目"| T_META
+        W_FORGET -->|"写: forget 工具 → 标 superseded"| T_META
+        W_POST -->|"写: 用户否定检测 → supersede 旧条目"| T_META
     end
 
     %% ═══════════════════════════════════════════
@@ -113,13 +113,13 @@ flowchart TB
     subgraph READ["检索注入 — 读出路径（每轮回复前）"]
         direction TB
         RETR["Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane（多 query 并嵌）<br/>+ 关键词 lane（FTS5 BM25 / OR-LIKE）<br/>→ RRF 融合 top-k"]
-        RETR -->|"向量 lane"| T_META
-        RETR -->|"关键词 lane"| T_FTS
+        RETR -->|"读: 向量 lane → memory_items 语义检索"| T_META
+        RETR -->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
         RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
         INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → MemoryBlock(55)"]
-        F_MEM -->|"读: 全量注入 prompt"| INJECT
-        F_SELF -->|"读: 全量注入 prompt"| INJECT
-        F_RECENT -->|"读: Compression +<br/>Ongoing Threads 注入"| INJECT
+        F_MEM -->|"读: MEMORY.md 全量注入 prompt"| INJECT
+        F_SELF -->|"读: SELF.md 全量注入 prompt"| INJECT
+        F_RECENT -->|"读: RECENT_CONTEXT.md Compression +<br/>Ongoing Threads 注入"| INJECT
     end
 
     %% ═══════════════════════════════════════════
@@ -132,10 +132,10 @@ flowchart TB
     PRO_FETCH["主动 Fetch<br/>ProactiveTurnPipeline ②"]
     DR_PREP["Drift Prepare<br/>DriftTurnPipeline ②"]
 
-    RETR -.->|"读: 检索块注入 prompt"| PT_BEFORE
-    PT_AFTER -->|"写: TurnCommitted → consolidation<br/>追加 HISTORY / PENDING / journal"| L1_CONS
-    F_RECENT -.->|"读: 近期上下文摘要"| PRO_FETCH
-    RETR -.->|"读: memory / briefing 注入"| DR_PREP
+    RETR -.->|"读: MemoryBlock 检索块 → 注入 BeforeTurn prompt"| PT_BEFORE
+    PT_AFTER -->|"写: TurnCommitted → 触发 consolidation<br/>追加 HISTORY.md / PENDING.md / journal"| L1_CONS
+    F_RECENT -.->|"读: RECENT_CONTEXT.md 近期上下文摘要"| PRO_FETCH
+    RETR -.->|"读: MemoryBlock（memory/briefing）→ 注入 Drift Prepare"| DR_PREP
 
     %% ====== 样式应用 ======
     class LEG_MEM async
