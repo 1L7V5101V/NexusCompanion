@@ -35,7 +35,7 @@ flowchart TB
     %% ═══════════════════════════════════════════
     %% L1 Markdown 文件层（人类可读全景）
     %% ═══════════════════════════════════════════
-    subgraph L1["L1 — Markdown 文件层（人类可读全景，workspace/memory/）"]
+    subgraph L1["L1 — Markdown 文件层（人类可读全景 · 记忆文件系统 · workspace/memory/）"]
         direction TB
         L1_CONS["MarkdownMemoryMaintenance<br/>consolidation + 异步文件写入<br/>→ 详见 PassiveTurnPipeline-MemoryConsolidation.mermaid"]
         L1_OPT["MemoryOptimizer 后台定时任务<br/>默认 64800s = 18h 一次<br/>读 PENDING + MEMORY + SELF<br/>LLM 归档决策 → 覆写 MEMORY/SELF"]
@@ -116,7 +116,7 @@ flowchart TB
         RETR -->|"向量 lane"| T_META
         RETR -->|"关键词 lane"| T_FTS
         RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
-        INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → 向量块(55)"]
+        INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → MemoryBlock(55)"]
         F_MEM -->|"读: 全量注入 prompt"| INJECT
         F_SELF -->|"读: 全量注入 prompt"| INJECT
         F_RECENT -->|"读: Compression +<br/>Ongoing Threads 注入"| INJECT
