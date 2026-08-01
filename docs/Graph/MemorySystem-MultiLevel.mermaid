@@ -29,7 +29,7 @@ flowchart TB
         L0_MSG --> L0_RECENT
     end
 
-    L0_MSG -->|"写: TurnCommitted → 触发 consolidation（skip_post_memory 可跳过）"| CONSOLIDATION
+    L0_MSG -->|"写: 每轮回复提交 → TurnCommitted 事件<br/>触发 consolidation 写文件（skip_post_memory 可跳过）"| L1_CONS
     L0_MSG -->|"读: 语义查询 → 触发向量+关键词检索"| RETR
 
     %% ═══════════════════════════════════════════
@@ -37,7 +37,12 @@ flowchart TB
     %% ═══════════════════════════════════════════
     subgraph L1["L1 — Markdown 文件层（人类可读全景 · 记忆文件系统 · workspace/memory/）"]
         direction TB
+        L1_CONS["MarkdownMemoryMaintenance<br/>consolidation + 异步文件写入<br/>→ 详见 PassiveTurnPipeline-MemoryConsolidation.mermaid"]
         L1_OPT["MemoryOptimizer 后台定时任务<br/>默认 64800s = 18h 一次<br/>读 PENDING + MEMORY + SELF<br/>LLM 归档决策 → 覆写 MEMORY/SELF"]
+        L1_CONS -->|"写: 追加事件日志"| F_HISTORY
+        L1_CONS -->|"写: 追加待归档事实"| F_PENDING
+        L1_CONS -->|"写: Compression 覆写<br/>+ Recent Turns 刷新"| F_RECENT
+        L1_CONS -->|"写: 追加每日时间线"| F_JOURNAL
         L1_OPT -->|"写: LLM 归档覆写"| F_MEM
         L1_OPT -->|"写: 调整自我认知覆写"| F_SELF
         F_PENDING -->|"读 + 消费后清空"| L1_OPT
@@ -52,12 +57,7 @@ flowchart TB
         F_JOURNAL["journal/YYYY-MM-DD.md<br/>每日时间线，追加"]
     end
 
-    CONSOLIDATION["MemoryConsolidation — 记忆整合<br/>MarkdownMemoryMaintenance<br/>对应子图: PassiveTurnPipeline-MemoryConsolidation"]
-
-    CONSOLIDATION -->|"写: 追加 HISTORY.md 事件日志"| F_HISTORY
-    CONSOLIDATION -->|"写: 追加 PENDING.md 待归档事实"| F_PENDING
-    CONSOLIDATION -->|"写: 覆写 RECENT_CONTEXT.md<br/>+ Recent Turns 刷新"| F_RECENT
-    CONSOLIDATION -->|"写: 追加 journal 每日时间线"| F_JOURNAL
+    L1_CONS -->|"写文件完成 → 发出 ConsolidationCommitted"| CONSOLIDATION["MemoryConsolidation — 记忆整合流程<br/>对应子图: PassiveTurnPipeline-MemoryConsolidation"]
     CONSOLIDATION -->|"写: ConsolidationCommitted 事件<br/>history_entry → 向量层 event 条目"| L2_WRITE
 
     %% ═══════════════════════════════════════════
@@ -134,7 +134,7 @@ flowchart TB
     DR_PREP["Drift Prepare<br/>DriftTurnPipeline ②"]
 
     RETR -.->|"读: MemoryBlock 检索块 → 注入 BeforeTurn prompt"| PT_BEFORE
-    PT_AFTER -->|"写: TurnCommitted → 触发 consolidation"| CONSOLIDATION
+    PT_AFTER -->|"写: TurnCommitted → 触发 consolidation<br/>追加 HISTORY.md / PENDING.md / journal"| L1_CONS
     F_RECENT -.->|"读: RECENT_CONTEXT.md 近期上下文摘要"| PRO_FETCH
     RETR -.->|"读: MemoryBlock（memory/briefing）→ 注入 Drift Prepare"| DR_PREP
 
@@ -145,7 +145,7 @@ flowchart TB
     class PRO_FETCH proPhase
     class DR_PREP driftPhase
     class L0_MSG,L0_RECENT step
-    class L1_OPT step
+    class L1_CONS,L1_OPT step
     class CONSOLIDATION event
     class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
     class L2_WRITE,L2_EVT,L2_LT step
