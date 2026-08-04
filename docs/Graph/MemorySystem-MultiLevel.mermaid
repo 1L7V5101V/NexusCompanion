@@ -117,8 +117,8 @@ flowchart TB
     subgraph READ["检索注入 — 读出路径（每轮回复前）"]
         direction TB
         RETR["Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane（多 query 并嵌）<br/>+ 关键词 lane（FTS5 BM25 / OR-LIKE）<br/>→ RRF 融合 top-k"]
-        RETR -->|"读: 向量 lane → memory_items 语义检索"| T_META
-        RETR -->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
+        RETR -.->|"读: 向量 lane → memory_items 语义检索"| T_META
+        RETR -.->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
         RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
         INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → MemoryBlock(55)"]
         F_MEM -->|"读: MEMORY.md 全量注入 prompt"| INJECT
