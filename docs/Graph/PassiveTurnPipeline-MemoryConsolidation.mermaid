@@ -85,7 +85,7 @@ graph TB
             COMMIT_J["append_journal<br/>← draft.history_entry_payloads 按日期分片<br/>→ journal/YYYY-MM-DD.md"] --> COMMIT_R
             COMMIT_R["write_recent_context<br/>← draft.recent_context_text<br/>→ 覆写RECENT_CONTEXT.md"] --> COMMIT_L
             COMMIT_L["更新 session.last_consolidated<br/>= draft.window.consolidate_up_to<br/>→ 下次从此开始"] --> COMMIT_E
-            COMMIT_E["Emit ConsolidationCommitted<br/>→ 通知 Rachael / 其他引擎"]
+            COMMIT_E["Emit ConsolidationCommitted 事件<br/>→ default_memory 引擎 _on_consolidation_committed 消费<br/>→ 写 memory2.db（L2 向量层）<br/>（rachael 不订阅此事件，走自身 TurnCommitted 写入）"]
         end
 
         REFRESH --> DONE
