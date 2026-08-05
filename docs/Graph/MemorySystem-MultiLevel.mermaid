@@ -71,7 +71,7 @@ flowchart TB
         direction LR
         subgraph L2A["L2.a — default_memory 引擎 · memory2.db（SQLite 向量表存储）"]
             direction TB
-            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
+            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py<br/>消费 ConsolidationCommitted 事件<br/>→ 分发两条写入路径"]
             L2_WRITE -->|"分发: history_entry"| L2_EVT
             L2_WRITE -->|"分发: conversation"| L2_LT
             L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
