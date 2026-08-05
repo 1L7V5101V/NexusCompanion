@@ -67,7 +67,7 @@ flowchart TB
     %% ═══════════════════════════════════════════
     %% L2 SQLite v2 向量结构化层
     %% ═══════════════════════════════════════════
-    subgraph L2["L2 — SQLite v2 向量结构化层（memory2.db，机器可搜细节）"]
+    subgraph L2["L2 — SQLite v2 向量结构化层（memory2.db · default_memory 引擎专属）<br/>注: rachael 引擎用自有 RachaelStore（sessions.db 图谱），不走此层"]
         direction TB
         L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
         L2_WRITE --> L2_EVT
@@ -129,7 +129,7 @@ flowchart TB
     %% ═══════════════════════════════════════════
     %% 定位标注 + 记忆 ↔ 主链路读写触点
     %% ═══════════════════════════════════════════
-    LEG_MEM["⚓ 定位：本图是 AgenticRAG 多引擎检索中的 vector 源（default_memory 引擎）内部结构；<br/>graph 源（rachael）与 web 源不在本图范围"]
+    LEG_MEM["⚓ 定位：本图是 AgenticRAG 多引擎检索中的 vector 源（default_memory 引擎）内部结构；<br/>graph 源（rachael）用自有 RachaelStore，web 源不在本图范围"]
 
     PT_BEFORE["被动 BeforeTurn<br/>PassiveTurnPipeline ①"]
     PT_AFTER["被动 AfterTurn<br/>PassiveTurnPipeline ⑥"]
