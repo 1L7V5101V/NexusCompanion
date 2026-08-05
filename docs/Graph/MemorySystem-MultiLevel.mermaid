@@ -79,7 +79,7 @@ flowchart TB
             L2_EVT --> T_META
             L2_LT --> T_META
 
-            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
+            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16] · 唯一索引 ux_items_hash(content_hash+memory_type) → 同内容重写判为强化<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
             T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
             subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
                 direction LR
@@ -88,9 +88,6 @@ flowchart TB
                 T_TYPES --> T_EVENT["event<br/>scope_channel / scope_chat_id<br/>happened_at 时间戳"]
                 T_TYPES --> T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
             end
-
-            T_IDX["ux_items_hash（唯一索引/约束）<br/>索引列: content_hash(内容指纹) + memory_type(记忆类型)<br/>同一内容再写入会被拦截 →<br/>判定为'强化'而非新增"]
-            T_META -->|"建在 memory_items 上"| T_IDX
 
             T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
             T_META -.->|"summary 同步（rowid 关联）"| T_FTS["memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
@@ -101,7 +98,7 @@ flowchart TB
                 T_REPL["memory_replacements（血缘谱系）<br/>old_item → new_item<br/>生产写入未接线 · undo 读取"]
                 T_QLOG["memory_query_log（检索审计）<br/>query/intent/命中快照<br/>只写不读"]
             end
-            LEG_DB["图例：蓝=真表 · 青=虚拟表 · 灰=索引/约束 · 白虚线=类型定义（非表）"]
+            LEG_DB["图例：蓝=真表 · 青=虚拟表 · 白虚线=类型定义（非表）"]
         end
 
         subgraph L2B["L2.b — rachael 引擎 · RachaelStore（sessions.db 图谱存储）"]
@@ -200,7 +197,6 @@ flowchart TB
     class L2_WRITE,L2_EVT,L2_LT step
     class T_META,T_CONS,T_REPL,T_QLOG db
     class T_VEC,T_FTS vtable
-    class T_IDX idx
     class T_TYPES,T_PROC,T_PREF,T_EVENT,T_PROF type
     class LEG_DB async
     class W_MEM,W_FORGET,W_POST step
