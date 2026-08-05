@@ -124,7 +124,7 @@ flowchart TB
         direction TB
         W_MEM["memorize 工具<br/>_remember → save_item_with_supersede<br/>写入门内先做相似 supersede"]
         W_FORGET["forget_memory 工具<br/>_forget → 按 id mark_superseded<br/>软删除"]
-        W_POST["PostResponseMemoryWorker<br/>TurnIngested 事件 → 用户否定检测<br/>→ invalidation supersede"]
+        W_POST["PostResponseMemoryWorker（每轮回复后异步）<br/>light model 提取否定主题 → 判定该废哪些<br/>对象: procedure/preference 旧条目（预筛≥0.82）<br/>→ supersede 软删除（无否定则空转）"]
         W_MEM -->|"写: memorize 工具 → memory_items 条目"| T_META
         W_FORGET -->|"写: forget 工具 → 标 superseded"| T_META
         W_POST -->|"写: 用户否定检测 → supersede 旧条目"| T_META
