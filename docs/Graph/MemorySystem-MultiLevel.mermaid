@@ -94,9 +94,13 @@ flowchart TB
 
             T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
             T_META -.->|"summary 同步（rowid 关联）"| T_FTS["memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
-            T_META -.->|"item_id 关联"| T_CONS["consolidation_events（溯源表）<br/>source_ref(来源) → item_id(条目) 映射<br/>保证同一来源只写一次（幂等）"]
-            T_META -.->|"old/new item 关联"| T_REPL["memory_replacements（替换谱系表）<br/>old_item(被替换的旧条目) → new_item(新条目)<br/>可追查一条记忆被谁更新过"]
-            T_META -.->|"检索快照记录（无外键）"| T_QLOG["memory_query_log（检索日志表）<br/>query(查询内容) / intent(检索意图) / hit_count(命中数) / items_json(返回条目)<br/>记录每次检索，可分析记忆使用情况"]
+            T_META -.->|"伴随记录: 幂等登记 / 血缘谱系 / 检索审计"| T_RECORD_GRP
+            subgraph T_RECORD_GRP["伴随记录表 — 不参与读路径<br/>读路径只走 memory_items + 检索索引"]
+                direction LR
+                T_CONS["consolidation_events（幂等登记）<br/>source_ref → item_id<br/>写前查重：同一来源只写一次"]
+                T_REPL["memory_replacements（血缘谱系）<br/>old_item → new_item<br/>生产写入未接线 · undo 读取"]
+                T_QLOG["memory_query_log（检索审计）<br/>query/intent/命中快照<br/>只写不读"]
+            end
             LEG_DB["图例：蓝=真表 · 青=虚拟表 · 灰=索引/约束 · 白虚线=类型定义（非表）"]
         end
 
@@ -218,3 +222,4 @@ flowchart TB
     style WRITE fill:#f0f9f2,stroke:#a5d6a7
     style READ fill:#eef7fd,stroke:#90caf9
     style T_TYPES_GRP fill:#fff8f0,stroke:#ffcc80,stroke-dasharray:5 3
+    style T_RECORD_GRP fill:#f5f5f5,stroke:#bdbdbd,stroke-dasharray:5 3
