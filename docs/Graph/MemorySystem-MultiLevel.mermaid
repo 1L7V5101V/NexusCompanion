@@ -118,8 +118,19 @@ flowchart TB
     subgraph READ["检索注入 — AgenticRAG 多引擎读出路径（每轮回复前）"]
         direction TB
         RAG["AgenticRAGPipeline.retrieve<br/>agent/retrieval/default_pipeline.py<br/>系统级检索入口（被动 BeforeTurn 每轮调用）"]
-        RAG -->|"分类检索源"| PLANNER["QueryPlanner 路由<br/>graph / vector / web<br/>规则打分 + light LLM 兜底"]
-        PLANNER -->|"选定的 sources 列表"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
+        RAG -->|"router_mode=rule 规则打分"| R_SCORE["QueryPlanner 规则打分（非互斥，可叠加）<br/>问候语 → graph +0.6 · 时间敏感 → web +0.7<br/>文档/代码 → vector +0.6 · 关系推理 → graph +0.5<br/>兜底 graph +0.1（保证有候选）"]
+        R_SCORE --> R_D1{"最高分 ≥ 0.8 且<br/>与第二名差距 ≥ 0.3?"}
+        R_D1 -->|"是（高置信度，跳过 LLM）"| R_S1["单源直出<br/>sources = [最高分源]"]
+        R_D1 -->|"否"| R_D2{"≥ 0.5 的源<br/>恰好 1 个?"}
+        R_D2 -->|"是"| R_S2["单源直出<br/>sources = [该源]"]
+        R_D2 -->|"否"| R_D3{"最高分 − 第二 < 0.2<br/>或 最高分 < 0.3?"}
+        R_D3 -->|"是 → LLM 兜底判源"| R_LLM["light LLM 分类<br/>sources = LLM 输出"]
+        R_D3 -->|"否 → 降级"| R_DEG["降级: 最高分 ≥ 0.3 → 取最高分源<br/>否则 → 默认 graph"]
+        R_S1 --> R_SRC
+        R_S2 --> R_SRC
+        R_LLM --> R_SRC
+        R_DEG --> R_SRC
+        R_SRC["sources 列表<br/>graph / vector / web"] -->|"选定的 sources"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
         SANDBOX -->|"graph lane"| GEXT["（外部）rachael 引擎 query<br/>RachaelStore · sessions.db 图谱<br/>→ 不在此图展开"]
         SANDBOX -->|"vector lane"| RETR["default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
         SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
@@ -167,7 +178,9 @@ flowchart TB
     class LEG_DB async
     class W_MEM,W_FORGET,W_POST step
     class RETR,INJ,INJECT step
-    class RAG,PLANNER,SANDBOX,EVAL,MEMBLOCK step
+    class RAG,SANDBOX,EVAL,MEMBLOCK step
+    class R_SCORE,R_S1,R_S2,R_LLM,R_DEG,R_SRC step
+    class R_D1,R_D2,R_D3 gate
     class GEXT,WEXT,W_RACHAEL async
 
     %% ====== 子图背景（L0-L2 分层记忆系统 / WRITE 写入入口 / READ 读库路径） ======
