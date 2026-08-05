@@ -72,12 +72,12 @@ flowchart TB
         subgraph L2A["L2.a — default_memory 引擎 · memory2.db（SQLite 向量表存储）"]
             direction TB
             L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
-            L2_WRITE --> L2_EVT
-            L2_WRITE --> L2_LT
+            L2_WRITE -->|"分发: history_entry"| L2_EVT
+            L2_WRITE -->|"分发: conversation"| L2_LT
             L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
             L2_LT["_extract_implicit_long_term<br/>LLM 长时提取（一次调用）<br/>profile / preference / procedure<br/>→ save_item_with_supersede 写入"]
-            L2_EVT --> T_META
-            L2_LT --> T_META
+            L2_EVT -->|"写: event 条目"| T_META
+            L2_LT -->|"写: profile/preference/procedure"| T_META
 
             T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16] · 唯一索引 ux_items_hash(content_hash+memory_type) → 同内容重写判为强化<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
             T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
@@ -89,8 +89,8 @@ flowchart TB
                 T_TYPES --> T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
             end
 
-            T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
-            T_META -.->|"summary 同步（rowid 关联）"| T_FTS["memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
+            T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["向量最近邻（KNN）检索<br/>vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
+            T_META -.->|"summary 同步（rowid 关联）"| T_FTS["BM25 关键词全文检索<br/>memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
             T_META -.->|"伴随记录: 幂等登记 / 血缘谱系 / 检索审计"| T_RECORD_GRP
             subgraph T_RECORD_GRP["伴随记录表 — 不参与读路径<br/>读路径只走 memory_items + 检索索引"]
                 direction LR
@@ -151,8 +151,8 @@ flowchart TB
         R_LLM --> R_SRC
         R_DEG --> R_SRC
         R_SRC["sources 列表<br/>graph / vector / web"] -->|"选定的 sources"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
-        SANDBOX -->|"graph lane"| GEXT["rachael 引擎 query（graph 源）<br/>dense 语义近邻 + ripple 图谱扩散<br/>→ 读 L2.b（RachaelStore）"]
-        SANDBOX -->|"vector lane"| RETR["default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
+        SANDBOX -->|"graph lane"| GEXT["graph源 <br/>rachael 引擎 query（graph 源）<br/>dense 语义近邻 + ripple 图谱扩散<br/>→ 读 L2.b（RachaelStore）"]
+        SANDBOX -->|"vector lane"| RETR["vector 源<br/>default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
         SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
         RETR -.->|"读: 向量 lane → memory_items 语义检索"| T_META
         RETR -.->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
