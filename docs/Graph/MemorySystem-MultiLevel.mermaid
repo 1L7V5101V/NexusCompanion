@@ -118,8 +118,8 @@ flowchart TB
     subgraph READ["检索注入 — AgenticRAG 多引擎读出路径（每轮回复前）"]
         direction TB
         RAG["AgenticRAGPipeline.retrieve<br/>agent/retrieval/default_pipeline.py<br/>系统级检索入口（被动 BeforeTurn 每轮调用）"]
-        RAG --> PLANNER["QueryPlanner 路由<br/>graph / vector / web<br/>规则打分 + light LLM 兜底"]
-        PLANNER --> SANDBOX["RetrievalSandbox 并行检索<br/>各源独立超时（web 15s / 其他 5s）"]
+        RAG -->|"分类检索源"| PLANNER["QueryPlanner 路由<br/>graph / vector / web<br/>规则打分 + light LLM 兜底"]
+        PLANNER -->|"选定的 sources 列表"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
         SANDBOX -->|"graph lane"| GEXT["（外部）rachael 引擎 query<br/>RachaelStore · sessions.db 图谱<br/>→ 不在此图展开"]
         SANDBOX -->|"vector lane"| RETR["default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
         SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
