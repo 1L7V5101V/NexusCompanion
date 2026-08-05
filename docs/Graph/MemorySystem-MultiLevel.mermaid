@@ -65,37 +65,55 @@ flowchart TB
     CONSOLIDATION -->|"写: ConsolidationCommitted 事件<br/>history_entry → 向量层 event 条目"| L2_WRITE
 
     %% ═══════════════════════════════════════════
-    %% L2 SQLite v2 向量结构化层
+    %% L2 双引擎结构化存储层
     %% ═══════════════════════════════════════════
-    subgraph L2["L2 — SQLite v2 向量结构化层（memory2.db · default_memory 引擎专属）<br/>注: rachael 引擎用自有 RachaelStore（sessions.db 图谱），不走此层"]
-        direction TB
-        L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
-        L2_WRITE --> L2_EVT
-        L2_WRITE --> L2_LT
-        L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
-        L2_LT["_extract_implicit_long_term<br/>LLM 长时提取（一次调用）<br/>profile / preference / procedure<br/>→ save_item_with_supersede 写入"]
-        L2_EVT --> T_META
-        L2_LT --> T_META
+    subgraph L2["L2 — 双引擎结构化存储层（机器可搜细节）"]
+        direction LR
+        subgraph L2A["L2.a — default_memory 引擎 · memory2.db（SQLite 向量表存储）"]
+            direction TB
+            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py 装配<br/>Memorizer + Retriever + PostResponseMemoryWorker"]
+            L2_WRITE --> L2_EVT
+            L2_WRITE --> L2_LT
+            L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
+            L2_LT["_extract_implicit_long_term<br/>LLM 长时提取（一次调用）<br/>profile / preference / procedure<br/>→ save_item_with_supersede 写入"]
+            L2_EVT --> T_META
+            L2_LT --> T_META
 
-        T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
-        T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
-        subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
-            direction LR
-            T_TYPES["各类型的专用字段"] --> T_PROC["procedure<br/>tool_requirement / steps[]<br/>rule_schema{required/forbidden/mentioned}<br/>trigger_tags 关键词触发"]
-            T_TYPES --> T_PREF["preference<br/>行为偏好（无专用字段）"]
-            T_TYPES --> T_EVENT["event<br/>scope_channel / scope_chat_id<br/>happened_at 时间戳"]
-            T_TYPES --> T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
+            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
+            T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
+            subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
+                direction LR
+                T_TYPES["各类型的专用字段"] --> T_PROC["procedure<br/>tool_requirement / steps[]<br/>rule_schema{required/forbidden/mentioned}<br/>trigger_tags 关键词触发"]
+                T_TYPES --> T_PREF["preference<br/>行为偏好（无专用字段）"]
+                T_TYPES --> T_EVENT["event<br/>scope_channel / scope_chat_id<br/>happened_at 时间戳"]
+                T_TYPES --> T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
+            end
+
+            T_IDX["ux_items_hash（唯一索引/约束）<br/>索引列: content_hash(内容指纹) + memory_type(记忆类型)<br/>同一内容再写入会被拦截 →<br/>判定为'强化'而非新增"]
+            T_META -->|"建在 memory_items 上"| T_IDX
+
+            T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
+            T_META -.->|"summary 同步（rowid 关联）"| T_FTS["memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
+            T_META -.->|"item_id 关联"| T_CONS["consolidation_events（溯源表）<br/>source_ref(来源) → item_id(条目) 映射<br/>保证同一来源只写一次（幂等）"]
+            T_META -.->|"old/new item 关联"| T_REPL["memory_replacements（替换谱系表）<br/>old_item(被替换的旧条目) → new_item(新条目)<br/>可追查一条记忆被谁更新过"]
+            T_META -.->|"检索快照记录（无外键）"| T_QLOG["memory_query_log（检索日志表）<br/>query(查询内容) / intent(检索意图) / hit_count(命中数) / items_json(返回条目)<br/>记录每次检索，可分析记忆使用情况"]
+            LEG_DB["图例：蓝=真表 · 青=虚拟表 · 灰=索引/约束 · 白虚线=类型定义（非表）"]
         end
 
-        T_IDX["ux_items_hash（唯一索引/约束）<br/>索引列: content_hash(内容指纹) + memory_type(记忆类型)<br/>同一内容再写入会被拦截 →<br/>判定为'强化'而非新增"]
-        T_META -->|"建在 memory_items 上"| T_IDX
-
-        T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
-        T_META -.->|"summary 同步（rowid 关联）"| T_FTS["memory_items_fts（虚拟表 · FTS5）<br/>把 summary 建成关键词倒排索引<br/>按关键词搜记忆（如搜'python'）"]
-        T_META -.->|"item_id 关联"| T_CONS["consolidation_events（溯源表）<br/>source_ref(来源) → item_id(条目) 映射<br/>保证同一来源只写一次（幂等）"]
-        T_META -.->|"old/new item 关联"| T_REPL["memory_replacements（替换谱系表）<br/>old_item(被替换的旧条目) → new_item(新条目)<br/>可追查一条记忆被谁更新过"]
-        T_META -.->|"检索快照记录（无外键）"| T_QLOG["memory_query_log（检索日志表）<br/>query(查询内容) / intent(检索意图) / hit_count(命中数) / items_json(返回条目)<br/>记录每次检索，可分析记忆使用情况"]
-        LEG_DB["图例：蓝=真表 · 青=虚拟表 · 灰=索引/约束 · 白虚线=类型定义（非表）"]
+        subgraph L2B["L2.b — rachael 引擎 · RachaelStore（sessions.db 图谱存储）"]
+            direction TB
+            R_WRITE["RachaelMemoryEngine._on_turn_committed<br/>embed 消息 → upsert_message_node<br/>+ upsert_edges + 激活事件"]
+            R_REINF["reinforce_memory 工具<br/>boost 节点强度"]
+            R_NODE["akasha_nodes（节点表）<br/>每条消息 turn 一个节点<br/>embedding · salience · strength · resource"]
+            R_EDGE["akasha_edges（边表）<br/>节点间共现权重 weight · co_count"]
+            R_ACT["akasha_activation_events（激活事件表）<br/>检索激活节点 + 分数分解"]
+            R_QLOG["akasha_query_log（检索日志表）<br/>dense/ripple 计数 + 注入统计"]
+            R_EMB["akasha_embedding_cache（缓存表）<br/>消息 embedding 缓存"]
+            R_WRITE --> R_NODE
+            R_WRITE --> R_EDGE
+            R_WRITE --> R_EMB
+            R_REINF --> R_NODE
+        end
     end
 
     %% ═══════════════════════════════════════════
@@ -109,7 +127,8 @@ flowchart TB
         W_MEM -->|"写: memorize 工具 → memory_items 条目"| T_META
         W_FORGET -->|"写: forget 工具 → 标 superseded"| T_META
         W_POST -->|"写: 用户否定检测 → supersede 旧条目"| T_META
-        W_RACHAEL["（并行）rachael 引擎写自有 RachaelStore<br/>TurnCommitted → sidecar + 图谱边<br/>→ 不在此图展开"]
+        W_RACHAEL["（并行）rachael 引擎 _on_turn_committed 写入<br/>→ 写 L2.b（RachaelStore）"]
+        W_RACHAEL --> R_WRITE
     end
 
     %% ═══════════════════════════════════════════
@@ -131,11 +150,15 @@ flowchart TB
         R_LLM --> R_SRC
         R_DEG --> R_SRC
         R_SRC["sources 列表<br/>graph / vector / web"] -->|"选定的 sources"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
-        SANDBOX -->|"graph lane"| GEXT["（外部）rachael 引擎 query<br/>RachaelStore · sessions.db 图谱<br/>→ 不在此图展开"]
+        SANDBOX -->|"graph lane"| GEXT["rachael 引擎 query（graph 源）<br/>dense 语义近邻 + ripple 图谱扩散<br/>→ 读 L2.b（RachaelStore）"]
         SANDBOX -->|"vector lane"| RETR["default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
         SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
         RETR -.->|"读: 向量 lane → memory_items 语义检索"| T_META
         RETR -.->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
+        GEXT -.->|"读: dense → 节点 embedding"| R_NODE
+        GEXT -.->|"读: ripple → 图谱边扩散"| R_EDGE
+        GEXT -.->|"写: 激活事件"| R_ACT
+        GEXT -.->|"写: 检索日志"| R_QLOG
         SANDBOX --> EVAL["Evaluator<br/>light LLM 结构化评分<br/>relevance / completeness"]
         EVAL -->|"质检通过"| MEMBLOCK["MemoryBlock 融合结果<br/>单源直出 / 多源 RRF"]
         EVAL -.->|"未通过 → 重写 query<br/>重试 ≤ 3 轮"| SANDBOX
@@ -149,7 +172,7 @@ flowchart TB
     %% ═══════════════════════════════════════════
     %% 定位标注 + 记忆 ↔ 主链路读写触点
     %% ═══════════════════════════════════════════
-    LEG_MEM["⚓ 定位：本图展开 default_memory（vector 源）引擎内部结构；<br/>READ 子图含 AgenticRAG 管线（Router→Sandbox→Evaluator）；<br/>graph 源（rachael）用自有 RachaelStore、web 源均以占位节点标注，不在此图展开"]
+    LEG_MEM["⚓ 定位：本图展开双引擎 L2 层 — L2.a default_memory（memory2 向量表）+ L2.b rachael（RachaelStore 图谱）；<br/>READ 子图含 AgenticRAG 管线（Router→Sandbox→Evaluator）；<br/>web 源为外部占位；rachael dense+ripple 检索细节见单独图"]
 
     PT_BEFORE["被动 BeforeTurn<br/>PassiveTurnPipeline ①"]
     PT_AFTER["被动 AfterTurn<br/>PassiveTurnPipeline ⑥"]
@@ -181,12 +204,17 @@ flowchart TB
     class RAG,SANDBOX,EVAL,MEMBLOCK step
     class R_SCORE,R_S1,R_S2,R_LLM,R_DEG,R_SRC step
     class R_D1,R_D2,R_D3 gate
-    class GEXT,WEXT,W_RACHAEL async
+    class WEXT async
+    class GEXT,W_RACHAEL step
+    class R_WRITE,R_REINF step
+    class R_NODE,R_EDGE,R_ACT,R_QLOG,R_EMB db
 
     %% ====== 子图背景（L0-L2 分层记忆系统 / WRITE 写入入口 / READ 读库路径） ======
     style L0 fill:#fff7e6,stroke:#ffb74d
     style L1 fill:#fff7e6,stroke:#ffb74d
     style L2 fill:#fff7e6,stroke:#ffb74d
+    style L2A fill:#fff7e6,stroke:#ffb74d
+    style L2B fill:#fff7e6,stroke:#ffb74d
     style WRITE fill:#f0f9f2,stroke:#a5d6a7
     style READ fill:#eef7fd,stroke:#90caf9
     style T_TYPES_GRP fill:#fff8f0,stroke:#ffcc80,stroke-dasharray:5 3
