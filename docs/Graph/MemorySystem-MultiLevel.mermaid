@@ -109,17 +109,26 @@ flowchart TB
         W_MEM -->|"写: memorize 工具 → memory_items 条目"| T_META
         W_FORGET -->|"写: forget 工具 → 标 superseded"| T_META
         W_POST -->|"写: 用户否定检测 → supersede 旧条目"| T_META
+        W_RACHAEL["（并行）rachael 引擎写自有 RachaelStore<br/>TurnCommitted → sidecar + 图谱边<br/>→ 不在此图展开"]
     end
 
     %% ═══════════════════════════════════════════
     %% 检索注入（读出路径）
     %% ═══════════════════════════════════════════
-    subgraph READ["检索注入 — 读出路径（每轮回复前）"]
+    subgraph READ["检索注入 — AgenticRAG 多引擎读出路径（每轮回复前）"]
         direction TB
-        RETR["Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane（多 query 并嵌）<br/>+ 关键词 lane（FTS5 BM25 / OR-LIKE）<br/>→ RRF 融合 top-k"]
+        RAG["AgenticRAGPipeline.retrieve<br/>agent/retrieval/default_pipeline.py<br/>系统级检索入口（被动 BeforeTurn 每轮调用）"]
+        RAG --> PLANNER["QueryPlanner 路由<br/>graph / vector / web<br/>规则打分 + light LLM 兜底"]
+        PLANNER --> SANDBOX["RetrievalSandbox 并行检索<br/>各源独立超时（web 15s / 其他 5s）"]
+        SANDBOX -->|"graph lane"| GEXT["（外部）rachael 引擎 query<br/>RachaelStore · sessions.db 图谱<br/>→ 不在此图展开"]
+        SANDBOX -->|"vector lane"| RETR["default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
+        SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
         RETR -.->|"读: 向量 lane → memory_items 语义检索"| T_META
         RETR -.->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
-        RETR --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
+        SANDBOX --> EVAL["Evaluator<br/>light LLM 结构化评分<br/>relevance / completeness"]
+        EVAL -->|"质检通过"| MEMBLOCK["MemoryBlock 融合结果<br/>单源直出 / 多源 RRF"]
+        EVAL -.->|"未通过 → 重写 query<br/>重试 ≤ 3 轮"| SANDBOX
+        MEMBLOCK --> INJ["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 1200 + 置信度标注"]
         INJ --> INJECT["system prompt 组装（按 priority）<br/>SELF(30) → MEMORY(35)<br/>→ RECENT_CONTEXT(45) → MemoryBlock(55)"]
         F_MEM -->|"读: MEMORY.md 全量注入 prompt"| INJECT
         F_SELF -->|"读: SELF.md 全量注入 prompt"| INJECT
@@ -129,17 +138,17 @@ flowchart TB
     %% ═══════════════════════════════════════════
     %% 定位标注 + 记忆 ↔ 主链路读写触点
     %% ═══════════════════════════════════════════
-    LEG_MEM["⚓ 定位：本图是 AgenticRAG 多引擎检索中的 vector 源（default_memory 引擎）内部结构；<br/>graph 源（rachael）用自有 RachaelStore，web 源不在本图范围"]
+    LEG_MEM["⚓ 定位：本图展开 default_memory（vector 源）引擎内部结构；<br/>READ 子图含 AgenticRAG 管线（Router→Sandbox→Evaluator）；<br/>graph 源（rachael）用自有 RachaelStore、web 源均以占位节点标注，不在此图展开"]
 
     PT_BEFORE["被动 BeforeTurn<br/>PassiveTurnPipeline ①"]
     PT_AFTER["被动 AfterTurn<br/>PassiveTurnPipeline ⑥"]
     PRO_FETCH["主动 Fetch<br/>ProactiveTurnPipeline ②"]
     DR_PREP["Drift Prepare<br/>DriftTurnPipeline ②"]
 
-    RETR -.->|"读: MemoryBlock 检索块 → 注入 BeforeTurn prompt"| PT_BEFORE
+    MEMBLOCK -.->|"读: 融合 MemoryBlock → 注入 BeforeTurn prompt"| PT_BEFORE
     PT_AFTER -->|"写: TurnCommitted → 触发 consolidation<br/>追加 HISTORY.md / PENDING.md / journal"| L1_CONS
     F_RECENT -.->|"读: RECENT_CONTEXT.md 近期上下文摘要"| PRO_FETCH
-    RETR -.->|"读: MemoryBlock（memory/briefing）→ 注入 Drift Prepare"| DR_PREP
+    MEMBLOCK -.->|"读: 融合 MemoryBlock → 注入 Drift Prepare"| DR_PREP
 
     %% ====== 样式应用 ======
     class LEG_MEM async
@@ -158,6 +167,8 @@ flowchart TB
     class LEG_DB async
     class W_MEM,W_FORGET,W_POST step
     class RETR,INJ,INJECT step
+    class RAG,PLANNER,SANDBOX,EVAL,MEMBLOCK step
+    class GEXT,WEXT,W_RACHAEL async
 
     %% ====== 子图背景（L0-L2 分层记忆系统 / WRITE 写入入口 / READ 读库路径） ======
     style L0 fill:#fff7e6,stroke:#ffb74d
