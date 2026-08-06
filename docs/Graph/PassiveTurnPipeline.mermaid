@@ -194,6 +194,19 @@ graph TB
 
     P5_3 -.->|TurnCommitted event| ASYNC_SUB
 
+    %% ──── 异步后处理 — 双引擎记忆消费者（TurnCommitted 其他订阅方） ────
+    subgraph ASYNC_ENG[异步后处理 — 双引擎记忆消费者<br/>（与 Markdown 文件写入并行）]
+        direction TB
+        DE_SUB["default_memory._on_turn_committed<br/>订阅 TurnCommitted"] --> DE_ENQ["skip_post_memory? 否 →<br/>enqueue TurnIngested 事件"]
+        DE_ENQ --> DE_WORKER["PostResponseMemoryWorker<br/>light model 否定检测<br/>→ supersede memory2 旧条目"]
+        DE_WORKER --> DE_MEM2["写 memory2.db（L2A）<br/>invalidation supersede"]
+        RA_SUB["rachael._on_turn_committed<br/>订阅 TurnCommitted"] --> RA_WRITE["embed → 节点/边/激活"]
+        RA_WRITE --> RA_STORE["写 RachaelStore（L2B 图谱）"]
+    end
+
+    P5_3 -.->|TurnCommitted event| DE_SUB
+    P5_3 -.->|TurnCommitted event| RA_SUB
+
     %% ──── 记忆检索系统 ────
     subgraph MEM[记忆检索 — MemoryRetrievalPipeline]
         direction TB
@@ -216,6 +229,7 @@ graph TB
     class P5_3,P1_5,P2_3,PR_2,TL_BS,TL_AS,P4_2,P5_5 event
     class CH_OUT stream
     class ASYNC_SUB,ASYNC_ENQ,ASYNC_H,ASYNC_P,ASYNC_J,ASYNC_R,ASYNC_REFRESH async
+    class DE_SUB,DE_ENQ,DE_WORKER,DE_MEM2,RA_SUB,RA_WRITE,RA_STORE async
     class P1_ABORT module
     class MEM_R,MEM_ROUTER,MEM_SINGLE,MEM_RAG,MEM_SB,MEM_EVAL,MEM_RESULT mem
     class MBO final
