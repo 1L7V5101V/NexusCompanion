@@ -79,9 +79,12 @@ flowchart TB
             L2_EVT -->|"写: event 条目"| T_META
             L2_LT -->|"写: profile/preference/procedure"| T_META
 
-            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status (active / superseded) · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
-            T_IDX["ux_items_hash 唯一索引（非列 · 建在列上）<br/>content_hash + memory_type 两列<br/>→ 同内容重写判为强化"]
-            T_META -->|"唯一约束（非列，独立 B-tree）"| T_IDX
+            subgraph T_CORE_GRP["memory_items 核心表单元（含唯一索引）"]
+                direction TB
+                T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status (active / superseded) · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
+                T_IDX["ux_items_hash（唯一索引 · 非列）<br/>建在 content_hash + memory_type 两列<br/>→ 同内容重写判为强化"]
+                T_META -->|"唯一约束（非列）"| T_IDX
+            end
             T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
             subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
                 direction LR
@@ -222,3 +225,4 @@ flowchart TB
     style READ fill:#eef7fd,stroke:#90caf9
     style T_TYPES_GRP fill:#fff8f0,stroke:#ffcc80,stroke-dasharray:5 3
     style T_RECORD_GRP fill:#f5f5f5,stroke:#bdbdbd,stroke-dasharray:5 3
+    style T_CORE_GRP fill:#eef6fb,stroke:#90caf9
