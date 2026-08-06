@@ -79,7 +79,9 @@ flowchart TB
             L2_EVT -->|"写: event 条目"| T_META
             L2_LT -->|"写: profile/preference/procedure"| T_META
 
-            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16] · 唯一索引 ux_items_hash(content_hash+memory_type) → 同内容重写判为强化<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status active可用/superseded被替代 · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
+            T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status (active / superseded) · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
+            T_IDX["ux_items_hash 唯一索引（非列 · 建在列上）<br/>content_hash + memory_type 两列<br/>→ 同内容重写判为强化"]
+            T_META -->|"唯一约束（非列，独立 B-tree）"| T_IDX
             T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
             subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
                 direction LR
@@ -98,7 +100,7 @@ flowchart TB
                 T_REPL["memory_replacements（血缘谱系）<br/>old_item → new_item<br/>生产写入未接线 · undo 读取"]
                 T_QLOG["memory_query_log（检索审计）<br/>query/intent/命中快照<br/>只写不读"]
             end
-            LEG_DB["图例：蓝=真表 · 青=虚拟表 · 白虚线=类型定义（非表）"]
+            LEG_DB["图例：蓝=真表 · 青=虚拟表 · 灰=索引/约束（非列） · 白虚线=类型定义（非表）"]
         end
 
         subgraph L2B["L2.b — rachael 引擎 · RachaelStore（sessions.db 图谱存储）"]
@@ -124,7 +126,7 @@ flowchart TB
         direction TB
         W_MEM["memorize 工具<br/>_remember → save_item_with_supersede<br/>写入门内先做相似 supersede"]
         W_FORGET["forget_memory 工具<br/>_forget → 按 id mark_superseded<br/>软删除"]
-        W_POST["PostResponseMemoryWorker（每轮回复后异步）<br/>light model 提取否定主题 → 判定该废哪些<br/>对象: procedure/preference 旧条目（预筛≥0.82）<br/>→ supersede 软删除（无否定则空转）"]
+        W_POST["PostResponseMemoryWorker（每轮回复后异步）<br/>light model 提取否定主题 → 判定该废哪些<br/>vector源检索召回对象: procedure/preference 旧条目（预筛≥0.82）<br/>→ supersede 软删除（无否定则空转）"]
         W_MEM -->|"写: memorize 工具 → memory_items 条目"| T_META
         W_FORGET -->|"写: forget 工具 → 标 superseded"| T_META
         W_POST -->|"写: 用户否定检测 → supersede 旧条目"| T_META
@@ -197,6 +199,7 @@ flowchart TB
     class L2_WRITE,L2_EVT,L2_LT step
     class T_META,T_CONS,T_REPL,T_QLOG db
     class T_VEC,T_FTS vtable
+    class T_IDX idx
     class T_TYPES,T_PROC,T_PREF,T_EVENT,T_PROF type
     class LEG_DB async
     class W_MEM,W_FORGET,W_POST step
