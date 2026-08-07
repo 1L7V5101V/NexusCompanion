@@ -87,10 +87,10 @@ graph LR
     end
 
     %% ═══════════════ 跨机制联动 ═══════════════
-    T_EFFECT -.->|"②退休 复活条目 → ①强化 计数+1"| R_COUNT
-    M_RAW -.->|"③合并 merge 目标 → ①强化 计数+1"| R_COUNT
-    M_NOTE -.->|"③合并 写 _merge_note → ④溯源 同一字段"| P_NOTE
-    T_MAIN -.->|"②退休 保留 source_ref → ④溯源 恢复用"| P_SRC
+    T_EFFECT -.->|"superseded 条目被同 content_hash 重写复活时，强化计数 +1"| R_COUNT
+    M_RAW -.->|"merge_item_raw 更新目标条目时 reinforcement=reinforcement+1，强化计数 +1"| R_COUNT
+    M_NOTE -.->|"merge_item 写入的 _merge_note 即④溯源展示的同一 extra_json 字段"| P_NOTE
+    T_MAIN -.->|"supersede 软删除后条目仍保留 source_ref，供④溯源记录与恢复"| P_SRC
 
     %% ═══════════════ 定位标注 ═══════════════
     LEG_MEM["⚓ 定位：本图描述 AgenticRAG 多引擎检索中 vector 源（default_memory 引擎）的条目演化机制；<br/>graph 源（rachael）引擎另有实现"]
