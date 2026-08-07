@@ -47,7 +47,7 @@ graph LR
     end
 
     %% ═══════════════ ③ 合并 ═══════════════
-    subgraph M["③ 合并 — merge（procedure 专属）"]
+    subgraph M["③ 合并 — merge（仅 memory_type='procedure'"]
         direction TB
         M_ENTRY["save_item_with_supersede<br/>procedure 写入入口（preference 不 merge）<br/>embed 新 summary"]
         M_ENTRY -->|"写: vector_search 同类型候选<br/>memory_types=[procedure] top_k=5<br/>score_threshold=0.70"| M_D1{"新条目有 tool_requirement?"}
