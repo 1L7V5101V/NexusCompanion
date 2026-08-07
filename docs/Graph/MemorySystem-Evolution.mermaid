@@ -47,12 +47,12 @@ graph LR
     end
 
     %% ═══════════════ ③ 合并 ═══════════════
-    subgraph M["③ 合并 — merge（仅 memory_type='procedure'"]
+    subgraph M["③ 合并 — merge（仅 memory_type='procedure'）"]
         direction TB
         M_ENTRY["save_item_with_supersede<br/>procedure 写入入口（preference 不 merge）<br/>embed 新 summary"]
-        M_ENTRY -->|"写: vector_search 同类型候选<br/>memory_types=[procedure] top_k=5<br/>score_threshold=0.70"| M_D1{"新条目有 tool_requirement?"}
+        M_ENTRY -->|"写: vector_search 同类型候选<br/>memory_types=[procedure] top_k=5<br/>score = 候选与新摘要的向量余弦相似度<br/>score_threshold=0.70"| M_D1{"新条目有 tool_requirement?"}
         M_D1 -->|"否"| M_NO["不 merge → 落入 supersede"]
-        M_D1 -->|"是"| M_D2{"候选中有 score≥0.70<br/>且库内 tool_requirement 相同<br/>的 procedure?"}
+        M_D1 -->|"是"| M_D2{"候选中有 与新摘要向量余弦相似度<br/>score≥0.70 且 库内 tool_requirement 相同<br/>的 procedure?"}
         M_D2 -->|"无"| M_NO
         M_D2 -->|"有 → 命中 merge_target"| M_SUM["_merge_summary_text<br/>新摘要⊆旧 → 用旧摘要<br/>旧摘要⊆新 → 用新摘要<br/>否则 旧摘要；新摘要"]
         M_SUM -->|"→ merge_item"| M_ITEM["merge_item<br/>重 embed 合并后摘要<br/>重算 content_hash<br/>以 old_extra 组装 new_extra"]
