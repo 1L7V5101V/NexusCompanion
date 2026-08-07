@@ -55,11 +55,12 @@ graph LR
         M_D1 -->|"是"| M_D2{"候选中有 与新摘要向量余弦相似度<br/>score≥0.70 且 库内 tool_requirement 相同<br/>的 procedure?"}
         M_D2 -->|"无"| M_NO
         M_D2 -->|"有 → 命中 merge_target"| M_SUM["_merge_summary_text<br/>新摘要⊆旧 → 用旧摘要<br/>旧摘要⊆新 → 用新摘要<br/>否则 旧摘要；新摘要"]
+        %% 核心是字符串子串去重：谁包含谁就用谁，互不包含才拼。图里 新摘要⊆旧 / 旧摘要⊆新 / 否则 旧摘要；新摘要
         M_SUM -->|"→ merge_item"| M_ITEM["merge_item<br/>重 embed 合并后摘要<br/>重算 content_hash<br/>以 old_extra 组装 new_extra"]
         M_ITEM -->|"写: 摘要快照"| M_NOTE["_merge_note = 合并后摘要<br/>存于 memory_items.extra_json"]
         M_ITEM -->|"写: 重建 rule_schema"| M_SCHEMA["build_procedure_rule_schema<br/>required/forbidden/mentioned 重推"]
         M_ITEM -->|"写: steps 去重合并"| M_STEPS["steps 新旧合并去重保序"]
-        M_ITEM -->|"写: 清除 trigger_tags"| M_TAGS["trigger_tags 清除<br/>tagger 需 LLM 无法在线重建<br/>旧标签防错误关键词触发"]
+        M_ITEM -->|"写: 清除 trigger_tags"| M_TAGS["清除旧 trigger_tags<br/>防错误关键词触发（tagger 需 LLM 无法在线重建）"]
         M_SCHEMA --> M_RAW
         M_STEPS --> M_RAW
         M_TAGS --> M_RAW
