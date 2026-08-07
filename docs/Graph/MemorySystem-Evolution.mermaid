@@ -60,7 +60,7 @@ graph LR
         M_ITEM -->|"写: 摘要快照"| M_NOTE["_merge_note = 合并后摘要<br/>存于 memory_items.extra_json"]
         M_ITEM -->|"写: 重建 rule_schema"| M_SCHEMA["build_procedure_rule_schema<br/>required/forbidden/mentioned 重推"]
         M_ITEM -->|"写: steps 去重合并"| M_STEPS["steps 新旧合并去重保序"]
-        M_ITEM -->|"写: 清除 trigger_tags"| M_TAGS["清除旧 trigger_tags<br/>防错误关键词触发（tagger 需 LLM 无法在线重建）"]
+        M_ITEM -->|"写: 清除 trigger_tags"| M_TAGS["清除旧 trigger_tags<br/>防错误关键词触发"]
         M_SCHEMA --> M_RAW
         M_STEPS --> M_RAW
         M_TAGS --> M_RAW
@@ -87,10 +87,10 @@ graph LR
     end
 
     %% ═══════════════ 跨机制联动 ═══════════════
-    T_EFFECT -.->|"写: 复活即强化"| R_COUNT
-    M_RAW -.->|"写: merge 目标 +1"| R_COUNT
-    M_NOTE -.->|"写: 同一 _merge_note 字段"| P_NOTE
-    T_MAIN -.->|"保留: source_ref 供溯源与恢复"| P_SRC
+    T_EFFECT -.->|"②退休 复活条目 → ①强化 计数+1"| R_COUNT
+    M_RAW -.->|"③合并 merge 目标 → ①强化 计数+1"| R_COUNT
+    M_NOTE -.->|"③合并 写 _merge_note → ④溯源 同一字段"| P_NOTE
+    T_MAIN -.->|"②退休 保留 source_ref → ④溯源 恢复用"| P_SRC
 
     %% ═══════════════ 定位标注 ═══════════════
     LEG_MEM["⚓ 定位：本图描述 AgenticRAG 多引擎检索中 vector 源（default_memory 引擎）的条目演化机制；<br/>graph 源（rachael）引擎另有实现"]
