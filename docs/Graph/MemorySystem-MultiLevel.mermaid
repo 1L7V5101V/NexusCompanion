@@ -71,13 +71,13 @@ flowchart TB
         direction LR
         subgraph L2A["L2.a — default_memory 引擎 · memory2.db（SQLite 向量表存储）"]
             direction TB
-            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>plugins/default_memory/engine.py<br/>消费 ConsolidationCommitted 事件<br/>→ 分发两条写入路径"]
+            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>engine.py · 订阅 ConsolidationCommitted 事件<br/>从该事件取 history_entry_payloads 与 conversation<br/>→ 分别交给 event 路径与 long-term 路径"]
             L2_WRITE -->|"分发: history_entry"| L2_EVT
             L2_WRITE -->|"分发: conversation"| L2_LT
-            L2_EVT["save_from_consolidation<br/>history_entry → event 条目<br/>upsert_consolidation_event<br/>source_ref 幂等 + 向量语义去重 0.92"]
-            L2_LT["_extract_implicit_long_term<br/>LLM 长时提取（一次调用）<br/>profile / preference / procedure<br/>→ save_item_with_supersede 写入"]
-            L2_EVT -->|"写: event 条目"| T_META
-            L2_LT -->|"写: profile/preference/procedure"| T_META
+            L2_EVT["DefaultMemoryEngine._save_from_consolidation<br/>输入: history_entry（逐条）<br/>→ 写 memory_type=event 条目（extra_json: scope_channel/scope_chat_id/happened_at）<br/>写入前防重: source_ref 幂等(consolidation_events) + 向量语义 ≥0.92"]
+            L2_LT["DefaultMemoryEngine._extract_implicit_long_term<br/>输入: 整段 conversation（非 history_entry）<br/>单次 LLM 调用 → 一次产出三类 memory_type（不产出 event）<br/>profile / preference / procedure<br/>写新条目 + 相似旧条目标 superseded（阈值 ≈0.90，高情绪抬至 0.92）"]
+            L2_EVT -->|"写: memory_type=event 条目"| T_META
+            L2_LT -->|"写: memory_type=profile/preference/procedure"| T_META
 
             subgraph T_CORE_GRP["memory_items 核心表单元（含唯一索引）"]
                 direction LR
