@@ -47,13 +47,27 @@ graph LR
     end
 
     %% ═══════════════ ③ 合并 ═══════════════
-    subgraph M["③ 合并 — merge"]
+    subgraph M["③ 合并 — merge（procedure 专属）"]
         direction TB
-        M_TRIG["save_item_with_supersede<br/>procedure 分支<br/>_pick_explicit_merge_target<br/>新条目 tool_requirement == 库内 procedure<br/>且相似 ≥ 0.70 → 合并"]
-        M_TRIG -->|"触发: 同 tool_requirement<br/>且相似 ≥ 0.70"| M_ITEM["merge_item<br/>摘要拼接去重 _merge_summary_text<br/>steps 新旧去重合并<br/>rule_schema 重建<br/>trigger_tags 清除（防误触发）"]
-        M_ITEM -->|"→ 执行合并"| M_RAW["merge_item_raw 原子落库<br/>summary + content_hash + embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items<br/>hash 冲突降级 supersede + upsert"]
-        M_RAW -->|"写: _merge_note 快照"| M_NOTE["_merge_note = 合并后摘要<br/>→ 写入 extra_json 供溯源"]
-        M_RAW -->|"返回 merged:id"| M_RET["调用方识别 merged 状态"]
+        M_ENTRY["save_item_with_supersede<br/>procedure 写入入口（preference 不 merge）<br/>embed 新 summary"]
+        M_ENTRY -->|"写: vector_search 同类型候选<br/>memory_types=[procedure] top_k=5<br/>score_threshold=0.70"| M_D1{"新条目有 tool_requirement?"}
+        M_D1 -->|"否"| M_NO["不 merge → 落入 supersede"]
+        M_D1 -->|"是"| M_D2{"候选中有 score≥0.70<br/>且库内 tool_requirement 相同<br/>的 procedure?"}
+        M_D2 -->|"无"| M_NO
+        M_D2 -->|"有 → 命中 merge_target"| M_SUM["_merge_summary_text<br/>新摘要⊆旧 → 用旧摘要<br/>旧摘要⊆新 → 用新摘要<br/>否则 旧摘要；新摘要"]
+        M_SUM -->|"→ merge_item"| M_ITEM["merge_item<br/>重 embed 合并后摘要<br/>重算 content_hash<br/>以 old_extra 组装 new_extra"]
+        M_ITEM -->|"写: 摘要快照"| M_NOTE["_merge_note = 合并后摘要<br/>存于 memory_items.extra_json"]
+        M_ITEM -->|"写: 重建 rule_schema"| M_SCHEMA["build_procedure_rule_schema<br/>required/forbidden/mentioned 重推"]
+        M_ITEM -->|"写: steps 去重合并"| M_STEPS["steps 新旧合并去重保序"]
+        M_ITEM -->|"写: 清除 trigger_tags"| M_TAGS["trigger_tags 清除<br/>tagger 需 LLM 无法在线重建<br/>旧标签防错误关键词触发"]
+        M_SCHEMA --> M_RAW
+        M_STEPS --> M_RAW
+        M_TAGS --> M_RAW
+        M_NOTE --> M_RAW
+        M_ITEM -->|"→ merge_item_raw 原子落库"| M_RAW["merge_item_raw<br/>UPDATE summary/content_hash/embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items（rowid 关联）"]
+        M_RAW -->|"返回 merged:目标id"| M_RET["调用方识别 merged 状态<br/>post_response_worker 前缀解析"]
+        M_RAW -.->|"异常: content_hash 冲突（极低概率）"| M_FALL["降级: ROLLBACK<br/>supersede 旧条目<br/>upsert_item 写新摘要（变强化）"]
+        M_NO -.->|"继续: 相似≥0.90 软删除（②退休）"| T_MAIN
     end
 
     %% ═══════════════ ④ 溯源 ═══════════════
@@ -84,6 +98,8 @@ graph LR
     class LEG_MEM,P_NOREAD async
     class R_SRC1,R_SRC2,R_SRC3,R_COUNT,R_HOT,R_FUSE step
     class T_SRC1,T_SRC2,T_SRC3,T_SRC4,T_SRC5,T_MAIN,T_EFFECT step
-    class M_TRIG,M_ITEM,M_RAW,M_NOTE,M_RET step
+    class M_ENTRY,M_SUM,M_ITEM,M_NOTE,M_SCHEMA,M_STEPS,M_TAGS,M_RAW,M_RET step
+    class M_D1,M_D2 gate
+    class M_NO,M_FALL async
     class P_SRC,P_EVT,P_REPL,P_NOTE,P_QLOG,P_EVID step
     class T_EFFECT,R_COUNT,P_REPL,P_SRC,P_NOTE gate
