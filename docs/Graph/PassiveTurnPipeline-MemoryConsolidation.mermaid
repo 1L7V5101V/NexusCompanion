@@ -7,6 +7,8 @@ graph TB
     classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
     classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
     classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+    classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+    classDef flow fill:#e0f7fa,color:#006064,stroke:#4dd0e1,stroke-width:1px
 
     %% ──── 触发层 ────
     subgraph TRIGGER[同步触发层]
@@ -45,7 +47,7 @@ graph TB
         CHECK_CONS -->|否, 仅刷新| REFRESH["refresh_recent_turns<br/>替换 RECENT_CONTEXT.md 中<br/>Recent Turns 区块（其余不变）"]
         CHECK_CONS -->|是, 执行合并| PREPARE
 
-        subgraph PREPARE[consolidate — LLM 提取阶段]
+        subgraph PREPARE[consolidate — 窗口选择 + LLM 提取]
             direction TB
             PREP_MSG["session.messages<br/>当前 session 全部对话历史<br/>格式: list[dict] 每条含:<br/>role(user/assistant) + content + timestamp"]
             PREP_MSG --> PREP_WIN
@@ -65,13 +67,16 @@ graph TB
 
             PREP_LLM2["LLM 调用 #2: recent_context<br/>prompt：近期语境压缩代理<br/>→ 返回 JSON"]
             PREP_LLM2 -->|"active_topics → 最近持续关注<br/>user_preferences → 最近明确偏好<br/>follow_ups → 最近待延续话题<br/>avoidances → 最近避免事项"| PREP_COMP[Compression 区块]
-            PREP_LLM2 -->|ongoing_threads<br/>→ Ongoing Threads| PREP_THREAD[Ongoing Threads 区块]
+            PREP_LLM2 -->|"ongoing_threads<br/>跨窗口持续的重要现实线索<br/>（情绪/工作/学习/健康，门槛高于 active_topics）"| PREP_THREAD[Ongoing Threads 区块]
             PREP_COMP --> PREP_RC
             PREP_THREAD -->  PREP_RC
             PREP_TURNS[Recent Turns 区块<br/>取 session 尾部最近 K 条消息<br/>纯格式化, 无 LLM 调用] --> PREP_RC
             PREP_RC[组装 recent_context 全文] --> PREP_DONE
 
-            PREP_DONE["_ConsolidationDraft<br/>合并草案<br/>→ 包含 pending_items + history_entries + recent_context"]
+            PREP_DONE["_ConsolidationDraft · LLM 产物部分<br/>history_entry_payloads · pending_items<br/>· recent_context_text"]
+
+            PREP_WIN -->|"派生: source_ref · conversation"| PREP_CTX
+            PREP_CTX["_ConsolidationDraft · 上下文部分<br/>window · source_ref · conversation<br/>scope_channel · scope_chat_id（来自 session）<br/>archive_all（来自请求）"]
         end
 
         PREP_DONE --> PREP_FAIL{LLM 成功?}
@@ -81,17 +86,29 @@ graph TB
         subgraph COMMIT[commit — 物理写入]
             direction TB
             COMMIT_H["append_history_once<br/>← draft.history_entry_payloads<br/>→ HISTORY.md（统一追加）"] --> COMMIT_P
-            COMMIT_P["append_pending_once<br/>← draft.pending_items<br/>→ PENDING.md"] --> COMMIT_J
-            COMMIT_J["append_journal<br/>← draft.history_entry_payloads 按日期分片<br/>→ journal/YYYY-MM-DD.md"] --> COMMIT_R
-            COMMIT_R["write_recent_context<br/>← draft.recent_context_text<br/>→ 覆写RECENT_CONTEXT.md"] --> COMMIT_L
-            COMMIT_L["更新 session.last_consolidated<br/>= draft.window.consolidate_up_to<br/>→ 下次从此开始"] --> COMMIT_E
-            COMMIT_E["Emit ConsolidationCommitted 事件<br/>→ default_memory 引擎 _on_consolidation_committed 消费<br/>→ 写 memory2.db（L2 向量层）<br/>（rachael 不订阅此事件，走自身 TurnCommitted 写入）"]
+            COMMIT_P["append_pending_once<br/>← draft.pending_items<br/>→ PENDING.md"] --> COMMIT_R
+            COMMIT_R["write_recent_context<br/>← draft.recent_context_text<br/>→ 覆写 RECENT_CONTEXT.md"] --> COMMIT_J
+            COMMIT_J["append_journal<br/>← draft.history_entry_payloads 按日期分片<br/>→ journal/YYYY-MM-DD.md"] --> COMMIT_L
+            COMMIT_L["更新 session.last_consolidated<br/>= draft.window.consolidate_up_to"] --> COMMIT_E
+            COMMIT_E["emit ConsolidationCommitted 事件<br/>（_commit_markdown_draft 收尾）<br/>携带字段: history_entry_payloads<br/>source_ref · scope_channel<br/>scope_chat_id · conversation"]
         end
 
         REFRESH --> DONE
         COMMIT --> DONE
         DONE[异步写文件完成]
     end
+
+    subgraph CONSUME_D["default_memory 引擎消费 — L2.a 向量层"]
+        direction TB
+        C_D1["DefaultMemoryEngine._on_consolidation_committed<br/>写 memory2.db（详见 MemorySystem-MultiLevel.mermaid）"]
+    end
+    COMMIT_E -->|"commit 收尾 emit 事件 → 订阅<br/>→ 写 memory2.db"| C_D1
+
+    subgraph CONSUME_R["rachael 引擎 — L2.b 图谱层"]
+        direction TB
+        C_R1["不订阅本事件<br/>→ 走自身 TurnCommitted 写入图谱<br/>（详见 MemorySystem-MultiLevel.mermaid L2.b）"]
+    end
+    COMMIT_E -.->|"commit 收尾 emit 事件 → 不订阅<br/>→ 走自身 TurnCommitted 写入图谱"| C_R1
 
     %% ──── 后台优化层 ────
     subgraph OPT[MemoryOptimizer — 后台定时任务]
@@ -136,9 +153,10 @@ graph TB
     class AT step
     class AT_EVENT,SUB,SUB_SKIP,SUB_DROP,ENQUEUE step
     class WORKER,CHECK_CONS,REFRESH step
-    class PREPARE,PREP_WIN,PREP_MSG,PREP_LLM1,PREP_LLM2,PREP_PA,PREP_HE,PREP_RC,PREP_DONE,PREP_FAIL,PREP_ERR,PREP_COMP,PREP_THREAD,PREP_TURNS step
+    class PREPARE,PREP_WIN,PREP_MSG,PREP_LLM1,PREP_LLM2,PREP_PA,PREP_HE,PREP_RC,PREP_DONE,PREP_CTX,PREP_FAIL,PREP_ERR,PREP_COMP,PREP_THREAD,PREP_TURNS step
     class COMMIT,COMMIT_H,COMMIT_P,COMMIT_J,COMMIT_R,COMMIT_L,COMMIT_E step
+    class C_D1,C_R1 db
     class DONE step
-    class OPT_START,OPT_CHECK,OPT_SKIP,OPT_READ,OPT_MERGE,OPT_SELF,OPT_CLEAR async
+    class OPT_START,OPT_CHECK,OPT_SKIP,OPT_READ,OPT_MERGE,OPT_SELF,OPT_CLEAR flow
     class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
     class MBO final
