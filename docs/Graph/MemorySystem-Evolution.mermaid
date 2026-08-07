@@ -19,7 +19,7 @@ graph LR
     subgraph R["① 强化 — reinforcement 计数器 + 热度融合"]
         direction TB
         R_SRC1["upsert_item / upsert_consolidation_event<br/>content_hash 命中 ux_items_hash<br/>→ reinforcement+1<br/>status=superseded 则复活为 active"]
-        R_SRC2["event 向量语义去重<br/>相似 ≥ 0.92（7 天内）<br/>→ 新条目丢弃，强化最近似 1 条<br/>reinforce_items_batch"]
+        R_SRC2["event 向量语义去重<br/>向量余弦相似度 ≥ 0.92（7 天内）<br/>→ 新条目丢弃，强化最近似 1 条<br/>reinforce_items_batch"]
         R_SRC3["merge_item_raw<br/>merge 目标 reinforcement+1"]
         R_SRC1 -->|"写: 命中 content_hash<br/>→ 计数+1（重复写入变强化）"| R_COUNT
         R_SRC2 -->|"写: 语义去重<br/>→ 强化最近似 1 条"| R_COUNT
@@ -32,12 +32,12 @@ graph LR
     %% ═══════════════ ② 退休 ═══════════════
     subgraph T["② 退休 — supersede 软删除"]
         direction TB
-        T_SRC1["save_item_with_supersede<br/>procedure / preference<br/>相似 ≥ 0.90<br/>→ mark_superseded_batch"]
-        T_SRC2["profile 同类防堆积<br/>status / purchase 同 category<br/>相似 ≥ 0.90（情感≥7 时 0.92）"]
+        T_SRC1["save_item_with_supersede<br/>procedure / preference<br/>向量余弦相似度 ≥ 0.90<br/>→ mark_superseded_batch"]
+        T_SRC2["profile 同类防堆积<br/>status / purchase 同 category<br/>向量余弦相似度 ≥ 0.90（情感≥7 时 0.92）"]
         T_SRC3["PostResponseMemoryWorker<br/>用户否定旧行为<br/>预筛 ≥ 0.82 → light model 判定"]
         T_SRC4["forget_memory 工具<br/>按 id mark_superseded_batch"]
         T_SRC5["undo_by_message_sources<br/>消息删除 → 相关 source_ref 条目退休"]
-        T_SRC1 -->|"写: 相似≥0.90 → 批量退休"| T_MAIN
+        T_SRC1 -->|"写: 余弦相似度≥0.90 → 批量退休"| T_MAIN
         T_SRC2 -->|"写: 同类防堆积 → 退休"| T_MAIN
         T_SRC3 -->|"写: 用户否定 → 退休"| T_MAIN
         T_SRC4 -->|"写: forget 工具 → 退休"| T_MAIN
@@ -67,7 +67,7 @@ graph LR
         M_ITEM -->|"→ merge_item_raw 原子落库"| M_RAW["merge_item_raw<br/>UPDATE summary/content_hash/embedding<br/>+ extra_json + reinforcement+1<br/>同步 vec_items（rowid 关联）"]
         M_RAW -->|"返回 merged:目标id"| M_RET["调用方识别 merged 状态<br/>post_response_worker 前缀解析"]
         M_RAW -.->|"异常: content_hash 冲突（极低概率）"| M_FALL["降级: ROLLBACK<br/>supersede 旧条目<br/>upsert_item 写新摘要（变强化）"]
-        M_NO -.->|"继续: 相似≥0.90 软删除（②退休）"| T_MAIN
+        M_NO -.->|"继续: 余弦相似度≥0.90 软删除（②退休）"| T_MAIN
     end
 
     %% ═══════════════ ④ 溯源 ═══════════════
