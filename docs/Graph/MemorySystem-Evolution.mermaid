@@ -14,6 +14,7 @@ graph LR
     classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
     classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
     classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+    classDef cons fill:#e8f5e9,color:#1b5e20,stroke:#a5d6a7,stroke-width:1px
 
     %% ═══════════════ ① 强化 ═══════════════
     %% 依据代码：memory2/store.py（_content_hash:131, upsert_item:455, upsert_consolidation_event:506,
@@ -23,20 +24,25 @@ graph LR
     subgraph R["① 强化 — reinforcement 计数器 + 热度融合"]
         direction TB
 
+        %% ── 触发源: ConsolidationCommitted 事件（引擎分派）──
+        R_TRIG["触发源: _on_consolidation_committed<br/>订阅 ConsolidationCommitted 事件<br/>engine.py:675 分派两条写入链"]
+        R_TRIG -->|"写: history_entry 逐条<br/>→ _save_from_consolidation<br/>→ memorizer.save_from_consolidation"| R_SRC2
+        R_TRIG -->|"写: conversation 整段<br/>→ _extract_implicit_long_term<br/>→ _save_implicit_long_term"| R_SRC1
+
         %% ── 分支 A：event 语义去重 → 抑制写入 ──
-        R_SRC2["事件语义预筛 _should_semantic_dedup_event<br/>save_from_consolidation 落库前调用"]
+        R_SRC2["事件预筛 _should_semantic_dedup_event<br/>save_from_consolidation 落库前调用<br/>（预筛函数，非写入口）"]
         R_SRC2 -->|"读 find_similar_recent_events<br/>event+active+created_at≥7天前 top_k=3<br/>cosine 阈值 0.92"| R_D3{"有相似旧事件<br/>（向量余弦相似度≥0.92?）"}
         R_D3 -->|"是 → 丢弃新事件 + 强化最近似 1 条"| R_FORCE["reinforce_items_batch(similar_ids[:1])<br/>reinforcement+1、emotional_weight 取 MAX<br/>新事件 text 清空不落库"]
         R_D3 -->|"否 → 不丢，走正常写入"| R_SRC1E
 
         %% ── 分支 B：事件幂等闸门（仅事件路径）──
-        R_SRC1E["事件写入入口 upsert_consolidation_event<br/>（save_consolidation 产出的 history_entry）"]
+        R_SRC1E["事件写入入口 upsert_consolidation_event<br/>（仅 memory_type=event<br/>consolidation 产出）"]
         R_SRC1E -->|"读: 查 consolidation_events 登记表（见④）"| R_DID{"source_ref 已登记?"}
         R_DID -->|"已登记 → 同一来源只写一次"| R_SKIP["skipped: 不写入不强化"]
         R_DID -->|"未登记 → 进入 content_hash 链路"| R_HASH
 
         %% ── 分支 C：content_hash 精确命中 ──
-        R_SRC1["写入入口 upsert_item<br/>（procedure / preference / profile 等）"]
+        R_SRC1["通用写入入口 upsert_item<br/>（procedure / preference / profile）<br/>上游: 隐式长期记忆 / memorize 工具"]
         R_SRC1 -->|"算 content_hash → 查库"| R_HASH["_content_hash 计算<br/>SHA256(小写摘要+memory_type)[:16]"]
         R_HASH -->|"读: SELECT id, status<br/>WHERE content_hash=? AND memory_type=?<br/>存在 → 走强化，无 → 新插入"| R_D1{"content_hash 已命中?"}
         R_D1 -->|"否"| R_NEW["INSERT 新条目<br/>id=md5(hash+ts)[:12] reinforcement=1<br/>若带 embedding 同步写 vec_items<br/>返回 new:id"]
@@ -49,13 +55,15 @@ graph LR
         R_REV -->|"计数+1（复活）"| R_COUNT
         R_ADD -->|"计数+1"| R_COUNT
         R_FORCE -->|"计数+1"| R_COUNT
-        R_SRC3["merge_item_raw<br/>merge 目标条目（来自③合并决策）"]
-        R_SRC3 -->|"merge_item_raw 原子 UPDATE<br/>reinforcement=reinforcement+1<br/>同步更新 vec_items"| R_COUNT
+        R_SRC3["merge_item_raw ③ 合并落库<br/>UPDATE 目标条目 summary/content_hash/embedding<br/>+ extra_json(_merge_note)、reinforcement+1<br/>同步 vec_items（content_hash 冲突→降级 upsert）<br/>store.py:1521"]
+        R_SRC3 -->|"merge 目标条目<br/>reinforcement+1（原子 UPDATE）"| R_COUNT
 
         %% ── 热度 & 融合 ──
         R_COUNT["reinforcement 计数<br/>取值: 整数 ≥1（初始1，每强化+1）<br/>emotional_weight 各分支取 MAX（0-10）"]
         R_COUNT -->|"→ 检索时计算热度分"| R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)，下限 0.1"]
-        R_HOT -->|"→ Retriever 检索分数融合"| R_FUSE["检索融合 final<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever hotness_alpha 默认）<br/>低于 score_threshold 过滤，按 final 排序"]
+        R_HOT -->|"→ Retriever 检索分数融合"| R_FUSE["检索融合 final<br/>final = (1−α)×语义分 + α×热度分<br/>（Retriever hotness_alpha 默认 α = 0.20）<br/>低于 score_threshold 过滤，按 final 排序"]
+        R_FUSE -.->|"语义分来源: KNN 最近邻<br/>只读"| R_VEC["向量最近邻 KNN 检索表<br/>vec_items（虚拟表 · vec0）<br/>rowid 关联 memory_items<br/>维度=embedding 输出维<br/>store.py:1326"]
+        R_FUSE -.->|"关键词命中来源: BM25<br/>只读"| R_FTS["BM25 关键词全文检索表<br/>memory_items_fts（虚拟表 · FTS5）<br/>按 summary 关键词搜记忆"]
     end
 
 %% ═══════════════ ② 退休 ═══════════════
@@ -160,11 +168,15 @@ graph LR
         P_REPL -.->|"仅写不读"| P_NOREAD
         P_QLOG -.->|"仅写不读"| P_NOREAD
         P_NOREAD["⚓ 三张伴随表不参与读路径<br/>生命周期检索只走 memory_items<br/>+ 检索索引（vec_items / fts）"]
+        %% - memory_items — 普通表，存每条记忆的元数据（summary/content_hash/reinforcement 等），embedding 列也存一份 JSON 文本（store.py:69-83）。
+        %% - vec_items — sqlite-vec 的 VIRTUAL TABLE（store.py:332），只有 rowid + embedding，rowid 直接对应 memory_items 的行 id，向量查询走它（store.py:1326）。
+        %% - FTS5 全文索引 fts_memory_items 也是类似旁路表。
     end
+
 
     %% ═══════════════ 跨机制联动 ═══════════════
     T_EFFECT -.->|"superseded 条目被同 content_hash 重写复活时，强化计数 +1"| R_COUNT
-    M_RAW -.->|"merge_item_raw 更新目标条目时 reinforcement=reinforcement+1，强化计数 +1"| R_COUNT
+    M_RAW -.->|"merge_item_raw 更新目标条目时 reinforcement=reinforcement+1<br/>→ 并入 ① 强化计数（见 R_SRC3）"| R_SRC3
     M_NOTE -.->|"merge_item 写入的 _merge_note 即④溯源展示的同一 extra_json 字段"| P_NOTE
     T_MAIN -.->|"supersede 软删除后条目仍保留 source_ref，供④溯源记录与恢复"| P_SRC
 
@@ -175,8 +187,10 @@ graph LR
     %% ── 异步 / 锚点 ──
     class LEG_MEM,P_NOREAD,T_SKIP,M_FALL,R_SKIP async
     %% ── ① 强化 ──
-    class R_SRC1,R_SRC1E,R_SRC2,R_SRC3,R_HASH,R_COUNT,R_HOT step
+    class R_TRIG cons
+    class R_SRC1,R_SRC1E,R_SRC2,R_HASH,R_COUNT,R_HOT step
     class R_NEW,R_REV,R_ADD,R_FORCE db
+    class R_VEC,R_FTS db
     class R_D1,R_D2,R_D3,R_DID gate
     class R_FUSE final
     %% ── ② 退休 ──
