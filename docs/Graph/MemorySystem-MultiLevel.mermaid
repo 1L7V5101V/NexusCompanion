@@ -71,27 +71,67 @@ flowchart TB
         direction LR
         subgraph L2A["L2.a — default_memory 引擎 · memory2.db（SQLite 向量表存储）"]
             direction TB
-            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>engine.py · 订阅 ConsolidationCommitted 事件<br/>从该事件取 history_entry_payloads 与 conversation<br/>→ 分别交给 event 路径与 long-term 路径"]
-            L2_WRITE -->|"分发: history_entry"| L2_EVT
-            L2_WRITE -->|"分发: conversation"| L2_LT
-            L2_EVT["DefaultMemoryEngine._save_from_consolidation<br/>输入: history_entry（逐条）<br/>→ 写 memory_type=event 条目（extra_json: scope_channel/scope_chat_id/happened_at）<br/>写入前防重: source_ref 幂等(consolidation_events) + 向量语义 ≥0.92"]
-            L2_LT["DefaultMemoryEngine._extract_implicit_long_term<br/>输入: 整段 conversation（非 history_entry）<br/>单次 LLM 调用 → 一次产出三类 memory_type（不产出 event）<br/>profile / preference / procedure<br/>写新条目 + 相似旧条目标 superseded（阈值 ≈0.90，高情绪抬至 0.92）"]
-            L2_EVT -->|"写: memory_type=event 条目"| T_META
-            L2_LT -->|"写: memory_type=profile/preference/procedure"| T_META
+            L2_WRITE["DefaultMemoryEngine._on_consolidation_committed<br/>engine.py · 订阅 ConsolidationCommitted 事件"]
+            L2_WRITE --> L2_DISP["从该事件取 history_entry_payloads 与 conversation"]
+            L2_DISP -->|"分发: history_entry"| L2_EVT
+            L2_DISP -->|"分发: conversation"| L2_LT
+            L2_EVT["DefaultMemoryEngine._save_from_consolidation<br/>输入: history_entry（逐条）"]
+            L2_EVT --> L2_EVT_REF{source_ref 幂等?<br/>consolidation_events 已登记}
+            L2_EVT_REF -->|"已登记 → 跳过"| L2_EVT_DROP["丢弃，不写"]
+            L2_EVT_REF -->|"未登记"| L2_EVT_SEM{向量语义 ≥ 0.92?<br/>与已有 event 重复}
+            L2_EVT_SEM -->|"重复 → 跳过"| L2_EVT_DROP
+            L2_EVT_SEM -->|"不重复"| L2_EVT_W["写 memory_type=event 条目<br/>extra_json: scope_channel / scope_chat_id<br/>happened_at → 溯源列"]
+            L2_EVT_W -->|"写: memory_type=event 条目"| T_META
+
+            L2_LT["DefaultMemoryEngine._extract_implicit_long_term<br/>输入: 整段 conversation（非 history_entry）<br/>单次 LLM 调用 → 一次产出三类 memory_type（不产出 event）<br/>profile / preference / procedure"]
+            L2_LT --> L2_LT_SUP{相似旧条目 ≥ 阈值?<br/>procedure/preference ≥0.90<br/>profile 同类别 ≥0.90（高情绪→0.92）}
+            L2_LT_SUP -->|"有 → 旧条目标 superseded"| L2_LT_W["写新条目 upsert_item<br/>→ memory_type=profile/preference/procedure"]
+            L2_LT_SUP -->|"无 → 直接写"| L2_LT_W
+            L2_LT_W -->|"写: memory_type=profile/preference/procedure"| T_META
 
             subgraph T_CORE_GRP["memory_items 核心表单元（含唯一索引）"]
-                direction LR
-                T_META["memory_items（核心表）— 每条记忆一行<br/>① 识别: id 主键 · memory_type 记忆类型(procedure/preference/event/profile) · content_hash 内容指纹=sha256(摘要+类型)[:16]，同内容判重<br/>② 内容: summary 一句话摘要 · embedding 1024维向量(语义检索用) · extra_json 类型专用字段(每类型不同的细节)<br/>③ 状态: status (active / superseded) · reinforcement 强化次数(重复出现+1) · emotional_weight 情感权重0-10<br/>④ 溯源: source_ref 来源引用(来自哪条消息/事件) · happened_at 发生时间 · created_at·updated_at 创建/更新时间"]
-                T_IDX["ux_items_hash（唯一索引 · 非列）<br/>建在 content_hash + memory_type 两列<br/>→ 同内容重写判为强化"]
+                direction TB
+                T_META["memory_items（核心表）<br/>每条记忆一行"]
+                subgraph T_GRP1["① 识别"]
+                    direction LR
+                    T_COL_ID["id<br/>主键"]
+                    T_COL_TYPE["memory_type<br/>记忆类型: procedure / preference<br/>/ event / profile"]
+                    T_COL_HASH["content_hash<br/>内容指纹 = sha256(摘要+类型)[:16]<br/>同内容判重"]
+                end
+                subgraph T_GRP2["② 内容"]
+                    direction LR
+                    T_COL_SUM["summary<br/>一句话摘要"]
+                    T_COL_EMB["embedding<br/>1024维向量（语义检索用）"]
+                    T_COL_EXTRA["extra_json<br/>类型专用字段<br/>（每类型不同细节）"]
+                end
+                subgraph T_GRP3["③ 状态"]
+                    direction LR
+                    T_COL_STATUS["status<br/>active / superseded"]
+                    T_COL_REINF["reinforcement<br/>强化次数（重复出现 +1）"]
+                    T_COL_EW["emotional_weight<br/>情感权重 0-10"]
+                end
+                subgraph T_GRP4["④ 溯源"]
+                    direction LR
+                    T_COL_SRC["source_ref<br/>来源引用（来自哪条消息/事件）"]
+                    T_COL_HAPPENED["happened_at<br/>发生时间（event 核心字段）"]
+                    T_COL_TIME["created_at · updated_at<br/>创建 / 更新时间"]
+                end
+                T_META --> T_GRP1
+                T_META --> T_GRP2
+                T_META --> T_GRP3
+                T_META --> T_GRP4
                 T_META -->|"唯一约束（非列）"| T_IDX
+                T_IDX["ux_items_hash（唯一索引 · 非列）<br/>建在 content_hash + memory_type 两列<br/>→ 同内容重写判为强化"]
+                
             end
-            T_META -->|"memory_type 四种取值<br/>（存于 extra_json）"| T_TYPES
-            subgraph T_TYPES_GRP["类型定义（非表）— memory_type 四种取值<br/>专用字段存于 memory_items.extra_json"]
+            T_COL_TYPE -->|"四类取值<br/>每类专用字段存于 extra_json"| T_TYPES
+            subgraph T_TYPES_GRP["类型字典（非表）— memory_type 四类取值的字段映射<br/>统一存于 memory_items.extra_json 列"]
                 direction LR
-                T_TYPES["各类型的专用字段"] --> T_PROC["procedure<br/>tool_requirement / steps[]<br/>rule_schema{required/forbidden/mentioned}<br/>trigger_tags 关键词触发"]
-                T_TYPES --> T_PREF["preference<br/>行为偏好（无专用字段）"]
-                T_TYPES --> T_EVENT["event<br/>scope_channel / scope_chat_id<br/>happened_at 时间戳"]
-                T_TYPES --> T_PROF["profile<br/>category: personal_fact<br/>purchase / decision / status"]
+                T_TYPES["各类型的字段"] --> T_COMMON["共有字段（四类都带）<br/>scope_channel / scope_chat_id"]
+                T_TYPES --> T_PROC["procedure<br/>tool_requirement / steps[]<br/>rule_schema{required/forbidden/mentioned}<br/>trigger_tags 关键词触发"]
+                T_TYPES --> T_PREF["preference<br/>无专用字段<br/>（tool_requirement / steps 留空）"]
+                T_TYPES --> T_EVENT["event<br/>extra_json 无专用字段<br/>（仅共有 scope）"]
+                T_TYPES --> T_PROF["profile<br/>专用字段: category<br/>personal_fact / purchase<br/>/ decision / status"]
             end
 
             T_META -.->|"embedding 同步（rowid 关联）"| T_VEC["向量最近邻（KNN）检索<br/>vec_items（虚拟表 · vec0）<br/>每条记忆的 embedding(1024维向量) 存这里<br/>检索时按向量距离找'语义相近'的记忆"]
@@ -199,13 +239,18 @@ flowchart TB
     class L0_MSG,L0_RECENT step
     class L1_CONS,L1_OPT,CONSOLIDATION flow
     class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
-    class L2_WRITE,L2_EVT,L2_LT flow
+    class L2_WRITE,L2_DISP,L2_EVT,L2_LT flow
+    class L2_EVT_W,L2_LT_W flow
+    class L2_EVT_DROP async
+    class L2_EVT_REF,L2_EVT_SEM,L2_LT_SUP gate
     class T_META,T_CONS,T_REPL,T_QLOG db
+    class T_COL_ID,T_COL_TYPE,T_COL_HASH,T_COL_SUM,T_COL_EMB,T_COL_EXTRA,T_COL_STATUS,T_COL_REINF,T_COL_EW,T_COL_SRC,T_COL_HAPPENED,T_COL_TIME db
     class T_VEC,T_FTS vtable
     class T_IDX idx
-    class T_TYPES,T_PROC,T_PREF,T_EVENT,T_PROF type
+    class T_TYPES,T_COMMON,T_PROC,T_PREF,T_EVENT,T_PROF type
     class LEG_DB async
-    class W_MEM,W_FORGET,W_POST step
+    class W_MEM,W_FORGET passPhase
+    class W_POST step
     class RETR,INJ,INJECT step
     class RAG,SANDBOX,EVAL,MEMBLOCK step
     class R_SCORE,R_S1,R_S2,R_LLM,R_DEG,R_SRC step
