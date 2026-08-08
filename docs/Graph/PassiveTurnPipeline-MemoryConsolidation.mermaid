@@ -90,7 +90,7 @@ graph TB
             COMMIT_R["write_recent_context<br/>← draft.recent_context_text<br/>→ 覆写 RECENT_CONTEXT.md"] --> COMMIT_J
             COMMIT_J["append_journal<br/>← draft.history_entry_payloads 按日期分片<br/>→ journal/YYYY-MM-DD.md"] --> COMMIT_L
             COMMIT_L["更新 session.last_consolidated<br/>= draft.window.consolidate_up_to"] --> COMMIT_E
-            COMMIT_E["emit ConsolidationCommitted 事件<br/>（_commit_markdown_draft 收尾）<br/>携带字段: history_entry_payloads<br/>source_ref · scope_channel<br/>scope_chat_id · conversation"]
+            COMMIT_E["emit ConsolidationCommitted 事件<br/>（_commit_markdown_draft 收尾）<br/>事件字段 = _ConsolidationDraft 子集<br/>history_entry_payloads · source_ref<br/>scope_channel · scope_chat_id · conversation<br/>（pending_items / recent_context_text 已落盘，不进事件）"]
         end
 
         REFRESH --> DONE
