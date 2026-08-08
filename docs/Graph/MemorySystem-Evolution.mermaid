@@ -16,34 +16,110 @@ graph LR
     classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
 
     %% ═══════════════ ① 强化 ═══════════════
+    %% 依据代码：memory2/store.py（_content_hash:131, upsert_item:455, upsert_consolidation_event:506,
+    %%   reinforce_items_batch:739, find_similar_recent_events:1652, _hotness_score:190, 融合:1378）、
+    %%   memory2/memorizer.py（save_from_consolidation:181, _should_semantic_dedup_event:224）、
+    %%   memory2/retriever.py（hotness_alpha:55）
     subgraph R["① 强化 — reinforcement 计数器 + 热度融合"]
         direction TB
-        R_SRC1["upsert_item / upsert_consolidation_event<br/>content_hash 命中 ux_items_hash<br/>→ reinforcement+1<br/>status=superseded 则复活为 active"]
-        R_SRC2["event 向量语义去重<br/>向量余弦相似度 ≥ 0.92（7 天内）<br/>→ 新条目丢弃，强化最近似 1 条<br/>reinforce_items_batch"]
-        R_SRC3["merge_item_raw<br/>merge 目标 reinforcement+1"]
-        R_SRC1 -->|"写: 命中 content_hash<br/>→ 计数+1（重复写入变强化）"| R_COUNT
-        R_SRC2 -->|"写: 语义去重<br/>→ 强化最近似 1 条"| R_COUNT
-        R_SRC3 -->|"写: merge 目标<br/>→ 计数+1"| R_COUNT
-        R_COUNT["reinforcement 计数<br/>emotional_weight 取 MAX"]
-        R_COUNT -->|"→ 计算热度分"| R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1 + 0.5×情感/10)"]
-        R_HOT -->|"→ 检索分数融合"| R_FUSE["检索融合<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever 固定）"]
+
+        %% ── 分支 A：event 语义去重 → 抑制写入 ──
+        R_SRC2["事件语义预筛 _should_semantic_dedup_event<br/>save_from_consolidation 落库前调用"]
+        R_SRC2 -->|"读 find_similar_recent_events<br/>event+active+created_at≥7天前 top_k=3<br/>cosine 阈值 0.92"| R_D3{"有相似旧事件<br/>（向量余弦相似度≥0.92?）"}
+        R_D3 -->|"是 → 丢弃新事件 + 强化最近似 1 条"| R_FORCE["reinforce_items_batch(similar_ids[:1])<br/>reinforcement+1、emotional_weight 取 MAX<br/>新事件 text 清空不落库"]
+        R_D3 -->|"否 → 不丢，走正常写入"| R_SRC1E
+
+        %% ── 分支 B：事件幂等闸门（仅事件路径）──
+        R_SRC1E["事件写入入口 upsert_consolidation_event<br/>（save_consolidation 产出的 history_entry）"]
+        R_SRC1E -->|"读: 查 consolidation_events 登记表（见④）"| R_DID{"source_ref 已登记?"}
+        R_DID -->|"已登记 → 同一来源只写一次"| R_SKIP["skipped: 不写入不强化"]
+        R_DID -->|"未登记 → 进入 content_hash 链路"| R_HASH
+
+        %% ── 分支 C：content_hash 精确命中 ──
+        R_SRC1["写入入口 upsert_item<br/>（procedure / preference / profile 等）"]
+        R_SRC1 -->|"算 content_hash → 查库"| R_HASH["_content_hash 计算<br/>SHA256(小写摘要+memory_type)[:16]"]
+        R_HASH -->|"读: SELECT id, status<br/>WHERE content_hash=? AND memory_type=?<br/>存在 → 走强化，无 → 新插入"| R_D1{"content_hash 已命中?"}
+        R_D1 -->|"否"| R_NEW["INSERT 新条目<br/>id=md5(hash+ts)[:12] reinforcement=1<br/>若带 embedding 同步写 vec_items<br/>返回 new:id"]
+        R_D1 -->|"是 → 重复写入变强化"| R_D2{"命中条目 status=superseded?"}
+        R_D2 -->|"是 → 复活（重返 active）"| R_REV["复活: 同 content_hash 重写时唤醒旧条目<br/>UPDATE status='superseded'→'active'<br/>+ reinforcement+1, updated_at=now<br/>emotional_weight 取 MAX<br/>event 另用新 happened_at 覆盖空值"]
+        R_D2 -->|"否 → 普通+1"| R_ADD["reinforcement+1, updated_at=now<br/>emotional_weight 取 MAX"]
+
+        %% ── 汇入强化计数 ──
+        R_NEW -->|"新条目 reinforcement=1（初始）"| R_COUNT
+        R_REV -->|"计数+1（复活）"| R_COUNT
+        R_ADD -->|"计数+1"| R_COUNT
+        R_FORCE -->|"计数+1"| R_COUNT
+        R_SRC3["merge_item_raw<br/>merge 目标条目（来自③合并决策）"]
+        R_SRC3 -->|"merge_item_raw 原子 UPDATE<br/>reinforcement=reinforcement+1<br/>同步更新 vec_items"| R_COUNT
+
+        %% ── 热度 & 融合 ──
+        R_COUNT["reinforcement 计数<br/>取值: 整数 ≥1（初始1，每强化+1）<br/>emotional_weight 各分支取 MAX（0-10）"]
+        R_COUNT -->|"→ 检索时计算热度分"| R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)，下限 0.1"]
+        R_HOT -->|"→ Retriever 检索分数融合"| R_FUSE["检索融合 final<br/>final = (1−α)×语义分 + α×热度<br/>α = 0.20（Retriever hotness_alpha 默认）<br/>低于 score_threshold 过滤，按 final 排序"]
     end
 
-    %% ═══════════════ ② 退休 ═══════════════
+%% ═══════════════ ② 退休 ═══════════════
     subgraph T["② 退休 — supersede 软删除"]
         direction TB
-        T_SRC1["save_item_with_supersede<br/>procedure / preference<br/>向量余弦相似度 ≥ 0.90<br/>→ mark_superseded_batch"]
-        T_SRC2["profile 同类防堆积<br/>status / purchase 同 category<br/>向量余弦相似度 ≥ 0.90（情感≥7 时 0.92）"]
-        T_SRC3["PostResponseMemoryWorker<br/>用户否定旧行为<br/>预筛 ≥ 0.82 → light model 判定"]
-        T_SRC4["forget_memory 工具<br/>按 id mark_superseded_batch"]
-        T_SRC5["undo_by_message_sources<br/>消息删除 → 相关 source_ref 条目退休"]
-        T_SRC1 -->|"写: 余弦相似度≥0.90 → 批量退休"| T_MAIN
-        T_SRC2 -->|"写: 同类防堆积 → 退休"| T_MAIN
-        T_SRC3 -->|"写: 用户否定 → 退休"| T_MAIN
-        T_SRC4 -->|"写: forget 工具 → 退休"| T_MAIN
-        T_SRC5 -->|"写: 消息删除 → 退休"| T_MAIN
-        T_MAIN["状态机<br/>active → superseded<br/>（软删除，不物理删）"]
-        T_MAIN -->|"读: 检索过滤 status='active'"| T_EFFECT["检索过滤 status='active'<br/>superseded 不召回但保留可溯源<br/>同 content_hash 重写 → 复活为 active"]
+
+        %% ── 来源1: procedure / preference 写前相似退休（memory2/memorizer.py save_item_with_supersede）──
+        T_SRC1["写入口 save_item_with_supersede<br/>procedure / preference 共用<br/>各类型按自身条件触发退休"]
+        T_SRC1 -->|"procedure"| T_M1
+        T_SRC1 -->|"preference"| T_M2
+
+        T_M1{"procedure 候选里<br/>是否存在 tool_requirement 相同<br/>且 score ≥ 0.70 的合并目标?"}
+        T_M1 -->|"是 → 走 ③ 合并（不退休）"| T_MGO["merge_item 合并返回<br/>见第 ② 之后 ③ 合并 M"]
+        T_MGO -.->|"jump → ③ 合并链：memorizer.merge_item<br/>读 M 子图"| M_ENTRY
+        T_M1 -->|"否 → 进入阈值筛选"| T_M2
+
+        T_M2{"候选向量余弦相似度<br/>score ≥ 0.90?<br/>（supersede_threshold）"}
+        T_M2 -->|"是 → 批量软删"| T_MAIN
+        T_M2 -->|"否"| T_UP1["upsert_item 写新条目<br/>同 content_hash 则走 ① 强化"]
+
+        %% ── 来源2: profile 同类避免堆积（memory2/memorizer.py profile 分支）──
+        T_SRC2["写入口 save_item_with_supersede<br/>profile 分支<br/>(memorizer.py:127)"]
+        T_SRC2 --> T_P1
+        T_P1{"extra_json.category 是<br/>status 或 purchase?"}
+        T_P1 -->|"否 personal_fact/decision<br/>→ 不退休直接写"| T_UP2["upsert 写新条目"]
+        T_P1 -->|"是 → 查同类型候选"| T_P2{"profile 候选同 category<br/>且 score ≥ 0.90?<br/>（该条情感≥7 时阈值提到 0.92）"}
+        T_P2 -->|"是 → 强制避免堆积"| T_MAIN
+        T_P2 -->|"否"| T_UP2
+
+        %% ── 来源3：用户否定旧行为（memory2/post_response_worker.py invalidation）──
+        T_SRC3["PostResponseMemoryWorker<br/>用户明确否定旧行为<br/>(post_response_worker.py:174)"]
+        T_SRC3 --> T_I1
+        T_I1{"light 模型提取到<br/>被否定行为主题 topics?"}
+        T_I1 -->|"否 → 跳过"| T_SKIP["不触发退休"]
+        T_I1 -->|"是 → 每主题检索<br/>procedure/preference 候选"| T_I2{"候选 score ≥ 0.82<br/>且不在本轮<br/>protected_ids 内?"}
+        T_I2 -->|"否 → 跳过"| T_SKIP
+        T_I2 -->|"是 → light 模型筛选"| T_I3{"light 模型_check_invalidate<br/>确认可退休 ids 非空?"}
+        T_I3 -->|"否 → 跳过"| T_SKIP
+        T_I3 -->|"是 → 批量标记"| T_MK3["supersede_batch<br/>＋ fanout MemoryWritten<br/>action=supersede"]
+
+        %% ── 来源4: forget_memory 工具（plugins/default_memory/engine.py _forget）──
+        T_SRC4["forget_memory 工具<br/>(engine.py:911  _forget)"]
+        T_SRC4 --> T_F1
+        T_F1{"id 去重后<br/>条目真实存在?"}
+        T_F1 -->|"是 → 批量标记"| T_MK4["mark_superseded_batch"]
+        T_F1 -->|"否 → missing_ids 返回"| T_FMISS["missing_ids 返回调用方"]
+
+        %% ── 来源5: 消息删除 undo（plugins/default_memory/engine.py _undo_store_by_message_sources）──
+        T_SRC5["undo_by_message_sources<br/>(engine.py:89)"]
+        T_SRC5 --> T_U1
+        T_U1{"source_ref 命中<br/>被删除消息 ids?"}
+        T_U1 -->|"否 → 不受影响"| T_SKIP
+        T_U1 -->|"是 → 受影响条目"| T_UM["受影响条目<br/>改为 superseded"]
+        T_UM --> T_U2{"这些条目曾作为<br/>new_item 被替换（记忆来源<br/>memory_replacements 谱系）?"}
+        T_U2 -->|"是 → 尝试恢复旧条目"| T_UR["旧条目无存活替换<br/>才恢复 active<br/>(restore_replacements_for_undo)"]
+        T_U2 -->|"否"| T_MAIN
+        T_UR --> T_DONE["恢复完成"]
+
+        %% ── 收敛：中央状态机 + 读效果 ──
+        T_MK3 --> T_MAIN
+        T_MK4 --> T_MAIN
+        T_UM --> T_MAIN
+        T_MAIN["状态机三态归并<br/>mark_superseded_batch<br/>UPDATE status=superseded<br/>（软删除，不物理删）"]
+        T_MAIN -->|"读: 检索过滤 status='active'"| T_EFFECT["检索只召回 active<br/>superseded 不召回但保留可溯源<br/>同 content_hash 重写 → 复活为 active"]
     end
 
     %% ═══════════════ ③ 合并 ═══════════════
@@ -96,11 +172,26 @@ graph LR
     LEG_MEM["⚓ 定位：本图描述 AgenticRAG 多引擎检索中 vector 源（default_memory 引擎）的条目演化机制；<br/>graph 源（rachael）引擎另有实现"]
 
     %% ====== 样式应用 ======
-    class LEG_MEM,P_NOREAD async
-    class R_SRC1,R_SRC2,R_SRC3,R_COUNT,R_HOT,R_FUSE step
-    class T_SRC1,T_SRC2,T_SRC3,T_SRC4,T_SRC5,T_MAIN,T_EFFECT step
-    class M_ENTRY,M_SUM,M_ITEM,M_NOTE,M_SCHEMA,M_STEPS,M_TAGS,M_RAW,M_RET step
+    %% ── 异步 / 锚点 ──
+    class LEG_MEM,P_NOREAD,T_SKIP,M_FALL,R_SKIP async
+    %% ── ① 强化 ──
+    class R_SRC1,R_SRC1E,R_SRC2,R_SRC3,R_HASH,R_COUNT,R_HOT step
+    class R_NEW,R_REV,R_ADD,R_FORCE db
+    class R_D1,R_D2,R_D3,R_DID gate
+    class R_FUSE final
+    %% ── ② 退休 ──
+    class T_SRC1,T_SRC2,T_SRC3,T_SRC4,T_SRC5,T_MGO,T_EFFECT step
+    class T_M1,T_M2,T_P1,T_P2,T_I1,T_I2,T_I3,T_F1,T_U1,T_U2 gate
+    class T_UP1,T_UP2,T_MAIN,T_MK4,T_UM,T_UR db
+    class T_MK3 event
+    class T_DONE,T_FMISS final
+    %% ── ③ 合并 ──
+    class M_ENTRY,M_NO,M_SUM,M_ITEM,M_NOTE,M_SCHEMA,M_STEPS,M_TAGS step
     class M_D1,M_D2 gate
-    class M_NO,M_FALL async
-    class P_SRC,P_EVT,P_REPL,P_NOTE,P_QLOG,P_EVID step
-    class T_EFFECT,R_COUNT,P_REPL,P_SRC,P_NOTE gate
+    class M_RAW db
+    class M_RET final
+    class M_FALL async
+    %% ── ④ 溯源 ──
+    class P_SRC,P_NOTE,P_EVID step
+    class P_EVT,P_REPL,P_QLOG db
+    class P_NOREAD async
