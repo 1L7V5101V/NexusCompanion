@@ -84,8 +84,10 @@ graph TB
             PR_2["Emit PromptRenderCtx<br/>EventBus.gate → plugins 可追加<br/>system_sections_top / bottom<br/>→ 让插件在渲染前修改上下文"] --> PR_3
             PR_3[SystemPromptBuilder.build] --> PR_3_S
             PR_3_S["按优先级渲染 PromptBlock<br/>P10 → P100<br/>→ 组装 system_prompt + context_frame"] --> BLK_10
-            BLK_10["P10 IdentityPromptBlock<br/>build_agent_static_identity<br/>(NEXUS_IDENTITY+PERSONALITY_RULES)"] --> BLK_15 %% agent/persona.py
-            BLK_15["P15 BehaviorRulesPromptBlock<br/>build_agent_behavior_rules_prompt(workspace)<br/>行为约束"] --> BLK_20 %% prompts/agent.py
+            BLK_10["P10 IdentityPromptBlock<br/>build_agent_static_identity<br/>(NEXUS_IDENTITY+PERSONALITY_RULES)"] --> BLK_15 
+            %% agent/persona.py
+            BLK_15["P15 BehaviorRulesPromptBlock<br/>build_agent_behavior_rules_prompt(workspace)<br/>行为约束"] --> BLK_20 
+            %% prompts/agent.py
             BLK_20[P20 SkillsCatalogPromptBlock<br/>skills.build_skills_summary<br/>注册 skill 的目录] --> BLK_30
             BLK_30[P30 SelfModelPromptBlock<br/>SELF.md<br/>Nexus的自我认知] --> BLK_35
             BLK_35[P35 LongTermMemoryPromptBlock<br/>MEMORY.md<br/>对用户的长期记忆] --> BLK_40
