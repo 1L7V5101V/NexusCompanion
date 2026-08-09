@@ -1,4 +1,4 @@
-flowchart TB
+﻿flowchart TB
     %% ============================================================
     %% 多级结构化记忆系统 — 三级结构 + 数据流
     %% 依据代码：memory2/store.py、memory2/models.py、memory2/memorizer.py、
@@ -197,7 +197,7 @@ flowchart TB
         R_DEG --> R_SRC
         R_SRC["sources 列表<br/>graph / vector / web"] -->|"选定的 sources"| SANDBOX["RetrievalSandbox 执行检索<br/>并行跑 Router 选定的源<br/>超时: web 15s / 其他 5s"]
         SANDBOX -->|"graph lane"| GEXT["graph源 <br/>rachael 引擎 query（graph 源）<br/>dense 语义近邻 + ripple 图谱扩散<br/>→ 读 L2.b（RachaelStore）"]
-        SANDBOX -->|"vector lane"| RETR["vector 源<br/>default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF"]
+        SANDBOX -->|"vector lane"| RETR["vector 源<br/>default_memory Retriever.retrieve<br/>memory2/retriever.py<br/>向量 lane + 关键词 lane → 内部 RRF<br/>细节: 热度分 + 融合 final（α=0.20）<br/>→ 见 MemorySystem-RetrievalHeat"]
         SANDBOX -->|"web lane"| WEXT["（外部）Exa web_search<br/>MCP 工具"]
         RETR -.->|"读: 向量 lane → memory_items 语义检索"| T_META
         RETR -.->|"读: 关键词 lane → memory_items_fts 全文检索"| T_FTS
