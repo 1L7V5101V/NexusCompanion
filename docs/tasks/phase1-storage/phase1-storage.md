@@ -104,10 +104,11 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [x] 明确 `close()` / 生命周期 / 异常语义在两个后端一致
 
 ### M2 PostgresMemoryStore（sync 后端）
-- [ ] 用 psycopg（sync）实现 `MemoryStore2` 全部接口；或实现薄桥接把 sync 调用转为 `bootstrap/db` async repo（`asyncio.run` 封装，注意线程安全）
-- [ ] schema：embedding 改原生 `vector(1024)` 列；`memory_item` 按 `tenant_id` LIST 分区，父表建 HNSW 索引（每分区自动继承，见决策 B 验证）
-- [ ] 补齐 WIP 缺失方法：`get_all_with_embedding` / `vector_search_batch` / `merge_item_raw` / `find_similar_recent_events` / `keyword_match_procedures` / `keyword_search_summary` / `mark_superseded(_batch)` / `record_replacements` / `reinforce_items_batch` 等
-- [ ] 关键词检索：SQLite FTS5 → PG `pg_trgm` 或 tsvector（确认中文分词语义）
+- [x] 用 psycopg（sync）实现 `MemoryStore2` 全部 28 个 public 接口，落 `infra/storage/postgres_memory_store.py`（`PostgresMemoryStore`，单连接 + `threading.RLock`，`register_vector` 自动转换 list↔vector，所有方法带 tenant scope）；通过 `tmp/verify_pg_memory.py` 15 项功能验证
+- [x] schema：embedding 改原生 `vector(1024)` 列；`memory_item` 按 `tenant_id` LIST 分区，父表建 HNSW 索引（每分区自动继承），见 `alembic/versions/a3d5c7e9f1b2_partition_memory_items.py`（含 `consolidation_events` 复合 PK、`memory_replacements.source_ref` 补列）
+- [x] 补齐 WIP 缺失方法：`get_all_with_embedding` / `vector_search_batch` / `merge_item_raw` / `find_similar_recent_events` / `keyword_match_procedures` / `keyword_search_summary` / `mark_superseded(_batch)` / `record_replacements` / `reinforce_items_batch` 等
+- [x] 关键词检索：SQLite 基线 `keyword_search_summary` 本就是 OR-LIKE 子串匹配（`store.py` 未用 FTS5 MATCH），PG 镜像为 `summary LIKE %s` 逐项对齐，无需 `pg_trgm`/tsvector；中文子串匹配由 UTF-8 LIKE 直接保留
+- [x] 两后端 parity：`tmp/parity_smoke.py` 同数据写 SQLite + PG，向量 top-k 排序 / score、scope 过滤、关键词、替换、事件检索一致（`score=0` 精确平局时 HNSW 与 KNN 截断顺序可不同，测试只比较明确项与分数）
 
 ### M3 PostgresSessionStore（sync 后端）
 - [ ] 实现 `SessionStore` 全部接口：`search_messages`（FTS）、`list_presence`、`fetch_by_ids_with_context`、`next_seq` 原子自增（PG 用 sequence / `RETURNING`）等
