@@ -75,6 +75,29 @@ class MemoryConfig:
 
 
 @dataclass
+class StorageConfig:
+    """存储层配置：sqlite（单机兼容）或 postgres（Phase 1 目标）。"""
+
+    backend: str = "sqlite"
+    postgres_url: str = (
+        "postgresql+psycopg://nexus:nexus_dev@localhost:5433/nexus"
+    )
+    """postgres 后端连接串。默认指向 docker/debug 的本地开发库（宿主端口 5433）。"""
+    pool_size: int = 20
+
+
+@dataclass
+class CacheConfig:
+    """Redis 缓存层配置。Redis 不可用时业务侧降级直连 DB（fail-open）。"""
+
+    enabled: bool = False
+    redis_url: str = "redis://localhost:6379/0"
+    context_ttl_seconds: int = 300  # 会话上下文 5min
+    profile_ttl_seconds: int = 3600  # 用户画像 1h
+    search_ttl_seconds: int = 600  # 向量检索结果 10min
+
+
+@dataclass
 class FitbitIntegrationConfig:
     enabled: bool = False
 
@@ -135,6 +158,8 @@ class Config:
     agent_base_url: str = ""
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     fitbit: FitbitIntegrationConfig = field(default_factory=FitbitIntegrationConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     multimodal: bool = True
     vl_model: str = ""
     vl_api_key: str = ""
@@ -155,6 +180,7 @@ class Config:
 
 
 __all__ = [
+    "CacheConfig",
     "ChannelsConfig",
     "Config",
     "FitbitIntegrationConfig",
@@ -165,6 +191,7 @@ __all__ = [
     "QQChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",
+    "StorageConfig",
     "TelegramChannelConfig",
     "WiringConfig",
 ]

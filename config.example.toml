@@ -168,6 +168,33 @@ api_key = "sk-..."
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # =============================================================================
+# 存储层（Phase 1：SQLite → PostgreSQL + pgvector）
+# backend = "sqlite" 保持单机兼容；切到 "postgres" 前先跑迁移脚本。
+# =============================================================================
+
+[storage]
+# 后端选择：sqlite（单机默认）/ postgres。
+backend = "sqlite"
+# postgres 后端连接串，支持 ${ENV_VAR}。默认指向 docker/debug 的本地开发库
+# （pgvector/pgvector:pg17，宿主端口 5433，避开原生 PG 的 5432）。
+postgres_url = "postgresql+psycopg://nexus:nexus_dev@localhost:5433/nexus"
+# 连接池大小（5000 用户 / 100 并发 ≈ 50）。
+pool_size = 20
+
+# =============================================================================
+# Redis 缓存层（可选，Phase 1.2）
+# Redis 不可用时业务侧自动降级直连 DB（fail-open）。
+# =============================================================================
+
+[cache]
+enabled = false
+redis_url = "redis://localhost:6379/0"
+# TTL 策略（秒）：会话上下文 5min / 用户画像 1h / 向量检索结果 10min。
+context_ttl_seconds = 300
+profile_ttl_seconds = 3600
+search_ttl_seconds = 600
+
+# =============================================================================
 # 主动推送（可选）
 # 先跑通基本对话再开启这部分。
 # =============================================================================
