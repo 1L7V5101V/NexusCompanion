@@ -141,6 +141,7 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [ ] 配置往返切换：`postgres → sqlite → postgres`，每步验证数据仍在、行为一致
 - [ ] 分区行为：新 tenant 懒创建（首次写入建分区）、并发建分区无 race（`pg_advisory_xact_lock` 兜底）、`EXPLAIN` 确认分区裁剪真的发生、跨 tenant 查询返回空而非报错
 - [ ] `EXPLAIN` 确认分区裁剪：务必保留——若查询写法导致裁剪失效（如 `tenant_id` 参与函数运算），会退回全表扫描 + 全局索引，即 [vector-validation.md](vector-validation.md) 召回 0.18 的场景，且无任何报错（静默退化最危险）
+- [ ] **BM25 对等实现（独立待办，不随合并）**：main 合入 SQLite FTS5 `keyword_search_bm25()`（retriever 在 `_fts_available=True` 时启用）后，PG 侧 `_fts_available=False` 恒走 OR-LIKE `keyword_search_summary`，与 SQLite BM25 排序有语义差距。待办：PG 用 `pg_trgm` 相似度排序或 tsvector + `ts_rank` 实现等价 BM25 排序，并在 retriever 短路守卫处对齐。优先级低于 M5/M6，独立提交
 
 ## 5. 验收标准
 
