@@ -46,7 +46,8 @@ plugins/**/.data/
 /evals/
 /tests/regression/
 /config.backup.20260301-063714.json
-/docs/
+# 文档目录可跟踪；Graph 图为知识库同步产物，不在仓库维护第二份
+/docs/Graph/
 /.pytest_artifacts/
 /rss/
 
