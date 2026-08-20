@@ -100,8 +100,8 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [x] `pg.py` 增加 `init-db`（建库 + `CREATE EXTENSION vector` + 建用户）子命令（原生路径备用）
 
 ### M1 接口界定
-- [ ] 从 `MemoryStore2` / `SessionStore` 抽出完整接口清单（方法签名 + 返回类型），作为 [storage-interface.md](../storage-interface.md) 存底
-- [ ] 明确 `close()` / 生命周期 / 异常语义在两个后端一致
+- [x] 从 `MemoryStore2` / `SessionStore` 抽出完整接口清单（方法签名 + 返回类型），作为 [storage-interface.md](../storage-interface.md) 存底
+- [x] 明确 `close()` / 生命周期 / 异常语义在两个后端一致
 
 ### M2 PostgresMemoryStore（sync 后端）
 - [ ] 用 psycopg（sync）实现 `MemoryStore2` 全部接口；或实现薄桥接把 sync 调用转为 `bootstrap/db` async repo（`asyncio.run` 封装，注意线程安全）
