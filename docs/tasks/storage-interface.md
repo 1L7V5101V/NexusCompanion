@@ -46,7 +46,7 @@
 | 向量检索 | sqlite-vec（`vector_search` 等） | pgvector `<=>`，按 tenant 分区 + 每分区 HNSW（决策 B） |
 | embedding 存储 | 独立 vec_items 表 + blob | `memory_items.embedding` 原生 `vector` 列（M2） |
 
-## 4. MemoryStore2 接口清单（`memory2/store.py`，28 个 public 方法）
+## 4. MemoryStore2 接口清单（`memory2/store.py`，29 个 public 方法）
 
 > 返回 dict 的字段键以 `memory_items` 表列为准：`id, memory_type, summary,
 > content_hash, embedding, reinforcement, emotional_weight, extra_json, source_ref,
@@ -62,6 +62,7 @@
 | `merge_item_raw` | `(item_id, new_summary, new_hash, new_embedding, new_extra=None) -> None` | `None` | 原子更新 merge 目标；content_hash 冲突时 supersede 旧条目 + 写新摘要 |
 | `mark_superseded` | `(item_id) -> None` | `None` | 置 status='superseded' |
 | `mark_superseded_batch` | `(ids) -> None` | `None` | 批量置 superseded |
+| `undo_by_message_sources` | `(message_ids, *, dry_run=False) -> dict` | `dict` | 按 source_ref 命中的消息 id，批量 supersede 命中条目并恢复被其取代的旧条目（单事务）；返回 `{affected_ids, restored_ids, rollback_source_ids}`；`dry_run=True` 只预览不改写（M4，两个 store 各自实现） |
 | `record_replacements` | `(*, old_items, new_item, source_ref=None, relation_type="supersede") -> int` | `int` | 写入 memory_replacements 关系行，返回写入数 |
 | `reinforce_items_batch` | `(ids, emotional_weight=0) -> None` | `None` | 批量强化（reinforcement + 权重） |
 | `delete_item` | `(item_id) -> bool` | `bool` | 不存在返回 False |

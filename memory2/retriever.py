@@ -9,10 +9,13 @@ from datetime import datetime
 import json
 import logging
 import re
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
+
+if TYPE_CHECKING:
+    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +42,7 @@ class Retriever:
 
     def __init__(
         self,
-        store: MemoryStore2,
+        store: MemoryStore2 | PostgresMemoryStore,
         embedder: Embedder,
         top_k: int = 8,
         score_threshold: float = 0.45,

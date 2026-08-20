@@ -22,7 +22,9 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from agent.config_models import Config
 from agent.memory import MemoryStore
+from infra.storage.factory import create_session_store
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.memory.engine import MemoryAdminApi
@@ -172,6 +174,7 @@ class ManualMemoryOptimizer(Protocol):
     async def optimize(self) -> None: ...
 
 
+# proactive 日志库（passive/proactive/drift 三库）不在 Phase 1 storage 抽象范围，storage.backend 不影响此处。
 class ProactiveDashboardReader:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
@@ -697,10 +700,15 @@ def create_dashboard_app(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
-    memory_store: MemoryStore | None = None,
+    memory_store: MemoryStore | None = None,  # markdown 旧记忆系统，与 storage.backend 无关
+    config: Config | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
-    store = SessionStore(workspace / "sessions.db")
+    store = (
+        create_session_store(config.storage, workspace / "sessions.db")
+        if config is not None
+        else SessionStore(workspace / "sessions.db")
+    )
     proactive_reader: ProactiveDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
     optimizer_last_status = "idle"
@@ -736,7 +744,7 @@ def create_dashboard_app(
 
     app = FastAPI(title="Nexus Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
-    app.state.memory_store = memory_store or MemoryStore(workspace)
+    app.state.memory_store = memory_store or MemoryStore(workspace)  # markdown 旧记忆系统，与 storage.backend 无关
     # Vite build output is gitignored, so a fresh clone (or CI) may lack it. Keep
     # the directory present and mount without a dir check so app creation never
     # depends on the build having run; dashboard_index() reports if it's missing.
@@ -1288,6 +1296,7 @@ def run_dashboard_api(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    config: Config | None = None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1298,6 +1307,7 @@ def run_dashboard_api(
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
+            config=config,
         )
     )
     server.run()
@@ -1312,21 +1322,23 @@ def _build_dashboard_uvicorn_config(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    config: Config | None = None,
 ) -> uvicorn.Config:
-    config = uvicorn.Config(
+    uvicorn_cfg = uvicorn.Config(
         create_dashboard_app(
             workspace,
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
             memory_store=memory_store,
+            config=config,
         ),
         host=host,
         port=port,
         log_level="info",
     )
     _install_dashboard_access_log_filter()
-    return config
+    return uvicorn_cfg
 
 
 def build_dashboard_server(
@@ -1338,8 +1350,9 @@ def build_dashboard_server(
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
+    config: Config | None = None,
 ) -> uvicorn.Server:
-    config = _build_dashboard_uvicorn_config(
+    uvicorn_cfg = _build_dashboard_uvicorn_config(
         workspace=workspace,
         host=host,
         port=port,
@@ -1347,5 +1360,6 @@ def build_dashboard_server(
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
         memory_store=memory_store,
+        config=config,
     )
-    return uvicorn.Server(config)
+    return uvicorn.Server(uvicorn_cfg)

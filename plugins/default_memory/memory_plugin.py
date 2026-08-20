@@ -34,6 +34,7 @@ class MemoryPlugin:
         DefaultMemoryEngine.ensure_workspace_storage(
             default_config=default_config,
             workspace=workspace,
+            config=config,
         )
         return [(db_path, existed)]
 

@@ -38,6 +38,7 @@ from memory2.store import (
     _now_iso,
     _parse_memory_time,
     _result_score,
+    _source_ref_message_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -471,6 +472,119 @@ class PostgresMemoryStore:
                     [(now, self._tenant_id, item_id) for item_id in ids],
                 )
             self._conn.commit()
+
+    def undo_by_message_sources(
+        self,
+        message_ids: list[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        """按消息 source 撤销记忆（引擎 undo_by_message_sources 委托此处）。
+
+        与 SQLite 版语义一致：全扫带 source_ref 的条目 → 命中则 supersede →
+        恢复其取代的旧条目（仅当旧条目无其他 active 取代）。dry_run 只探测。
+        单事务：整段在锁内，末尾一次 commit。
+        """
+        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
+        if not clean_ids:
+            return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
+        target_ids = set(clean_ids)
+        with self._lock:
+            self._check_open()
+            rows = self._conn.execute(
+                """
+                SELECT id, source_ref
+                FROM memory_items
+                WHERE tenant_id = %s AND COALESCE(source_ref, '') != ''
+                """,
+                (self._tenant_id,),
+            ).fetchall()
+            affected_ids: set[str] = set()
+            rollback_source_ids: set[str] = set()
+            for item_id, source_ref in rows:
+                source = str(source_ref or "").strip()
+                base_ids = _source_ref_message_ids(source)
+                if source in target_ids:
+                    affected_ids.add(str(item_id))
+                    rollback_source_ids.add(source)
+                    continue
+                if base_ids and target_ids.intersection(base_ids):
+                    affected_ids.add(str(item_id))
+                    rollback_source_ids.update(base_ids)
+
+            if affected_ids and not dry_run:
+                now = _now_iso()
+                with self._conn.cursor() as cur:
+                    cur.executemany(
+                        "UPDATE memory_items SET status='superseded', updated_at=%s "
+                        "WHERE tenant_id=%s AND id=%s",
+                        [(now, self._tenant_id, item_id) for item_id in sorted(affected_ids)],
+                    )
+            restored_ids = self._restore_replacements_for_undo(
+                affected_ids,
+                dry_run=dry_run,
+            )
+            if not dry_run:
+                self._conn.commit()
+        return {
+            "affected_ids": sorted(affected_ids),
+            "restored_ids": sorted(restored_ids),
+            "rollback_source_ids": sorted(rollback_source_ids),
+        }
+
+    def _restore_replacements_for_undo(
+        self,
+        affected_ids: set[str],
+        *,
+        dry_run: bool = False,
+    ) -> set[str]:
+        if not affected_ids:
+            return set()
+        sorted_affected = sorted(affected_ids)
+        placeholders = ",".join("%s" for _ in sorted_affected)
+        rows = self._conn.execute(
+            f"""
+            SELECT DISTINCT old_item_id
+            FROM memory_replacements
+            WHERE tenant_id = %s AND new_item_id IN ({placeholders})
+            """,
+            (self._tenant_id, *sorted_affected),
+        ).fetchall()
+        old_ids = {str(row[0]) for row in rows if str(row[0]).strip()}
+        restored: set[str] = set()
+        now = _now_iso()
+        for old_id in sorted(old_ids):
+            active_replacement = self._conn.execute(
+                f"""
+                SELECT 1
+                FROM memory_replacements r
+                JOIN memory_items m ON m.id = r.new_item_id AND m.tenant_id = r.tenant_id
+                WHERE r.tenant_id = %s
+                  AND r.old_item_id = %s
+                  AND r.new_item_id NOT IN ({placeholders})
+                  AND m.status = 'active'
+                LIMIT 1
+                """,
+                (self._tenant_id, old_id, *sorted_affected),
+            ).fetchone()
+            if active_replacement is not None:
+                continue
+            if dry_run:
+                old_row = self._conn.execute(
+                    "SELECT 1 FROM memory_items WHERE tenant_id=%s AND id=%s AND status='superseded'",
+                    (self._tenant_id, old_id),
+                ).fetchone()
+                if old_row is not None:
+                    restored.add(old_id)
+                continue
+            cur = self._conn.execute(
+                "UPDATE memory_items SET status='active', updated_at=%s "
+                "WHERE tenant_id=%s AND id=%s AND status='superseded'",
+                (now, self._tenant_id, old_id),
+            )
+            if cur.rowcount:
+                restored.add(old_id)
+        return restored
 
     def record_replacements(
         self,

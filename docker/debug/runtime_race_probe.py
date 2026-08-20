@@ -296,6 +296,8 @@ class RaceHarness:
     def make_agent_loop(self, reasoner: Reasoner) -> AgentLoop:
         config = self.load_config()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        # 探针仅支持 sqlite 后端（SessionManager 直连 SQLite，不受 storage.backend 影响）；
+        # 如需 PG 请走生产路径。
         session_manager = SessionManager(self.workspace)
         return AgentLoop(
             AgentLoopDeps(
