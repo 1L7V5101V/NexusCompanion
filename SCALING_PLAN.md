@@ -51,7 +51,8 @@
 补完这个 channel 时有三个与其它 channel 不同的结构性问题，直接影响扩展方案：
 
 - **身份自持**：Telegram/QQ 的 chat_id 由平台保证不可伪造，`allow_from` 白名单足够；
-  webchat 的身份必须自己签发，否则 session_key 可被前端任意指定。
+  webchat 的身份必须自己签发，否则 `tenant_id`（Phase 1 的分区键）可被前端任意指定，
+  分区隔离形同虚设。
 - **连接常驻**：webhook 无状态，WebSocket 是每标签页一条常驻 TCP。5000 在线意味着
   5000 fd，且连接与进程绑定 —— 与 Phase 4 的多 Worker 直接冲突。
 - **流式预期**：webchat 用户预期逐字输出，而当前 `OutboundMessage` 是一次性 content。
@@ -297,58 +298,62 @@ class AsyncAgentLoop:
 
 ---
 
-## Phase 3: 向量检索优化（P1 - 重要）
+## Phase 3: 向量检索优化（已由 Phase 1 吸收，仅剩调参）
 
-### 3.1 切换到专用向量数据库
+> **方案已定：pgvector + 分区 HNSW**，不引入独立向量数据库。
+> 依据：`docs/tasks/phase1-storage/vector-validation.md` 的实测结论。
 
-**选项 A：Qdrant（推荐）**
+### 3.1 为什么不上 Qdrant
 
-```python
-# infra/vector/qdrant_client.py
-from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams
+原计划把"切换到专用向量数据库"列为独立阶段，Phase 1 的验证让这一步失去必要性：
 
-class QdrantMemoryStore:
-    def __init__(self, url: str):
-        self.client = AsyncQdrantClient(url=url)
+| 形态 | 小租户召回（2% 占比，ef=40）| 结论 |
+|------|------|------|
+| 单全局 HNSW + `WHERE tenant_id` | 0.180 | 不可用，调 ef 到 200 也仅 0.413 |
+| 按 tenant_id 分区 + 每分区 HNSW | 0.990 | **已采用**（Phase 1 M2 落地）|
 
-    async def init_collection(self):
-        await self.client.create_collection(
-            collection_name="memories",
-            vectors_config=VectorParams(
-                size=1024, 
-                distance=Distance.COSINE
-            )
-        )
+关键发现是召回坍缩源于全局图遍历被其他租户节点带偏、目标节点被过滤饿死，**不是数据
+稀疏问题** —— 同样数据按租户隔离后召回立即回到 0.99+。这个机制对 Qdrant 的
+payload filter 同样成立，换引擎不解决问题，正确的解法是物理隔离，而 PG 原生分区已经
+提供了。多引入一个有状态组件（运维、备份、一致性、$400/月）换不到收益。
 
-    async def vector_search(self, query_vec, top_k=8, filters=None):
-        results = await self.client.search(
-            collection_name="memories",
-            query_vector=query_vec,
-            limit=top_k,
-            query_filter=filters  # 按 session_key 过滤
-        )
-        return [hit.payload for hit in results]
+### 3.2 分片策略：已实现
+
+原计划的"按用户哈希分 10 个 collection"被 LIST 分区取代，且更彻底 —— 每个 tenant
+独占一个分区与一个 HNSW 索引，而非 500 个 tenant 挤在一个 shard 里：
+
+```sql
+-- alembic/versions/a3d5c7e9f1b2_partition_memory_items.py
+CREATE TABLE memory_items (...) PARTITION BY LIST (tenant_id);
+CREATE TABLE memory_items_<tid> PARTITION OF memory_items FOR VALUES IN ('<tid>');
 ```
 
-**选项 B：继续用 pgvector（成本低）**
+分区由 `PostgresMemoryStore._ensure_partition()` 懒创建（advisory lock 防并发
+race），不建 DEFAULT 分区 —— 默认分区会混装多租户，正好破坏上面那个隔离前提。
 
-- 创建 HNSW 索引加速检索：
-  
-  ```sql
-  CREATE INDEX ON memory_items 
-  USING hnsw (embedding vector_cosine_ops)
-  WITH (m = 16, ef_construction = 64);
-  ```
+### 3.3 剩余工作：索引参数与运维
 
-### 3.2 分片策略
+这部分不构成独立阶段，随 Phase 1 压测一并做：
 
-**按用户分片**：
+- [ ] **`ef_search` 按分区规模分档**：大租户 40 够用，小租户可直接走 seq scan
+      （分区内行数少时 planner 判断通常正确，但需实测确认拐点）
+- [ ] **`m` / `ef_construction` 调优**：当前 `m=16, ef_construction=64`，在真实
+      1024 维 embedding 上复测（验证用的是 128 维合成数据）
+- [ ] **分区数量上限**：PG 在数千分区后 planner 规划耗时上升，5000 tenant 需实测
+      `EXPLAIN` 开销；超限则改为按 tenant 哈希分组（多 tenant 共享分区），
+      但需重新验证召回
+- [ ] **索引维护**：分区各自 `REINDEX`，避免单次全表重建阻塞
+- [ ] **空分区回收**：tenant 注销后 `DROP TABLE` 分区，比 `DELETE` 干净
 
-```python
-# 每个用户的记忆独立存储，避免全表扫描
-collection_name = f"memories_shard_{hash(session_key) % 10}"
-```
+### 3.4 什么时候才真的需要换引擎
+
+保留判断依据，避免过早迁移：
+
+- 单 tenant 记忆量 > 500 万条（分区内 HNSW 本身成为瓶颈）
+- 需要跨 tenant 的全局语义检索（分区隔离恰好挡住这个能力）
+- 分区数超过 PG planner 的舒适区且哈希分组后召回不达标
+
+以上均未发生前，pgvector 是正确选择。
 
 ---
 
@@ -513,8 +518,8 @@ Worker 的 GC 停顿影响连接心跳，导致误判掉线。
 │   - 流式 chunk 发布到 Pub/Sub                    │
 ├─────────────────────────────────────────────────┤
 │  PostgreSQL (主) + 只读副本 (2台)               │
+│    + pgvector 分区 HNSW（向量检索并入，无独立组件）│
 │  Redis Cluster (缓存 + 队列 + Pub/Sub)          │
-│  Qdrant / pgvector (向量检索)                   │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -570,7 +575,10 @@ class WebChatChannel:
 **为什么最高**：其它 Phase 做错的后果是慢或贵，可观测、可回滚；这一项做错的后果是
 全量会话与记忆泄露，无告警、不可撤回。
 
-`session_key` 是隔离的信任根，必须服务端派生，前端传值一律忽略：
+`session_key` 是隔离的信任根，必须服务端派生，前端传值一律忽略。Phase 1 的 schema
+已把 `tenant_id` 做成 `memory_items` 的 LIST 分区键，并贯穿 `sessions` /
+`messages` 等全部表（`alembic/versions/47460ba069a5_initial.py`），因此**不需要新增
+归属列** —— 鉴权层要做的是把 token 身份绑到既有的 `tenant_id` 上：
 
 ```python
 # infra/channels/web_chat_auth.py
@@ -578,40 +586,52 @@ class ChatAuth:
     def issue_token(self, user_id: str) -> str:
         return jwt.encode({"sub": user_id, "exp": ...}, self.secret, "HS256")
 
+    def tenant_id_for(self, user_id: str) -> str:
+        return f"chat_{user_id}"      # 由 token.sub 决定，不接受前端入参
+
     def session_key_for(self, user_id: str) -> str:
-        return f"chat:{user_id}"          # 由 token.sub 决定，不接受前端入参
+        return f"chat:{user_id}"
 ```
+
+`tenant_id` 同时是分区键，所以越权访问在存储层就被物理隔离：查错 tenant 命中的是
+另一个分区，而非同表内的其它行。这比应用层过滤强 —— 前提是 `tenant_id` 必须来自
+token，不能来自请求参数。
 
 WS 握手阶段鉴权（浏览器 WebSocket 无法自定义 header，走 query 参数）：
 
 ```python
 # infra/channels/web_chat_channel.py
-async def _authenticate(self, ws: WebSocket) -> str:
+async def _authenticate(self, ws: WebSocket) -> tuple[str, str]:
     token = ws.query_params.get("token", "")
     try:
         claims = self._auth.verify(token)
     except InvalidToken:
         await ws.close(code=4401)          # 握手即拒，不进消息循环
         raise
-    return self._auth.session_key_for(claims["sub"])
+    sub = claims["sub"]
+    return self._auth.tenant_id_for(sub), self._auth.session_key_for(sub)
 ```
 
-REST 端点加依赖，并把归属过滤做成**必填参数**：
+REST 端点加依赖，`tenant_id` 由 token 注入而非请求参数：
 
 ```python
 # bootstrap/chat_api.py
 @app.get("/api/chat/sessions")
 def list_sessions(user: User = Depends(require_user), ...):
+    store = _store_for(user.tenant_id)      # store 实例本身绑定 tenant
     items, total = store.list_sessions_for_dashboard(
         channel=channel.name,
-        owner_id=user.id,      # 必填，不是 owner_id: str | None = None
         ...
     )
 ```
 
-`owner_id` 设为可选会被漏传，且漏传时静默返回全量数据 —— 这类缺陷不会在功能测试中
-暴露。同理 `/api/chat/media` 需在 `_can_read_media` 的路径校验之外，追加"该文件是否
-属于请求者的会话"判断。
+`PostgresMemoryStore(postgres_url, tenant_id=...)` 已把 tenant 绑在实例上
+（`infra/storage/postgres_memory_store.py`），所以按请求身份取对应 store 实例即可，
+不必给每个查询方法加参数。**关键是禁止从请求体或 query 读 `tenant_id`** —— 一旦可传，
+分区隔离就失效了。
+
+`/api/chat/media` 需在 `_can_read_media` 的路径校验之外，追加"该文件属于请求者
+tenant 的会话"判断。
 
 ```toml
 [channels.chat.auth]
@@ -681,7 +701,11 @@ max_sessions_per_user = 50
 
 ---
 
-## Phase 6: 配置与监控（P2 - 建议）
+## Phase 6: 配置与监控（P1 - Phase 1 的前置工具，不是收尾）
+
+> **优先级修正**：原列为 P2 收尾项，实为排错。Phase 1 的双写验证期需要
+> "不一致率 > 0.1% 告警"，没有埋点只能靠人工抽查 —— 监控是 Phase 1 的工具。
+> 代码库当前无任何 prometheus 埋点，建议与 Phase 1 并行搭起最小集。
 
 ### 6.1 动态配置
 
@@ -705,14 +729,45 @@ statement_cache_size = 500
 
 ### 6.2 监控指标
 
+**Phase 1 期间就需要的最小集**（服务双写验证与迁移决策）：
+
 ```python
 # infra/monitoring/metrics.py
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
+# —— Phase 1 双写验证必需 ——
+dual_write_mismatch = Counter(
+    "dual_write_mismatch_total", "SQLite/PG 双写不一致数", ["table"]
+)
+dual_write_total = Counter("dual_write_total", "双写总数", ["table"])
+store_latency = Histogram(
+    "store_op_seconds", "存储操作耗时", ["backend", "op"]
+)   # backend=sqlite|postgres，直接给出迁移是否劣化
+vector_recall = Gauge(
+    "vector_search_recall", "抽样召回率", ["tenant_bucket"]
+)   # 对齐 vector-validation.md 的实测口径，防线上退化
+
+# —— Phase 2 之后 ——
 llm_requests = Counter("llm_requests_total", "LLM API calls")
 llm_latency = Histogram("llm_latency_seconds", "LLM response time")
 queue_depth = Gauge("message_queue_depth", "Pending messages")
+
+# —— Phase 4.1b / 5 之后 ——
+ws_connections = Gauge("ws_connections", "当前 WebSocket 连接数")
+outbound_delivered = Counter("outbound_delivered_total", "出站送达数")
+inbound_received = Counter("inbound_received_total", "入站接收数")
+# 二者差值非零即为静默丢消息，见 4.1b
 ```
+
+**告警规则**：
+
+| 指标 | 阈值 | 对应风险 |
+|------|------|----------|
+| `dual_write_mismatch / dual_write_total` | > 0.1% | 迁移数据不一致（风险 1）|
+| `store_op_seconds{backend="postgres"}` P99 | > 100ms | 性能回退（风险 2）|
+| `vector_search_recall` | < 0.9 | 分区/索引退化 |
+| `inbound_received - outbound_delivered` | ≠ 0 | 多 Worker 丢消息（风险 5）|
+| `ws_connections` | > `max_connections` × 0.8 | 接近 fd 上限 |
 
 ---
 
@@ -722,23 +777,44 @@ queue_depth = Gauge("message_queue_depth", "Pending messages")
 | ------------- | -------------- | --- | -------- | --- |
 | Phase 1.1     | PostgreSQL 迁移  | 2周  | 10x 写入吞吐 | 必须  |
 | Phase 1.2     | Redis 缓存       | 1周  | 5x 读取速度  | 必须  |
+| Phase 6       | 监控埋点（Phase 1 前置）| 1周 | 可观测性 | 必须  |
 | Phase 2.1-2.2 | 异步 + 速率限制      | 3周  | 3x 并发处理  | 必须  |
 | Phase 2.3     | AgentLoop 异步改造 | 2周  | 2x 资源利用率 | 必须  |
 | Phase 2.4     | 出站改流式接口        | +0.5周 | 免除后续返工 | 必须  |
-| Phase 3.1     | 向量数据库独立        | 1周  | 5x 检索性能  | 重要  |
+| Phase 3.3     | HNSW 参数调优      | +0.5周 | 召回保障 | 随 Phase 1 压测 |
 | Phase 4.1-4.2 | 消息队列 + 水平扩展    | 2周  | 无限水平扩展   | 重要  |
 | Phase 4.1b    | 出站 Pub/Sub     | 1周  | WS 多 Worker 前置 | 必须（若启 webchat）|
 | Phase 5.1     | webchat 鉴权     | 1周  | 防数据泄露    | 必须（若启 webchat）|
 | Phase 5.2-5.4 | 限流 + channel + 前端 | 2周 | 功能可用 | 必须（若启 webchat）|
-| Phase 6       | 监控与配置          | 1周  | 可观测性     | 建议  |
 
-**总计**：约 15 周（不启 webchat 则 12 周）
+**总计**：约 13 周（不启 webchat 则 9 周）—— 原估 15 周，Phase 3 由独立阶段
+（1 周）降为调参（0.5 周），且并行后压缩。
 
 **排期约束**：
 
 - 5.1 鉴权不依赖存储层，可与 Phase 1 并行
 - 5.4 的 channel 实现应在 2.4 接口定型后开始，否则出站要改两遍
 - 4.1b 是 webchat 上多 Worker 的硬前置，与 Worker Pool 同批上线
+
+### 并行执行矩阵
+
+判断依据是**是否修改同一批文件**，不是编号先后。
+
+| 与 Phase 1 并行 | 触及文件 | 冲突风险 |
+|------|----------|----------|
+| **Phase 6 监控** | `infra/monitoring/`（新）+ 少量埋点 | 无。且 Phase 1 双写验证需要它 |
+| **Phase 5.1 鉴权** | `infra/channels/web_chat_auth.py`（新）、`bootstrap/chat_api.py`、`agent/config_models.py` | 无。`tenant_id` 已在 Phase 1 schema 就位，不需改存储层 |
+| **Phase 5.3 前端** | `frontend/dashboard/` | 无。纯前端资产 |
+| **Phase 3.3 调参** | SQL 索引参数 | 无。就在 Phase 1 的表上 |
+
+| 必须串行 | 原因 |
+|------|------|
+| **Phase 2 异步化** | 与 Phase 1 抢 `agent/looping/core.py` 及全部 store 调用点。更要紧的是在 SQLite 上做 asyncio 改造要写一堆 `run_in_executor` 包装，Phase 1 落地后全部拆掉 |
+| **Phase 4.1b Pub/Sub** | 依赖 2.4 接口定型，接口未定则改两遍 |
+| **Phase 5.4 channel 实现** | 同上，出站形状未定不能动 |
+
+**当前状态（Phase 1 进行中）可立即启动**：Phase 6 监控、Phase 5.1 鉴权、Phase 5.3
+前端。三者互不冲突，也不碰 Phase 1 的文件。
 
 ---
 
@@ -778,10 +854,12 @@ items = await store.vector_search(query_vec, top_k=8)
 | ------------------------------------- | -------- | ---- | ------- |
 | Gateway 实例 | 2核 4GB | 3台 | 鉴权 + WS 常驻连接（webchat 需要）|
 | Worker 实例 | 8核 16GB  | 10台  | 处理用户消息  |
-| PostgreSQL                            | 16核 64GB | 1主2从 | 持久化存储   |
+| PostgreSQL                            | 16核 64GB | 1主2从 | 持久化存储 **+ 向量检索**（分区 HNSW）|
 | Redis Cluster                         | 8核 32GB  | 3节点  | 缓存 + 队列 + Pub/Sub |
-| Qdrant                                | 8核 32GB  | 2节点  | 向量检索    |
 | Nginx                                 | 2核 4GB   | 2台   | 负载均衡    |
+
+无独立向量数据库 —— 分区 HNSW 在 PG 内，省去一个有状态组件。代价是 PG 内存需覆盖
+活跃分区的索引，规格已按此预留（64GB）。
 
 Gateway 单独列出是因为 5000 常驻 WS 连接的画像与 Worker 完全不同：I/O 密集、内存
 占用来自连接态（约 100-250MB）而非模型上下文，2 核即可撑数千连接。混部见 4.1c。
@@ -789,11 +867,13 @@ Gateway 单独列出是因为 5000 常驻 WS 连接的画像与 Worker 完全不
 ### 成本估算（云服务器）
 
 - **计算**：Worker 10 × $100/月 = $1000；Gateway 3 × $50/月 = $150
-- **数据库**：$300/月（托管 PostgreSQL）
+- **数据库**：$450/月（托管 PostgreSQL，规格上调以承载向量索引）
 - **缓存**：$200/月（托管 Redis）
-- **向量数据库**：$400/月（Qdrant Cloud）
+- **向量数据库**：$0（并入 PG，原 Qdrant Cloud 方案 $400/月已取消）
 - **流量**：$100/月
-- **总计**：约 $2150/月（不启 webchat 可省下 Gateway 的 $150，即 $2000/月）
+- **总计**：约 $1900/月（不启 webchat 可省下 Gateway 的 $150，即 $1750/月）
+
+比原估算低 $250/月：省掉 Qdrant 的 $400，PG 规格上调补回 $150。
 
 ---
 

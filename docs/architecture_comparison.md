@@ -5,7 +5,7 @@
 | 维度 | 当前架构 | 5000用户架构 | 提升倍数 |
 |------|----------|--------------|----------|
 | **数据库** | SQLite 单文件 | PostgreSQL 集群 | 10x 写入 |
-| **向量检索** | sqlite-vec 内存 | Qdrant/pgvector | 5x QPS |
+| **向量检索** | sqlite-vec 内存 | pgvector 分区 HNSW | 5x QPS |
 | **并发模型** | 同步 + threading.Lock | 异步 + 消息队列 | 5x 吞吐 |
 | **扩展能力** | 单机垂直扩展 | 水平无限扩展 | ∞ |
 | **缓存层** | 无 | Redis 多级缓存 | 3x 响应速度 |
@@ -52,13 +52,14 @@
 │    - 消费队列                                   │
 │    - 异步处理 Turn                              │
 └─────────────────────────────────────────────────┘
-      ▼                    ▼                  ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ Redis Cache  │  │ PostgreSQL   │  │ Qdrant       │
-│ (热数据)     │  │ (持久化)     │  │ (向量检索)   │
-│ - Session    │  │ - 行级锁     │  │ - HNSW索引   │
-│ - 用户画像   │  │ - 连接池50   │  │ - 分片       │
-└──────────────┘  └──────────────┘  └──────────────┘
+      ▼                    ▼
+┌──────────────┐  ┌────────────────────────────────┐
+│ Redis Cache  │  │ PostgreSQL                     │
+│ (热数据)     │  │ (持久化 + 向量检索)            │
+│ - Session    │  │ - 行级锁                       │
+│ - 用户画像   │  │ - 连接池50                     │
+│ - 队列/PubSub│  │ - tenant_id LIST 分区 + HNSW   │
+└──────────────┘  └────────────────────────────────┘
 ```
 
 **优势**：
@@ -145,28 +146,46 @@ def vector_search(self, query_vec, top_k=8):
 - **暴力计算**：500万次余弦计算，耗时 2-5 秒
 - **无索引**：每次查询都重新计算
 
-#### 目标：Qdrant HNSW 索引
-```python
-# infra/vector/qdrant_client.py
-async def vector_search(self, query_vec, session_key, top_k=8):
-    # HNSW 索引加速，复杂度 O(log N)
-    results = await self.client.search(
-        collection_name="memories",
-        query_vector=query_vec,
-        limit=top_k,
-        query_filter={
-            "must": [{"key": "session_key", "match": {"value": session_key}}]
-        }
-    )
-    return results
+#### 目标：pgvector 分区 HNSW
+
+按 `tenant_id` LIST 分区，每个分区独立 HNSW 索引 —— 隔离靠分区而非查询过滤：
+
+```sql
+-- alembic/versions/a3d5c7e9f1b2_partition_memory_items.py
+CREATE TABLE memory_items (...) PARTITION BY LIST (tenant_id);
+CREATE TABLE memory_items_<tid> PARTITION OF memory_items FOR VALUES IN ('<tid>');
+CREATE INDEX ON memory_items_<tid>
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
 ```
 
+```python
+# infra/storage/postgres_memory_store.py
+# tenant 绑在 store 实例上，查询自动只命中本分区
+store = PostgresMemoryStore(url, tenant_id="chat_alice")
+```
+
+**为什么不用「单全局索引 + WHERE 过滤」**（含 Qdrant 的 payload filter）：实测
+（`docs/tasks/phase1-storage/vector-validation.md`）小租户召回坍缩 ——
+
+| 租户占比 | 全局 HNSW + 过滤（ef=40）| 分区独立索引 |
+|---------|------------------------|-------------|
+| 50% | 0.987 | 0.993 |
+| 2% | 0.180 | 0.990 |
+| 0.1% | 0.100 | 1.000 |
+
+原因是全局图遍历被其他租户节点带偏、目标节点被过滤饿死，ef 提到 200 也只到 0.257。
+这是机制问题而非数据稀疏，换引擎不解决 —— 5000 用户系统里单用户通常 ≤1% 占比，
+正落在坍缩区间。
+
 **性能对比**（单次查询）：
-| 数据量 | sqlite-vec | Qdrant HNSW | 提升 |
-|--------|------------|-------------|------|
+
+| 数据量 | sqlite-vec | 分区 HNSW | 提升 |
+|--------|------------|-----------|------|
 | 10万条 | 200ms | 15ms | 13x |
 | 100万条 | 2.5s | 25ms | 100x |
 | 500万条 | 12s | 40ms | 300x |
+
+代价是不支持跨 tenant 的全局语义检索 —— 分区隔离恰好挡住这个能力。当前无此需求。
 
 ---
 
@@ -261,8 +280,7 @@ webchat 不是"再加一个 channel"。它是**第一个身份自持 + 连接常
 
 | 维度 | Telegram / QQ / 飞书 | CLI / IPC | WebChat |
 |------|---------------------|-----------|---------|
-| 身份来源 | 平台签发，不可伪造 | 本机 socket，隐含可信 | **自己签发** |
-| 连接模型 | 无状态 webhook | 单条本地连接 | **N 条常驻 WS** |
+| 身份来源 | 平台签发，不可伪造 | 本机 socket，隐含可信 | **自己签发** || 连接模型 | 无状态 webhook | 单条本地连接 | **N 条常驻 WS** |
 | 进程亲和 | 无 | 单进程 | **连接绑定实例** |
 | 输出形态 | 整段发送 | 逐行 | **逐字流式** |
 | 滥用防护 | 平台已挡 | 无需 | **自行实现** |
@@ -286,14 +304,17 @@ webchat 若沿用同构造法：
               改本地 id 即可读他人会话
 ```
 
-`session_key` 是整个系统的隔离边界，不只影响会话读取：
+Phase 1 的 schema 把 `tenant_id` 做成 `memory_items` 的 LIST 分区键，并贯穿
+`sessions` / `messages` 等全部表，所以**信任根是 `tenant_id`，`session_key` 是次级
+标识**：
 
-- Phase 3.2 的 Qdrant 按 `session_key` 过滤检索
-- PostgreSQL 按 `session_key` 分区
-- `memory2/store.py` 的 scope 匹配依赖它做记忆隔离
+- `tenant_id` 决定命中哪个分区 —— 记忆隔离由 PG 分区物理保证
+- 每个分区有独立 HNSW 索引，查错 tenant 命中的是另一个分区而非同表其它行
+- `session_key` 在 tenant 内区分会话，`memory2/store.py` 的 scope 匹配用它
 
-也就是说，**session_key 可伪造会同时击穿会话隔离和记忆隔离**。因此它必须由服务端
-从已验证的 token 派生，前端无权指定。
+这比"应用层加过滤条件"强一层：过滤条件可能漏传，分区键不传则写入直接失败。但前提
+是二者都必须由服务端从已验证的 token 派生 —— **一旦 `tenant_id` 可从请求参数传入，
+分区隔离就退化成了字符串比较**。
 
 ### 4.3 出站路径：单进程假设的失效
 
@@ -421,8 +442,9 @@ async def upsert_item(self, memory_type, summary, embedding):
 **应对**：
 - **默认拒绝**：`host` 非 `127.0.0.1` 且 `auth.enabled = false` 时启动失败
 - **session_key 服务端派生**：从 JWT `sub` 生成，前端传值一律忽略
-- **查询强制过滤**：`list_sessions_for_dashboard` 加 `owner_id` 必填参数，
-  而非可选 —— 可选参数会被漏传
+- **tenant_id 服务端派生**：从 JWT `sub` 生成，前端传值一律忽略。它同时是
+  `memory_items` 的分区键，所以越权在存储层被物理隔离（查错 tenant 命中的是另一个
+  分区），比应用层过滤强 —— 前提是禁止从请求参数读取 `tenant_id`
 - **越权测试进 CI**：持 A 的 token 请求 B 的资源，断言 403；防止后续改动回退
 
 ### 风险 5：多 Worker 下 WS 静默丢消息（新增）
@@ -439,30 +461,35 @@ async def upsert_item(self, memory_type, summary, embedding):
 
 ```
 Week 1-2:  PostgreSQL + Redis 环境搭建
-Week 3-4:  数据迁移脚本 + 双写验证
-           ├─ 并行：webchat 鉴权层（不依赖存储层）
+           ├─ 并行：监控埋点（双写验证的前置工具）
+Week 3-4:  数据迁移脚本 + 双写验证 + HNSW 参数在真实 1024 维上复测
+           ├─ 并行：webchat 鉴权层（tenant_id 已在 schema 就位，不依赖存储层）
+           └─ 并行：webchat 前端（纯前端资产）
 Week 5-6:  异步 AgentLoop 重构（出站定为流式接口）
 Week 7-8:  LLM Client 改造 + 限流
-Week 9-10: Qdrant 向量检索集成
-Week 11:   压力测试 + 性能调优
-Week 12:   灰度发布 + 全量上线
+Week 9:    压力测试 + 性能调优（含分区数 planner 开销实测）
+Week 10:   灰度发布 + 全量上线
 ───────────────────────────────────────
-Week 13:   出站 Pub/Sub + Gateway 拆分
-Week 14:   web_chat_channel.py 实现 + 前端
-Week 15:   webchat 越权/负载专项测试 + 上线
+Week 11:   出站 Pub/Sub + Gateway 拆分
+Week 12:   web_chat_channel.py 实现（接前面已就绪的鉴权与前端）
+Week 13:   webchat 越权/负载专项测试 + 上线
 ```
 
-**里程碑检查点**：
-- Week 4: 双写一致性验证通过（错误率 < 0.1%）
-- Week 6: 出站接口已定为 async generator（避免 Week 14 返工）
-- Week 8: 单 Worker 处理 50 QPS
-- Week 11: 5000 用户模拟负载测试通过
-- Week 12: 生产环境稳定运行 72 小时
-- Week 13: 多 Worker 下出站送达率 100%（入站数 = 出站数）
-- Week 15: 越权测试全部返回 403/404；5000 WS 并发无 fd 耗尽
+原 15 周压缩至 13 周：Phase 3 从独立阶段降为调参并入 Phase 1，监控/鉴权/前端三项
+移入并行窗口。
 
-**排期依赖**：Week 14 的 channel 实现依赖 Week 6 的接口定型与 Week 13 的 Pub/Sub。
-若 webchat 需提前上线，可先出单 Worker 版本（跳过 Week 13），但届时无法水平扩展，
+**里程碑检查点**：
+- Week 2: 双写不一致率指标可观测（否则 Week 3-4 的验证无从判断）
+- Week 4: 双写一致性验证通过（错误率 < 0.1%）；分区 HNSW 在 1024 维上召回 > 0.95
+- Week 6: 出站接口已定为 async generator（避免 Week 12 返工）
+- Week 8: 单 Worker 处理 50 QPS
+- Week 9: 5000 用户模拟负载测试通过；5000 分区下 planning time 可接受
+- Week 10: 生产环境稳定运行 72 小时
+- Week 11: 多 Worker 下出站送达率 100%（入站数 = 出站数）
+- Week 13: 越权测试全部返回 403/404；5000 WS 并发无 fd 耗尽
+
+**排期依赖**：Week 12 的 channel 实现依赖 Week 6 的接口定型与 Week 11 的 Pub/Sub。
+若 webchat 需提前上线，可先出单 Worker 版本（跳过 Week 11），但届时无法水平扩展，
 需在配置中锁 `worker_count = 1`。
 
 ---
@@ -502,21 +529,24 @@ enabled = false  # webchat 可独立关闭，不影响其它 channel
 
 1. **存储层**：SQLite → PostgreSQL + Redis 缓存
 2. **并发模型**：sync + threading → async + asyncio
-3. **向量检索**：全量扫描 → HNSW 索引
+3. **向量检索**：全量扫描 → 按 tenant 分区 + 每分区 HNSW（不引入独立向量库）
 4. **水平扩展**：单进程 → Worker Pool + 消息队列
 5. **可靠性**：单点 → 多副本 + 自动故障切换
 6. **接入层**：平台 channel → 增加身份自持的 webchat（Gateway + Pub/Sub 出站）
 
-**webchat 带来的三处方案修正**：
+**方案修正记录**：
 
-| 位置 | 原方案 | 修正后 |
-|------|--------|--------|
-| Phase 2.4 | 出站返回完整字符串 | async generator，一次性留出流式 |
-| Phase 4.1b | 只做入站队列 | 出站 Pub/Sub，否则多 Worker 下 WS 收不到回复 |
-| 资源估算 | 按无状态 webhook 算 | 追加 Gateway + 5000 常驻连接的 fd/内存 |
+| 位置 | 原方案 | 修正后 | 起因 |
+|------|--------|--------|------|
+| Phase 2.4 | 出站返回完整字符串 | async generator，一次性留出流式 | webchat 流式预期 |
+| Phase 4.1b | 只做入站队列 | 出站 Pub/Sub，否则多 Worker 下 WS 收不到回复 | webchat 长连接 |
+| 资源估算 | 按无状态 webhook 算 | 追加 Gateway + 5000 常驻连接的 fd/内存 | webchat 长连接 |
+| Phase 3 | Qdrant 独立部署（1 周）| 并入 Phase 1，仅剩调参（0.5 周）| 实测分区 HNSW 已达 0.99 召回 |
+| Phase 6 监控 | P2 收尾项 | P1，Phase 1 双写验证的前置工具 | 无埋点则一致性只能人工抽查 |
+| 鉴权归属列 | 新增 `owner_id` 必填参数 | 复用既有 `tenant_id` 分区键 | Phase 1 schema 已贯穿全表 |
 
 **投入产出比**：
-- 开发成本：核心 3 人月；含 webchat 约 3.75 人月
-- 运维成本：$2000/月（含 webchat Gateway 约 $2150/月）
+- 开发成本：核心 2.5 人月；含 webchat 约 3.25 人月
+- 运维成本：$1750/月（含 webchat Gateway 约 $1900/月）
 - 支持用户数：50 → 5000（100倍）
 - ROI：假设每用户 $5/月，收入从 $250 → $25000/月

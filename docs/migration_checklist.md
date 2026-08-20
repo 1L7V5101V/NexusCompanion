@@ -1,5 +1,17 @@
 # 迁移执行清单（5000用户扩展）
 
+> **向量方案已定**：pgvector + 按 `tenant_id` 分区 HNSW，不引入独立向量数据库。
+> 依据 `docs/tasks/phase1-storage/vector-validation.md`。
+>
+> **可与阶段 1 并行的工作**（互不冲突，也不碰阶段 1 的文件）：
+>
+> - 监控埋点（阶段 5.0）—— 阶段 1 的双写一致性告警依赖它，属前置而非收尾
+> - webchat 鉴权（阶段 4.5.2 的鉴权部分）—— `tenant_id` 已在阶段 1 schema 就位
+> - webchat 前端（阶段 4.5.2 的前端部分）—— 纯前端资产
+>
+> **必须串行**：阶段 2 异步化（与阶段 1 抢 store 调用点，且在 SQLite 上做 asyncio
+> 会写一堆 `run_in_executor` 包装，阶段 1 落地后全部拆掉）。
+
 ## 阶段 0：准备工作（Week 0）
 
 ### 0.1 环境准备
@@ -18,14 +30,26 @@
   asyncpg>=0.29.0
   redis[asyncio]>=5.0.0
   httpx>=0.27.0
-  qdrant-client>=1.7.0  # 可选
   prometheus-client>=0.19.0
   ```
 
-- [ ] **监控工具**
-  
+- [ ] **监控工具**（Week 1-2 并行，双写验证的前置）
+
   - [ ] Grafana + Prometheus 搭建
   - [ ] 日志聚合（ELK 或 Loki）
+  - [ ] `infra/monitoring/metrics.py` 最小指标集 —— 代码库当前无任何
+        prometheus 埋点，需从零建：
+
+    ```python
+    dual_write_mismatch = Counter("dual_write_mismatch_total", "...", ["table"])
+    dual_write_total    = Counter("dual_write_total", "...", ["table"])
+    store_latency       = Histogram("store_op_seconds", "...", ["backend", "op"])
+    vector_recall       = Gauge("vector_search_recall", "...", ["tenant_bucket"])
+    ```
+
+  - [ ] 告警：`dual_write_mismatch / dual_write_total > 0.1%`
+  - [ ] 告警：`store_op_seconds{backend="postgres"}` P99 > 100ms
+  - [ ] 告警：`vector_search_recall < 0.9`
 
 ###  0.2 基线测试
 
@@ -368,116 +392,84 @@
 
 ---
 
-## 阶段 3：向量检索优化（Week 9-10）
+## 阶段 3：向量检索调优（并入 Week 3-4，不再是独立阶段）
 
-### 3.1 Qdrant 部署（可选）
+> **方案已定：pgvector + 分区 HNSW**，不部署独立向量数据库。
+> 分区表与每分区 HNSW 已在阶段 1 落地（`alembic/versions/a3d5c7e9f1b2_*`），
+> 本阶段只剩参数调优与运维。依据见
+> `docs/tasks/phase1-storage/vector-validation.md`。
 
-- [ ] **Docker 部署**
-  
-  ```yaml
-  # docker-compose.yml
-  services:
-    qdrant:
-      image: qdrant/qdrant:v1.7.4
-      ports:
-        - "6333:6333"
-      volumes:
-        - ./qdrant_storage:/qdrant/storage
-      environment:
-        - QDRANT__SERVICE__HTTP_PORT=6333
-  ```
+### 3.1 已完成（阶段 1 M2）
 
-- [ ] **数据导入**
-  
-  ```python
-  # scripts/import_to_qdrant.py
-  async def import_vectors():
-      qdrant = AsyncQdrantClient(url="http://localhost:6333")
-  
-      # 创建 collection
-      await qdrant.create_collection(
-          collection_name="memories",
-          vectors_config=VectorParams(size=1024, distance=Distance.COSINE)
-      )
-  
-      # 批量导入
-      pg_store = PostgresMemoryStore(...)
-      items = await pg_store.get_all_with_embedding()
-  
-      points = [
-          PointStruct(
-              id=item["id"],
-              vector=item["embedding"],
-              payload={
-                  "session_key": item["session_key"],
-                  "summary": item["summary"],
-                  "memory_type": item["memory_type"]
-              }
-          )
-          for item in items
-      ]
-  
-      await qdrant.upsert(collection_name="memories", points=points)
-  ```
+- [x] `memory_items` 按 `tenant_id` LIST 分区
+- [x] 每分区独立 HNSW 索引（`m=16, ef_construction=64`）
+- [x] 分区懒创建 + advisory lock 防并发 race
+- [x] 不建 DEFAULT 分区（会混装多租户，破坏隔离前提）
+- [x] 召回验证：小租户 0.180（全局过滤）→ 0.990（分区隔离）
 
-### 3.2 pgvector 优化（备选方案）
+### 3.2 参数调优（真实 1024 维数据上复测）
 
-- [ ] **HNSW 索引调优**
-  
+> 阶段 1 的验证用 128 维合成数据，维度与分布都与生产不同，需复测。
+
+- [ ] **`ef_search` 分档**
+
   ```sql
-  -- 重建索引（离线操作，需停机维护窗口）
-  DROP INDEX IF EXISTS idx_memory_embedding;
-  
-  CREATE INDEX idx_memory_embedding ON memory_items 
-  USING hnsw (embedding vector_cosine_ops)
-  WITH (m = 16, ef_construction = 64);
-  
-  -- 查询时调整 ef_search 参数
-  SET hnsw.ef_search = 100;  -- 默认 40，提高召回率
+  -- 大分区（>50k 行）：ef=40 通常足够
+  SET hnsw.ef_search = 40;
+  -- 小分区：分区内行数少，planner 可能选 seq scan（召回 1.0，延迟可接受）
+  -- 需实测拐点，确认 planner 判断正确
+  EXPLAIN (ANALYZE) SELECT id FROM memory_items
+  WHERE tenant_id = 'chat_alice'
+  ORDER BY embedding <=> %s::vector LIMIT 10;
   ```
 
-- [ ] **分区表**
-  
+- [ ] **`m` / `ef_construction` 复测**：1024 维下召回与构建耗时的权衡
+- [ ] **召回基线入库**：按 `tenant_bucket`（分区规模分档）记录召回率，
+      作为 `vector_search_recall` 指标的告警基线（< 0.9 告警）
+
+### 3.3 分区规模的运维边界
+
+- [ ] **分区数量上限实测**：PG 在数千分区后 planner 规划耗时上升，
+      5000 tenant 需测 `EXPLAIN` 自身开销
+
   ```sql
-  -- 按 session_key 分区
-  CREATE TABLE memory_items_partitioned (
-      LIKE memory_items INCLUDING ALL
-  ) PARTITION BY HASH (session_key);
-  
-  -- 创建 10 个分区
-  CREATE TABLE memory_items_p0 PARTITION OF memory_items_partitioned
-      FOR VALUES WITH (MODULUS 10, REMAINDER 0);
-  -- ... 重复到 p9
+  -- 观察 planning time 随分区数增长
+  EXPLAIN (ANALYZE, TIMING) SELECT ... ;
+  -- 关注 "Planning Time" 一行
   ```
 
-### 3.3 性能对比测试
+  - [ ] 若超出舒适区：改为按 tenant 哈希分组（多 tenant 共享分区），
+        **但需重新验证召回** —— 分组会把小租户混装，正是坍缩成因
 
-- [ ] **检索延迟测试**
-  
-  ```python
-  # tests/benchmark_vector_search.py
-  async def benchmark():
-      query_vec = [random.random() for _ in range(1024)]
-  
-      # 测试 pgvector
-      start = time.time()
-      results_pg = await pg_store.vector_search(query_vec, top_k=10)
-      pg_latency = time.time() - start
-  
-      # 测试 Qdrant
-      start = time.time()
-      results_qd = await qdrant.search(query_vec, limit=10)
-      qd_latency = time.time() - start
-  
-      print(f"pgvector: {pg_latency*1000:.2f}ms")
-      print(f"Qdrant: {qd_latency*1000:.2f}ms")
+- [ ] **索引维护**：分区各自 `REINDEX`，避免单次全表重建阻塞
+
+  ```sql
+  REINDEX INDEX CONCURRENTLY memory_items_<tid>_embedding_idx;
   ```
+
+- [ ] **空分区回收**：tenant 注销后 `DROP TABLE` 分区（比 `DELETE` 干净，
+      直接释放索引空间）
+- [ ] **PG 内存核对**：活跃分区的 HNSW 索引需驻留内存，确认
+      `shared_buffers` + 系统缓存覆盖热分区总索引大小
+
+  ```sql
+  SELECT pg_size_pretty(sum(pg_relation_size(indexrelid)))
+  FROM pg_stat_user_indexes WHERE indexrelname LIKE '%embedding%';
+  ```
+
+### 3.4 换引擎的判断依据（保留，避免过早迁移）
+
+以下条件均未触发前，pgvector 是正确选择：
+
+- [ ] 单 tenant 记忆量 > 500 万条（分区内 HNSW 本身成为瓶颈）
+- [ ] 需要跨 tenant 全局语义检索（分区隔离恰好挡住此能力）
+- [ ] 分区数超 planner 舒适区，且哈希分组后召回不达标
 
 ---
 
-## 阶段 4：生产环境部署（Week 11-12）
+## 阶段 4：生产环境部署（Week 9-10）
 
-### 4.1 基础设施（Week 11）
+### 4.1 基础设施（Week 9）
 
 - [ ] **Kubernetes 集群**（或 Docker Swarm）
   
@@ -537,7 +529,7 @@
   }
   ```
 
-### 4.2 监控告警（Week 11）
+### 4.2 监控告警（Week 9）
 
 - [ ] **Prometheus 指标**
   
@@ -579,7 +571,7 @@
         summary: "P95 延迟 > 5秒"
   ```
 
-### 4.3 灰度发布（Week 12）
+### 4.3 灰度发布（Week 10）
 
 - [ ] **流量切换计划**
   
@@ -603,9 +595,9 @@
 
 ---
 
-## 阶段 4.5：WebChat 补完（Week 13-15，仅当启用 webchat）
+## 阶段 4.5：WebChat 补完（Week 11-13，仅当启用 webchat）
 
-### 4.5.1 出站 Pub/Sub 与 Gateway 拆分（Week 13）
+### 4.5.1 出站 Pub/Sub 与 Gateway 拆分（Week 11）
 
 > 前置：Week 6 的出站接口须已定为 async generator（`OutboundChunk`），否则此处要
 > 重构整条调用链。
@@ -648,7 +640,7 @@
   nexus hard nofile 65535
   ```
 
-### 4.5.2 鉴权与 channel 实现（Week 14）
+### 4.5.2 鉴权与 channel 实现（Week 12）
 
 > Phase 5.1 鉴权不依赖存储层，可提前到 Week 3-4 与数据迁移并行。
 
@@ -659,21 +651,24 @@
   - [ ] `handle_websocket` / `save_upload` / `upload_roots` / `has_media` /
         `_require_ctx`（`chat_api.py` 依赖）
 
-- [ ] **session_key 服务端派生**
+- [ ] **session_key 与 tenant_id 均服务端派生**
 
   ```python
+  def tenant_id_for(self, user_id: str) -> str:
+      return f"chat_{user_id}"       # 分区键，物理隔离的依据
   def session_key_for(self, user_id: str) -> str:
-      return f"chat:{user_id}"      # 来自 token.sub，前端传值一律忽略
+      return f"chat:{user_id}"       # 来自 token.sub，前端传值一律忽略
   ```
 
 - [ ] **WS 握手鉴权**：`?token=` 校验失败即 `close(4401)`，不进消息循环
 - [ ] **REST 端点加 `Depends(require_user)`**：`/api/chat/sessions`、
       `/messages`、`/media`、`/uploads`
-- [ ] **`owner_id` 改为必填参数**（不是 `str | None = None`）
+- [ ] **`tenant_id` 只能来自 token，禁止从请求参数读取**
 
-  - [ ] `list_sessions_for_dashboard`（`session/store.py:642`）
-  - [ ] `list_messages_for_dashboard`
-  - [ ] 可选参数会被漏传，且漏传时静默返回全量数据
+  - [ ] store 实例按请求身份取（`PostgresMemoryStore(url, tenant_id=...)` 已把
+        tenant 绑在实例上，不需给每个查询方法加参数）
+  - [ ] 审查 `bootstrap/chat_api.py` 所有端点，确认无 `tenant_id` 入参
+  - [ ] 一旦可从请求传入，分区隔离即失效
 
 - [ ] **附件归属校验**：`_can_read_media` 之外追加"该文件属于请求者会话"判断
 - [ ] **启动自检**：`host` 非环回且 `auth.enabled = false` 时 `raise ConfigError`
@@ -715,7 +710,7 @@
   idle_timeout_seconds = 300
   ```
 
-### 4.5.3 专项测试与上线（Week 15）
+### 4.5.3 专项测试与上线（Week 13）
 
 - [ ] **越权测试进 CI**
 
@@ -742,6 +737,10 @@
 ---
 
 ## 阶段 5：监控与优化（持续）
+
+> **注意**：基础埋点应在 Week 1-2 就绪（与阶段 1 并行），因为 Week 3-4 的双写
+> 一致性验证依赖 `dual_write_mismatch` 指标 —— 没有埋点只能人工抽查。本阶段是
+> 上线后的持续调优，不是埋点的起点。
 
 ### 5.1 性能调优清单
 
@@ -788,7 +787,7 @@
   
   - [ ] P95 延迟持续 1 周 > 3 秒 → 加 Worker
   - [ ] 数据库 CPU > 80% 持续 3 天 → 升级规格
-  - [ ] 向量检索 QPS > 80 → 加 Qdrant 节点
+  - [ ] 向量检索 QPS > 80 → 加 PG 只读副本 / 调 ef_search
 
 ---
 
