@@ -15,6 +15,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
+    CacheConfig,
     ChannelsConfig,
     Config,
     FitbitIntegrationConfig,
@@ -24,6 +25,7 @@ from agent.config_models import (
     PersonaConfig,
     QQChannelConfig,
     QQGroupConfig,
+    StorageConfig,
     TelegramChannelConfig,
     WiringConfig,
 )
@@ -88,6 +90,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
     memory = _load_memory_config(data)
     peer_agents = _load_peer_agents_config(data)
     fitbit = _load_fitbit_config(data)
+    storage = _load_storage_config(data)
+    cache = _load_cache_config(data)
     wiring = _load_wiring_config(data)
     plugins = _load_plugins_config(data)
     persona_cfg = _as_dict(agent_cfg.get("persona"))
@@ -147,6 +151,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
         ),
         memory=memory,
         fitbit=fitbit,
+        storage=storage,
+        cache=cache,
         tool_search_enabled=bool(
             agent_tools.get("search_enabled", data.get("tool_search_enabled", False))
         ),
@@ -273,6 +279,36 @@ def _load_memory_config(data: dict) -> MemoryConfig:
     )
 
 
+def _load_storage_config(data: dict) -> StorageConfig:
+    storage = _as_dict(data.get("storage"))
+    default = StorageConfig()
+    return StorageConfig(
+        backend=str(storage.get("backend") or default.backend),
+        postgres_url=_resolve(
+            str(storage.get("postgres_url") or default.postgres_url)
+        ),
+        pool_size=int(storage.get("pool_size", default.pool_size)),
+    )
+
+
+def _load_cache_config(data: dict) -> CacheConfig:
+    cache = _as_dict(data.get("cache"))
+    default = CacheConfig()
+    return CacheConfig(
+        enabled=bool(cache.get("enabled", default.enabled)),
+        redis_url=_resolve(str(cache.get("redis_url") or default.redis_url)),
+        context_ttl_seconds=int(
+            cache.get("context_ttl_seconds", default.context_ttl_seconds)
+        ),
+        profile_ttl_seconds=int(
+            cache.get("profile_ttl_seconds", default.profile_ttl_seconds)
+        ),
+        search_ttl_seconds=int(
+            cache.get("search_ttl_seconds", default.search_ttl_seconds)
+        ),
+    )
+
+
 def _load_peer_agents_config(data: dict) -> list[PeerAgentConfig]:
     integrations = _as_dict(data.get("integrations"))
     peer_agents = integrations.get("peer_agents", data.get("peer_agents", []))
@@ -393,6 +429,7 @@ def _load_config_data(path: str | Path) -> dict:
 
 
 __all__ = [
+    "CacheConfig",
     "ChannelsConfig",
     "Config",
     "DEFAULT_SOCKET",
@@ -400,6 +437,7 @@ __all__ = [
     "MemoryEmbeddingConfig",
     "QQChannelConfig",
     "QQGroupConfig",
+    "StorageConfig",
     "TelegramChannelConfig",
     "_validated_timezone",
     "load_config",
