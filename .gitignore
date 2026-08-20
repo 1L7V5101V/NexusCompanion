@@ -59,6 +59,9 @@ qa_error_log_*.txt
 lme_error_log_*.txt
 /config.json.bak
 
+# 本地验证/基准临时目录（脚本正式版在 docs/tasks/phase1-storage/tests/）
+/tmp/
+
 # Local AI assistant docs
 /CLAUDE.md
 /AGENTS.md
