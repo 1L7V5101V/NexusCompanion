@@ -1,0 +1,77 @@
+graph TB
+    %% ============================================================
+    %% 检索热度融合 — vector 源内部读取路径（default_memory 引擎）
+    %% 依据代码：memory2/retriever.py（retrieve:97, _embed_lanes:205,
+    %%   _retrieve_keyword_lane:224, _rrf_merge:130）、
+    %%   memory2/store.py（vector_search:1007 区, _score_embedding_rows:1453,
+    %%   _hotness_score:190）
+    %% 关联图：MemorySystem-MultiLevel（READ 子图 · vector lane）、
+    %%   MemorySystem-Evolution（① 强化 → R_COUNT 供热度读）、
+    %%   PassiveTurnPipeline（① BeforeTurn → ③-a P55 注入）
+    %% ============================================================
+    %% ====== 样式 ======
+    classDef step fill:#90caf9,color:#0d47a1,stroke:#64b5f6,stroke-width:1px
+    classDef gate fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef db fill:#b3e5fc,color:#01579b,stroke:#4fc3f7,stroke-width:1px
+    classDef vtable fill:#b2dfdb,color:#00695c,stroke:#80cbc4,stroke-width:1px
+    classDef mem fill:#ffe082,color:#e65100
+    classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+
+    %% ═══════════════ 入口：仅 Passive 链路触发 ═══════════════
+    %% 本图 step 全部属被动链路（retrieval 仅 Passive BeforeTurn 触发），
+    %% 故 step 色取 passive phase（passPhase 蓝 #90caf9），与三链路主图一致。
+    subgraph ENT["暴露入口 — 仅 Passive 链路触发"]
+        direction TB
+        PREP["ContextStore.prepare<br/>passive_turn.py:678<br/>读取 session history → 组装检索 query"]
+        PREP -->|"msg.content 为 query"| GET["MemoryRetrievalPipeline.retrieve<br/>agent/retrieval/default_pipeline.py:70<br/>AgenticRAG 路由（graph/vector/web）"]
+    end
+    PREP -.->|"skip_memory_retrieval=True<br/>跳过本次检索"| GET
+
+    %% ═══════════════ vector 源内部 ═══════════════
+    subgraph VEC["vector 源内部 — default_memory（memory2）"]
+        direction TB
+        VEC_ENGINE["Retriever.retrieve<br/>memory2/retriever.py:97<br/>主 query + aux_queries 去重"] --> EMBED["① Embed<br/>_embed_lanes（retriever.py:205）<br/>query_texts 并行 embedding<br/>embed 失败 → 该 lane 跳过"]
+        EMBED -->|"query 向量"| KNN["② 向量 lane<br/>vector_search_batch / vector_search<br/>store.py:1007 区<br/>vec_items KNN 最近邻 → 语义相似度"]
+        EMBED -.->|"query 原文（仅原始 query）"| KW["② 关键词 lane<br/>_retrieve_keyword_lane（retriever.py:224）<br/>FTS5 BM25（3+ token）<br/>→ 保底 OR-LIKE（keyword_search_summary）"]
+        KNN --> HOT["③ 热度分<br/>_hotness_score（store.py:190）<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age/半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)<br/>实时计算，不落库"]
+        HOT --> FUSE
+        KNN --> D1{"语义相似度<br/>低于 score_threshold?"}
+        D1 -->|"是 → 丢弃"| DROP["continue: 不进入候选"]
+        D1 -->|"否"| FUSE
+        FUSE["③ 融合 final<br/>final = (1−α)×语义分 + α×热度分<br/>α = 0.20（Retriever hotness_alpha 默认）<br/>按 final 排序 → top_k 截断"] --> RRF["④ 内部 RRF<br/>_rrf_merge(vector, keyword)<br/>retriever.py:130 → top_n"]
+        KW --> RRF
+        FUSE --> RRF
+        RRF -->|"vector 源候选输出"| OUT
+    end
+    GET -->|"router 选中 vector 源"| VEC_ENGINE
+
+    %% ═══════════════ 检索源（只读） ═══════════════
+    KNN -.->|"读: KNN → vec_items（虚拟表 · vec0）"| VEC_T["向量最近邻 KNN 检索表<br/>vec_items（虚拟表 · vec0）<br/>rowid 关联 memory_items<br/>维度 = embedding 输出维"]
+    KW -.->|"读: BM25 → memory_items_fts（虚拟表 · FTS5）"| FTS_T["BM25 关键词全文检索表<br/>memory_items_fts（虚拟表 · FTS5）<br/>按 summary 关键词搜记忆"]
+    HOT -.->|"读: memory_items<br>reinforcement / emotional_weight"| META_T["memory_items（主表）<br/>reinforcement / emotional_weight<br/>updated_at 列<br/>→ 热度分实时输入"]
+
+    %% ═══════════════ 注入 prompt ═══════════════
+    subgraph INJ["注入 Prompt"]
+        direction TB
+        OUT["vector 源候选"] --> MB["MemoryBlock 融合结果<br/>单源直出 / 多源 RRF<br/>（AgenticRAG Evaluator 层）"]
+        MB --> INJB["build_injection_block<br/>强制约束 / 流程规范 / 相关历史<br/>字符预算 + 置信度标注"]
+        INJB --> P55["P55 MemoryBlockPromptBlock<br/>（priority 55）<br/>→ context_frame 注入 system prompt"]
+        P55 --> LLM["LLM 作答"]
+    end
+
+    %% 跨图引用
+    P55 -.->|"注入时机 = PassiveTurnPipeline<br/>③-a PromptRender"| PT_P55["PassiveTurnPipeline.mermaid<br/>P55 MemoryBlockPromptBlock"]
+    META_T -.->|"强化产物来源<br/>Evolution ① R_COUNT"| R_COUNT_REF["MemorySystem-Evolution.mermaid<br/>① 强化 R_COUNT"]
+
+    %% ====== 样式应用 ======
+    class PREP,GET,VEC_ENGINE,EMBED,KNN,KW step
+    class HOT,FUSE,RRF,INJB step
+    class D1 gate
+    class DROP async
+    class OUT,MB,LLM step
+    class P55 final
+    class VEC_T,FTS_T vtable
+    class META_T db
+    class R_COUNT_REF mem
+    class PT_P55 async

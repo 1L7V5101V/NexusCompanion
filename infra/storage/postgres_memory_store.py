@@ -128,6 +128,9 @@ class PostgresMemoryStore:
         self._vec_dim = vec_dim
         self._lock = threading.RLock()
         self._closed = False
+        # PG 无 FTS5；镜像 SQLite 的 _fts_available 让 retriever 守卫短路到
+        # keyword_search_summary（PG store 已实现，语义等价于 SQLite 基线 OR-LIKE）
+        self._fts_available = False
         self._partitions_known: set[str] = set()
         # schema 由 alembic 管理；构造只开连接 + 注册 vector 适配器
         self._conn = psycopg.connect(self._url)

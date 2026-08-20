@@ -21,6 +21,7 @@ __all__ = [
     "load_json",
     "save_json",
     "atomic_save_json",
+    "atomic_write_text",
 ]
 
 
@@ -127,6 +128,46 @@ def atomic_save_json(
             "[%s] 原子替换失败: tmp=%s target=%s err=%s", domain, tmp, path, e
         )
         # 尝试清理临时文件
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+
+
+def atomic_write_text(
+    path: Path,
+    content: str,
+    *,
+    domain: str = "json_store",
+) -> None:
+    """
+    原子写纯文本：先写到 .tmp 再 rename，避免写到一半崩溃损坏文件。
+
+    Args:
+        path: 目标文件路径，父目录不存在时自动创建。
+        content: 文本内容。
+        domain: 日志标识域。
+    """
+    # 1. 确保父目录存在
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 2. 写到临时文件
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+    except Exception as e:
+        logger.warning("[%s] 原子写临时文件失败: path=%s err=%s", domain, tmp, e)
+        raise
+
+    # 3. 原子替换
+    try:
+        tmp.replace(path)
+        logger.debug("[%s] 原子写完成 path=%s", domain, path)
+    except Exception as e:
+        logger.warning(
+            "[%s] 原子替换失败: tmp=%s target=%s err=%s", domain, tmp, path, e
+        )
         try:
             tmp.unlink(missing_ok=True)
         except Exception:

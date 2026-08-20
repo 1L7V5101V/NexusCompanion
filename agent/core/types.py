@@ -118,6 +118,9 @@ class ReasonerResult:
     thinking: str | None = None
     streamed: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 日志系统注入字段
+    initial_messages: list[dict[str, Any]] = field(default_factory=list)
+    tools_schema: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

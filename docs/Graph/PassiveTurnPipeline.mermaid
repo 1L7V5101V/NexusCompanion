@@ -1,0 +1,250 @@
+%%{init: {'flowchart': {'padding': 8}}}%%
+%%{init: {'flowchart': {'htmlLabels': true, 'nodeSpacing': 50, 'rankSpacing': 20}}}%%
+graph TB
+    %% ====== 样式 ======
+    classDef passPhase fill:#90caf9,color:#0d47a1
+    classDef subphase fill:#bbdefb,color:#0d47a1
+    classDef module fill:#ffffff,color:#1565c0,stroke:#90caf9,stroke-width:1px
+    classDef decision fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef mem fill:#ffe082,color:#e65100
+    classDef stream fill:#f5f5f5,color:#d0d0d0,stroke:#e0e0e0,stroke-width:1px,stroke-dasharray:5 3
+    classDef final fill:#a5d6a7,color:#1b5e20,stroke:#66bb6a,stroke-width:2px
+
+    subgraph INPUT[消息入口]
+        INMSG[InboundMessage<br/>channel + chatId + content + media] --> PASSIVE
+    end
+
+    PASSIVE[PassiveTurnPipeline.run] --> P1
+
+    %% ──── ① BeforeTurn ────
+    subgraph P1[① BeforeTurn]
+        direction TB
+        %% InboundMessage.content = 用户文字输入, 即时作为 query 检索记忆
+        %% media = 图片/文件(不参与检索)
+        %% session.get_history = 之前所有轮次的消息(当前消息尚未写入)
+        P1_1[AcquireSession<br/>session_manager.get_or_create] --> P1_2
+        P1_2{MemoryContextGuard<br/>pending 堆积 >= threshold?}
+        P1_2 -->|正常, pending < threshold| P1_3_A
+        P1_2 -->|超过| P1_2_RETRY[尝试 trigger_memory_consolidation]
+        P1_2_RETRY{Consolidation<br/>成功?}
+        P1_2_RETRY -->|成功, 放行| P1_3_A
+        P1_2_RETRY -->|失败 / 超时 / 无 consolidator| P1_2_ABORT[返回 abort_reply<br/>提示先完成记忆合并]
+        subgraph P1_3_A[ContextBundle 组装 — ContextStore.prepare]
+            direction TB
+            P1_3[ContextStore.prepare<br/>传入 state.msg]
+            P1_3 --> CTX_H["session.get_history()<br/>当前 session 的全部消息<br/>格式: list[dict]"]
+            P1_3 -.->|传入 msg.content| CTX_R[MemoryRetrievalPipeline.retrieve<br/>msg.content 为 query<br/>检索 AgenticRAG（向量 / 图谱）]
+            P1_3 -.->|传入 msg.content| CTX_S[正则扫描 msg.content<br/>收集 $skill_name 提及]
+            CTX_H --> CTX_M[support.to_history_messages<br/>转为 HistoryMessage 格式<br/>字段: role / content / media]
+            CTX_M -->|history| CTX_DONE
+            CTX_R -->|memory_blocks| CTX_DONE
+            CTX_S -->|skill_mentions| CTX_DONE
+            CTX_DONE[ContextBundle<br/>history + memory_blocks + skill_mentions]
+        end
+        CTX_DONE --> P1_4
+        P1_4[_BuildBeforeTurnCtxModule<br/>将 ContextBundle 打包成<br/>BeforeTurnCtx<br/>含 history + skill_names + memory_block] --> P1_5
+        P1_5[Emit BeforeTurnCtx<br/>EventBus.gate → 插件可修改] --> P1_6
+        P1_6[_CollectBeforeTurnExportSlotsModule<br/>收集插件 extra_hints<br/>检查是否有 abort_reply] --> P1_DONE
+        P1_DONE[输出 BeforeTurnCtx]
+        P1_2_ABORT --> P1_ABORT
+    end
+
+    P1_ABORT[返回 abort_reply → 用户]
+    P1_ABORT --->|绕过 ②~⑤| MBO
+    P1_DONE --> P2
+
+    %% ──── ② BeforeReasoning ────
+    subgraph P2[② BeforeReasoning]
+        direction TB
+        P2_1[_SyncToolContextModule<br/>写入 channel / chat_id / ts 到 ToolRegistry<br/>→ 后续工具执行时知道发到哪个频道、回给谁] --> P2_2
+        P2_2[_BuildBeforeReasoningCtxModule<br/>BeforeTurnCtx → BeforeReasoningCtx<br/>传递 skill_names + memory_block + hints<br/>→ 给 Reasoner 准备好输入] --> P2_3
+        P2_3[_EmitBeforeReasoningCtxModule<br/>EventBus.gate → 插件可修改上下文<br/>插件可设 abort 阻断 turn<br/>→ 在推理前给插件最后的干预机会] --> P2_4
+        P2_4["_PromptWarmupModule<br/>调用 context.render(history=[])<br/>预渲染静态 prompt block 到缓存<br/>→ 减少首次 LLM 调用的等待时间"] --> P2_DONE
+        P2_DONE[输出 BeforeReasoningCtx<br/>→ 进入 Reasoner]
+    end
+
+    P2_DONE --> P3_A1
+
+    %% ──── ③ Reasoner.run_turn ────
+    subgraph P3[③ Reasoner.run_turn — Think-Act-Observe 循环]
+        direction TB
+
+        %% history_since_consolidation = get_history_since_consolidated(session, memory_window)
+        %% 从 session.last_consolidated 开始取，最多 memory_window 条
+        %% 异常时重试: 若 LLM.chat 抛 ContextLengthError/ContentSafetyError
+        %% run_turn 内部用下一计划重试（缩小 history_window + 裁剪分区）
+        %% context_retry 记录实际使用的计划供 P4 使用
+
+        %% ③-a PromptRender
+        subgraph P3_A1[③-a PromptRender]
+            direction TB
+            PR_1["_BuildPromptRenderCtxModule<br/>把 BeforeReasoning 转成<br/>PromptRenderCtx 格式<br/>→给渲染器提供标准输入"] --> PR_2
+            PR_2["Emit PromptRenderCtx<br/>EventBus.gate → plugins 可追加<br/>system_sections_top / bottom<br/>→ 让插件在渲染前修改上下文"] --> PR_3
+            PR_3[SystemPromptBuilder.build] --> PR_3_S
+            PR_3_S["按优先级渲染 PromptBlock<br/>P10 → P100<br/>→ 组装 system_prompt + context_frame"] --> BLK_10
+            BLK_10["P10 IdentityPromptBlock<br/>build_agent_static_identity<br/>(NEXUS_IDENTITY+PERSONALITY_RULES)"] --> BLK_15 
+            %% agent/persona.py
+            BLK_15["P15 BehaviorRulesPromptBlock<br/>build_agent_behavior_rules_prompt(workspace)<br/>行为约束"] --> BLK_20 
+            %% prompts/agent.py
+            BLK_20[P20 SkillsCatalogPromptBlock<br/>skills.build_skills_summary<br/>注册 skill 的目录] --> BLK_30
+            BLK_30[P30 SelfModelPromptBlock<br/>SELF.md<br/>Nexus的自我认知] --> BLK_35
+            BLK_35[P35 LongTermMemoryPromptBlock<br/>MEMORY.md<br/>对用户的长期记忆] --> BLK_40
+            BLK_40[P40 SessionContextPromptBlock<br/>channel + chat_id] --> BLK_45
+            BLK_45[P45 RecentContextPromptBlock<br/>RECENT_CONTEXT.md<br/>压缩过的 consolidation] --> BLK_50
+            BLK_50["P50 ActiveSkillsPromptBlock<br/>always-on + @mentions<br/>加载技能的完整定义(描述 + 工具 schemas)"] --> BLK_55
+            BLK_55[P55 MemoryBlockPromptBlock<br/>检索结果 放入 context_frame] --> BLK_SPLIT
+            BLK_SPLIT{分拆}
+            BLK_SPLIT --> PR_SYS["Identity + Rules + Skills Self + 长期记忆<br/>(P10~P35)"]
+            BLK_SPLIT --> PR_CTX["最近上下文 + ActiveSkills + Memory block<br/> (P45~P55)"]
+            PR_SYS -->|system_prompt| PR_4
+            PR_CTX -->|context_frame| PR_4
+            PR_4["MessageEnvelopeBuilder.build<br/>拼接 system_prompt + history_since_consolidation<br/>+ context_frame + 用户消息(含 media)<br/>→ 生成最终 messages 数组送 LLM"] --> PR_DONE
+            PR_DONE["PromptRenderResult<br/>messages 数组<br/>→ 输出渲染完成的 prompt"]
+        end
+
+        PR_DONE --> P3_B1
+
+        %% ③-b Tool Loop
+        subgraph P3_B1[③-b Think-Act-Observe 循环]
+            direction TB
+            TL_BS["BeforeStep<br/>token 估算 + 插件注入 hints<br/>EventBus.gate<br/>→ 在 LLM 调用前给插件干预机会"] --> TL_LLM
+            TL_LLM["LLM.chat<br/>messages + visible tool schemas<br/>→ 驱动 LLM 决策：直接回复或调用工具"] --> TL_TC
+            TL_TC{有 tool_calls?}
+            TL_TC -->|No| TL_DONE_N[返回 ReasonerResult]
+            TL_TC -->|Yes| TL_ITER[遍历每个 tool_call]
+            TL_ITER --> TL_VIS{工具已解锁?}
+
+
+
+            TL_VIS -->|已解锁| TL_EXEC["ToolExecutor.run<br/>通过 ToolRegistry.execute 实际调用<br/>+ pre/post hooks trace<br/>→ 执行工具并记录审计跟踪"]
+            TL_VIS -->|未解锁| TL_SEARCH[引导 LLM 用 tool_search<br/>申请解锁新工具]
+            TL_SEARCH --> TL_LLM
+            TL_EXEC --> TL_RES["append_tool_result<br/>将工具返回结果追加到 messages<br/>→ 让 LLM 看到工具输出继续推理"]
+            TL_RES --> TL_AS["AfterStep<br/>检查 early_stop（插件可中断循环）<br/>EventBus.fanout 通知观察者<br/>→ 耗尽token / 死循环检测时提前收尾"]
+            TL_AS -->|iteration < max| TL_LLM
+            TL_AS -->|iteration = max<br/>或 early_stop| TL_SUM["_summarize_incomplete_progress<br/>LLM 生成收尾总结 (固定文案兜底)<br/>→ 作为最终回复发给用户"]
+            TL_SUM --> TL_DONE
+            TL_DONE_N --> TL_DONE
+            TL_DONE[输出 ReasonerResult]
+
+            %% 实时推送到 Channel 的旁路
+            TL_LLM -.->|StreamDeltaReady<br/>文字流式输出| CH_OUT[推送实时内容<br/>到用户]
+            TL_EXEC -.->|ToolCallStarted<br/>工具名 + 参数| CH_OUT
+            TL_EXEC -.->|ToolCallCompleted<br/>状态 + 结果预览| CH_OUT
+        end
+
+        TL_DONE --> P3_OUT
+        P3_OUT[↓ 数据交接<br/>reply = 最终 LLM 回复/收尾总结<br/>tool_chain = 工具调用链<br/>thinking = 返回最终文本之前的内部推理过程<br/>交 AfterReasoning 处理]
+
+        CH_OUT[实时输出 → Channel<br/>EventBus → TelegramChannel<br/>单条 live message 原地编辑]
+    end
+
+    P3_OUT --> P4
+
+    %% ──── ④ AfterReasoning ────
+    subgraph P4[④ AfterReasoning]
+        direction TB
+        P4_1["_BuildAfterReasoningCtxModule<br/>解析 P3 产出 → AfterReasoningCtx<br/>含 reply / tool_chain / thinking /<br/>context_retry / outbound_metadata<br/>→ 将推理结果转为结构化上下文，供后续持久化使用"] --> P4_2
+        P4_2["_EmitAfterReasoningCtxModule<br/>EventBus.gate → 插件可修改 ctx<br/>→ 让插件在持久化前干预推理结果"] --> P4_3
+        P4_3["_PersistUserMessageModule<br/>将 InboundMessage.content + media<br/>写入 TurnState.session.add_message('user')<br/>若有 context_retry.llm_user_content<br/>（重试时LLM实际看到的版本）也一并记录<br/>→ 将用户本轮输入追加到会话历史"] --> P4_4
+        P4_4["_PersistAssistantMessageModule<br/>将 reply + tools_used + tool_chain<br/>写入 TurnState.session.add_message('assistant')<br/>→ 将助手回复及调用链追加到会话历史"] --> P4_5
+        P4_5["_UpdateSessionMetadataModule<br/>更新 TurnState.session 运行时元数据<br/>tools_used + tool_chain<br/>→ 更新 session 的运行时元数据"] --> P4_6
+        P4_6["_AppendMessagesModule<br/>session_manager.append_messages<br/>将 TurnState.session 中新消息持久化到数据库"] --> P4_7
+        P4_7["_BuildOutboundMessageModule<br/>构建 OutboundMessage 对象<br/>reply + thinking + media + metadata<br/>→ 组装最终发往用户的消息"] --> P4_DONE
+        P4_DONE[OutboundMessage 已构建<br/>↓ 交 P5 派发]
+    end
+
+    P4_DONE --> P5
+
+    %% ──── ⑤ AfterTurn ────
+    subgraph P5[⑤ AfterTurn]
+        direction TB
+        P5_1["_BuildTurnWorkModule + _CollectExtras<br/>计算 token 预算 + react 统计<br/>+ 收集插件 extra 标记<br/>→ 为 TurnCommitted 准备各项元数据"] --> P5_2
+        P5_2["_BuildTurnCommittedModule<br/>构建 TurnCommitted 事件<br/>含完整 turn 快照 + tool_chain + budget<br/>→ 生成标准 turn 事件供消费者处理"] --> P5_3
+        P5_3["_FanoutTurnCommittedModule<br/>EventBus.fanout 发出 TurnCommitted 事件<br/>→ 通知 ASYNC 旁路异步处理"] --> P5_4
+        P5_4["_LogBudgetModule + _LogTurnModule<br/>记录 token 预算 + react 统计 + turn 数据<br/>SQLite RoutingTurnLogger<br/>→ 将 turn 数据和统计持久化到 SQLite"] --> P5_5
+        P5_5["_BuildAfterTurnCtxModule + 收集 + Fanout<br/>构建 AfterTurnCtx 快照 + 收集 telemetry<br/>EventBus.fanout 通知插件<br/>→ 让插件在 turn 结束时做收尾响应"] --> P5_6
+        P5_6["_DispatchOutboundModule<br/>派发出站消息到 MessageBus<br/>BusOutboundPort.publish<br/>→ 将消息发送到 channel 层给用户"] --> P5_DONE
+        P5_DONE[消息已出站]
+    end
+
+    P5_DONE --> MBO[MBO MessageBus outbound]
+
+    %% ──── 异步文件写入（旁路） ────
+    subgraph ASYNC[异步文件写入 — MarkdownMemoryMaintenance.consolidate]
+        direction TB
+        %% pending = total消息数 - last_consolidated(最后归档位置)
+        %% P1_2 用高 threshold 做安全阀(阻塞 turn)
+        %% 这里用低 threshold 做正常归档(不阻塞, 跳过即可)
+
+        ASYNC_SUB[on_turn_committed<br/>收到 TurnCommitted 事件] --> ASYNC_SKIP
+        ASYNC_SKIP{skip_post_memory<br/>标记?}
+        ASYNC_SKIP -->|是| ASYNC_DROP[丢弃<br/>不做任何写入]
+        ASYNC_SKIP -->|否| ASYNC_ENQ[enqueue 异步队列<br/>按 session_key 加锁串行]
+        ASYNC_ENQ --> ASYNC_CONS{_should_consolidate?<br/>pending >= 低threshold?}
+        ASYNC_CONS -->|否, 仅刷新| ASYNC_REFRESH[refresh_recent_turns<br/>仅更新 RECENT_CONTEXT.md]
+        ASYNC_CONS -->|是, 合并<br/>调用 LLM 提取| ASYNC_H
+        ASYNC_H[append_history_once<br/>→ HISTORY.md] --> ASYNC_P
+        ASYNC_P[append_pending_once<br/>→ PENDING.md] --> ASYNC_J
+        ASYNC_J[append_journal<br/>→ journal/YYYY-MM-DD.md] --> ASYNC_R
+        ASYNC_R[write_recent_context<br/>→ RECENT_CONTEXT.md]
+
+        %% MemoryOptimizer 是独立定时任务，非本流程一部分
+    end
+
+    P5_3 -.->|TurnCommitted event| ASYNC_SUB
+
+    %% ──── 异步后处理 — 双引擎记忆消费者（TurnCommitted 其他订阅方） ────
+    %% ──── 异步后处理 — default_memory 引擎消费者 ────
+    subgraph ASYNC_DE[异步后处理 — default_memory 引擎<br/>→ 写 L2.a memory2.db]
+        direction TB
+        DE_SUB["default_memory._on_turn_committed<br/>订阅 TurnCommitted"] --> DE_ENQ["skip_post_memory? 否 →<br/>enqueue TurnIngested 事件"]
+        DE_ENQ --> DE_WORKER["PostResponseMemoryWorker<br/>light model 否定检测<br/>→ supersede memory2 旧条目"]
+        DE_WORKER --> DE_MEM2["写 memory2.db（L2A）<br/>invalidation supersede"]
+    end
+
+    %% ──── 异步后处理 — rachael 引擎消费者 ────
+    subgraph ASYNC_RA[异步后处理 — rachael 引擎<br/>→ 写 L2.b RachaelStore]
+        direction TB
+        RA_SUB["rachael._on_turn_committed<br/>订阅 TurnCommitted"] --> RA_WRITE["embed → 节点/边/激活"]
+        RA_WRITE --> RA_STORE["写 RachaelStore（L2B 图谱）"]
+    end
+
+    P5_3 -.->|TurnCommitted event| DE_SUB
+    P5_3 -.->|TurnCommitted event| RA_SUB
+
+    %% ──── 记忆检索系统 ────
+    subgraph MEM[记忆检索 — MemoryRetrievalPipeline]
+        direction TB
+        MEM_R[RetrievalRequest<br/>query + top_k] --> MEM_ROUTER{引擎模式}
+        MEM_ROUTER -->|单引擎| MEM_SINGLE[engine.query<br/>直接检索]
+        MEM_ROUTER -->|AgenticRAG<br/>多引擎| MEM_RAG[QueryPlanner 路由<br/>选择策略+源]
+        MEM_RAG --> MEM_SB[RetrievalSandbox<br/>并行检索 + RRF 融合]
+        MEM_SB --> MEM_EVAL[Evaluator<br/>LLM 评分 + 重写 ≤ 3次]
+        MEM_SINGLE --> MEM_RESULT[MemoryBlock<br/>检索结果文本]
+        MEM_EVAL --> MEM_RESULT
+    end
+
+    CTX_R -.->|调用| MEM_R
+
+    %% ====== 样式 ======
+    class P1,P2,P3,P4,P5 passPhase
+    class P1_3_A subphase
+    class P1_1,P1_4,P1_6,P2_1,P2_2,P2_4,PR_1,PR_4,P4_1,P4_3,P4_4,P4_5,P4_6,P4_7,P4_8,P5_1,P5_2,P5_4,P5_6,CTX_H,CTX_M,CTX_R,CTX_S,CTX_DONE,TL_EXEC,TL_RES,TL_SEARCH,TL_SUM,PR_3_S,BLK_10,BLK_15,BLK_20,BLK_30,BLK_35,BLK_40,BLK_45,BLK_50,BLK_55,PR_SYS,PR_CTX,TL_DONE_N,TL_DONE,P3_OUT,ASYNC_ENQ,ASYNC_REFRESH,ASYNC_H,ASYNC_P,ASYNC_J,ASYNC_R module
+    class P1_2,P1_2_RETRY,P1_2_ABORT,TL_TC,TL_VIS,BLK_SPLIT,ASYNC_SKIP,ASYNC_CONS,ASYNC_DROP decision
+    class P5_3,P1_5,P2_3,PR_2,TL_BS,TL_AS,P4_2,P5_5 event
+    class CH_OUT stream
+    class ASYNC_SUB,ASYNC_ENQ,ASYNC_H,ASYNC_P,ASYNC_J,ASYNC_R,ASYNC_REFRESH async
+    class DE_SUB,DE_ENQ,DE_WORKER,DE_MEM2,RA_SUB,RA_WRITE,RA_STORE async
+    style ASYNC_DE fill:#fff7e6,stroke:#ffb74d
+    style ASYNC_RA fill:#e8eaf6,stroke:#9fa8da
+    class P1_ABORT module
+    class MEM_R,MEM_ROUTER,MEM_SINGLE,MEM_RAG,MEM_SB,MEM_EVAL,MEM_RESULT mem
+    class MBO final
+
+    %% ====== 主流程线加粗 ======
+    linkStyle default stroke-width:2px
+    linkStyle 59,58,57 stroke:#e0e0e0,stroke-width:1px
+

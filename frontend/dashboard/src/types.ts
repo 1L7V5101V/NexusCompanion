@@ -1,5 +1,5 @@
 export type SortOrder = "asc" | "desc";
-export type BuiltinView = "sessions" | "proactive";
+export type BuiltinView = "sessions" | "proactive" | "logs";
 export type ViewMode = BuiltinView | `plugin:${string}`;
 
 export interface PageResult<T> {
@@ -58,6 +58,22 @@ export interface ProactiveTick {
   interesting_ids?: string[];
   discarded_ids?: string[];
   cited_ids?: string[];
+}
+
+export interface LogRow {
+  id: number;
+  session_key: string;
+  channel: string | null;
+  chat_id: string | null;
+  turn_type: string;
+  timestamp: string;
+  llm_model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_hit_tokens: number | null;
+  turn_duration_ms: number | null;
+  error: string | null;
+  created_at: string;
 }
 
 export interface ProactiveStep {

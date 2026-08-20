@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from agent.core.types import RetrievalTrace
 from agent.looping.ports import MemoryServices
@@ -44,17 +44,25 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
     不在 ToolRegistry 中，LLM 不可见。所有中间结果留在 Sandbox 内。
     """
 
+
+
     def __init__(
         self,
         memory: MemoryServices,
         light_provider: LLMProvider | None = None,
         web_search_fn: Callable[[str], Awaitable[str]] | None = None,
+        light_model: str = "",
+        router_mode: Literal["rule", "llm"] = "rule",
     ) -> None:
         self._memory = memory
         self._light_provider = light_provider
 
-        self._planner = QueryPlanner(light_provider=light_provider)
-        self._evaluator = Evaluator(light_provider=light_provider)
+        self._planner = QueryPlanner(
+            light_provider=light_provider,
+            light_model=light_model,
+            router_mode=router_mode,
+        )
+        self._evaluator = Evaluator(light_provider=light_provider, light_model=light_model)
         self._sandbox = RetrievalSandbox(
             rachael_engine=memory.engines.get("rachael"),
             vector_engine=memory.engines.get("default"),
@@ -68,8 +76,9 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
         if not self._memory.engines:
             return RetrievalResult(block="", trace=None)
 
-        # ── 1. 后向兼容: 单引擎 + 无 light_provider → 旧行为 ──
-        if len(self._memory.engines) == 1 and self._light_provider is None:
+        # ── 1. 单引擎 → 旧行为（直接调 engine.query()，跳过 Agentic RAG 管线） ──
+        #     双引擎（如 "default,rachael"）才走完整的 Agentic RAG 管线。
+        if len(self._memory.engines) == 1:
             engine = next(iter(self._memory.engines.values()))
             try:
                 result = await engine.query(self._build_query(request))
@@ -123,9 +132,22 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
             if not block:
                 break
 
-            # Evaluator 质检
+            # 日志：本轮检索内容（截取前 300 字，方便判断质检结果）
+            _block_preview = block[:300].replace("\n", " ")
+            logger.info(
+                "检索内容 (第%d轮, %s): %s",
+                retry + 1,
+                plan.sources,
+                _block_preview + ("..." if len(block) > 300 else ""),
+            )
+
+            # Evaluator 质检（传入 Router 决策，供按场景调整严格度）
             if self._light_provider is not None:
-                eval_result = await self._evaluator.evaluate(query, block)
+                eval_result = await self._evaluator.evaluate(
+                    query, block,
+                    router_sources=plan.sources,
+                    router_reason=plan.reason,
+                )
                 if eval_result.verified:
                     logger.info("检索通过质检 (第%d轮)", retry + 1)
                     return RetrievalResult(block=block, verified=True)

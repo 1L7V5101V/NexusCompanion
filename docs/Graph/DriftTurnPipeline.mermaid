@@ -1,0 +1,277 @@
+%%{init: {"flowchart": {"padding": 8, "htmlLabels": true, "nodeSpacing": 10, "rankSpacing": 50}}}%%
+
+graph TB
+    %% ====== 样式 ======
+    classDef driftPhase fill:#a5d6a7,color:#1b5e20
+    classDef subphase fill:#c8e6c9,color:#1b5e20
+    classDef module fill:#ffffff,color:#2e7d32,stroke:#a5d6a7,stroke-width:1px
+    classDef decision fill:#fff9c4,color:#f57f17,stroke:#ffe082,stroke-width:1px
+    classDef event fill:#ce93d8,color:#4a148c,stroke:#ce93d8,stroke-width:1px
+    classDef skip fill:#e0e0e0,color:#616161,stroke:#9e9e9e,stroke-width:2px,stroke-dasharray:5 3
+    classDef file fill:#ffffff,color:#bf360c,stroke:#ffcc80,stroke-width:1px
+    classDef async fill:#e0e0e0,color:#616161,stroke:#bdbdbd,stroke-width:1px,stroke-dasharray:5 3
+    classDef mem fill:#ffe082,color:#e65100
+    classDef proPhase fill:#f8bbd0,color:#880e4f
+    classDef driftFile fill:#e8f5e9,color:#1b5e20,stroke:#a5d6a7,stroke-width:1px
+
+    %% ═══════════════════════════════════════════
+    %% 框架调度层 — 从 Proactive Fetch 进入
+    %% ═══════════════════════════════════════════
+    subgraph L0[触发 — Proactive Fetch 路由选择]
+        direction TB
+        L_GW{"Gateway 已返回<br/>alerts + content_meta + context<br/>全部为空?<br/>且 context_as_fallback_open = False?"}
+        L_GW -->|"有 alerts / content<br/>或 fallback_open"| L_PRO["state.route = proactive<br/>→ Proactive 正常链路"]
+        L_GW -->|"皆空, 非 fallback"| L_DRIFT_OK{drift_enabled?<br/>config.drift_enabled}
+        L_DRIFT_OK -->|"否"| L_SKIP["state.route = skip"]
+        L_DRIFT_OK -->|"是"| L_INTERVAL{"drift_min_interval_hours<br/>已过冷却?"}
+        L_INTERVAL -->|"否（<min_interval）"| L_SKIP
+        L_INTERVAL -->|"上次 drift 无 / min=0<br/>或已超过间隔"| L_ENTER["state.route = drift<br/>→ DriftTurnPipeline.run()"]
+    end
+
+    L_PRO -.->|"alerts/content → Prepare+Judge"| PRO_PHASE[Proactive Phase 3~4<br/>Prepare + Judge<br/>（LLM 多轮工具分类）]
+    PRO_PHASE -.-> PRO_PHASE2[Proactive Phase 5~6<br/>Resolve + Deliver]
+    L_SKIP -.->|"skip → 直接结束"| PRO_PERSIST[Proactive Phase 7<br/>Persist tick_log<br/>+ EventBus]
+    L_ENTER --> BEGIN
+
+    BEGIN["AgentTickContext 初始化<br/>tick_id / session_key / now_utc<br/>llm_fn 已装配"] --> PHASE1
+
+    %% ═══════════════════════════════════════════
+    %% Phase 1: Scan
+    %% ═══════════════════════════════════════════
+    subgraph PHASE1[Phase 1 — Scan 扫描可用 Skills]
+        direction TB
+        S_SCAN["DriftStateStore.scan_skills()"] --> S_ROOTS
+        S_ROOTS["遍历 skill roots:<br/>① skills_dir（workspace/drift/skills/）<br/>② builtin_skills_dir（可选）<br/>③ plugin_skill_roots（插件贡献）"] --> S_DIR
+        S_DIR["对每个 skill_dir:<br/>读取 SKILL.md → 解析 frontmatter<br/>→ SkillMeta(name/description/requires_mcp)"] --> S_DEDUP
+        S_DEDUP["去重: seen_names set<br/>同名只保留第一个<br/>按 last_run_at 降序排列"] --> S_FILTER
+        S_FILTER{"MCP 依赖检查:<br/>shared_tools.get_mcp_server_names()<br/>skill.requires_mcp ⊆ connected_servers?"}
+        S_FILTER -->|"满足/无依赖"| S_ADD["加入可用列表"]
+        S_FILTER -->|"有依赖未连接"| S_DROP["丢弃该 skill"]
+        S_ADD --> S_EMPTY{结果为空?}
+        S_DROP --> S_EMPTY
+        S_EMPTY -->|"空"| S_EXIT["return False<br/>→ Proactive skip"]
+        S_EMPTY -->|"有可用 skills"| S_OK["return skills list"]
+    end
+
+    S_OK --> PHASE2
+
+
+    %% ═══════════════════════════════════════════
+    %% Phase 2: Prepare
+    %% ═══════════════════════════════════════════
+    subgraph PHASE2[Phase 2 — Prepare 准备]
+        direction TB
+
+        P_FLAGS["设置 ctx 标志位(DriftTurnPipeline和ProactiveFlowRuntime间的通信协议):<br/>drift_entered = True<br/>drift_finished = False<br/>drift_message_staged = False<br/>drift_message_sent = False<br/>drift_selected_skill = ''<br/>drift_finish_status = ''<br/>drift_finish_briefing = ''"] --> P_TOOLS
+
+        P_TOOLS["build_drift_tool_registry(ctx, deps)<br/>→ ToolRegistry<br/>注册所有 Drift 可用工具<br/>（select_skill / idle_drift / 文件工具<br/>/ recall_memory / web / shell<br/>/ message_push / finish_drift）"] --> P_SYS
+
+        P_SYS["_build_system_prompt()"] --> P_SYS_1["NEXUS_IDENTITY"]
+        P_SYS_1 --> P_SYS_2["PERSONALITY_RULES"]
+        P_SYS_2 --> P_SYS_3["Drift 模式说明prompt:<br/>空闲时间自主决定做一件小事<br/>不是服务用户请求<br/>也不是补跑历史任务"]
+        P_SYS_3 --> P_SYS_4["状态语义:<br/>completed / paused 两种收尾<br/>paused 必须写 scratchpad_update"]
+        P_SYS_4 --> P_SYS_5["异步消息语义:<br/>message_push = fire-and-forget<br/>不维护等待回复状态"]
+        P_SYS_5 --> P_SYS_6["自我定位:<br/>选择 skill 前先确认上一轮进展<br/>drift_self_state 是过去的倾向<br/>不是待办指令"]
+        P_SYS_6 --> P_SYS_7["prompt 约束 5 条（代码硬约束也已实现）:<br/>① select / idle 二选一→ schema 过滤 + required<br/>② 只读 SKILL.md → 仅 prompt 建议<br/>③ message_push 最多一次→ push 后 schema 收窄<br/>④ 结束前 finish_drift→ wrap_up 强制收尾<br/>⑤ status 限 completed/paused → finish_drift 校验 enum"]
+        P_SYS_7 --> P_SYS_8["可用工具列表<br/>（供 LLM 参考，最终可用范围由 schema 控制）:<br/>select_skill, idle_drift, read_file, list_dir,<br/>write_file, edit_file, recall_memory,<br/>web_fetch, web_search, fetch_messages,<br/>search_messages, shell, mount_server,<br/>message_push, finish_drift"]
+        P_SYS_8 --> P_SYS_DONE["messages[0] role: system"]
+
+        P_CTX["_build_runtime_context_message(skills, connected_servers)"] --> P_CTX_SS
+        P_CTX_SS["drift_self_state<br/>← self_state 表（SQLite）<br/>上次选择 / 意图 / 原因 / 倾向<br/>让模型能感知到自己的连续性，避免每轮都从零决策"] --> P_CTX_SO
+        P_CTX_SO["drift_self_observations<br/>← skill_journal[entry_type=self_observation]<br/>最近 12 条agent对自我的观察<br/>让模型看见多轮行为模式，质疑而非盲从"] --> P_CTX_SC
+        P_CTX_SC["drift_selection_context<br/>每个 skill 的 continuum 详情:<br/>status / run_count / briefing<br/>scratchpad / cursor<br/>让 LLM 选 skill 时能基于上次进展，而非只看 skill 名称"] --> P_CTX_SK
+        P_CTX_SK["drift_skills<br/>可用 skill 简表:<br/>name / run_count / status<br/>description / builtin / requires_mcp<br/>给 LLM 一个所有可选技能的快速目录"] --> P_CTX_MM
+        P_CTX_MM["long_term_memory<br/>← memory.read_long_term()<br/>→ MEMORY.md<br/>用户的长期画像"] --> P_CTX_RC
+        P_CTX_RC["recent_raw_chat<br/>最近 5 条用户/助手对话<br/>含 proactive 标记<br/>让 LLM 感知当前聊天气氛，判断是否适合主动行动"] --> P_CTX_BR
+        P_CTX_BR["drift_briefing<br/>全局前情 + 各 skill 摘要<br/>+ 最近 5 条 Drift runs<br/>浓缩版全局状态，让 LLM 快速了解局势"] --> P_CTX_RD
+        P_CTX_RD["recent_drift_runs<br/>← runs 表（SQLite）<br/>最近 5 条运行记录<br/>time / skill / status / briefing<br/>让 LLM 知道自己刚做过什么，避免无意识重复"] --> P_CTX_NT
+        P_CTX_NT["drift_note<br/>← global_note 表（SQLite）<br/>可选全局备注（前150字符）<br/>LLM 收尾时可维护的跨轮备注"] --> P_CTX_CE
+        P_CTX_CE["current_context_events<br/>← ctx.fetched_context（可选）<br/>用户状态事件上下文<br/>提供外部情境感知（如睡眠/清醒状态）"] --> P_CTX_MC
+        P_CTX_MC["drift_mcp_directory<br/>已连接 MCP server 列表<br/>可挂载工具数<br/>告知 LLM 有哪些外部能力可挂载<br/>（仅 MCP server > 0 时展示）"] --> P_CTX_CL
+        P_CTX_CL["runtime_clock<br/>current_time_utc<br/>current_time_local<br/>让 LLM 能做时间相关的判断（早晚/隔了多久）"] --> P_CTX_DONE
+        P_CTX_DONE["messages[1] role: user<br/>（context frame）"]
+        P_SYS_DONE-->|system| P_DONE
+        P_CTX_DONE -->|context| P_DONE["初始 messages = [system, context]<br/>→ 进入 Execute 循环"]
+    end
+
+    P_DONE --> PHASE3
+
+    %% ═══════════════════════════════════════════
+    %% Phase 3: Execute LLM 工具循环
+    %% ═══════════════════════════════════════════
+    subgraph PHASE3[Phase 3 — Execute LLM 工具循环<br/>同一 while，三种 schema 状态]
+        direction TB
+
+        E_HEAD["while steps < max_steps(默认20)<br/>AND not drift_finished"] --> E_CHK_STAGE{drift_selected_skill 为空?}
+        E_HEAD -->|"步数耗尽<br/>且未 finish"| E_WRAP
+
+        %% ── 3a: Selection 子图 ──
+        subgraph E_SELECT[3a Selection — 先声明本轮执行对象]
+            direction TB
+            E_SEL["tool_choice = required<br/>allowed = {select_skill, idle_drift}"] --> E_LLM["llm_fn(messages, schemas, required)<br/>disable_thinking=True<br/>→ LLM 必须二选一"]
+            E_LLM --> E_SEL_TOOL{工具名}
+            E_SEL_TOOL -->|select_skill| E_SS["SelectSkillTool.execute<br/>→ 校验 skill → 读 SKILL.md<br/>→ 返回正文 + local_context<br/>→ ctx.drift_selected_skill = name"]
+            E_SEL_TOOL -->|idle_drift| E_IDLE["IdleDriftTool.execute(reason)<br/>→ save_finish<br/>→ status = completed"]
+            E_IDLE --> E_TERM["终止 Drift<br/>drift_finished = True<br/>→ 本轮结束"]
+            E_SEL_TOOL -->|"其他（越界）"| E_REJECT_STAGE{约束违规<br/>≤ 2 次?}
+            E_REJECT_STAGE -->|"是"| E_REJ_MSG["追加错误消息<br/>→ 重试"]
+            E_REJECT_STAGE -->|"已超限"| E_SEL_ABORT["selection 反复越界<br/>→ 终止 drift"]
+            E_REJ_MSG --> E_LLM
+        end
+
+        E_CHK_STAGE -->|"是 → skill 未选"| E_SELECT
+        E_SS -.->|"下一圈回循环"| E_HEAD
+        E_TERM -->|"idle 静默结束"| E_EXIT_LOOP
+        E_SEL_ABORT -->|"abort：无收尾、无消息<br/>同 silent 走 Resolve"| E_EXIT_LOOP
+
+
+        %% ── 3b: Action 子图（React 循环 + push 后收窄） ──
+        subgraph E_ACTION[3b Action — React 循环执行 skill 工作]
+            direction TB
+            E_MSG_CHK{message_push 工具是否已用?}
+            E_MSG_CHK -->|"否 → 完整 schema"| E_FULL_LLM["llm_fn(full_schemas)<br/>read/write/edit/list/recall/web<br/>fetch/search/shell/mount<br/>message_push / finish_drift"]
+            E_MSG_CHK -->|"是 → 收窄"| E_FINISH_LLM["llm_fn(finish_schemas)<br/>allowed = {finish_drift}"]
+            E_FULL_LLM --> E_FULL_TOOL{选择工具}
+            E_FULL_TOOL -->|"其他工具"| E_EXEC["ToolExecutor.execute<br/>→ 执行并返回结果"]
+            E_EXEC --> E_APPEND["append_tool_result<br/>→ 结果注入 messages<br/>让 LLM 看到工具输出"]
+            E_FULL_TOOL -->|"message_push<br/>（暂存，非立即发送）"| E_PUSH["SendMessageTool.execute<br/>→ draft_message + staged=True<br/>不立即发送，Phase 4 才发"]
+            E_FULL_TOOL -->|finish_drift| E_FINISH["FinishDriftTool.execute<br/>→ 校验必填 → save_finish<br/>→ drift_finished = True"]
+            E_FINISH --> E_FINISH_TERM["终止 Drift<br/>drift_finished = True<br/>→ 本轮结束"]
+            E_APPEND -.->|"步数未耗尽 → 下一圈"| E_MSG_CHK
+            E_PUSH -.->|"下一圈 → 收窄分支"| E_MSG_CHK
+            E_FINISH_LLM --> E_FINISH_TOOL{finish_drift?}
+            E_FINISH_TOOL -->|"是"| E_FINISH
+            E_FINISH_TOOL -->|"否（越界）"| E_FINISH_REJ{≤ 2 次?}
+            E_FINISH_REJ -->|"是"| E_FINISH_REJ_MSG["追加错误 → 重试"]
+            E_FINISH_REJ -->|"已超限"| E_WRAP_GO["→ 强制收尾"]
+            E_FINISH_REJ_MSG --> E_FINISH_LLM
+        end
+
+        E_CHK_STAGE -->|"否 → skill 已选"| E_ACTION
+        E_FINISH_TERM -->|"正常收尾"| E_EXIT_LOOP
+        E_WRAP_GO -->|"错误次数超限，强制收尾"| E_WRAP
+
+        %% ── 3c: Wrap-up 子图 ──
+        subgraph E_WRAP[_wrap_up 强制收尾 — 步数耗尽]
+            direction TB
+            W_MSG["追加 system 消息:<br/>【系统强制收尾】只调 finish_drift"] --> W_LLM
+            W_LLM["llm_fn(messages, finish_schemas,<br/>{function:{name:finish_drift}})<br/>→ 强制调用 finish_drift"] --> W_TOOL{成功?}
+            W_TOOL -->|"finish_drift 返回 ok"| W_OK["drift_finished = True<br/>→ 退出"]
+            W_TOOL -->|"失败 / 其他工具 / None<br/>& attempt < 2"| W_RETRY["追加重试消息 → 重试"]
+            W_TOOL -->|"attempt ≥ 2<br/>全部失败"| W_FALLBACK["_fallback_pause<br/>→ status = paused<br/>→ drift_finished = True"]
+            W_RETRY --> W_LLM
+        end
+
+        W_OK -->|"wrap_up 成功"| E_EXIT_LOOP
+        W_FALLBACK -->|"fallback 兜底 → 自动 paused"| E_EXIT_LOOP
+
+        E_EXIT_LOOP["退出循环"]
+    end
+
+    E_EXIT_LOOP -->|退出循环| PHASE4
+
+    %% ═══════════════════════════════════════════
+    %% Phase 4: Proactive Resolve — 消息提交
+    %% ═══════════════════════════════════════════
+    subgraph PHASE4[Phase 4 — Resolve 决策 + Commit 提交]
+        direction TB
+        RES_ENTRY["_resolve_drift(ctx)<br/>→ 检查 draft_message / draft_media"] --> RES_EMPTY{有内容?}
+        RES_EMPTY -->|"无 ── silent drift<br/>DriftFinished 已在<br/>finish_drift 中发出"| RES_SKIP["terminal_action = skip<br/>skip_reason = no_content<br/>TurnResult(decision=skip)"]
+        RES_EMPTY -->|"有 → 发消息"| RES_REPLY["terminal_action = reply<br/>TurnResult(decision=reply)"]
+        RES_SKIP --> RES_DONE["skip 决策完成<br/>无消息可提交<br/>→ 直接 Persist"]
+        RES_REPLY --> DELIVER["_deliver_execute<br/>→ 发送 draft_message + draft_media<br/>→ 到 Channel 层"]
+        DELIVER --> COMMIT["record_commit_result(ctx, sent)<br/>→ store.update_last_message_result(sent)<br/>→ enqueue DriftFinished 事件<br/>（session_key / skill / status / briefing）"]
+    end
+
+    RES_DONE -.->|无消息发送| PHASE5
+    COMMIT --> PHASE5
+
+    %% ═══════════════════════════════════════════
+    %% Phase 5: Persist — 持久化 + 日志
+    %% ═══════════════════════════════════════════
+    subgraph PHASE5[Phase 5 — Persist 持久化 + 日志]
+        direction TB
+        P_LOG["record_tick_log_finish<br/>→ SQLite tick_log 表<br/>terminal_action / skip_reason<br/>steps_taken / drift_finish_status"]
+        P_LOG --> P_EVT["EventBus.enqueue<br/>ProactiveFinished 事件<br/>→ 通知其他插件本 tick 结束"]
+    end
+
+    P_EVT --> POST["ProactiveTickResult 输出<br/>base_score → 驱动下一轮调度"]
+    POST --> END["本轮 tick 结束"]
+
+    %% ====== 共享记忆文件系统（与 Passive/Proactive 共用） ======
+    %% subgraph MEM_FILES["记忆文件系统 — 与 Passive/Proactive 共享<br/>详见 PassiveTurnPipeline-MemoryConsolidation.mermaid"]
+    %%     direction TB
+    %%     F_MEM["MEMORY.md<br/>长期用户档案<br/>memory.read_long_term() 读取"]
+    %%     F_SELF[SELF.md<br/>Nexus 自我认知]
+    %%     F_PENDING[PENDING.md<br/>待合并的增量事实]
+    %%     F_HISTORY[HISTORY.md<br/>可 grep 事件日志]
+    %%     F_RECENT[RECENT_CONTEXT.md<br/>近期上下文摘要]
+    %%     F_JOURNAL[journal/YYYY-MM-DD.md<br/>每日时间线]
+    %% end
+
+    %% ====== 参考: Drift 工具集 ======
+    subgraph REF[Drift 工具集 — LLM 可调用]
+        direction LR
+        R1["select_skill<br/>声明意图 + 选择 skill<br/>返回 SKILL.md + local_context"] --- R2["idle_drift<br/>【例外】不合时宜时<br/>静默结束（需 reason）"]
+        R3["read_file<br/>读取 <skill> 文件<br/>路径解析 skills/name/"] --- R4["list_dir<br/>列出目录"]
+        R5["write_file<br/>写入 <skill> 文件"] --- R6["edit_file<br/>编辑 <skill> 文件"]
+        R7["recall_memory<br/>带 timestamps 检索"] --- R8["web_fetch / web_search<br/>外部信息获取"]
+        R9["fetch_messages<br/>search_messages<br/>消息查询"] --- R10["shell<br/>cwd=drift_dir"]
+        R11["mount_server<br/>挂载 MCP 工具<br/>到本次 drift"] --- R12["message_push<br/>【最多一次】<br/>fire-and-forget 消息"]
+        R13["finish_drift<br/>【终止】收尾工具<br/>status=completed/paused<br/>scratchpad / cursor /<br/>journal / self_update"]
+    end
+    REF -.->|Execute 阶段可用| PHASE3
+
+    %% ====== 参考: Drift 状态存储 ======
+    subgraph DRIFT_STORE[Drift 状态存储 — SQLite drift.db]
+        direction TB
+        D_RUNS["runs 表<br/>run_at / skill_name / status<br/>briefing / message_result<br/>每次 finish 写入一条"]
+        D_CONT["skill_continuum 表<br/>run_count / last_run_at<br/>last_status / last_briefing<br/>scratchpad / cursor_json / updated_at<br/>skill 级别的连续性数据"]
+        D_JOURNAL["skill_journal 表<br/>skill_name / entry_type<br/>key / payload_json / run_id<br/>self_observation / 已完成事实"]
+        D_STATE["self_state 表<br/>current_skill / current_intention<br/>last_decision / decision_reason<br/>next_tendency / updated_at<br/>全局自我连续性（仅一条）"]
+        D_STEPS["run_steps 表<br/>run_id / step_index / tool_name<br/>input_preview / output_preview<br/>每一步的工具调用记录"]
+        D_NOTE["global_note 表<br/>content / updated_at<br/>可选全局备注（仅一条）"]
+    end
+
+    %% ====== 文件系统引用 ======
+    subgraph DRIFT_FILES[Drift 文件系统]
+        direction TB
+        F_DIR["drift/<br/>工作区根目录"]
+        F_SKILLS["drift/skills/<name>/<br/>SKILL.md + 工作文件"]
+        F_BUILTIN["builtin_skills/<name>/<br/>内建 skill 定义"]
+        F_PLUGIN["（插件贡献）<br/>plugin_skill_roots/<name>/"]
+    end
+
+    %% ====== 数据访问连线 ======
+    P_TOOLS -.->|注册工具| REF
+    E_EXEC -.->|append_step| D_STEPS
+    E_FINISH -.->|save_finish| D_RUNS
+    E_FINISH -.->|update continuum| D_CONT
+    E_FINISH -.->|append journal_append| D_JOURNAL
+    E_FINISH -.->|update self_state| D_STATE
+    E_SS -.->|save_self_choice| D_STATE
+    E_SS -.->|load continuum + journal| D_CONT
+    E_SS -.->|read SKILL.md| F_SKILLS
+    E_IDLE -.->|save_finish + save_self_choice| D_RUNS
+    E_IDLE -.->|save_finish + save_self_choice| D_STATE
+    PHASE2 -.->|读取self_stat、journal_append、save_finish、global_note 表| D_STATE
+
+    %% P_CTX_MM -.->|"memory.read_long_term()"| F_MEM
+
+    %% ====== 样式 ======
+    class PHASE1,PHASE2,PHASE3,PHASE4,PHASE5 driftPhase
+    class E_SELECT,E_ACTION,E_WRAP subphase
+    class S_SCAN,S_ROOTS,S_DIR,S_DEDUP,S_ADD,S_FILTER,P_FLAGS,P_TOOLS,P_SYS,P_SYS_1,P_SYS_2,P_SYS_3,P_SYS_4,P_SYS_5,P_SYS_6,P_SYS_7,P_SYS_8,P_SYS_DONE,P_CTX,P_CTX_SS,P_CTX_SO,P_CTX_SC,P_CTX_SK,P_CTX_RC,P_CTX_BR,P_CTX_RD,P_CTX_NT,P_CTX_CE,P_CTX_MC,P_CTX_CL,P_CTX_DONE,P_DONE,E_HEAD,E_SEL,E_LLM,E_SS,E_IDLE,E_REJ_MSG,E_FULL_LLM,E_PUSH,E_FINISH,E_EXEC,E_APPEND,E_FINISH_LLM,E_FINISH_REJ_MSG,E_WRAP_GO,DELIVER,P_LOG,P_EVT,RES_SKIP,RES_REPLY,COMMIT,W_MSG,W_LLM,W_RETRY module
+    class P_CTX_MM mem
+    class L_GW,L_DRIFT_OK,L_INTERVAL,S_EMPTY,E_CHK_STAGE,E_SEL_TOOL,E_REJECT_STAGE,E_MSG_CHK,E_FULL_TOOL,E_FINISH_TOOL,E_FINISH_REJ,W_TOOL,RES_EMPTY decision
+    class L_ENTER,BEGIN,P_SYS_3,P_SYS_4,P_SYS_5,P_SYS_6,P_SYS_7,P_SYS_8,PRO_PHASE,PRO_PHASE2 module
+    class L_SKIP,S_EXIT,RES_DONE,END,E_EXIT_LOOP,E_SEL_ABORT,E_TERM,E_FINISH_TERM,W_OK,W_FALLBACK,PRO_PERSIST skip
+    class F_DIR,F_SKILLS,F_BUILTIN,F_PLUGIN driftFile
+    class D_RUNS,D_CONT,D_JOURNAL,D_STATE,D_STEPS,D_NOTE file
+    class L_PRO proPhase
+    class PRO_PHASE,PRO_PHASE2 proPhase
+    class PRO_PERSIST skip
+    class F_MEM,F_SELF,F_PENDING,F_HISTORY,F_RECENT,F_JOURNAL mem
+
+    %% ====== 全局线加粗 ======
+    linkStyle default stroke-width:3px

@@ -53,7 +53,11 @@ class RachaelPlugin(Plugin):
         return [RachaelLastCommandModule(self)]
 
     def is_active(self) -> bool:
-        return _is_memory_engine(getattr(self.context, "memory_engine", None), "rachael")
+        return _is_memory_engine(
+            getattr(self.context, "memory_engine", None),
+            "rachael",
+            engine_names=getattr(self.context, "memory_engine_names", ()),
+        )
 
     def render_last_query(self, session_key: str) -> str:
         workspace = self.context.workspace
@@ -275,7 +279,10 @@ def _abort_ctx(state: TurnState, reply: str) -> BeforeTurnCtx:
     )
 
 
-def _is_memory_engine(engine: object, name: str) -> bool:
+def _is_memory_engine(engine: object, name: str, *, engine_names: tuple[str, ...] = ()) -> bool:
+    # 优先检查 engine_names 列表（combined 模式下 engine 指向 primary，但 name 可能在列表中）
+    if name in engine_names:
+        return True
     describe = getattr(engine, "describe", None)
     if not callable(describe):
         return False

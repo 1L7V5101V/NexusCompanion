@@ -122,10 +122,11 @@ def build_memory_runtime(
             engines[engine_name] = plugin_runtime.engine
             closeables.extend(plugin_runtime.closeables)
 
-            # 仅为 default engine 注册内存工具（recall_memory / memorize / forget）
-            # Rachael 的写入是 TurnCommitted 自动触发，不需要显式工具
-            if engine_name == "default":
-                register_memory_meta_tools(tools, plugin_runtime.engine)
+            # 为每个 memory engine 注册其 tool_profile 中声明的记忆工具。
+            # default → recall_memory + memorize + forget
+            # rachael → recall_memory + reinforce_memory
+            # 写入型工具（memorize / forget）仅 default 声明；rachael 写入走 TurnCommitted 事件。
+            register_memory_meta_tools(tools, plugin_runtime.engine)
 
         if engines:
             primary_engine = next(iter(engines.values()))

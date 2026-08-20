@@ -15,10 +15,12 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
+    AppServerConfig,
     CacheConfig,
     ChannelsConfig,
     Config,
     FitbitIntegrationConfig,
+    LoggingConfig,
     MemoryConfig,
     MemoryEmbeddingConfig,
     PeerAgentConfig,
@@ -94,6 +96,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
     cache = _load_cache_config(data)
     wiring = _load_wiring_config(data)
     plugins = _load_plugins_config(data)
+    app_server = _load_app_server_config(data)
+    logging_cfg = _load_logging_config(data)
     persona_cfg = _as_dict(agent_cfg.get("persona"))
     persona = PersonaConfig(
         identity=str(persona_cfg.get("identity", "") or ""),
@@ -176,6 +180,11 @@ def load_config(path: str | Path = "config.toml") -> Config:
         wiring=wiring,
         plugins=plugins,
         persona=persona,
+        app_server=app_server,
+        logging=logging_cfg,
+        router_mode=str(
+            data.get("router_mode", "rule")
+        ),
     )
 
 
@@ -335,6 +344,53 @@ def _load_fitbit_config(data: dict) -> FitbitIntegrationConfig:
     )
 
 
+def _load_logging_config(data: dict) -> LoggingConfig:
+    raw = _as_dict(data.get("logging"))
+    passive_db = str(raw.get("passive_db", "") or "").strip()
+    proactive_db = str(raw.get("proactive_db", "") or "").strip()
+    drift_db = str(raw.get("drift_db", "") or "").strip()
+    return LoggingConfig(
+        passive_db=passive_db or "",
+        proactive_db=proactive_db or "",
+        drift_db=drift_db or "",
+    )
+
+
+def _load_app_server_config(data: dict) -> AppServerConfig:
+    raw = _as_dict(data.get("app_server"))
+    return AppServerConfig(
+        enabled=bool(raw.get("enabled", False)),
+        listen=str(raw.get("listen", "127.0.0.1:2236")),
+        max_connections=int(raw.get("max_connections", 32)),
+        ingress_queue_size=int(raw.get("ingress_queue_size", 128)),
+        max_message_bytes=int(raw.get("max_message_bytes", 2 * 1024 * 1024)),
+        outbound_queue_size=int(raw.get("outbound_queue_size", 512)),
+    )
+
+
+def resolve_app_server_endpoint(listen: str, workspace: Path) -> str:
+    """将 app_server.listen 配置规范化为可用 endpoint 字符串。
+
+    - TCP 地址（127.0.0.1:PORT）原样返回
+    - 相对路径则拼接 workspace 目录
+    """
+    listen = listen.strip()
+    if not listen:
+        return ""
+    # 如果是 TCP 地址格式（host:port）则直接使用
+    if listen.startswith("127.") or listen.startswith("localhost"):
+        return listen
+    if ":" in listen and not listen.startswith("/"):
+        parts = listen.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            return listen
+    # 否则作为 socket 路径处理
+    p = Path(listen)
+    if p.is_absolute():
+        return listen
+    return str(workspace / p)
+
+
 def _load_wiring_config(data: dict) -> WiringConfig:
     agent_cfg = _as_dict(data.get("agent"))
     raw = _as_dict(agent_cfg.get("wiring")) or data.get("wiring", {}) or {}
@@ -429,6 +485,7 @@ def _load_config_data(path: str | Path) -> dict:
 
 
 __all__ = [
+    "AppServerConfig",
     "CacheConfig",
     "ChannelsConfig",
     "Config",
@@ -441,4 +498,5 @@ __all__ = [
     "TelegramChannelConfig",
     "_validated_timezone",
     "load_config",
+    "resolve_app_server_endpoint",
 ]
