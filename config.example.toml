@@ -84,6 +84,11 @@ memory_window = 40
 [agent.tools]
 search_enabled = true
 
+# 可选：Agentic RAG 检索路由模式（默认 "rule"）。
+# "rule" - 规则打分 + 阈值决策，模糊时 LLM 兜底（默认）
+# "llm"  - 跳过规则打分，完全由 LLM 判断检索源
+# router_mode = "rule"
+
 # 可选：长期记忆整理任务（默认已启用，通常无需修改）
 # [agent.maintenance]
 # memory_optimizer_enabled = true
@@ -222,6 +227,21 @@ delivery_cooldown_hours = 1
 enabled = false
 max_steps = 20
 min_interval_hours = 3
+
+# =============================================================================
+# 交互日志（可选）
+# 每条链路的完整 LLM 请求/响应记录到独立 SQLite 库，用于调试和 Dashboard 查询。
+# 留空则对应链路不记录日志。
+# 路径支持 ~/ 用户目录展开。
+# =============================================================================
+
+[logging]
+# 被动回复链路日志库路径
+passive_db = "~/.nexus/workspace/logs/passive.db"
+# 主动推送链路日志库路径
+proactive_db = "~/.nexus/workspace/logs/proactive.db"
+# 漂流探索链路日志库路径
+drift_db = "~/.nexus/workspace/logs/drift.db"
 
 # =============================================================================
 # 其他集成（可选）

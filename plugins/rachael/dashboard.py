@@ -1,12 +1,15 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, cast
 
 from fastapi import FastAPI, HTTPException
+
+logger = logging.getLogger(__name__)
 
 from plugins.rachael.config import RachaelConfig, load_rachael_config, resolve_rachael_db_path
 from plugins.rachael.graph_snapshot import (
@@ -74,6 +77,7 @@ class RachaelInspectorReader:
             try:
                 parsed = json.loads(str(raw_json))
             except Exception:
+                logger.debug("JSON 解析失败，回退到空列表: %r", raw_json)
                 parsed = []
             result[out_key] = parsed if isinstance(parsed, list) else []
         return cast(dict[str, Any], result)
@@ -422,6 +426,7 @@ def _load_rachael_config(workspace: Path) -> RachaelConfig | None:
         plugin_dir = Path(__file__).resolve().parent
         return load_rachael_config(plugin_dir=plugin_dir)
     except Exception:
+        logger.warning("加载 Rachael 配置失败，使用默认配置", exc_info=True)
         return RachaelConfig()
 
 

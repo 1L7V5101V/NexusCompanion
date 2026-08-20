@@ -43,10 +43,18 @@ class SkillIndex:
 
 
 class SkillsLoader:
-    def __init__(self, workspace: Path, builtin_skills_dir: Path | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        builtin_skills_dir: Path | None = None,
+        *,
+        plugin_roots: dict[str, tuple[Path, ...]] | None = None,
+        workspace_skills_dir: Path | None = None,
+    ):
         self.workspace = workspace
-        self.workspace_skills = workspace / "skills"
+        self.workspace_skills = workspace_skills_dir or (workspace / "skills")
         self.builtin_skills = builtin_skills_dir or BUILTIN_SKILLS_DIR
+        self.plugin_roots = plugin_roots or {}
 
     def list_skill_records(self, filter_unavailable: bool = True) -> list[SkillRecord]:
         return self._build_index().list_records(filter_unavailable=filter_unavailable)
@@ -69,6 +77,9 @@ class SkillsLoader:
 
     def load_skill_record(self, name: str) -> SkillRecord | None:
         return self._build_index().get(name)
+
+    def build_index(self) -> SkillIndex:
+        return self._build_index()
 
     def get_always_skills(self) -> list[str]:
         return [
@@ -121,6 +132,16 @@ class SkillsLoader:
             ):
                 if record.name not in records:
                     records[record.name] = record
+
+        for plugin_id, roots in sorted(self.plugin_roots.items()):
+            for root in roots:
+                for record in self._scan_skills_dir(
+                    root,
+                    source="plugin",
+                    source_id=plugin_id,
+                ):
+                    if record.name not in records:
+                        records[record.name] = record
 
         return SkillIndex(records)
 

@@ -1,11 +1,148 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
+
+from agent.control.errors import TurnNotFoundError, TurnStateTransitionError
+from agent.control.models import (
+    TurnError,
+    TurnItem,
+    TurnRecord,
+    TurnStatus,
+    TurnUsage,
+    parse_rfc3339,
+)
+
+logger = logging.getLogger(__name__)
+
+_FTS_CAPABILITY_ERROR_MARKERS = (
+    "no such module: fts5",
+    "no such tokenizer: trigram",
+    "unknown tokenizer: trigram",
+)
+_MESSAGE_COLUMN_FIELDS = frozenset(
+    {"id", "session_key", "seq", "role", "content", "timestamp", "tool_chain"}
+)
+_TURN_TRANSITIONS = {
+    TurnStatus.QUEUED: frozenset({TurnStatus.IN_PROGRESS, TurnStatus.CANCELLED}),
+    TurnStatus.IN_PROGRESS: frozenset(
+        {
+            TurnStatus.COMPLETED,
+            TurnStatus.INTERRUPTED,
+            TurnStatus.FAILED,
+            TurnStatus.CANCELLED,
+        }
+    ),
+}
+
+
+def _resolve_path_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.startswith(("http://", "https://")):
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except OSError:
+        return ""
+
+
+def _decode_json_payload(
+    raw: str | bytes | bytearray | None,
+    *,
+    fallback: str,
+    field: str,
+    identifier: str,
+) -> object:
+    """在 SQLite 反序列化边界统一转换 JSON 损坏错误。"""
+    try:
+        return json.loads(fallback if raw is None else raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+        raise ValueError(f"{field} JSON 损坏: {identifier}") from exc
+
+
+def _decode_session_metadata(
+    raw: str | bytes | bytearray | None,
+    session_key: str,
+) -> dict[str, Any]:
+    """解析并校验 sessions.metadata 的 JSON object 契约。"""
+    metadata = _decode_json_payload(
+        raw,
+        fallback="{}",
+        field="session metadata",
+        identifier=session_key,
+    )
+    if not isinstance(metadata, dict):
+        raise ValueError(f"session metadata 必须是 JSON object: {session_key}")
+    return cast(dict[str, Any], metadata)
+
+
+def _decode_turn_input(raw: object, turn_id: str) -> tuple[str, dict[str, Any]]:
+    """解析并校验 turn 输入及其 metadata。"""
+    payload = _decode_json_payload(
+        cast(str | bytes | bytearray | None, raw),
+        fallback="{}",
+        field="turn input",
+        identifier=turn_id,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError(f"turn input 必须是 JSON object: {turn_id}")
+    data = cast(dict[str, object], payload)
+    input_text = data.get("input")
+    metadata = data.get("metadata")
+    if not isinstance(input_text, str):
+        raise ValueError(f"turn input.input 必须是字符串: {turn_id}")
+    if not isinstance(metadata, dict):
+        raise ValueError(f"turn input.metadata 必须是 JSON object: {turn_id}")
+    return input_text, cast(dict[str, Any], metadata)
+
+
+def _decode_turn_items(raw: object, turn_id: str) -> list[TurnItem]:
+    """解析并校验 turn item 数组。"""
+    payload = _decode_json_payload(
+        cast(str | bytes | bytearray | None, raw),
+        fallback="[]",
+        field="turn items",
+        identifier=turn_id,
+    )
+    if not isinstance(payload, list):
+        raise ValueError(f"turn items 必须是 JSON array: {turn_id}")
+    return [TurnItem.from_dict(item) for item in cast(list[object], payload)]
+
+
+def _decode_turn_usage(raw: object, turn_id: str) -> TurnUsage | None:
+    if raw is None:
+        return None
+    payload = _decode_json_payload(
+        cast(str | bytes | bytearray, raw),
+        fallback="null",
+        field="turn usage",
+        identifier=turn_id,
+    )
+    return TurnUsage.from_dict(payload)
+
+
+def _decode_turn_error(raw: object, turn_id: str) -> TurnError | None:
+    if raw is None:
+        return None
+    payload = _decode_json_payload(
+        cast(str | bytes | bytearray, raw),
+        fallback="null",
+        field="turn error",
+        identifier=turn_id,
+    )
+    return TurnError.from_dict(payload)
+
+
+def _decode_required_turn_time(raw: object, field_name: str, turn_id: str) -> datetime:
+    value = parse_rfc3339(raw, field_name)
+    if value is None:
+        raise ValueError(f"turn {field_name} 不能为空: {turn_id}")
+    return value
 
 
 class SessionStore:
@@ -24,8 +161,12 @@ class SessionStore:
         if not self._closed:
             try:
                 self.close()
-            except Exception:
-                pass
+            except sqlite3.Error as cleanup_error:
+                logger.warning(
+                    "SessionStore 析构关闭失败 db=%s err=%s",
+                    self.db_path,
+                    cleanup_error,
+                )
 
     def _init_schema(self) -> None:
         with self._lock:
@@ -51,6 +192,29 @@ class SessionStore:
                     ts          TEXT NOT NULL,
                     UNIQUE (session_key, seq)
                 )
+                """)
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS turns (
+                    id             TEXT PRIMARY KEY,
+                    session_key    TEXT NOT NULL,
+                    status         TEXT NOT NULL,
+                    input_json     TEXT NOT NULL,
+                    items_json     TEXT NOT NULL,
+                    usage_json     TEXT,
+                    error_json     TEXT,
+                    final_response TEXT,
+                    created_at     TEXT NOT NULL,
+                    started_at     TEXT,
+                    completed_at   TEXT
+                )
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_turns_session_created
+                ON turns(session_key, created_at, id)
+                """)
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_turns_status
+                ON turns(status)
                 """)
             self._ensure_next_seq_values()
             self._ensure_fts()
@@ -85,27 +249,33 @@ class SessionStore:
                 )
 
     def _ensure_fts(self) -> None:
+        """确保全文索引可用，并仅在创建或修复时重建已有消息。"""
+
+        needs_rebuild = False
         try:
-            # Migrate to trigram tokenizer if the table exists without it.
-            # trigram supports CJK substring matching; the old unicode61 default does not.
+            # 1. 发现旧索引或缺失索引时，准备一次性重建。
             existing = self._conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='table' AND name='messages_fts'"
             ).fetchone()
+            needs_rebuild = existing is None
             if existing:
-                try:
-                    cfg = dict(
-                        self._conn.execute(
-                            "SELECT * FROM messages_fts_config"
-                        ).fetchall()
-                    )
-                    is_trigram = "trigram" in cfg.get("tokenize", "")
-                except sqlite3.OperationalError:
-                    is_trigram = False
+                table_sql = "".join(str(existing["sql"] or "").split()).lower()
+                is_trigram = "tokenize='trigram'" in table_sql
                 if not is_trigram:
                     self._conn.execute("DROP TABLE IF EXISTS messages_fts")
                     for trig in ("messages_ai", "messages_ad", "messages_au"):
                         self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                    needs_rebuild = True
 
+                trigger_rows = self._conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'trigger' AND name IN (?, ?, ?)",
+                    ("messages_ai", "messages_ad", "messages_au"),
+                ).fetchall()
+                needs_rebuild = needs_rebuild or len(trigger_rows) < 3
+
+            # 2. 确保索引和消息写入触发器存在。
             self._conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                     content,
@@ -132,13 +302,21 @@ class SessionStore:
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END
                 """)
-            # Rebuild index so existing messages are covered by trigram.
-            self._conn.execute(
-                "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
-            )
+            # 3. 正常重启依赖触发器增量维护，避免重复扫描整张 messages 表。
+            if needs_rebuild:
+                self._conn.execute(
+                    "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+                )
             self._conn.commit()
             self._has_fts = True
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if not any(
+                marker in str(exc).lower() for marker in _FTS_CAPABILITY_ERROR_MARKERS
+            ):
+                raise
+            logger.warning(
+                "SQLite FTS5/trigram 不可用，已禁用 session 全文检索: %s", exc
+            )
             self._has_fts = False
 
     def close(self) -> None:
@@ -205,10 +383,243 @@ class SessionStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "last_consolidated": int(row["last_consolidated"] or 0),
-            "metadata": json.loads(row["metadata"] or "{}"),
+            "metadata": _decode_session_metadata(row["metadata"], str(row["key"])),
             "last_user_at": row["last_user_at"],
             "last_proactive_at": row["last_proactive_at"],
         }
+
+    def create_turn(self, record: TurnRecord) -> TurnRecord:
+        """持久化一个 queued turn 并返回数据库中的正式记录。"""
+        if record.status is not TurnStatus.QUEUED:
+            raise TurnStateTransitionError("turn 创建时必须处于 queued 状态")
+        if record.started_at is not None or record.completed_at is not None:
+            raise TurnStateTransitionError("queued turn 不得包含 started_at/completed_at")
+        if (
+            record.usage is not None
+            or record.error is not None
+            or record.final_response is not None
+        ):
+            raise TurnStateTransitionError("queued turn 不得包含 usage/error/final_response")
+
+        # 1. 在写入前完成所有 JSON 编码，序列化失败时数据库保持不变。
+        input_json = json.dumps(
+            {"input": record.input, "metadata": record.metadata},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        items_json = json.dumps(
+            [item.to_dict() for item in record.items],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        usage_json = (
+            json.dumps(record.usage.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            if record.usage is not None
+            else None
+        )
+        error_json = (
+            json.dumps(record.error.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            if record.error is not None
+            else None
+        )
+
+        # 2. 单条 INSERT 建立不可变 turn identity。
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO turns (
+                    id, session_key, status, input_json, items_json,
+                    usage_json, error_json, final_response,
+                    created_at, started_at, completed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.thread_id,
+                    record.status.value,
+                    input_json,
+                    items_json,
+                    usage_json,
+                    error_json,
+                    record.final_response,
+                    record.created_at.isoformat(),
+                    None,
+                    None,
+                ),
+            )
+            self._conn.commit()
+        stored = self.read_turn(record.id)
+        if stored is None:
+            raise RuntimeError(f"turn 创建后无法读取: {record.id}")
+        return stored
+
+    def read_turn(self, turn_id: str) -> TurnRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT id, session_key, status, input_json, items_json,
+                       usage_json, error_json, final_response,
+                       created_at, started_at, completed_at
+                FROM turns
+                WHERE id = ?
+                """,
+                (turn_id,),
+            ).fetchone()
+        return self._row_to_turn(row) if row is not None else None
+
+    def transition_turn(
+        self,
+        turn_id: str,
+        *,
+        expected_status: TurnStatus,
+        status: TurnStatus,
+        thread_id: str | None = None,
+        items: list[TurnItem] | None = None,
+        usage: TurnUsage | None = None,
+        error: TurnError | None = None,
+        final_response: str | None = None,
+        now: datetime | None = None,
+    ) -> TurnRecord:
+        """用单条 CAS 更新 turn 状态，状态漂移时明确失败。"""
+        expected_status = TurnStatus(expected_status)
+        status = TurnStatus(status)
+        allowed = _TURN_TRANSITIONS.get(expected_status, frozenset())
+        if status not in allowed:
+            raise TurnStateTransitionError(
+                f"非法 turn 状态转换: {expected_status.value} -> {status.value}"
+            )
+        if status is TurnStatus.FAILED and error is None:
+            raise TurnStateTransitionError("failed turn 必须包含 error")
+        timestamp = now or datetime.now(UTC)
+        if timestamp.tzinfo is None:
+            raise ValueError("turn transition 时间必须包含时区")
+        timestamp = timestamp.astimezone(UTC)
+
+        # 1. 只更新本次调用明确拥有的终态字段。
+        set_parts = ["status = ?"]
+        params: list[object] = [status.value]
+        if status is TurnStatus.IN_PROGRESS:
+            set_parts.append("started_at = ?")
+            params.append(timestamp.isoformat())
+        if status.is_terminal:
+            set_parts.append("completed_at = ?")
+            params.append(timestamp.isoformat())
+        if items is not None:
+            set_parts.append("items_json = ?")
+            params.append(
+                json.dumps(
+                    [item.to_dict() for item in items],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        if usage is not None:
+            set_parts.append("usage_json = ?")
+            params.append(
+                json.dumps(usage.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            )
+        if error is not None:
+            set_parts.append("error_json = ?")
+            params.append(
+                json.dumps(error.to_dict(), ensure_ascii=False, separators=(",", ":"))
+            )
+        if final_response is not None:
+            set_parts.append("final_response = ?")
+            params.append(final_response)
+
+        # 2. status 和可选 thread identity 共同构成 compare-and-set 条件。
+        where_parts = ["id = ?", "status = ?"]
+        params.extend([turn_id, expected_status.value])
+        if thread_id is not None:
+            where_parts.append("session_key = ?")
+            params.append(thread_id)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE turns SET {', '.join(set_parts)} WHERE {' AND '.join(where_parts)}",
+                tuple(params),
+            )
+            if cursor.rowcount != 1:
+                current = self._conn.execute(
+                    "SELECT session_key, status FROM turns WHERE id = ?", (turn_id,)
+                ).fetchone()
+                self._conn.rollback()
+                if current is None:
+                    raise TurnNotFoundError(f"turn 不存在: {turn_id}")
+                if thread_id is not None and str(current["session_key"]) != thread_id:
+                    raise TurnNotFoundError(
+                        f"turn 不属于 thread: {thread_id}/{turn_id}"
+                    )
+                raise TurnStateTransitionError(
+                    f"turn CAS 失败，期望 {expected_status.value}，实际 {current['status']}: {turn_id}"
+                )
+            self._conn.commit()
+
+        # 3. 返回同一连接提交后可重读的正式记录。
+        stored = self.read_turn(turn_id)
+        if stored is None:
+            raise RuntimeError(f"turn 转换后无法读取: {turn_id}")
+        return stored
+
+    def list_turns(
+        self,
+        thread_id: str,
+        *,
+        limit: int = 100,
+        before: tuple[str, str] | None = None,
+    ) -> list[TurnRecord]:
+        """按创建时间倒序读取一个 thread 的稳定 turn 页面。"""
+        if limit <= 0 or limit > 200:
+            raise ValueError("turn list limit 必须在 1..200")
+        where = "session_key = ?"
+        params: list[object] = [thread_id]
+        if before is not None:
+            where += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([before[0], before[0], before[1]])
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""
+                SELECT id, session_key, status, input_json, items_json,
+                       usage_json, error_json, final_response,
+                       created_at, started_at, completed_at
+                FROM turns
+                WHERE {where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._row_to_turn(row) for row in rows]
+
+    def delete_thread_turns(self, thread_id: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM turns WHERE session_key = ?", (thread_id,)
+            )
+            self._conn.commit()
+        return int(cursor.rowcount or 0)
+
+    def _row_to_turn(self, row: sqlite3.Row) -> TurnRecord:
+        """在 SQLite 边界把 turn 行恢复成严格领域对象。"""
+        turn_id = str(row["id"])
+        input_text, metadata = _decode_turn_input(row["input_json"], turn_id)
+        return TurnRecord(
+            id=turn_id,
+            thread_id=str(row["session_key"]),
+            status=TurnStatus(str(row["status"])),
+            input=input_text,
+            metadata=metadata,
+            items=_decode_turn_items(row["items_json"], turn_id),
+            usage=_decode_turn_usage(row["usage_json"], turn_id),
+            error=_decode_turn_error(row["error_json"], turn_id),
+            final_response=cast(str | None, row["final_response"]),
+            created_at=_decode_required_turn_time(
+                row["created_at"], "created_at", turn_id
+            ),
+            started_at=parse_rfc3339(row["started_at"], "started_at"),
+            completed_at=parse_rfc3339(row["completed_at"], "completed_at"),
+        )
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:

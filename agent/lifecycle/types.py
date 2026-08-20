@@ -192,6 +192,9 @@ class AfterReasoningCtx:
     media: list[str] = field(default_factory=_empty_str_list)
     meme_tag: str | None = None
     outbound_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    # 日志系统注入字段
+    initial_messages: list[dict[str, Any]] = field(default_factory=list)
+    tools_schema: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

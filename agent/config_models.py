@@ -41,11 +41,20 @@ class QQBotGroupConfig:
 
 
 @dataclass
+class ChatChannelConfig:
+    enabled: bool = False
+    channel_name: str = "chat"
+    host: str = "127.0.0.1"
+    port: int = 6322
+
+
+@dataclass
 class ChannelsConfig:
     telegram: TelegramChannelConfig | None = None
     qq: QQChannelConfig | None = None
     socket: str = "/tmp/nexus.sock"
     cli_session_key: str = ""
+    chat: ChatChannelConfig = field(default_factory=ChatChannelConfig)
 
 
 @dataclass
@@ -136,6 +145,27 @@ class WiringConfig:
 
 
 @dataclass
+class LoggingConfig:
+    passive_db: str = ""
+    proactive_db: str = ""
+    drift_db: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.passive_db)
+
+
+@dataclass
+class AppServerConfig:
+    enabled: bool = False
+    listen: str = "127.0.0.1:2236"
+    max_connections: int = 32
+    ingress_queue_size: int = 128
+    max_message_bytes: int = 2 * 1024 * 1024
+    outbound_queue_size: int = 512
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -167,10 +197,14 @@ class Config:
     tool_search_enabled: bool = False
     spawn_enabled: bool = True
     dev_mode: bool = False
+    router_mode: str = "rule"
+    """Router 模式: "rule" = 规则打分 + LLM 兜底, "llm" = LLM 直接路由"""
     peer_agents: list[PeerAgentConfig] = field(default_factory=list)
     wiring: WiringConfig = field(default_factory=WiringConfig)
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
+    app_server: AppServerConfig = field(default_factory=AppServerConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
     def load(cls, path: str | Path = "config.toml") -> Config:
@@ -180,8 +214,10 @@ class Config:
 
 
 __all__ = [
+    "AppServerConfig",
     "CacheConfig",
     "ChannelsConfig",
+    "ChatChannelConfig",
     "Config",
     "FitbitIntegrationConfig",
     "MemoryConfig",

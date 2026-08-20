@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -12,6 +13,8 @@ from typing import Any, cast
 import networkx as nx
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 BIG_COMMUNITY_SIZE = 8
 LAYOUT_EDGE_LIMIT = 5000
@@ -50,6 +53,7 @@ def load_snapshot(path: Path) -> dict[str, Any] | None:
     try:
         return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
     except Exception:
+        logger.debug("加载 graph snapshot 失败: %s", path)
         return None
 
 
@@ -652,6 +656,7 @@ def _normalized_embedding(value: object) -> NDArray[np.float32] | None:
     try:
         emb = np.frombuffer(cast(Any, value), dtype=np.float32).copy()
     except Exception:
+        logger.debug("embedding 反序列化失败")
         return None
     norm = float(np.linalg.norm(emb))
     if norm <= 0:
