@@ -41,8 +41,8 @@
 | 差异 | SQLite 现状 | PG 后端要求 |
 |------|------------|-------------|
 | close 后调用 | `sqlite3.ProgrammingError` | 抛 `psycopg.ProgrammingError`（或同义） |
-| 原子自增 seq | `next_seq` 读 max(seq)+1 + `_ensure_next_seq_values` | 用 `SEQUENCE` + `RETURNING`（M3） |
-| 全文检索 | FTS5（`search_messages`） | `pg_trgm` 或 tsvector，中文分词语义需回归（M3） |
+| 原子自增 seq | `next_seq` 读 max(seq)+1 + `_ensure_next_seq_values`（非消费式） | 镜像 SQLite：返回 `max(stored next_seq, max(seq)+1)`，不消费（M3 定稿：`peek_next_message_id` 是无副作用 peek，消费式 SEQUENCE 会烧 seq；唯一性由 `insert_message` 原子 max 自增 + UNIQUE(tenant_id, session_key, seq) 保证，单连接 + RLock 无竞态） |
+| 全文检索 | FTS5 trigram（`search_messages`） | `pg_trgm` GIN 索引 + ILIKE 子串匹配（M3），bm25 排序由「命中词数 DESC + seq DESC」近似 |
 | 向量检索 | sqlite-vec（`vector_search` 等） | pgvector `<=>`，按 tenant 分区 + 每分区 HNSW（决策 B） |
 | embedding 存储 | 独立 vec_items 表 + blob | `memory_items.embedding` 原生 `vector` 列（M2） |
 

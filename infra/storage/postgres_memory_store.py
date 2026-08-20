@@ -1284,9 +1284,9 @@ class PostgresMemoryStore:
             )
             scope_params = [(scope_channel or "").strip(), (scope_chat_id or "").strip()]
 
-        or_conditions = " OR ".join("summary LIKE %s" for _ in terms)
+        or_conditions = " OR ".join("summary ILIKE %s" for _ in terms)
         score_expr = " + ".join(
-            "(CASE WHEN summary LIKE %s THEN 1 ELSE 0 END)" for _ in terms
+            "(CASE WHEN summary ILIKE %s THEN 1 ELSE 0 END)" for _ in terms
         )
         like_vals = [f"%{t}%" for t in terms]
 
@@ -1401,7 +1401,7 @@ class PostgresMemoryStore:
 
             if q:
                 where_parts.append(
-                    "(id LIKE %s OR summary LIKE %s OR COALESCE(source_ref, '') LIKE %s)"
+                    "(id ILIKE %s OR summary ILIKE %s OR COALESCE(source_ref, '') ILIKE %s)"
                 )
                 like = f"%{q}%"
                 params.extend([like, like, like])
@@ -1412,7 +1412,7 @@ class PostgresMemoryStore:
                 where_parts.append("status = %s")
                 params.append(status)
             if source_ref:
-                where_parts.append("COALESCE(source_ref, '') LIKE %s")
+                where_parts.append("COALESCE(source_ref, '') ILIKE %s")
                 params.append(f"%{source_ref}%")
             if scope_channel:
                 where_parts.append(f"{_SCOPE_CHANNEL_SQL} = %s")
