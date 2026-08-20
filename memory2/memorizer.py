@@ -6,9 +6,13 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
+
+if TYPE_CHECKING:
+    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,9 @@ def _parse_history_entry_happened_at(summary: str) -> str | None:
 
 
 class Memorizer:
-    def __init__(self, store: MemoryStore2, embedder: Embedder) -> None:
+    def __init__(
+        self, store: MemoryStore2 | PostgresMemoryStore, embedder: Embedder
+    ) -> None:
         self._store = store
         self._embedder = embedder
 
@@ -295,28 +301,20 @@ class Memorizer:
         对 procedure 类型同步重建 rule_schema，并写入 _merge_note 供溯源。
         调用方保证 merged_summary 非空且 item_id 存在。
         """
-        import json as _json
-
         from memory2.store import _content_hash
 
         merged_summary = (merged_summary or "").strip()
         if not merged_summary or not item_id:
             return
 
-        row = self._store._db.execute(
-            "SELECT memory_type, extra_json FROM memory_items WHERE id=?", (item_id,)
-        ).fetchone()
-        if not row:
+        item = self._store.get_item_for_dashboard(item_id)
+        if item is None:
             logger.warning("merge_item: item %s not found", item_id)
             return
 
-        memory_type, extra_json_str = row
-        old_extra: dict = {}
-        if extra_json_str:
-            try:
-                old_extra = _json.loads(extra_json_str) or {}
-            except Exception:
-                pass
+        memory_type = str(item.get("memory_type") or "")
+        extra_raw = item.get("extra_json")
+        old_extra = dict(extra_raw) if isinstance(extra_raw, dict) else {}
 
         new_embedding = await self._embedder.embed(merged_summary)
         new_hash = _content_hash(merged_summary, memory_type)

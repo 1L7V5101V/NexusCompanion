@@ -44,6 +44,7 @@ from bootstrap.toolsets.meta import (
 )
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
+from infra.storage.factory import create_session_store
 from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
@@ -303,8 +304,6 @@ def build_registered_tools(
     PeerProcessManager | None,
     PeerAgentPoller | None,
 ]:
-    from session.store import SessionStore
-
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
     wiring = getattr(config, "wiring", WiringConfig())
     tools = tools or ToolRegistry()
@@ -313,7 +312,7 @@ def build_registered_tools(
     readonly_tools = build_readonly_tools(
         http_resources, multimodal=multimodal, vl_available=vl_available
     )
-    store = session_store or SessionStore(workspace / "sessions.db")
+    store = session_store or create_session_store(config.storage, workspace / "sessions.db")
     push_tool = MessagePushTool(chat_lane=bus.chat_lane)
     memory_result = resolve_memory_toolset_provider(wiring.memory).register(
         tools,
@@ -483,7 +482,10 @@ def build_core_runtime(
     # provider (llm.main) is used for consolidation event extraction.
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
-    session_manager = SessionManager(workspace)
+    session_manager = SessionManager(
+        workspace,
+        session_store=create_session_store(config.storage, workspace / "sessions.db"),
+    )
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(

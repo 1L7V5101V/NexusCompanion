@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +36,7 @@ from core.memory.utils import (
     should_require_scope_match,
 )
 from core.net.http import SharedHttpResources
+from infra.storage.factory import create_store
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -49,6 +49,7 @@ from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
+    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger("plugins.default_memory.engine")
 
@@ -63,131 +64,6 @@ def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
     text = (entry or "").strip()
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12] if text else "empty"
     return f"{base_source_ref}#h:{digest}"
-
-
-def _source_ref_message_ids(source_ref: str) -> list[str]:
-    raw = str(source_ref or "").strip()
-    if not raw:
-        return []
-    base = raw.split("#", 1)[0].strip()
-    if not base.startswith("["):
-        return []
-    try:
-        loaded: object = json.loads(base)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
-    values: list[str] = []
-    for item in cast(list[object], loaded):
-        text = str(item).strip()
-        if text:
-            values.append(text)
-    return values
-
-
-def _undo_store_by_message_sources(
-    store: MemoryStore2,
-    message_ids: list[str],
-    *,
-    dry_run: bool = False,
-) -> dict[str, object]:
-    clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
-    if not clean_ids:
-        return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
-    target_ids = set(clean_ids)
-    with store._lock:
-        rows = store._db.execute(
-            """
-            SELECT id, source_ref
-            FROM memory_items
-            WHERE COALESCE(source_ref, '') != ''
-            """
-        ).fetchall()
-        affected_ids: set[str] = set()
-        rollback_source_ids: set[str] = set()
-        for item_id, source_ref in rows:
-            source = str(source_ref or "").strip()
-            base_ids = _source_ref_message_ids(source)
-            if source in target_ids:
-                affected_ids.add(str(item_id))
-                rollback_source_ids.add(source)
-                continue
-            if base_ids and target_ids.intersection(base_ids):
-                affected_ids.add(str(item_id))
-                rollback_source_ids.update(base_ids)
-
-        if affected_ids and not dry_run:
-            now = datetime.now().astimezone().isoformat()
-            store._db.executemany(
-                "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
-                [(now, item_id) for item_id in sorted(affected_ids)],
-            )
-        restored_ids = _restore_replacements_for_undo(
-            store,
-            affected_ids,
-            dry_run=dry_run,
-        )
-        if not dry_run:
-            store._db.commit()
-    return {
-        "affected_ids": sorted(affected_ids),
-        "restored_ids": sorted(restored_ids),
-        "rollback_source_ids": sorted(rollback_source_ids),
-    }
-
-
-def _restore_replacements_for_undo(
-    store: MemoryStore2,
-    affected_ids: set[str],
-    *,
-    dry_run: bool = False,
-) -> set[str]:
-    if not affected_ids:
-        return set()
-    sorted_affected = sorted(affected_ids)
-    placeholders = ",".join("?" for _ in sorted_affected)
-    rows = store._db.execute(
-        f"""
-        SELECT DISTINCT old_item_id
-        FROM memory_replacements
-        WHERE new_item_id IN ({placeholders})
-        """,
-        tuple(sorted_affected),
-    ).fetchall()
-    old_ids = {str(row[0]) for row in rows if str(row[0]).strip()}
-    restored: set[str] = set()
-    now = datetime.now().astimezone().isoformat()
-    for old_id in sorted(old_ids):
-        active_replacement = store._db.execute(
-            """
-            SELECT 1
-            FROM memory_replacements r
-            JOIN memory_items m ON m.id = r.new_item_id
-            WHERE r.old_item_id = ?
-              AND r.new_item_id NOT IN ({})
-              AND m.status = 'active'
-            LIMIT 1
-            """.format(placeholders),
-            tuple([old_id, *sorted_affected]),
-        ).fetchone()
-        if active_replacement is not None:
-            continue
-        if dry_run:
-            old_row = store._db.execute(
-                "SELECT 1 FROM memory_items WHERE id=? AND status='superseded'",
-                (old_id,),
-            ).fetchone()
-            if old_row is not None:
-                restored.add(old_id)
-            continue
-        cur = store._db.execute(
-            "UPDATE memory_items SET status='active', updated_at=? WHERE id=? AND status='superseded'",
-            (now, old_id),
-        )
-        if cur.rowcount:
-            restored.add(old_id)
-    return restored
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -557,7 +433,7 @@ class DefaultMemoryEngine:
         self._provider = provider
         self._light_provider = light_provider or provider
         self._light_model = config.light_model or config.model
-        self._v2_store: MemoryStore2 | None = None
+        self._v2_store: MemoryStore2 | PostgresMemoryStore | None = None
         self._embedder: Embedder | None = None
         self._memorizer: Memorizer | None = None
         self._retriever: Retriever | None = None
@@ -572,7 +448,8 @@ class DefaultMemoryEngine:
         )
         embedding = config.memory.embedding
         retrieval = default_config.retrieval
-        self._v2_store = MemoryStore2(
+        self._v2_store = create_store(
+            self._config.storage,
             db_path,
             vec_dim=embedding.output_dimensionality or VEC_DIM,
         )
@@ -636,13 +513,15 @@ class DefaultMemoryEngine:
         *,
         default_config: DefaultMemoryConfig,
         workspace: Path,
+        config: Config,
     ) -> None:
         db_path = resolve_memory_db_path(
             workspace=workspace,
             default_config=default_config,
         )
-        store = MemoryStore2(db_path)
-        store.close()
+        if config.storage.backend != "postgres":
+            store = create_store(config.storage, db_path)
+            store.close()
 
     def _wire_memory2_events(self) -> None:
         if self._event_bus is None:
@@ -1005,10 +884,8 @@ class DefaultMemoryEngine:
         *,
         dry_run: bool = False,
     ) -> dict[str, object]:
-        return _undo_store_by_message_sources(
-            self._require_v2_store(),
-            message_ids,
-            dry_run=dry_run,
+        return self._require_v2_store().undo_by_message_sources(
+            message_ids, dry_run=dry_run
         )
 
     def find_similar_items_for_dashboard(
@@ -1295,7 +1172,7 @@ class DefaultMemoryEngine:
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
 
-    def _require_v2_store(self) -> MemoryStore2:
+    def _require_v2_store(self) -> MemoryStore2 | PostgresMemoryStore:
         if self._v2_store is None:
             raise RuntimeError("memory v2 store unavailable")
         return self._v2_store

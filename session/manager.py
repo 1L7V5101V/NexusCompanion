@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -7,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.prompting import (
     PromptSectionRender,
@@ -15,6 +17,9 @@ from agent.prompting import (
     build_context_frame_message,
 )
 from session.store import SessionStore
+
+if TYPE_CHECKING:
+    from infra.storage.postgres_session_store import PostgresSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -295,12 +300,16 @@ class Session:
 class SessionManager:
     _METADATA_REFRESH_EVERY: int = 10
 
-    def __init__(self, workspace: Path):
+    def __init__(
+        self,
+        workspace: Path,
+        session_store: SessionStore | PostgresSessionStore | None = None,
+    ):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = workspace / "sessions.db"
-        self._store = SessionStore(self.db_path)
+        self._store = session_store or SessionStore(self.db_path)
         self._cache: dict[str, Session] = {}
         self._write_locks: dict[str, asyncio.Lock] = {}
 

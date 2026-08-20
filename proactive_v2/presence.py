@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from core.common.timekit import parse_iso as _parse_iso, utcnow as _utcnow
 from session.store import SessionStore
+
+if TYPE_CHECKING:
+    from infra.storage.postgres_session_store import PostgresSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -12,9 +16,12 @@ logger = logging.getLogger(__name__)
 class PresenceStore:
     """跨 session 的用户心跳持久化，底层直接复用 sessions.db。"""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: SessionStore | PostgresSessionStore) -> None:
         self._store = store
-        logger.info("[presence] 初始化完成 db=%s", self._store.db_path)
+        logger.info(
+            "[presence] 初始化完成 db=%s",
+            getattr(self._store, "db_path", ""),
+        )
 
     def record_user_message(
         self, session_key: str, now: datetime | None = None

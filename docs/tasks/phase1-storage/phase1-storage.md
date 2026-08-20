@@ -119,9 +119,9 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [x] 补齐 WIP `session_repo` 缺失方法——按决策 A（路线 1，sync 后端为准）此项关闭：async `session_repo` 无生产引用，整体挪 Phase 2；SessionStore 侧 2.3 列出的 10 个缺失方法已由本 M3 全部实现
 
 ### M4 工厂与接线
-- [ ] `infra/storage/factory.py`：`create_store(config)` 按 backend 返回 store（沿用 SCALING_PLAN 设计）
-- [ ] 改造构造点：`plugins/default_memory/engine.py`、`memory2/retriever.py`、`memory2/memorizer.py`、`bootstrap/tools.py`、`bootstrap/dashboard_api.py`、`bootstrap/init_workspace.py` 走工厂
-- [ ] 测试构造点保持兼容（`MemoryStore2(path, vec_dim=...)` 直连仍可用）
+- [x] `infra/storage/factory.py`：`create_store` / `create_session_store` 按 `config.backend` 返回 store（沿用 SCALING_PLAN 设计；`StorageConfig` 无 sqlite_path，sqlite 路径由调用方显式传入）；postgres 分支构造前 `to_regclass` 探测 schema，缺失抛含 `alembic upgrade head` 的 `RuntimeError`
+- [x] 改造构造点：`plugins/default_memory/engine.py`、`memory2/memorizer.py`、`bootstrap/tools.py`、`bootstrap/dashboard_api.py`、`bootstrap/init_workspace.py` 走工厂（`memory2/retriever.py` 经 engine 注入 store，无直接构造）
+- [x] 测试构造点保持兼容（`MemoryStore2(path, vec_dim=...)` 直连仍可用）
 
 ### M5 Redis 缓存层
 - [ ] `infra/cache/redis_cache.py`：`MemoryCache`（会话上下文 5min / 用户画像 1h / 检索结果 10min，对齐 SCALING_PLAN 1.2）
@@ -137,7 +137,10 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [ ] 现有 SQLite 单测全绿（不回归）
 - [ ] 新增：同一组数据在 sqlite / postgres 后端下返回一致（含向量检索 top-k）
 - [ ] 性能基线：`memory2` 单测 + 压测脚本对比 SQLite vs PG（写吞吐、检索 P95）
-- [ ] 端到端：`backend="postgres"` 下对话 / 记忆检索 / dashboard / session 全链路跑通
+- [ ] 双后端端到端等价性：走完整 PassiveTurn（对话 → 记忆检索 → dashboard → session 全链路），而非仅 store 层断言
+- [ ] 配置往返切换：`postgres → sqlite → postgres`，每步验证数据仍在、行为一致
+- [ ] 分区行为：新 tenant 懒创建（首次写入建分区）、并发建分区无 race（`pg_advisory_xact_lock` 兜底）、`EXPLAIN` 确认分区裁剪真的发生、跨 tenant 查询返回空而非报错
+- [ ] `EXPLAIN` 确认分区裁剪：务必保留——若查询写法导致裁剪失效（如 `tenant_id` 参与函数运算），会退回全表扫描 + 全局索引，即 [vector-validation.md](vector-validation.md) 召回 0.18 的场景，且无任何报错（静默退化最危险）
 
 ## 5. 验收标准
 
