@@ -287,12 +287,12 @@ class AsyncAgentLoop:
 
 **各 channel 的消费方式**：
 
-| Channel | 消费方式 |
-|---------|----------|
-| webchat | 每个 chunk 直接 `websocket.send_json`，逐字渲染 |
-| Telegram | 缓冲聚合，末帧一次性 `send_message`（或按节流 `edit_message`）|
-| QQ / 飞书 | 同 Telegram，缓冲后整段发 |
-| CLI / IPC | 逐帧写 socket，行为即现状 |
+| Channel   | 消费方式                                           |
+| --------- | ---------------------------------------------- |
+| webchat   | 每个 chunk 直接 `websocket.send_json`，逐字渲染         |
+| Telegram  | 缓冲聚合，末帧一次性 `send_message`（或按节流 `edit_message`） |
+| QQ / 飞书   | 同 Telegram，缓冲后整段发                              |
+| CLI / IPC | 逐帧写 socket，行为即现状                               |
 
 聚合成整段是一行 `"".join()`，把整段拆成流则要重构整条链 —— 所以默认走流式。
 
@@ -307,10 +307,10 @@ class AsyncAgentLoop:
 
 原计划把"切换到专用向量数据库"列为独立阶段，Phase 1 的验证让这一步失去必要性：
 
-| 形态 | 小租户召回（2% 占比，ef=40）| 结论 |
-|------|------|------|
-| 单全局 HNSW + `WHERE tenant_id` | 0.180 | 不可用，调 ef 到 200 也仅 0.413 |
-| 按 tenant_id 分区 + 每分区 HNSW | 0.990 | **已采用**（Phase 1 M2 落地）|
+| 形态                           | 小租户召回（2% 占比，ef=40） | 结论                      |
+| ---------------------------- | ------------------ | ----------------------- |
+| 单全局 HNSW + `WHERE tenant_id` | 0.180              | 不可用，调 ef 到 200 也仅 0.413 |
+| 按 tenant_id 分区 + 每分区 HNSW    | 0.990              | **已采用**（Phase 1 M2 落地）  |
 
 关键发现是召回坍缩源于全局图遍历被其他租户节点带偏、目标节点被过滤饿死，**不是数据
 稀疏问题** —— 同样数据按租户隔离后召回立即回到 0.99+。这个机制对 Qdrant 的
@@ -336,10 +336,13 @@ race），不建 DEFAULT 分区 —— 默认分区会混装多租户，正好�
 这部分不构成独立阶段，随 Phase 1 压测一并做：
 
 - [ ] **`ef_search` 按分区规模分档**：大租户 40 够用，小租户可直接走 seq scan
+  
       （分区内行数少时 planner 判断通常正确，但需实测确认拐点）
 - [ ] **`m` / `ef_construction` 调优**：当前 `m=16, ef_construction=64`，在真实
+  
       1024 维 embedding 上复测（验证用的是 128 维合成数据）
 - [ ] **分区数量上限**：PG 在数千分区后 planner 规划耗时上升，5000 tenant 需实测
+  
       `EXPLAIN` 开销；超限则改为按 tenant 哈希分组（多 tenant 共享分区），
       但需重新验证召回
 - [ ] **索引维护**：分区各自 `REINDEX`，避免单次全表重建阻塞
@@ -469,13 +472,13 @@ consumer group（可回溯、有 ACK），或按 session_key 哈希分片到多�
 这是 webchat 相对 webhook 最大的成本差异 —— Telegram 5000 用户对进程无常驻开销，
 webchat 每个打开的标签页是一条常驻连接。
 
-| 项目 | 说明 |
-|------|------|
-| fd 数量 | 5000 在线 ≈ 5000 fd，`ulimit -n` 默认 1024，必须调至 65535 |
-| 单连接内存 | WS 对象 + 缓冲约 20-50KB，5000 连接 ≈ 100-250MB |
-| `max_connections` | `AppServerConfig` 默认 32（为 IPC 设计），webchat 需独立配置项 |
-| 心跳 | 需 ping/pong 保活，否则反代（Nginx 默认 60s）切断空闲连接 |
-| 反代配置 | Nginx 需 `Upgrade` 头透传 + `proxy_read_timeout 3600s` |
+| 项目                | 说明                                                 |
+| ----------------- | -------------------------------------------------- |
+| fd 数量             | 5000 在线 ≈ 5000 fd，`ulimit -n` 默认 1024，必须调至 65535   |
+| 单连接内存             | WS 对象 + 缓冲约 20-50KB，5000 连接 ≈ 100-250MB            |
+| `max_connections` | `AppServerConfig` 默认 32（为 IPC 设计），webchat 需独立配置项   |
+| 心跳                | 需 ping/pong 保活，否则反代（Nginx 默认 60s）切断空闲连接            |
+| 反代配置              | Nginx 需 `Upgrade` 头透传 + `proxy_read_timeout 3600s` |
 
 ```toml
 # config.toml —— webchat 不复用 app_server 的连接上限
@@ -549,11 +552,11 @@ location /ws {
 
 ### 5.0 现状与缺口
 
-| 已有 | 缺失 |
-|------|------|
-| `bootstrap/chat_api.py` 全部 HTTP/WS 端点 | `infra/channels/web_chat_channel.py`（文件不存在）|
-| `bootstrap/app.py:366-372` 条件接线 | `static/chat/index.html`（前端产物）|
-| `ChatChannelConfig`（`config_models.py:44`）| 任何鉴权 |
+| 已有                                         | 缺失                                          |
+| ------------------------------------------ | ------------------------------------------- |
+| `bootstrap/chat_api.py` 全部 HTTP/WS 端点      | `infra/channels/web_chat_channel.py`（文件不存在） |
+| `bootstrap/app.py:366-372` 条件接线            | `static/chat/index.html`（前端产物）              |
+| `ChatChannelConfig`（`config_models.py:44`） | 任何鉴权                                        |
 
 `web_chat_channel.py` 需满足 `infra/channels/contract.py` 的 `Channel` 协议
 （`name` / `start` / `stop`），另外 `chat_api.py` 还依赖这些成员：
@@ -761,31 +764,31 @@ inbound_received = Counter("inbound_received_total", "入站接收数")
 
 **告警规则**：
 
-| 指标 | 阈值 | 对应风险 |
-|------|------|----------|
-| `dual_write_mismatch / dual_write_total` | > 0.1% | 迁移数据不一致（风险 1）|
-| `store_op_seconds{backend="postgres"}` P99 | > 100ms | 性能回退（风险 2）|
-| `vector_search_recall` | < 0.9 | 分区/索引退化 |
-| `inbound_received - outbound_delivered` | ≠ 0 | 多 Worker 丢消息（风险 5）|
-| `ws_connections` | > `max_connections` × 0.8 | 接近 fd 上限 |
+| 指标                                         | 阈值                        | 对应风险               |
+| ------------------------------------------ | ------------------------- | ------------------ |
+| `dual_write_mismatch / dual_write_total`   | > 0.1%                    | 迁移数据不一致（风险 1）      |
+| `store_op_seconds{backend="postgres"}` P99 | > 100ms                   | 性能回退（风险 2）         |
+| `vector_search_recall`                     | < 0.9                     | 分区/索引退化            |
+| `inbound_received - outbound_delivered`    | ≠ 0                       | 多 Worker 丢消息（风险 5） |
+| `ws_connections`                           | > `max_connections` × 0.8 | 接近 fd 上限           |
 
 ---
 
 ## 改造优先级与成本估算
 
-| 阶段            | 改动点            | 工作量 | 性能提升     | 必要性 |
-| ------------- | -------------- | --- | -------- | --- |
-| Phase 1.1     | PostgreSQL 迁移  | 2周  | 10x 写入吞吐 | 必须  |
-| Phase 1.2     | Redis 缓存       | 1周  | 5x 读取速度  | 必须  |
-| Phase 6       | 监控埋点（Phase 1 前置）| 1周 | 可观测性 | 必须  |
-| Phase 2.1-2.2 | 异步 + 速率限制      | 3周  | 3x 并发处理  | 必须  |
-| Phase 2.3     | AgentLoop 异步改造 | 2周  | 2x 资源利用率 | 必须  |
-| Phase 2.4     | 出站改流式接口        | +0.5周 | 免除后续返工 | 必须  |
-| Phase 3.3     | HNSW 参数调优      | +0.5周 | 召回保障 | 随 Phase 1 压测 |
-| Phase 4.1-4.2 | 消息队列 + 水平扩展    | 2周  | 无限水平扩展   | 重要  |
-| Phase 4.1b    | 出站 Pub/Sub     | 1周  | WS 多 Worker 前置 | 必须（若启 webchat）|
-| Phase 5.1     | webchat 鉴权     | 1周  | 防数据泄露    | 必须（若启 webchat）|
-| Phase 5.2-5.4 | 限流 + channel + 前端 | 2周 | 功能可用 | 必须（若启 webchat）|
+| 阶段            | 改动点               | 工作量   | 性能提升           | 必要性            |
+| ------------- | ----------------- | ----- | -------------- | -------------- |
+| Phase 1.1     | PostgreSQL 迁移     | 2周    | 10x 写入吞吐       | 必须             |
+| Phase 1.2     | Redis 缓存          | 1周    | 5x 读取速度        | 必须             |
+| Phase 6       | 监控埋点（Phase 1 前置）  | 1周    | 可观测性           | 必须             |
+| Phase 2.1-2.2 | 异步 + 速率限制         | 3周    | 3x 并发处理        | 必须             |
+| Phase 2.3     | AgentLoop 异步改造    | 2周    | 2x 资源利用率       | 必须             |
+| Phase 2.4     | 出站改流式接口           | +0.5周 | 免除后续返工         | 必须             |
+| Phase 3.3     | HNSW 参数调优         | +0.5周 | 召回保障           | 随 Phase 1 压测   |
+| Phase 4.1-4.2 | 消息队列 + 水平扩展       | 2周    | 无限水平扩展         | 重要             |
+| Phase 4.1b    | 出站 Pub/Sub        | 1周    | WS 多 Worker 前置 | 必须（若启 webchat） |
+| Phase 5.1     | webchat 鉴权        | 1周    | 防数据泄露          | 必须（若启 webchat） |
+| Phase 5.2-5.4 | 限流 + channel + 前端 | 2周    | 功能可用           | 必须（若启 webchat） |
 
 **总计**：约 13 周（不启 webchat 则 9 周）—— 原估 15 周，Phase 3 由独立阶段
 （1 周）降为调参（0.5 周），且并行后压缩。
@@ -800,18 +803,18 @@ inbound_received = Counter("inbound_received_total", "入站接收数")
 
 判断依据是**是否修改同一批文件**，不是编号先后。
 
-| 与 Phase 1 并行 | 触及文件 | 冲突风险 |
-|------|----------|----------|
-| **Phase 6 监控** | `infra/monitoring/`（新）+ 少量埋点 | 无。且 Phase 1 双写验证需要它 |
+| 与 Phase 1 并行     | 触及文件                                                                                  | 冲突风险                                      |
+| ---------------- | ------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Phase 6 监控**   | `infra/monitoring/`（新）+ 少量埋点                                                          | 无。且 Phase 1 双写验证需要它                       |
 | **Phase 5.1 鉴权** | `infra/channels/web_chat_auth.py`（新）、`bootstrap/chat_api.py`、`agent/config_models.py` | 无。`tenant_id` 已在 Phase 1 schema 就位，不需改存储层 |
-| **Phase 5.3 前端** | `frontend/dashboard/` | 无。纯前端资产 |
-| **Phase 3.3 调参** | SQL 索引参数 | 无。就在 Phase 1 的表上 |
+| **Phase 5.3 前端** | `frontend/dashboard/`                                                                 | 无。纯前端资产                                   |
+| **Phase 3.3 调参** | SQL 索引参数                                                                              | 无。就在 Phase 1 的表上                          |
 
-| 必须串行 | 原因 |
-|------|------|
-| **Phase 2 异步化** | 与 Phase 1 抢 `agent/looping/core.py` 及全部 store 调用点。更要紧的是在 SQLite 上做 asyncio 改造要写一堆 `run_in_executor` 包装，Phase 1 落地后全部拆掉 |
-| **Phase 4.1b Pub/Sub** | 依赖 2.4 接口定型，接口未定则改两遍 |
-| **Phase 5.4 channel 实现** | 同上，出站形状未定不能动 |
+| 必须串行                     | 原因                                                                                                                     |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| **Phase 2 异步化**          | 与 Phase 1 抢 `agent/looping/core.py` 及全部 store 调用点。更要紧的是在 SQLite 上做 asyncio 改造要写一堆 `run_in_executor` 包装，Phase 1 落地后全部拆掉 |
+| **Phase 4.1b Pub/Sub**   | 依赖 2.4 接口定型，接口未定则改两遍                                                                                                   |
+| **Phase 5.4 channel 实现** | 同上，出站形状未定不能动                                                                                                           |
 
 **当前状态（Phase 1 进行中）可立即启动**：Phase 6 监控、Phase 5.1 鉴权、Phase 5.3
 前端。三者互不冲突，也不碰 Phase 1 的文件。
@@ -850,13 +853,13 @@ items = await store.vector_search(query_vec, top_k=8)
 
 ### 硬件配置
 
-| 组件                                    | 规格       | 数量   | 用途      |
-| ------------------------------------- | -------- | ---- | ------- |
-| Gateway 实例 | 2核 4GB | 3台 | 鉴权 + WS 常驻连接（webchat 需要）|
-| Worker 实例 | 8核 16GB  | 10台  | 处理用户消息  |
-| PostgreSQL                            | 16核 64GB | 1主2从 | 持久化存储 **+ 向量检索**（分区 HNSW）|
-| Redis Cluster                         | 8核 32GB  | 3节点  | 缓存 + 队列 + Pub/Sub |
-| Nginx                                 | 2核 4GB   | 2台   | 负载均衡    |
+| 组件            | 规格       | 数量   | 用途                        |
+| ------------- | -------- | ---- | ------------------------- |
+| Gateway 实例    | 2核 4GB   | 3台   | 鉴权 + WS 常驻连接（webchat 需要）  |
+| Worker 实例     | 8核 16GB  | 10台  | 处理用户消息                    |
+| PostgreSQL    | 16核 64GB | 1主2从 | 持久化存储 **+ 向量检索**（分区 HNSW） |
+| Redis Cluster | 8核 32GB  | 3节点  | 缓存 + 队列 + Pub/Sub         |
+| Nginx         | 2核 4GB   | 2台   | 负载均衡                      |
 
 无独立向量数据库 —— 分区 HNSW 在 PG 内，省去一个有状态组件。代价是 PG 内存需覆盖
 活跃分区的索引，规格已按此预留（64GB）。
