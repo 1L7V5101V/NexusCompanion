@@ -93,10 +93,11 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 ## 4. 任务拆解
 
 ### M0 依赖与配置
+- [ ] 本地开发 PG：`docker/debug/docker-compose.yml` 加 `postgres` 服务（`pgvector/pgvector:pg17` 镜像，建库 + `CREATE EXTENSION vector`，数据卷持久化）——WSL/Docker 已可用（2026-08-20），优先 Docker；原生 PG 17.10（含验证用的 `vecbench` 库）保留作对照
 - [ ] `requirements.txt` / `pyproject.toml` 补充：`asyncpg`、`psycopg[binary]`（sync 后端用）、`redis`（asyncio）、`pgvector`
 - [ ] `agent/config_models.py` 新增 `StorageConfig`（backend / postgres_url / pool_size）与 `CacheConfig`（redis_url / ttl 策略）
 - [ ] `config.example.toml` 新增 `[storage]` / `[cache]` 段（对齐 SCALING_PLAN 配置示例）
-- [ ] `pg.py` 增加 `init-db`（建库 + `CREATE EXTENSION vector` + 建用户）子命令
+- [ ] `pg.py` 增加 `init-db`（建库 + `CREATE EXTENSION vector` + 建用户）子命令（原生路径备用）
 
 ### M1 接口界定
 - [ ] 从 `MemoryStore2` / `SessionStore` 抽出完整接口清单（方法签名 + 返回类型），作为 [storage-interface.md](../storage-interface.md) 存底
