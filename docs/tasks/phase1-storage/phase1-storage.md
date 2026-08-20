@@ -111,8 +111,12 @@ WIP 全表带 `tenant_id`（单库多租户），与当前单用户 SQLite 不�
 - [x] 两后端 parity：`tmp/parity_smoke.py` 同数据写 SQLite + PG，向量 top-k 排序 / score、scope 过滤、关键词、替换、事件检索一致（`score=0` 精确平局时 HNSW 与 KNN 截断顺序可不同，测试只比较明确项与分数）
 
 ### M3 PostgresSessionStore（sync 后端）
-- [ ] 实现 `SessionStore` 全部接口：`search_messages`（FTS）、`list_presence`、`fetch_by_ids_with_context`、`next_seq` 原子自增（PG 用 sequence / `RETURNING`）等
-- [ ] 补齐 WIP `session_repo` 缺失方法
+- [x] 实现 `SessionStore` 全部接口，落 `infra/storage/postgres_session_store.py`（28 个 public 方法 + close/__del__，单连接 + RLock，全部按 tenant_id 作用域）；`tmp/verify_pg_session.py` 13 组验证全过
+- [x] `next_seq` 定稿为非消费式：镜像 SQLite 返回 `max(stored, max(seq)+1)`，不采用 SEQUENCE 消费式（`peek_next_message_id` 无副作用 peek，消费式会烧 seq；原子性由 `insert_message` max 自增 + UNIQUE 保证），见 [storage-interface.md](../storage-interface.md) 3 节
+- [x] `search_messages` 用 `pg_trgm`（迁移 b6e9d2c4a8f1 建 GIN 索引加速 ILIKE 子串匹配），对标 SQLite FTS5 trigram；bm25 排序由「命中词数 DESC + seq DESC」近似
+- [x] 迁移 b6e9d2c4a8f1：sessions/messages 主键改 `(tenant_id, key)` / `(tenant_id, id)`（决策 C 跨 tenant 不撞 key）、messages UNIQUE(tenant_id, session_key, seq)、messages.id 放宽到 511、pg_trgm 扩展 + content GIN 索引
+- [x] 两后端 parity：`tmp/parity_session_smoke.py` 同数据写 SQLite + PG，next_seq 序列、session/message 结构、presence、dashboard 分页、search 命中集合、delete 语义一致（自动时间戳只比格式）
+- [x] 补齐 WIP `session_repo` 缺失方法——按决策 A（路线 1，sync 后端为准）此项关闭：async `session_repo` 无生产引用，整体挪 Phase 2；SessionStore 侧 2.3 列出的 10 个缺失方法已由本 M3 全部实现
 
 ### M4 工厂与接线
 - [ ] `infra/storage/factory.py`：`create_store(config)` 按 backend 返回 store（沿用 SCALING_PLAN 设计）
