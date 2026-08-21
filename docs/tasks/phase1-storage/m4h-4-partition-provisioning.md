@@ -1,6 +1,6 @@
 # M4H-4 分区 provisioning（计划 + ADR）
 
-> 状态：ADR 已定案，实现进行中
+> 状态：已完成（2026-08-22，8 commits `4c50a0e0`–`f056d5ea`）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
 > 依据：[`SCALING_PLAN.md`](../../scaling/SCALING_PLAN.md) §C 分区生产验证（:384-393）与风险表 :814
@@ -88,4 +88,32 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --level error
 npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrightconfig.tests.json --level error
 ```
 
-## 4. 实现证据与偏离记录（实现完成后填）
+## 4. 实现证据与偏离记录
+
+**状态：已完成（2026-08-22，8 commits，`4c50a0e0`–`f056d5ea`）**
+
+按 §2 序列实现：
+
+1. ADR + seam/state 模型：`4c50a0e0`
+2. 稳定分区命名：`ec7d445a`（`partition_name_for_tenant`：可读前缀 + 48-bit md5 后缀，bound 值保留原始 tenant_id）
+3. 幂等 provisioning 服务：`fa31b228`（状态机 + `request_provisioning` 只读探测恢复 + 同步 DDL 执行器）
+4. 独立 control worker：`2ca420be`（同 tenant 去重、异 tenant 并行、retry/backoff、失败 FAILED）
+5. 接入 + 移除懒 DDL：`1dd09385`（store 写路径 fail-fast）、`9ac95d83`（TurnStartup/Proactive/接线）、`8736740c`（dashboard/undo READY-only 验证）
+6. 5000 tenant 基准：`f056d5ea`
+
+**基准结果**（`results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
+
+| 指标 | 结果 |
+|---|---|
+| sequential 延迟 | total 114.2s / mean 22.9ms / p50 23.1ms / p95 34.0ms / p99 47.9ms |
+| concurrent burst | 5000 tenant 全量收敛 18.3s（3.67ms per tenant） |
+| catalog | baseline 189 → after 10189（delta +10000），lookup 15.5ms |
+| planning latency | 98.6ms（EXPLAIN FORMAT JSON） |
+| 分区裁剪 | scanned_relations=1、pruned_to_single_partition=true |
+| 失败重试 | 锁占用 224.7ms FAILED（2 attempts）→ 释放重入队 94.5ms 收敛 READY |
+
+**偏离记录**：
+
+- §2 计划 7 commits，commit 5 实现时拆为 5a/5b/5c 三个可验证 concern（写路径 fail-fast / turn gate + proactive + bootstrap wiring / dashboard-undo READY-only 验证），实际 8 commits。
+- 基准 catalog 记 delta 而非绝对数：dev 库 baseline 189 为既有测试残留分区，清理不属于本任务数据，如实记录增量 +10000（seq 5000 + burst 5000）。
+- 其余与 §1.3 定案一致：turn 路径零 DDL（store 写路径只读 probe）、proactive 执行前 `require_ready` 且 PENDING/FAILED 跳过本轮、dashboard/undo 直写缺分区 0 行 no-op 且不触发 provisioning。
