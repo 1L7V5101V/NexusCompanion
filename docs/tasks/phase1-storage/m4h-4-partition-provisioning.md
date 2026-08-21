@@ -1,6 +1,6 @@
 # M4H-4 分区 provisioning（计划 + ADR）
 
-> 状态：已完成（2026-08-22，8 commits `4c50a0e0`–`f056d5ea`）
+> 状态：已完成（2026-08-22，9 commits `4c50a0e0`–`f04c62c7`）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
 > 依据：[`SCALING_PLAN.md`](../../scaling/SCALING_PLAN.md) §C 分区生产验证（:384-393）与风险表 :814
@@ -90,7 +90,7 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrigh
 
 ## 4. 实现证据与偏离记录
 
-**状态：已完成（2026-08-22，8 commits，`4c50a0e0`–`f056d5ea`）**
+**状态：已完成（2026-08-22，9 commits，`4c50a0e0`–`f04c62c7`）**
 
 按 §2 序列实现：
 
@@ -114,6 +114,6 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrigh
 
 **偏离记录**：
 
-- §2 计划 7 commits，commit 5 实现时拆为 5a/5b/5c 三个可验证 concern（写路径 fail-fast / turn gate + proactive + bootstrap wiring / dashboard-undo READY-only 验证），实际 8 commits。
+- §2 计划 7 commits，commit 5 实现时拆为 5a/5b/5c 三个可验证 concern（写路径 fail-fast / turn gate + proactive + bootstrap wiring / dashboard-undo READY-only 验证），实际 9 commits。
 - 基准 catalog 记 delta 而非绝对数：dev 库 baseline 189 为既有测试残留分区，清理不属于本任务数据，如实记录增量 +10000（seq 5000 + burst 5000）。
 - 其余与 §1.3 定案一致：turn 路径零 DDL（store 写路径只读 probe）、proactive 执行前 `require_ready` 且 PENDING/FAILED 跳过本轮、dashboard/undo 直写缺分区 0 行 no-op 且不触发 provisioning。
