@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg.rows import dict_row
 
+from infra.storage.pool import PostgresPool
 from memory2.store import _now_iso
 
 
@@ -50,13 +53,21 @@ def _q(text: str) -> LiteralString:
 
 
 class PostgresSessionBackend:
-    """resource-owner：持有连接 + RLock（M4H-2 C）。
+    """resource-owner：持有连接池 + RLock（M4H-2 C / M4H-3）。
 
     跨 tenant 共享；tenant-bound view（PostgresSessionStore(backend, tenant_id)）
-    只委托连接与锁，不拥有 backend。底层生命周期只归 StorageRuntime.close()。
+    只委托 pool 借出的连接与锁，不拥有 backend。底层生命周期只归
+    StorageRuntime.close()。
     """
 
-    def __init__(self, postgres_url: str) -> None:
+    def __init__(
+        self,
+        postgres_url: str,
+        *,
+        pool_size: int = 1,
+        timeout: float = 5.0,
+        max_waiting: int = 20,
+    ) -> None:
         if postgres_url.startswith("postgresql+psycopg://"):
             postgres_url = postgres_url.replace(
                 "postgresql+psycopg://", "postgresql://", 1
@@ -64,23 +75,64 @@ class PostgresSessionBackend:
         self._url = postgres_url
         self._lock = threading.RLock()
         self._closed = False
-        # schema 由 alembic 管理；构造只开连接（dict_row 让 fetchone 返回 dict）
-        self._conn = cast(
-            psycopg.Connection[dict[str, Any]],
-            psycopg.connect(self._url, row_factory=cast(Any, dict_row)),
+        # pool 是连接唯一所有者；dict_row 让 fetchone 返回 dict
+        self._pool = PostgresPool(
+            postgres_url,
+            min_size=min(1, pool_size),
+            max_size=pool_size,
+            timeout=timeout,
+            max_waiting=max_waiting,
+            kwargs={"row_factory": dict_row},
+            name="session",
         )
+        # 当前线程借出的连接（view 方法体经 connection() 借出/归还）
+        self._local = threading.local()
+
+    @property
+    def conn(self) -> psycopg.Connection[dict[str, Any]]:
+        """当前线程借出的连接；未借出时访问属编程错误。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            raise RuntimeError(
+                "PostgresSessionBackend: no connection borrowed "
+                "(missing `with self._backend.connection()`)"
+            )
+        return cast(psycopg.Connection[dict[str, Any]], conn)
+
+    @contextmanager
+    def connection(self) -> Iterator[None]:
+        """借出一条 pool 连接供方法体使用，退出时归还。
+
+        嵌套调用复用当前连接（RLock 同线程语义），仅最外层归还。
+        """
+        self._check_open()
+        if getattr(self._local, "conn", None) is not None:
+            self._local.depth += 1
+            try:
+                yield
+            finally:
+                self._local.depth -= 1
+            return
+        with self._pool.connection() as conn:
+            self._local.conn = conn
+            self._local.depth = 1
+            try:
+                yield
+            finally:
+                self._local.depth = 0
+                self._local.conn = None
 
     def _check_open(self) -> None:
         if self._closed:
             raise psycopg.ProgrammingError(
-                "PostgresSessionBackend: connection is closed"
+                "PostgresSessionBackend: pool is closed"
             )
 
     def close(self) -> None:
         if self._closed:
             return
         try:
-            self._conn.close()
+            self._pool.close()
         finally:
             self._closed = True
 
@@ -103,7 +155,7 @@ class PostgresSessionStore:
 
     @property
     def _conn(self) -> psycopg.Connection[dict[str, Any]]:
-        return self._backend._conn
+        return self._backend.conn
 
     @property
     def _lock(self) -> threading.RLock:
@@ -129,7 +181,7 @@ class PostgresSessionStore:
     # ------------------------------------------------------------------
 
     def session_exists(self, key: str) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT 1 FROM sessions WHERE tenant_id = %s AND key = %s",
@@ -147,7 +199,7 @@ class PostgresSessionStore:
         metadata: dict[str, Any],
     ) -> None:
         payload = json.dumps(metadata or {}, ensure_ascii=False)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 """
@@ -166,7 +218,7 @@ class PostgresSessionStore:
             self._conn.commit()
 
     def update_last_consolidated(self, key: str, last_consolidated: int) -> None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 """
@@ -179,7 +231,7 @@ class PostgresSessionStore:
             self._conn.commit()
 
     def get_session_meta(self, key: str) -> dict[str, Any] | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 """
@@ -203,7 +255,7 @@ class PostgresSessionStore:
         }
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 """
@@ -299,7 +351,7 @@ class PostgresSessionStore:
             ORDER BY s.{safe_sort_by} {safe_sort_order}, s.key ASC
             LIMIT %s OFFSET %s
         """
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             count_row = self._conn.execute(_q(count_sql), tuple(params)).fetchone()
             rows = self._conn.execute(
@@ -332,7 +384,7 @@ class PostgresSessionStore:
     ) -> dict[str, Any]:
         now = _now_iso()
         payload = json.dumps(metadata or {}, ensure_ascii=False)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 """
@@ -383,7 +435,7 @@ class PostgresSessionStore:
             set_parts.append("last_proactive_at = %s")
             params.append(last_proactive_at)
         params.extend([self._tenant_id, key])
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             cur = self._conn.execute(
                 _q(
@@ -398,7 +450,7 @@ class PostgresSessionStore:
         return self.get_session_meta(key)
 
     def delete_session(self, key: str, *, cascade: bool = False) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             if not cascade:
                 row = self._conn.execute(
@@ -426,7 +478,7 @@ class PostgresSessionStore:
         if not clean_keys:
             return 0
         placeholders = ",".join("%s" for _ in clean_keys)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             if not cascade:
                 row = self._conn.execute(
@@ -465,7 +517,7 @@ class PostgresSessionStore:
         last_proactive_at: str | None = None,
     ) -> None:
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 """
@@ -488,7 +540,7 @@ class PostgresSessionStore:
             self._conn.commit()
 
     def get_presence(self, key: str) -> dict[str, str | None] | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 """
@@ -506,7 +558,7 @@ class PostgresSessionStore:
         }
 
     def list_presence(self) -> dict[str, dict[str, str | None]]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 """
@@ -526,7 +578,7 @@ class PostgresSessionStore:
         }
 
     def most_recent_user_at(self) -> str | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 """
@@ -542,7 +594,7 @@ class PostgresSessionStore:
 
     def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
         like_key = f"{channel}:%"
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT key, metadata_json FROM sessions "
@@ -567,7 +619,7 @@ class PostgresSessionStore:
     # ------------------------------------------------------------------
 
     def count_messages(self, session_key: str) -> int:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT COUNT(1) AS c FROM messages "
@@ -584,7 +636,7 @@ class PostgresSessionStore:
         的原子 max 自增（UPDATE ... CASE WHEN）+ UNIQUE(tenant_id, session_key,
         seq) 保证，单连接 + RLock 下不存在竞态。
         """
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             meta = self._conn.execute(
                 "SELECT next_seq FROM sessions "
@@ -619,7 +671,7 @@ class PostgresSessionStore:
             else None
         )
         extra_payload = json.dumps(extra or {}, ensure_ascii=False)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 """
@@ -666,7 +718,7 @@ class PostgresSessionStore:
         return row
 
     def fetch_session_messages(self, session_key: str) -> list[dict[str, Any]]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 """
@@ -720,7 +772,7 @@ class PostgresSessionStore:
             ORDER BY {safe_sort_by} {safe_sort}, seq {safe_sort}, id ASC
             LIMIT %s OFFSET %s
         """
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             count_row = self._conn.execute(_q(count_sql), tuple(params)).fetchone()
             rows = self._conn.execute(
@@ -731,7 +783,7 @@ class PostgresSessionStore:
         return [self._row_to_message(row) for row in rows], total
 
     def get_message(self, message_id: str) -> dict[str, Any] | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 """
@@ -775,7 +827,7 @@ class PostgresSessionStore:
         if not set_parts:
             return self.get_message(message_id)
 
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT session_key FROM messages "
@@ -804,7 +856,7 @@ class PostgresSessionStore:
         return self.get_message(message_id)
 
     def delete_message(self, message_id: str) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT session_key FROM messages "
@@ -834,7 +886,7 @@ class PostgresSessionStore:
             return 0
         placeholders = ",".join("%s" for _ in clean_ids)
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 f"SELECT DISTINCT session_key FROM messages "
@@ -868,7 +920,7 @@ class PostgresSessionStore:
             return 0
         placeholders = ",".join("%s" for _ in clean_ids)
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             try:
                 seq_rows = self._conn.execute(
@@ -945,7 +997,7 @@ class PostgresSessionStore:
             return []
 
         results: list[dict[str, Any]] = []
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             for sk, seqs in session_seqs.items():
                 expanded: set[int] = set()
@@ -975,7 +1027,7 @@ class PostgresSessionStore:
             f"FROM messages WHERE tenant_id = %s AND id IN ({placeholders}) "
             f"ORDER BY CASE id {order_expr} END"
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 _q(sql), tuple([self._tenant_id, *ids, *ids])
@@ -1033,7 +1085,7 @@ class PostgresSessionStore:
             f"{where_sql} AND ({term_conditions_or}) "
             f"ORDER BY match_score DESC, m.seq DESC LIMIT %s OFFSET %s"
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             count_row = self._conn.execute(_q(count_sql), tuple(count_params)).fetchone()
             rows = self._conn.execute(_q(data_sql), tuple(data_params)).fetchall()
