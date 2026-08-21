@@ -136,7 +136,7 @@ Phase 1 的目标调整为：
 - [x] 移除多用户路径隐式 `tenant_id="default"`，增加 A/B tenant 越权测试（M4H-2：`test_tenant_isolation.py` / `test_dashboard_api.py` / `test_memory_undo.py`）
 - [x] 定型 sync pool + bounded executor，确保 DB 调用不直接阻塞 event loop（M4H-3，`34c0f4c8` ADR + `3094b880` run_db 接入 + `8eddd528` lag probe）
 - [x] `pool_size` 控制真实 adapter；transaction recovery、pool exhaustion 和 shutdown 有测试（M4H-3，`55787a9e` pool + `8c9e96fe` 生命周期 + `c61d4d75` rollback + `1f85359a` 耗尽/并发）
-- [x] 首次用户写入不执行动态分区 DDL，改为幂等 tenant provisioning（M4H-4，`4c50a0e0`–`f056d5ea`，见 [`m4h-4-partition-provisioning.md`](m4h-4-partition-provisioning.md)）
+- [x] 首次用户写入不执行动态分区 DDL，改为幂等 tenant provisioning（M4H-4，`4c50a0e0`–`f04c62c7`，见 [`m4h-4-partition-provisioning.md`](m4h-4-partition-provisioning.md)）
 - [x] Phase 1 storage 范围 pyright error 清零（main 37 / test 29 基线持平），全量测试相对 main 基线无回归（main 83 failed/806 passed/5 收集错误 → 分支 84 failed/884 passed/0 收集错误；分支独有失败仅 `test_kernel_phase_order.py` 2 个，断言未实现的 `ProactivePhaseRunner` stub，生产与 main 字节一致、main 从未运行，见 [m4.5-architecture-hardening.md](m4.5-architecture-hardening.md) M4H-2 证据）
 - [x] 审查并处理 `6d09bc52` 删除的 15 个非存储测试文件；不得以删除测试替代覆盖迁移（M4H-0 证据：15 个文件删除全部合理，不在本分支恢复）
 
