@@ -17,6 +17,7 @@ from infra.storage.postgres_memory_store import PostgresMemoryStore
 from infra.storage.postgres_session_store import PostgresSessionStore
 from memory2.store import MemoryStore2
 from session.store import SessionStore
+from tests.provision_util import provision_partition
 
 DIM = 1024
 
@@ -69,7 +70,10 @@ def _emb(base: int, mag: float = 1.0) -> list[float]:
 def _open_memory(backend: str, pg_url: str, tmp_path: Path, tenant: str) -> MemoryStore2 | PostgresMemoryStore:
     if backend == "sqlite":
         return MemoryStore2(tmp_path / f"m_{uuid.uuid4().hex[:6]}.db", vec_dim=DIM)
-    return PostgresMemoryStore(pg_url, tenant_id=tenant, vec_dim=DIM)
+    store = PostgresMemoryStore(pg_url, tenant_id=tenant, vec_dim=DIM)
+    # 写路径已 fail-fast（M4H-4）：分区由测试前置建好，不再懒建。
+    provision_partition(pg_url, tenant)
+    return store
 
 
 def _seed_memory(st) -> None:

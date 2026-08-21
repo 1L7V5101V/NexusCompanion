@@ -13,15 +13,18 @@ worker）按 m4h-4 ADR §2 的 commit 2-5 落地。
 from __future__ import annotations
 
 import asyncio
-import hashlib
 from collections.abc import Awaitable, Callable
 from enum import Enum
-import re
 from typing import Any, Protocol, runtime_checkable
 
 import psycopg
 from psycopg import sql as pgsql
 
+from infra.storage.partitioning import (
+    PartitionNotReady,
+    PartitionProvisioningFailed,
+    partition_name_for_tenant,
+)
 from infra.storage.postgres_memory_store import PostgresMemoryBackend
 
 __all__ = [
@@ -34,8 +37,7 @@ __all__ = [
     "partition_name_for_tenant",
 ]
 
-# 全局 advisory 锁：序列化跨进程/线程的分区创建。本模块是控制路径所有者；
-# postgres_memory_store 里的同名常量在 commit 5 移除懒 DDL 时一并删除。
+# 全局 advisory 锁：序列化跨进程/线程的分区创建。控制路径唯一所有者。
 _PARTITION_LOCK_KEY = 872_001_457
 
 
@@ -50,27 +52,6 @@ class PartitionStatus(str, Enum):
     PENDING = "pending"
     READY = "ready"
     FAILED = "failed"
-
-
-class PartitionNotReady(Exception):
-    """require_ready 时分区尚未 READY（PENDING 或探测缺失）。
-
-    turn 路径 fail-fast 哨兵：``retryable=True`` 表达控制错误语义，调用方
-    重试即可（worker 通常在毫秒级完成 provisioning）。
-    """
-
-    retryable = True
-    error_type = "partition_not_ready"
-
-
-class PartitionProvisioningFailed(Exception):
-    """provisioning 尝试耗尽仍 FAILED，需人工介入。
-
-    ``retryable=False``：重复请求不会自愈，应告警并检查 DDL 失败根因。
-    """
-
-    retryable = False
-    error_type = "partition_provisioning_failed"
 
 
 @runtime_checkable
@@ -90,19 +71,6 @@ class TenantProvisioning(Protocol):
     async def require_ready(self, tenant_id: str) -> None: ...
 
     def provision_tenant(self, tenant_id: str) -> None: ...
-
-
-def partition_name_for_tenant(tenant_id: str) -> str:
-    """稳定 memory_items 分区名：可读前缀 + 48-bit 唯一后缀（ADR §1.4）。
-
-    有损 sanitize 只用于可读前缀（[:30]），唯一性由 ``md5(原始 tenant_id)[:12]``
-    保证（5000 tenant 碰撞概率 ~4e-8），不再依赖有损字符替换；总长 ≤ 56 ≤ PG 63
-    字符标识符限制。分区 bound 值仍是原始 tenant_id（``sql.Literal``），
-    本函数只决定分区标识符。
-    """
-    readable = re.sub(r"[^A-Za-z0-9_]", "_", tenant_id)[:30]
-    digest = hashlib.md5(tenant_id.encode("utf-8")).hexdigest()[:12]
-    return f"memory_items_{readable}_{digest}"
 
 
 class TenantProvisioningService:

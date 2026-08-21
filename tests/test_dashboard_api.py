@@ -21,6 +21,7 @@ from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
+from tests.provision_util import provision_partition
 
 
 class _TrackedTestClient(_RawTestClient):
@@ -930,6 +931,9 @@ def test_dashboard_sessions_and_memories_isolated_by_tenant(tmp_path) -> None:
         pytest.skip(f"本地 PG 不可用（{_PG_URL}），跳过 dashboard 越权用例")
     tenant_a = _unique_tenant("dash_a")
     tenant_b = _unique_tenant("dash_b")
+    # 写路径已 fail-fast（M4H-4）：memory 写前先由测试前置建好分区。
+    provision_partition(_PG_URL, tenant_a)
+    provision_partition(_PG_URL, tenant_b)
     try:
         seed = StorageRuntime(_PG_URL, tmp_path / "m.db", tmp_path / "s.db")
         a = seed.for_tenant(TenantContext(tenant_id=tenant_a))

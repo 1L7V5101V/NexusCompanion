@@ -22,6 +22,7 @@ from infra.storage.interfaces import TenantContext
 from infra.storage.runtime import StorageRuntime
 from memory2.store import VEC_DIM
 from session.manager import SessionManager
+from tests.provision_util import provision_partition
 
 PG_URL = os.environ.get(
     "NEXUS_TEST_PG_URL",
@@ -62,6 +63,9 @@ def _clean_pg(url: str, tenant: str) -> None:
 def iso(pg_url: str) -> Iterator[tuple[str, str]]:
     a = _unique_tenant("a")
     b = _unique_tenant("b")
+    # 写路径已 fail-fast（M4H-4）：memory 写前先由测试前置建好分区。
+    provision_partition(pg_url, a)
+    provision_partition(pg_url, b)
     yield a, b
     _clean_pg(pg_url, a)
     _clean_pg(pg_url, b)

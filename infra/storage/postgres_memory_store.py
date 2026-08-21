@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -24,9 +23,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, LiteralString, cast
 
 import psycopg
-from psycopg import sql
 from pgvector.psycopg import register_vector
 
+from infra.storage.partitioning import PartitionNotReady, partition_name_for_tenant
 from infra.storage.pool import PostgresPool
 from memory2.store import (
     MemoryStore2 as _SQLiteMemoryStore,
@@ -48,9 +47,6 @@ from memory2.store import (
 logger = logging.getLogger(__name__)
 
 VEC_DIM = 1024
-# 固定 advisory lock key：并发（跨进程）创建同一 tenant 分区时串行化，
-# 避免 CREATE TABLE ... PARTITION OF 的 race condition。
-_PARTITION_LOCK_KEY = 872_001_457
 # extra_json 是 TEXT，->> 需要显式 cast 为 jsonb（写入侧始终 json.dumps，保证合法）
 _SCOPE_CHANNEL_SQL = "COALESCE(TRIM(extra_json::jsonb->>'scope_channel'), '')"
 _SCOPE_CHAT_SQL = "COALESCE(TRIM(extra_json::jsonb->>'scope_chat_id'), '')"
@@ -90,11 +86,6 @@ def _to_iso(value: object) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
-
-
-def _sanitize_tenant(value: str) -> str:
-    """分区名只保留字母/数字/下划线，防止 tenant_id 注入标识符。"""
-    return re.sub(r"[^A-Za-z0-9_]", "_", value)
 
 
 def _pg_time_prefilter_clauses(
@@ -238,7 +229,6 @@ class PostgresMemoryStore:
             self._backend = PostgresMemoryBackend(postgres_url, vec_dim=vec_dim)
             self._owns_backend = True
         self._tenant_id = tenant_id
-        self._sanitized_tenant = _sanitize_tenant(tenant_id)
 
     @property
     def _conn(self) -> psycopg.Connection[Any]:
@@ -275,36 +265,28 @@ class PostgresMemoryStore:
     # 分区管理
     # ------------------------------------------------------------------
 
-    def _ensure_partition(self) -> None:
-        """确保当前 tenant 的分区存在（幂等，懒创建）。
+    def _assert_partition_ready(self) -> None:
+        """只读 readiness 检查：分区必须已由 provisioning control path 建好。
 
-        LIST 分区不建 DEFAULT 分区（会混装多租户，破坏决策 B 的 HNSW
-        隔离）。新 tenant 由首次写入时在此动态建分区。
+        写路径不执行 DDL；分区缺失直接抛 ``PartitionNotReady``（fail-fast），
+        绝不在此懒建分区（M4H-4：DDL 只归独立 control worker）。只读
+        ``to_regclass`` 探测 + 缓存填充，无 advisory 锁、无 commit。
         """
-        if self._sanitized_tenant in self._backend._partitions_known:
+        name = partition_name_for_tenant(self._tenant_id)
+        if name in self._backend._partitions_known:
             return
         with self._lock, self._backend.connection():
             self._check_open()
-            if self._sanitized_tenant in self._backend._partitions_known:
+            if name in self._backend._partitions_known:
                 return
-            self._conn.execute(
-                "SELECT pg_advisory_xact_lock(%s)", (_PARTITION_LOCK_KEY,)
-            )
             row = self._conn.execute(
-                "SELECT to_regclass(%s)", (f"memory_items_{self._sanitized_tenant}",)
+                "SELECT to_regclass(%s)", (name,)
             ).fetchone()
             if row is None or row[0] is None:
-                # 标识符经 sql.Identifier / sql.Literal 安全拼接（分区名已 sanitize）
-                self._conn.execute(
-                    sql.SQL(
-                        "CREATE TABLE {} PARTITION OF memory_items FOR VALUES IN ({})"
-                    ).format(
-                        sql.Identifier(f"memory_items_{self._sanitized_tenant}"),
-                        sql.Literal(self._tenant_id),
-                    )
+                raise PartitionNotReady(
+                    f"tenant {self._tenant_id} partition {name} not provisioned"
                 )
-            self._conn.commit()
-            self._backend._partitions_known.add(self._sanitized_tenant)
+            self._backend._partitions_known.add(name)
 
     # ------------------------------------------------------------------
     # 写操作
@@ -331,7 +313,7 @@ class PostgresMemoryStore:
         )
         with self._lock, self._backend.connection():
             self._check_open()
-            self._ensure_partition()
+            self._assert_partition_ready()
             existing = self._conn.execute(
                 "SELECT id, status FROM memory_items "
                 "WHERE tenant_id=%s AND content_hash=%s AND memory_type=%s",
@@ -406,7 +388,7 @@ class PostgresMemoryStore:
         )
         with self._lock, self._backend.connection():
             self._check_open()
-            self._ensure_partition()
+            self._assert_partition_ready()
             try:
                 already = self._conn.execute(
                     "SELECT item_id FROM consolidation_events "
@@ -515,7 +497,7 @@ class PostgresMemoryStore:
         )
         with self._lock, self._backend.connection():
             self._check_open()
-            self._ensure_partition()
+            self._assert_partition_ready()
             try:
                 if new_extra is not None:
                     self._conn.execute(

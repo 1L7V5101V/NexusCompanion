@@ -12,6 +12,7 @@ from infra.storage.interfaces import TenantContext
 from infra.storage.runtime import StorageRuntime
 from memory2.store import MemoryStore2
 from plugins.default_memory.engine import DefaultMemoryEngine
+from tests.provision_util import provision_partition
 
 
 def _item_id(result: str) -> str:
@@ -187,6 +188,9 @@ def test_undo_isolated_by_tenant(tmp_path: Path) -> None:
         pytest.skip(f"本地 PG 不可用（{_PG_URL}），跳过 undo 越权用例")
     tenant_a = _unique_tenant("undo_a")
     tenant_b = _unique_tenant("undo_b")
+    # 写路径已 fail-fast（M4H-4）：memory 写前先由测试前置建好分区。
+    provision_partition(_PG_URL, tenant_a)
+    provision_partition(_PG_URL, tenant_b)
     runtime = None
     try:
         runtime = StorageRuntime(_PG_URL, tmp_path / "m.db", tmp_path / "s.db")
