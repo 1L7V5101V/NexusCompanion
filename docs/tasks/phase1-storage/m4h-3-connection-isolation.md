@@ -1,6 +1,6 @@
 # M4H-3 connection 与 event-loop 隔离（计划 + ADR）
 
-> 状态：ADR 已定案（sync pool + bounded executor），实现进行中（2026-08-21）
+> 状态：ADR 已定案（sync pool + bounded executor），实现已完成（8 commits，2026-08-21）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
 
@@ -72,14 +72,14 @@ StorageRuntime                              TenantStorage（view）
 
 ## 3. 提交序列（8 commits）
 
-1. **ADR/设计决策**（本 commit）：`m4h-3-connection-isolation.md` + `m4.5-architecture-hardening.md` §M4H-3 补计划链接。
-2. **StorageRuntime 资源所有权与显式 shutdown**：runtime 持 pool + executor；`close()` 顺序 executor → pool；view 不持有 pool/executor；sqlite 路径不受影响。
-3. **PG pool adapter**：`psycopg_pool.ConnectionPool` 封装（min/max=pool_size、timeout、max_waiting、`configure=register_vector+dict_row`）；`pool_size` 真实生效；`_check_pg_schema` 改经 pool 临时借出；owned 构造保留测试用。
-4. **同步 DB 调用移出 event loop**：asyncio 边界 `run_in_executor`（turn memory/session 调用、dashboard handlers、undo）；同步入口直接调。
-5. **transaction rollback/recovery**：借出连接失败先 rollback 再归还；`pool.check()` 清理坏连接；aborted transaction 恢复测试。
-6. **pool exhaustion 与并发测试**：并发借出、借出超时、`max_waiting` 上限、连接归还后复用。
-7. **event-loop lag probe**：可重复 probe 证明 DB 调用不阻塞 event loop。
-8. **文档证据与 Phase 1 checkbox**：m4h-3 证据、`m4.5` §M4H-3 checkbox `[x]`、`phase1-storage.md` 勾 gate。
+1. **ADR/设计决策**（`34c0f4c8`）：`m4h-3-connection-isolation.md` + `m4.5-architecture-hardening.md` §M4H-3 补计划链接。
+2. **StorageRuntime 资源所有权与显式 shutdown**（`8c9e96fe`）：runtime 持 pool + executor；`close()` 顺序 executor → pool；view 不持有 pool/executor；sqlite 路径不受影响。
+3. **PG pool adapter**（`55787a9e`）：`psycopg_pool.ConnectionPool` 封装（min/max=pool_size、timeout、max_waiting、`configure=register_vector+dict_row`）；`pool_size` 真实生效；owned 构造保留测试用。
+4. **同步 DB 调用移出 event loop**（`3094b880`）：asyncio 边界 `run_in_executor`（turn memory/session 调用、dashboard handlers、undo）；同步入口直接调。
+5. **transaction rollback/recovery**（`c61d4d75`）：借出连接失败先 rollback 再归还；`pool.check()` 清理坏连接；aborted transaction 恢复测试。
+6. **pool exhaustion 与并发测试**（`1f85359a`）：并发借出、借出超时、`max_waiting` 上限、连接归还后复用。
+7. **event-loop lag probe**（`8eddd528`）：可重复 probe 证明 DB 调用不阻塞 event loop。
+8. **文档证据与 Phase 1 checkbox**（本 commit）：m4h-3 证据、`m4.5` §M4H-3 checkbox `[x]`、`phase1-storage.md` 勾 gate。
 
 ## 4. 验证命令
 
@@ -90,3 +90,9 @@ D:\.Projects\NexusCompanion\.venv\Scripts\python.exe -m pytest -q -W error tests
 npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --level error
 npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrightconfig.tests.json --level error
 ```
+
+## 5. 实现证据与偏离记录（2026-08-21）
+
+M4H-3 全部 8 commits 已完成并提交（哈希见 §3）。实现证据已汇总到 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md) §M4H-3：pool 预算真实生效、executor 线程数=pool_size、shutdown 顺序 executor→pool、借出异常先 rollback、`pool.check()` 清理坏连接、并发/耗尽/超时/`max_waiting` 测试、可重复 event-loop lag probe（对照组直接同步调用漏拍 ~200ms，`run_db` 隔离下心跳保持 ~10ms）。
+
+**偏离记录**：ADR §3.3 原约定「`_check_pg_schema` 改经 pool 临时借出」，实现保留临时 `psycopg.connect`。原因：`_check_pg_schema` 是建池前的单次 pre-flight schema 探测（`create_store`/`create_session_store`/`create_storage_runtime` 入口，pool 尚不存在），为单次探测临时建池会白白拉起 min_size 连接；偏离仅限一次性探测，真实借出路径全部经 pool。§3.3 已按实现更新。
