@@ -124,6 +124,7 @@ class _BuildTurnCommittedModule:
             session_key=state.session_key,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            tenant_id=msg.tenant_id,
             input_message=msg.content,
             persisted_user_message=None if omit_user_turn else msg.content,
             assistant_response=snap.ctx.reply,

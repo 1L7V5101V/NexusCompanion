@@ -51,6 +51,7 @@ from bus.events_lifecycle import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
+from infra.storage.tenancy import tenant_id_for_channel
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
@@ -572,6 +573,7 @@ class AgentLoop:
             channel=msg.channel,
             sender=msg.sender,
             chat_id=msg.chat_id,
+            tenant_id=msg.tenant_id,
             content=msg.content,
             timestamp=msg.timestamp,
             media=msg.media,
@@ -727,6 +729,7 @@ class AgentLoop:
             channel=channel,
             sender=sender,
             chat_id=chat_id,
+            tenant_id=tenant_id_for_channel(channel, chat_id),
             content=content,
             media=list(media or []),
             metadata=metadata,

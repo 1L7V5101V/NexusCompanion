@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from agent.config import _normalize_cli_socket_endpoint
 from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
+from infra.storage.tenancy import tenant_id_for_channel
 
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
@@ -136,6 +137,7 @@ class IPCServerChannel:
                         channel=CHANNEL,
                         sender="cli-user",
                         chat_id=chat_id,
+                        tenant_id=tenant_id_for_channel(CHANNEL, chat_id),
                         content=content,
                         metadata=metadata,
                     )
