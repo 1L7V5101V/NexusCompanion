@@ -7,8 +7,10 @@
 - PG 下不同 tenant 的 view SQL tenant 作用域正确（真实 CRUD 隔离）。
 postgres 用例依赖本地 PG，无 PG 自动 skip。
 """
+import asyncio
 import os
 import threading
+import time
 
 import psycopg
 import pytest
@@ -240,5 +242,62 @@ async def test_sqlite_run_db_runs_inline(tmp_path) -> None:
             return f"thread-{threading.get_ident()}"
 
         assert await runtime.run_db(_probe) == f"thread-{loop_thread}"
+    finally:
+        runtime.close()
+
+
+# ── event-loop lag probe（M4H-3 commit 7）───────────────────────────────────
+
+
+@pytest.mark.postgres
+async def test_event_loop_lag_probe(pg_alive, tmp_path) -> None:
+    """可重复 probe：run_db 隔离下 DB 调用不阻塞 event loop。
+
+    同一条 ``pg_sleep(0.2)`` DB 调用两种执行方式对照：
+    - 控制组：直接在 loop 线程同步调用（反模式），heartbeat 漏拍 ~200ms；
+    - 隔离组：经 ``run_db`` 走 executor，heartbeat 保持 ~10ms 周期。
+
+    probe 直接借出 pool 连接执行 pg_sleep，只为制造确定时长的 DB 调用；
+    生产路径的隔离已由 test_pg_run_db_runs_db_in_executor 覆盖。
+    """
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db", pool_size=2)
+    try:
+        interval = 0.01
+        gap_history: list[float] = []
+
+        def _slow_db() -> None:
+            with runtime._memory_backend._pool.connection() as conn:
+                conn.execute("SELECT pg_sleep(0.2)")
+
+        async def measure(blocking: bool) -> float:
+            """窗口内最大心跳间隔：blocking=True 时直接同步调 DB（阻塞 loop）。"""
+            gap_history.clear()
+            stop = asyncio.Event()
+
+            async def heartbeat() -> None:
+                prev = time.monotonic()
+                while not stop.is_set():
+                    await asyncio.sleep(interval)
+                    now = time.monotonic()
+                    gap_history.append(now - prev)
+                    prev = now
+
+            hb = asyncio.ensure_future(heartbeat())
+            await asyncio.sleep(0.03)
+            if blocking:
+                _slow_db()
+            else:
+                await runtime.run_db(_slow_db)
+            await asyncio.sleep(0.03)
+            stop.set()
+            await hb
+            return max(gap_history)
+
+        blocked_max = await measure(blocking=True)
+        isolated_max = await measure(blocking=False)
+        # 控制组确实阻塞过（pg_sleep 生效），对照才有意义
+        assert blocked_max >= 0.15
+        # 隔离组心跳保持 ~10ms 量级；若 DB 调用进了 loop 会漏拍至 ~200ms
+        assert isolated_max < 0.08
     finally:
         runtime.close()
