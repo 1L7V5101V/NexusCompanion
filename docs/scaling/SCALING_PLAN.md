@@ -341,7 +341,7 @@ StorageRuntime
 
 ### Phase 1：PostgreSQL + pgvector 存储基础（P0）
 
-**状态：`feature/scaling-phase1-storage` 已完成 M0-M4；M4H-1/M4H-2 已完成，M4H-3 尚未开始，仍未达到 M4.5 merge/cutover gate。**
+**状态：`feature/scaling-phase1-storage` 已完成 M0-M4 + M4H-1~M4H-4（storage foundation）；M4H-5 merge readiness 进行中（范围冻结），达到即 storage foundation merge-ready；M5-M7 拆为 Phase 1B/1C 在独立分支执行。**
 **旧分支：`feature/pg-migration` 已被该分支继承，视为 superseded。**
 
 详细任务记录位于该分支中的 `docs/tasks/phase1-storage/phase1-storage.md`；合并前该文件不在 `main`。
@@ -355,8 +355,10 @@ StorageRuntime
 - M4：工厂与主要构造点接线、undo 语义收口。
 - M4H-1：storage Protocol/interface、factory/holder 收口和 SQLite/PG 共同契约测试。
 - M4H-2：`TenantContext` / `TenantResolver` 全链路接线，以及 A/B tenant isolation、dashboard、undo 和 source_ref 越权测试。
+- M4H-3：sync pool + bounded executor，`run_db` 把同步 DB 调用移出 event loop，pool 生命周期、rollback/recovery、耗尽/并发、lag probe 有测试。
+- M4H-4：分区 provisioning 控制面（两阶段 readiness gate + 独立 control worker），store 写路径移除懒 DDL，5000 tenant 基准落库（`results/m4h4_partition_provisioning.json`）。
 
-这些工作证明了“SQLite 与 PostgreSQL 可以实现相近业务语义”，但 M4H-3 尚未开始；当前 adapter 的连接/阻塞模型仍未达到并发与生产 merge gate。
+这些工作证明了“SQLite 与 PostgreSQL 可以实现相近业务语义”，并通过 M4H-3/M4H-4 达成连接模型隔离与 provisioning 控制面；当前进入 M4H-5 merge readiness，目标是达到 storage foundation merge gate。
 
 #### 1.2 merge 前必须补齐
 
@@ -366,31 +368,30 @@ StorageRuntime
 - 多用户路径的隐式 `tenant_id="default"` 已移除，并有 A/B tenant 越权测试。
 - 后续连接池实现必须保持进程级共享；禁止按 tenant 创建长期 connection/store 单例。
 
-##### B. 连接与事件循环模型（M4H-3 尚未开始）
+##### B. 连接与事件循环模型（M4H-3 已完成）
 
-当前 `PostgresMemoryStore` / `PostgresSessionStore` 使用同步 psycopg 单连接。M4H-3 必须先形成 ADR 级决策，再实现以下两条路线之一：
+M4H-3 已定案并落地：**同步 pool + 有界 thread executor**（ADR `34c0f4c8`，非 async adapter）。`StorageRuntime.run_db` 经 `loop.run_in_executor(bounded)` 把同步 DB 调用移出 event loop，已接入 retriever/memorizer/engine/worker/session/before_turn/dashboard。资源模型：进程级 `StorageRuntime` 持 pool + bounded executor，request-scoped `TenantStorage` view 不持有连接。
 
-1. **推荐目标**：psycopg async/SQLAlchemy async + 进程级 pool；或
-2. **过渡方案**：同步 pool + 有界 thread executor，将所有 DB 调用移出 event loop。
-
-无论哪种方案，都必须满足：
+已满足（有测试证据）：
 
 - pool 配置真实生效；
 - `worker_count × pool_max` 不超过数据库连接预算；
 - 事务失败后连接可恢复，不留下 aborted transaction；
 - shutdown 显式关闭 pool，不依赖 `__del__`；
-- 不共享一个 cursor/connection 跨并发请求。
+- 不共享一个 cursor/connection 跨并发请求；
+- 同步 DB 调用不阻塞 event loop（`8eddd528` lag probe 证明）。
 
 ##### C. 分区生产验证
 
-当前每 tenant 一个 LIST 分区，并在首次写入时动态 DDL。合成 recall 结果不足以证明生产可用，必须验证：
+原为「每 tenant 一个 LIST 分区，并在首次写入时动态 DDL」。M4H-4 已把动态 DDL 移出用户 hot path（两阶段 readiness gate + 独立 control worker），并完成 5000 tenant provisioning 基准（`results/m4h4_partition_provisioning.json`）：顺序 provisioning p50 23.1ms / p99 47.9ms、5000 tenant burst 全量收敛 18.3s、catalog delta +10000 查询 15.5ms、planning 98.6ms（冷 EXPLAIN）、分区裁剪单分区、失败重试收敛。该基准证明 **provisioning、catalog lookup 和 partition pruning**，**不等价于完整 5000 并发用户生产验收**。清单：
 
-- 5000 分区下的 planning latency、catalog 大小、Alembic migration 时间、备份/恢复时间；
-- 真实 1024 维 embedding、真实 tenant 大小分布下的 recall/P95；
-- autovacuum、REINDEX、空 tenant 回收；
-- 首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning；
-- 分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞；
-- HNSW 参数和小分区 seq scan 的切换阈值。
+- [x] 首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning（M4H-4）
+- [x] 分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞（M4H-4 `partition_name_for_tenant`）
+- [x] 5000 分区下的 planning latency、catalog 大小（M4H-4 基准，冷 EXPLAIN 98.6ms）
+- [ ] 真实 1024 维 embedding、真实 tenant 大小分布下的 recall/P95（Phase 1C M7）
+- [ ] autovacuum、REINDEX、空 tenant 回收（Phase 1C M7）
+- [ ] Alembic migration 时间、备份/恢复时间（Phase 1B M5 / Phase 1C M7）
+- [ ] HNSW 参数和小分区 seq scan 的切换阈值（Phase 1C M7）
 
 若 5000 LIST 分区未通过 gate，再评估固定 hash bucket、冷热 tenant 分层或仅为大 tenant 建专属分区；当前 LIST partition 仅是 Phase 1 的 provisional 方案，不因已有实现而固化。
 
@@ -408,11 +409,10 @@ M4H-2 已完成 tenant 运行时接线，但当前 PostgreSQL adapter 仍不承�
 
 #### 1.4 迁移与切换
 
-M5-M7 调整为：
+M5-M7 拆为独立阶段，**不在 `feature/scaling-phase1-storage` 长期分支堆叠**（M4H-5 通过后达到 storage foundation merge-ready）：
 
-- **M5：迁移工具与校验**：批量 COPY、断点续传、行数/哈希/抽样语义校验。
-- **M6：主数据源切换**：按第 8 节迁移状态机执行，不采用无主次的简单双写。
-- **M7：生产基准与对等**：真实向量、BM25、5000 分区、连接池、故障恢复。
+- **Phase 1B（M5 迁移工具与校验 + M6 主数据源切换）**：批量 COPY、断点续传、行数/哈希/抽样语义校验；按第 8 节迁移状态机执行，不采用无主次的简单双写。
+- **Phase 1C（M7 生产基准与对等）**：真实向量、BM25、完整 5000 并发用户、连接池、故障恢复、PITR。
 - **Cache：条件任务**：只有 PG 基线显示重复读是瓶颈且可定义可靠失效时才启用。
 
 #### Phase 1 Exit gate
@@ -658,7 +658,7 @@ Gateway 扩缩容依据 active connections、send buffer、event-loop lag 和 re
 | 工作                        | 可立即开始       | 依赖                            | 说明                                |
 | ------------------------- | ----------- | ----------------------------- | --------------------------------- |
 | Phase 0 指标与负载工具           | 是           | 无                             | 所有后续 gate 的基础                     |
-| Phase 1 M5-M7             | 否           | M4.5 Exit gate                | M4.5 通过后依次执行 M5 迁移工具、M6 主数据源切换、M7 生产基准 |
+| Phase 1B/1C（M5-M7）       | 否           | M4H-5 merge gate（storage foundation merge-ready） | M4H-5 通过后在独立 branch/worktree 依次执行 M5 迁移工具、M6 主数据源切换、M7 生产基准；不堆叠 storage 长期分支 |
 | TenantResolver 设计与越权测试    | 是           | 身份模型确认                        | 与存储分支协调 interface，避免再次默认 tenant   |
 | WebChat 前端静态交互            | 可部分开始       | 稳定事件状态模型                      | 不得把未定的身份/session_key 写死           |
 | Phase 2 TurnAdmission     | 设计可开始，接线后合并 | Phase 1 store interface 稳定    | 会修改 `agent/looping/core.py` 和调用路径 |
@@ -896,7 +896,7 @@ worker_id, runtime_version, provider, model, attempt, duration_ms
 
 按风险和当前分支状态，推荐紧接着执行：
 
-1. M4H-2 已完成；在 `feature/scaling-phase1-storage` 中先完成 **M4H-3 连接池/阻塞模型 ADR 与验证**，再完成 M4H-4 分区 provisioning 和 M4H-5 全量 merge gate。
+1. M4H-2~M4H-4 已完成；在 `feature/scaling-phase1-storage` 中完成 **M4H-5 merge readiness（范围冻结：定向/全量测试、pyright 基线、Exit gate 证据、branch blocker 修复）**，达到 storage foundation merge-ready；随后 M5-M7 拆为 Phase 1B/1C 在独立 branch/worktree 执行。
 2. 在独立低冲突分支完成 **Phase 0 metrics + load harness**，为 Phase 1 M7 和 Phase 2 提供统一证据。
 3. 用小型设计文档定型 **TurnAdmission、IngressQueue envelope、inbox/outbox schema**，再开始 Phase 2/3 编码。
 4. 暂停把 Redis cache 和公网 WebChat 当作当前关键路径；前者等待 PG 基准，后者等待身份与最终投递语义。

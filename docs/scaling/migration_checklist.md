@@ -14,6 +14,13 @@
 > **必须串行**：阶段 2 异步化（与阶段 1 抢 store 调用点，且在 SQLite 上做 asyncio
 > 会写一堆 `run_in_executor` 包装，阶段 1 落地后全部拆掉）。
 
+> **范围冻结（2026-08-22）**：`feature/scaling-phase1-storage` 已完成 M4H-0~M4H-4，进入
+> M4H-5 merge readiness（storage foundation merge-ready，非新功能阶段）。本清单对应关系：
+> **Phase 1A = M0-M4 + M4.5 storage foundation**（本分支）、**Phase 1B = M5-M6
+> migration/cutover**、**Phase 1C = M7 production scale validation**；M5-M7 在独立
+> branch/worktree 执行，不堆叠 storage 分支。未完成的 import、cutover、PITR、真实负载验证
+> 一律不标记为完成。
+
 ## 阶段 0：准备工作（Week 0）
 
 ### 0.1 环境准备
@@ -667,8 +674,10 @@
       `/messages`、`/media`、`/uploads`
 - [ ] **`tenant_id` 只能来自 token，禁止从请求参数读取**
 
-  - [ ] store 实例按请求身份取（`PostgresMemoryStore(url, tenant_id=...)` 已把
-        tenant 绑在实例上，不需给每个查询方法加参数）
+  - [ ] 存储视图按请求身份解析：进程级 `StorageRuntime.for_tenant(ctx).memory` / `.sessions`
+        返回 request-scoped `TenantStorage`（绑定 tenant 的轻量 view）；不为请求新建连接/实例，
+        也不给存储方法加 tenant 参数。**不再按请求构造 `PostgresMemoryStore(url, tenant_id=...)`**
+        （M4H-3/4 后生产资源模型是共享 pool + request-scoped view，见 SCALING_PLAN §4.2）
   - [ ] 审查 `bootstrap/chat_api.py` 所有端点，确认无 `tenant_id` 入参
   - [ ] 一旦可从请求传入，分区隔离即失效
 

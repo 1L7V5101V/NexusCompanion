@@ -4,8 +4,17 @@
 > 分支：`feature/scaling-phase1-storage`（继承 `feature/pg-migration` 的 WIP）
 > 初版日期：2026-08-20
 > 架构复审：2026-08-21
-> 当前状态：M0-M4 功能实现完成；M4.5 架构硬化与 merge gate 进行中；不得进入旧版 Redis M5
+> 当前状态：M0-M4 + M4.5（M4H-0~M4H-4）已完成并验收；M4H-5 merge readiness 进行中（范围冻结，非新功能）；M5-M7 拆独立分支
 > 执行交接：[m4.5-architecture-hardening.md](m4.5-architecture-hardening.md)
+>
+> **范围冻结（2026-08-22）**：M4H-0~M4H-4 已完成并验收，不回滚、不简化已落地的
+> provisioning worker / readiness gate / 5000 tenant benchmark。M4H-5 只做 merge readiness
+> （定向/全量测试、pyright 基线、Exit gate 证据、branch blocker 修复），不新增 storage
+> abstraction、provisioning worker 能力、queue/retry、cache 或大规模重构。M5-M7 拆为
+> **Phase 1A = M0-M4 + M4.5 storage foundation** / **Phase 1B = M5-M6 migration/cutover** /
+> **Phase 1C = M7 production scale validation**，M5-M7 在独立 branch/worktree 执行。
+> 5000 tenant provisioning benchmark 证明 provisioning、catalog lookup 和 partition pruning，
+> **不等价于完整 5000 并发用户生产验收**（真实并发/数据分布、autovacuum/REINDEX、PITR 属 Phase 1C）。
 
 ## 1. 背景与目标
 
@@ -61,7 +70,7 @@ Phase 1 的目标调整为：
 
 **已复用并完成**：PG schema、pgvector 检索骨架、import 表映射、`pg.py`、依赖与配置、SQLite/PG factory、Memory/Session PostgreSQL adapter。
 
-**当前需补齐**：storage interface、`TenantContext` / `TenantResolver`、真实连接池与 event-loop 隔离、tenant isolation 测试、生产分区 provisioning、迁移工具和完整 CI gate。
+**当前需补齐**：storage interface、`TenantContext` / `TenantResolver`、真实连接池与 event-loop 隔离、tenant isolation 测试、生产分区 provisioning、迁移工具和完整 CI gate。（该行反映 M0-M4 复审时的缺口；截至 M4H-4，storage interface、tenant 接线、连接池/event-loop 隔离、分区 provisioning 均已落地并验收，见 §M4.5；迁移工具与完整 CI gate 属 Phase 1B/后续。）
 
 一句话：M0-M4 已证明双 adapter 的功能可行性；M4.5 必须把调用方 interface、tenant、连接生命周期和验证证据收口，才能进入迁移与切换。
 
@@ -140,20 +149,20 @@ Phase 1 的目标调整为：
 - [x] Phase 1 storage 范围 pyright error 清零（main 37 / test 29 基线持平），全量测试相对 main 基线无回归（main 83 failed/806 passed/5 收集错误 → 分支 84 failed/884 passed/0 收集错误；分支独有失败仅 `test_kernel_phase_order.py` 2 个，断言未实现的 `ProactivePhaseRunner` stub，生产与 main 字节一致、main 从未运行，见 [m4.5-architecture-hardening.md](m4.5-architecture-hardening.md) M4H-2 证据）
 - [x] 审查并处理 `6d09bc52` 删除的 15 个非存储测试文件；不得以删除测试替代覆盖迁移（M4H-0 证据：15 个文件删除全部合理，不在本分支恢复）
 
-### M5 迁移工具与校验
+### M5 迁移工具与校验（Phase 1B，独立 branch/worktree，不在本分支执行）
 - [ ] `import_to_pg.py` 使用批量 COPY/批量 insert，支持可配置 batch、进度、断点续传和幂等重跑
 - [ ] 补齐所有 Phase 1 目标表，包括 `memory_replacements`、session、memory 和明确纳入本阶段的插件数据
 - [ ] `verify_migration.py` 提供逐表行数、关键字段 hash、引用完整性和语义抽样
 - [ ] tenant mapping 必须显式；禁止无提示把所有数据导入 `default`
 - [ ] 导入与校验结果可机器读取并保存为迁移证据
 
-### M6 主数据源切换
+### M6 主数据源切换（Phase 1B，独立 branch/worktree，不在本分支执行）
 - [ ] 按主计划 S0-S4 状态机执行：SQLite primary → shadow import → PostgreSQL shadow write/read verify → PostgreSQL primary → SQLite retirement
 - [ ] 每个状态明确 primary、允许写路径、对账方式、进入条件和退出条件
 - [ ] 不采用无主次的简单双写；写 PostgreSQL 后没有反向同步时，不承诺无损回切 SQLite
 - [ ] 完成 staging cutover、PITR 恢复和回滚演练
 
-### M7 生产基准与对等
+### M7 生产基准与对等（Phase 1C，独立 branch/worktree，不在本分支执行）
 - [ ] SQLite/PG 共用契约测试，向量 top-k、关键词、session、dashboard、undo/source_ref 语义达到记录的允许差异
 - [ ] 双后端端到端等价性覆盖完整 PassiveTurn，而非仅 store 层断言
 - [ ] 真实 1024 维 embedding 和真实 tenant 分布下 recall@10、检索 P95 达标
