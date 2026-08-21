@@ -3,7 +3,7 @@
 > 状态：已完成（A–F 全部提交，2026-08-21）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
-> 证据：A `4ac8d8c8` · B `8bffd85b` · C `597feda3` · D1–D3 `4b27de4b`/`e464e6bb`/`abce3d45` · E `555d7079` · F-1 `c7b5daee`（既有测试同步）· F（test_tenant_isolation.py + 文档）
+> 证据：A `4ac8d8c8` · B `8bffd85b` · C `597feda3` · D1–D3 `4b27de4b`/`e464e6bb`/`abce3d45` · E `555d7079` · F-1 `c7b5daee`（既有测试同步）· F `cda8af11`（test_tenant_isolation.py + 文档）
 
 ## Context
 
