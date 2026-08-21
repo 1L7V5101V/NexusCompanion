@@ -24,20 +24,20 @@
 
 ### 0.1 已核实的实现状态
 
-| 领域 | `main` 当前事实 | 本地分支事实 | 架构判断 |
-| --- | --- | --- | --- |
-| Passive turn | `agent/looping/core.py` 已使用 asyncio，但完整 turn 被 `_passive_runtime_lock` 串行化 | Phase 1 分支沿用相同模型 | 当前每进程实质只有 1 个 passive turn 在执行 |
-| LLM transport | `agent/provider.py` 复用 `AsyncOpenAI`；Responses transport 每次请求新建并关闭 client | 未在 Phase 1 改动 | 不需要重写一套 HTTP 客户端；需要统一连接生命周期、配额与重试策略 |
-| 流式输出 | 已有 `StreamDeltaReady` 和部分 channel 流式消费能力 | 未形成跨进程协议 | 应演进现有事件信封，而不是另起一套 `AsyncAgentLoop` |
-| MessageBus | `bus/queue.py` 使用进程内、无界 `asyncio.Queue`；出站重试一次后可能彻底丢失 | 未改动 | 只能用于单进程；横向扩展前必须补持久队列、幂等和 DLQ |
-| Session 顺序 | `SessionManager` 只有进程内按 session 的写锁 | 未改动 | 多 Worker 下不足以保证同 session turn 顺序 |
-| 存储 | `main` 仍是 SQLite | `feature/scaling-phase1-storage` 已完成 M0-M4：配置、接口契约、两个 PG store、工厂与部分接线 | 是迁移基础，不是生产完成态 |
-| PG 连接 | 无 | 两个 PG store 各持有同步 psycopg 单连接与 `threading.RLock`；配置中的 `pool_size` 未成为运行时连接池 | 并发开启前必须修复，否则只是把 SQLite 全局锁换成单连接锁 |
-| 多租户 | channel/session 有身份线索，但没有统一 `TenantContext` | store 默认为 `tenant_id="default"`，调用点未传真实 tenant | 当前不能宣称租户隔离已落地 |
-| 向量检索 | SQLite/sqlite-vec | 每 tenant LIST 分区 + 分区 HNSW 已有合成数据验证 | 保留方向，但需 5000 分区、真实 1024 维、运行时 DDL 的生产验证 |
-| WebChat | `chat_api.py` 已有未鉴权端点；`web_chat_channel.py` 缺失 | `worktree-webchat-jwt-rebuild` 没有领先 `main` 的实现提交 | 视为未开始，不得按分支名计入进度 |
-| Proactive / jobs | 生命周期和调度均为进程内运行态 | 未增加分布式 claim/leader lease | 多副本会重复执行主动任务和插件 job |
-| 可观测性 | 有结构化阶段耗时日志，但无统一指标导出与跨链路 trace | 未改动 | 必须前移到 Phase 0，而不是收尾工作 |
+| 领域               | `main` 当前事实                                                                | 本地分支事实                                                                      | 架构判断                                    |
+| ---------------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------- |
+| Passive turn     | `agent/looping/core.py` 已使用 asyncio，但完整 turn 被 `_passive_runtime_lock` 串行化 | Phase 1 分支沿用相同模型                                                            | 当前每进程实质只有 1 个 passive turn 在执行          |
+| LLM transport    | `agent/provider.py` 复用 `AsyncOpenAI`；Responses transport 每次请求新建并关闭 client  | 未在 Phase 1 改动                                                               | 不需要重写一套 HTTP 客户端；需要统一连接生命周期、配额与重试策略     |
+| 流式输出             | 已有 `StreamDeltaReady` 和部分 channel 流式消费能力                                   | 未形成跨进程协议                                                                    | 应演进现有事件信封，而不是另起一套 `AsyncAgentLoop`      |
+| MessageBus       | `bus/queue.py` 使用进程内、无界 `asyncio.Queue`；出站重试一次后可能彻底丢失                      | 未改动                                                                         | 只能用于单进程；横向扩展前必须补持久队列、幂等和 DLQ            |
+| Session 顺序       | `SessionManager` 只有进程内按 session 的写锁                                        | 未改动                                                                         | 多 Worker 下不足以保证同 session turn 顺序        |
+| 存储               | `main` 仍是 SQLite                                                           | `feature/scaling-phase1-storage` 已完成 M0-M4：配置、接口契约、两个 PG store、工厂与部分接线      | 是迁移基础，不是生产完成态                           |
+| PG 连接            | 无                                                                          | 两个 PG store 各持有同步 psycopg 单连接与 `threading.RLock`；配置中的 `pool_size` 未成为运行时连接池 | 并发开启前必须修复，否则只是把 SQLite 全局锁换成单连接锁        |
+| 多租户              | channel/session 有身份线索，但没有统一 `TenantContext`                                | store 默认为 `tenant_id="default"`，调用点未传真实 tenant                              | 当前不能宣称租户隔离已落地                           |
+| 向量检索             | SQLite/sqlite-vec                                                          | 每 tenant LIST 分区 + 分区 HNSW 已有合成数据验证                                         | 保留方向，但需 5000 分区、真实 1024 维、运行时 DDL 的生产验证 |
+| WebChat          | `chat_api.py` 已有未鉴权端点；`web_chat_channel.py` 缺失                             | `worktree-webchat-jwt-rebuild` 没有领先 `main` 的实现提交                            | 视为未开始，不得按分支名计入进度                        |
+| Proactive / jobs | 生命周期和调度均为进程内运行态                                                            | 未增加分布式 claim/leader lease                                                   | 多副本会重复执行主动任务和插件 job                     |
+| 可观测性             | 有结构化阶段耗时日志，但无统一指标导出与跨链路 trace                                              | 未改动                                                                         | 必须前移到 Phase 0，而不是收尾工作                   |
 
 ### 0.2 保留与替换的架构决策
 
@@ -65,14 +65,14 @@
 
 扩展验收不得再只写“模拟 5000 用户并发”。Phase 0 结束前必须确定以下输入：
 
-| 维度 | 定义 | 本计划暂定口径 |
-| --- | --- | --- |
-| 注册身份数 | 可在系统中拥有独立数据的 principal/tenant 数 | 5000 |
-| 日活身份数 | 24 小时内至少发起一次 turn 的身份数 | 待产品数据确认 |
-| 在线连接数 | 同时维持的 WebSocket 数 | Channel-only 场景接近 0；WebChat 压测上限 5000 |
-| 活跃 turn 数 | 同时等待 LLM、工具或存储的 turn 数 | 由 LLM 配额反推，不等于在线人数 |
-| ingress rate | 每秒进入系统的新消息数 | 持续值与突发值分别定义 |
-| 数据量 | session messages、memory items、attachments 的总量与增长率 | 按真实样本推算，不只计算 embedding 原始字节 |
+| 维度           | 定义                                                | 本计划暂定口径                               |
+| ------------ | ------------------------------------------------- | ------------------------------------- |
+| 注册身份数        | 可在系统中拥有独立数据的 principal/tenant 数                   | 5000                                  |
+| 日活身份数        | 24 小时内至少发起一次 turn 的身份数                            | 待产品数据确认                               |
+| 在线连接数        | 同时维持的 WebSocket 数                                 | Channel-only 场景接近 0；WebChat 压测上限 5000 |
+| 活跃 turn 数    | 同时等待 LLM、工具或存储的 turn 数                            | 由 LLM 配额反推，不等于在线人数                    |
+| ingress rate | 每秒进入系统的新消息数                                       | 持续值与突发值分别定义                           |
+| 数据量          | session messages、memory items、attachments 的总量与增长率 | 按真实样本推算，不只计算 embedding 原始字节           |
 
 必须明确选择下面至少一个验收画像：
 
@@ -85,16 +85,16 @@
 
 以下目标用于架构验收，具体数值可在 Phase 0 基线后调整，但不得删除指标维度：
 
-| 指标 | 目标 |
-| --- | --- |
-| 入站接收 | 已通过鉴权的消息在 P95 250 ms 内得到 accepted/queued 确认 |
-| 排队延迟 | 在设计负载内，P95 queue wait 不超过 2 s；超载时明确返回 busy/retry-after |
-| 首帧延迟 | P95 不超过“上游模型首 token 延迟 + 1 s 系统开销” |
-| 最终消息可靠性 | 已持久化完成的回复不得静默丢失；投递失败进入可重试状态或 DLQ |
-| 会话顺序 | 同一 session 的 turn 按确定顺序执行，不出现历史覆盖或 seq 冲突 |
-| 隔离 | 所有读取、写入、搜索、附件访问都必须由服务端派生 tenant/principal 范围 |
-| 可恢复性 | PostgreSQL RPO 不高于 5 分钟、RTO 不高于 30 分钟；最终值按部署方案确认 |
-| 可观测性 | 任一 turn 可通过 `turn_id` 串起 ingress、queue、worker、LLM、store、delivery |
+| 指标      | 目标                                                               |
+| ------- | ---------------------------------------------------------------- |
+| 入站接收    | 已通过鉴权的消息在 P95 250 ms 内得到 accepted/queued 确认                      |
+| 排队延迟    | 在设计负载内，P95 queue wait 不超过 2 s；超载时明确返回 busy/retry-after           |
+| 首帧延迟    | P95 不超过“上游模型首 token 延迟 + 1 s 系统开销”                               |
+| 最终消息可靠性 | 已持久化完成的回复不得静默丢失；投递失败进入可重试状态或 DLQ                                 |
+| 会话顺序    | 同一 session 的 turn 按确定顺序执行，不出现历史覆盖或 seq 冲突                        |
+| 隔离      | 所有读取、写入、搜索、附件访问都必须由服务端派生 tenant/principal 范围                     |
+| 可恢复性    | PostgreSQL RPO 不高于 5 分钟、RTO 不高于 30 分钟；最终值按部署方案确认                 |
+| 可观测性    | 任一 turn 可通过 `turn_id` 串起 ingress、queue、worker、LLM、store、delivery |
 
 原计划中的“包含 LLM 调用 P95 小于 3 秒”删除。该目标无法脱离模型、上下文长度、工具链和供应商排队独立承诺。
 
@@ -126,13 +126,13 @@ TenantContext
 
 统一标识：
 
-| 标识 | 用途 |
-| --- | --- |
-| `inbound_id` | channel 重试时去重，同一外部消息稳定不变 |
-| `turn_id` | 一次 agent 执行，贯穿日志、事件、LLM 和工具调用 |
-| `message_id` | 持久化会话消息标识 |
-| `delivery_id` | 一次最终出站交付及其重试状态 |
-| `stream_seq` | 单 turn 流式事件的单调序号 |
+| 标识            | 用途                            |
+| ------------- | ----------------------------- |
+| `inbound_id`  | channel 重试时去重，同一外部消息稳定不变      |
+| `turn_id`     | 一次 agent 执行，贯穿日志、事件、LLM 和工具调用 |
+| `message_id`  | 持久化会话消息标识                     |
+| `delivery_id` | 一次最终出站交付及其重试状态                |
+| `stream_seq`  | 单 turn 流式事件的单调序号              |
 
 投递承诺：
 
@@ -649,16 +649,16 @@ Gateway 扩缩容依据 active connections、send buffer、event-loop lag 和 re
 
 ## 6. 阶段依赖与并行规则
 
-| 工作 | 可立即开始 | 依赖 | 说明 |
-| --- | --- | --- | --- |
-| Phase 0 指标与负载工具 | 是 | 无 | 所有后续 gate 的基础 |
-| Phase 1 M5-M7 | 是 | M0-M4 | 在现有 feature 分支继续 |
-| TenantResolver 设计与越权测试 | 是 | 身份模型确认 | 与存储分支协调 interface，避免再次默认 tenant |
-| WebChat 前端静态交互 | 可部分开始 | 稳定事件状态模型 | 不得把未定的身份/session_key 写死 |
-| Phase 2 TurnAdmission | 设计可开始，接线后合并 | Phase 1 store interface 稳定 | 会修改 `agent/looping/core.py` 和调用路径 |
-| Phase 3 durable messaging | 协议设计可开始 | Phase 2 event envelope | worker 化依赖并发与幂等语义 |
-| Phase 4 公网 WebChat | 否 | Phase 3 final delivery + auth | 未满足前只允许本地开发 |
-| Phase 5 多副本生产 | 否 | Phase 3 | 先证明两 Worker 正确，再扩数量 |
+| 工作                        | 可立即开始       | 依赖                            | 说明                                |
+| ------------------------- | ----------- | ----------------------------- | --------------------------------- |
+| Phase 0 指标与负载工具           | 是           | 无                             | 所有后续 gate 的基础                     |
+| Phase 1 M5-M7             | 是           | M0-M4                         | 在现有 feature 分支继续                  |
+| TenantResolver 设计与越权测试    | 是           | 身份模型确认                        | 与存储分支协调 interface，避免再次默认 tenant   |
+| WebChat 前端静态交互            | 可部分开始       | 稳定事件状态模型                      | 不得把未定的身份/session_key 写死           |
+| Phase 2 TurnAdmission     | 设计可开始，接线后合并 | Phase 1 store interface 稳定    | 会修改 `agent/looping/core.py` 和调用路径 |
+| Phase 3 durable messaging | 协议设计可开始     | Phase 2 event envelope        | worker 化依赖并发与幂等语义                 |
+| Phase 4 公网 WebChat        | 否           | Phase 3 final delivery + auth | 未满足前只允许本地开发                       |
+| Phase 5 多副本生产             | 否           | Phase 3                       | 先证明两 Worker 正确，再扩数量               |
 
 ### 本地分支整合规则
 
@@ -795,22 +795,22 @@ worker_id, runtime_version, provider, model, attempt, duration_ms
 
 ## 10. 风险登记
 
-| 风险 | 等级 | 当前证据 | 缓解 |
-| --- | --- | --- | --- |
-| 所有 PG 数据落入 `default` tenant | P0 | Phase 1 工厂与调用点未传真实 tenant | TenantResolver + request-scoped TenantStorage + 越权测试 |
-| 开启并发后同步 PG 阻塞 event loop | P0 | PG store 使用同步单连接和 RLock | async pool 或有界 executor；并发前完成 |
-| 全局 passive lock 导致吞吐为 1 | P0 | `_passive_runtime_lock` 覆盖完整 turn | TurnAdmission + snapshot lease 拆责 |
-| 多 Worker 重复执行同 session/tool | P0 | 只有进程内 queue/lock/state | inbox、session affinity/lease、工具幂等 |
-| final reply 静默丢失 | P0 | 当前出站重试一次后只记日志 | transactional outbox + delivery DLQ |
-| WebChat 越权与任意文件读取 | P0 | endpoint 无 auth，media 只做路径范围检查 | 服务端身份派生、owner scope、BlobStore |
-| 多副本重复 proactive/job | P0 | 调度状态为进程内 | leader lease/DB claim |
-| 5000 LIST 分区运维退化 | P1 | 只完成合成 recall 验证 | 5000 分区基准；必要时改分区策略 |
-| 首次请求动态 CREATE PARTITION | P1 | store 在首次写入确保分区 | provisioning control plane + 幂等 DDL worker |
-| PG 连接爆炸 | P1 | 原计划按 Worker 配 50 连接 | 全局连接预算 + PgBouncer/小 pool |
-| Redis cache 引入脏读 | P1 | 原计划计划缓存 session/profile/search | 指标驱动启用、版本化 key、可清空 |
-| 本地附件在多 Worker 不可见 | P1 | chat media 基于本地路径 | BlobStore adapter + metadata authorization |
-| LLM 费用先于计算资源失控 | P1 | 无统一 token budget/成本 gate | ModelGateway usage、tenant/global budget |
-| plugin 版本在滚动发布中不一致 | P1 | snapshot lease 仅进程内 | runtime_version + drain 策略 |
+| 风险                          | 等级  | 当前证据                              | 缓解                                                   |
+| --------------------------- | --- | --------------------------------- | ---------------------------------------------------- |
+| 所有 PG 数据落入 `default` tenant | P0  | Phase 1 工厂与调用点未传真实 tenant         | TenantResolver + request-scoped TenantStorage + 越权测试 |
+| 开启并发后同步 PG 阻塞 event loop    | P0  | PG store 使用同步单连接和 RLock           | async pool 或有界 executor；并发前完成                        |
+| 全局 passive lock 导致吞吐为 1     | P0  | `_passive_runtime_lock` 覆盖完整 turn | TurnAdmission + snapshot lease 拆责                    |
+| 多 Worker 重复执行同 session/tool | P0  | 只有进程内 queue/lock/state            | inbox、session affinity/lease、工具幂等                    |
+| final reply 静默丢失            | P0  | 当前出站重试一次后只记日志                     | transactional outbox + delivery DLQ                  |
+| WebChat 越权与任意文件读取           | P0  | endpoint 无 auth，media 只做路径范围检查    | 服务端身份派生、owner scope、BlobStore                        |
+| 多副本重复 proactive/job         | P0  | 调度状态为进程内                          | leader lease/DB claim                                |
+| 5000 LIST 分区运维退化            | P1  | 只完成合成 recall 验证                   | 5000 分区基准；必要时改分区策略                                   |
+| 首次请求动态 CREATE PARTITION     | P1  | store 在首次写入确保分区                   | provisioning control plane + 幂等 DDL worker           |
+| PG 连接爆炸                     | P1  | 原计划按 Worker 配 50 连接               | 全局连接预算 + PgBouncer/小 pool                            |
+| Redis cache 引入脏读            | P1  | 原计划计划缓存 session/profile/search    | 指标驱动启用、版本化 key、可清空                                   |
+| 本地附件在多 Worker 不可见           | P1  | chat media 基于本地路径                 | BlobStore adapter + metadata authorization           |
+| LLM 费用先于计算资源失控              | P1  | 无统一 token budget/成本 gate          | ModelGateway usage、tenant/global budget              |
+| plugin 版本在滚动发布中不一致          | P1  | snapshot lease 仅进程内               | runtime_version + drain 策略                           |
 
 ---
 
