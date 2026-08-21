@@ -1,12 +1,14 @@
-"""SQLite vs PG 存储等价性 parity 测试（M4 迁入自 tmp/parity_*.py）。
+"""SQLite vs PG 存储契约测试：共用一套矩阵（M4H-1）。
 
-约束：本文件两个测试在 M4 之后任何存储层改动下都必须保持绿色。
-只断言 store 层等价性；工厂/接线由 tests/test_storage_factory.py 覆盖。
-PG 不可用时自动 skip（不 fail）；PG URL 可用 NEXUS_TEST_PG_URL 覆盖。
+同一份测试 body 参数化跑 `sqlite` 与 `postgres` 两个 backend；断言以 SQLite
+（MemoryStore2/SessionStore，文档基线）为 reference。只断言 store 层契约等价性；
+工厂/接线由 tests/test_storage_factory.py 覆盖。PG 不可用时自动 skip（不 fail）；
+PG URL 可用 NEXUS_TEST_PG_URL 覆盖。
 """
 import os
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import psycopg
 import pytest
@@ -54,7 +56,7 @@ def _clean_pg(url: str, tenant: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# memory parity（原 tmp/parity_smoke.py）
+# memory contract matrix
 # ---------------------------------------------------------------------------
 
 
@@ -64,77 +66,88 @@ def _emb(base: int, mag: float = 1.0) -> list[float]:
     return v
 
 
-@pytest.mark.postgres
-def test_memory_parity(pg_url: str, tmp_path) -> None:
-    tenant = _unique_tenant("parity_mem")
-    _clean_pg(pg_url, tenant)
+def _open_memory(backend: str, pg_url: str, tmp_path: Path, tenant: str) -> MemoryStore2 | PostgresMemoryStore:
+    if backend == "sqlite":
+        return MemoryStore2(tmp_path / f"m_{uuid.uuid4().hex[:6]}.db", vec_dim=DIM)
+    return PostgresMemoryStore(pg_url, tenant_id=tenant, vec_dim=DIM)
 
-    sq = MemoryStore2(tmp_path / "m.db", vec_dim=DIM)
-    pg = PostgresMemoryStore(pg_url, tenant_id=tenant, vec_dim=DIM)
-    try:
-        # 同数据：5 条 note + 2 条 event
-        seeds = [
-            ("note", "猫抓板 拆家", _emb(0)),
-            ("note", "猫咪疫苗 时间", _emb(1)),
-            ("note", "公司团建 爬山", _emb(2)),
-            ("note", "周末 火锅 朋友", _emb(3)),
-            ("note", "读书 习惯 养成", _emb(4)),
-            ("event", "给猫打了疫苗", _emb(5)),
-            ("event", "团建去了爬山", _emb(6)),
-        ]
-        for mtype, summary, e in seeds:
-            sq.upsert_item(
-                mtype, summary, e, extra={"scope_channel": "tg", "scope_chat_id": "1"}
-            )
-            pg.upsert_item(
-                mtype, summary, e, extra={"scope_channel": "tg", "scope_chat_id": "1"}
-            )
 
-        # vector_search top-k 对比（tie 时 HNSW/KNN 截断顺序可不一致，只比明确项）
-        for q, k, types in [(_emb(1), 3, None), (_emb(6), 2, ["event"]), (_emb(2), 5, None)]:
-            rs = sq.vector_search(q, top_k=k)
-            rp = pg.vector_search(q, top_k=k)
-            rs_sig = [(r["summary"], round(r["score"], 4)) for r in rs if r["score"] > 0.01]
-            rp_sig = [(r["summary"], round(r["score"], 4)) for r in rp if r["score"] > 0.01]
-            assert rs_sig == rp_sig, (q, rs_sig, rp_sig)
-            for a, b in zip(rs, rp):
-                assert abs(a["score"] - b["score"]) < 1e-3, (a["score"], b["score"])
-
-        # scope 过滤
-        rs = sq.vector_search(
-            _emb(1), top_k=3, require_scope_match=True,
-            scope_channel="tg", scope_chat_id="1",
+def _seed_memory(st) -> None:
+    seeds = [
+        ("note", "猫抓板 拆家", _emb(0)),
+        ("note", "猫咪疫苗 时间", _emb(1)),
+        ("note", "公司团建 爬山", _emb(2)),
+        ("note", "周末 火锅 朋友", _emb(3)),
+        ("note", "读书 习惯 养成", _emb(4)),
+        ("event", "给猫打了疫苗", _emb(5)),
+        ("event", "团建去了爬山", _emb(6)),
+    ]
+    for mtype, summary, e in seeds:
+        st.upsert_item(
+            mtype, summary, e, extra={"scope_channel": "tg", "scope_chat_id": "1"}
         )
-        rp = pg.vector_search(
-            _emb(1), top_k=3, require_scope_match=True,
-            scope_channel="tg", scope_chat_id="1",
-        )
+
+
+def _assert_memory_contract(subject, ref) -> None:
+    # vector_search top-k（tie 时 HNSW/KNN 截断顺序可不一致，只比明确项与分数）
+    for q, k, types in [(_emb(1), 3, None), (_emb(6), 2, ["event"]), (_emb(2), 5, None)]:
+        rs = subject.vector_search(q, top_k=k)
+        rp = ref.vector_search(q, top_k=k)
         rs_sig = [(r["summary"], round(r["score"], 4)) for r in rs if r["score"] > 0.01]
         rp_sig = [(r["summary"], round(r["score"], 4)) for r in rp if r["score"] > 0.01]
-        assert rs_sig == rp_sig, (rs_sig, rp_sig)
+        assert rs_sig == rp_sig, (q, rs_sig, rp_sig)
+        for a, b in zip(rs, rp):
+            assert abs(a["score"] - b["score"]) < 1e-3, (a["score"], b["score"])
 
-        # keyword_search_summary
-        rs = sq.keyword_search_summary(["猫"], limit=10)
-        rp = pg.keyword_search_summary(["猫"], limit=10)
-        assert [r["summary"] for r in rs] == [r["summary"] for r in rp], (rs, rp)
+    # scope 过滤
+    rs = subject.vector_search(
+        _emb(1), top_k=3, require_scope_match=True,
+        scope_channel="tg", scope_chat_id="1",
+    )
+    rp = ref.vector_search(
+        _emb(1), top_k=3, require_scope_match=True,
+        scope_channel="tg", scope_chat_id="1",
+    )
+    rs_sig = [(r["summary"], round(r["score"], 4)) for r in rs if r["score"] > 0.01]
+    rp_sig = [(r["summary"], round(r["score"], 4)) for r in rp if r["score"] > 0.01]
+    assert rs_sig == rp_sig, (rs_sig, rp_sig)
 
-        # get_all_with_embedding 数量
-        assert len(sq.get_all_with_embedding()) == len(pg.get_all_with_embedding())
+    # keyword_search_summary
+    rs = subject.keyword_search_summary(["猫"], limit=10)
+    rp = ref.keyword_search_summary(["猫"], limit=10)
+    assert [r["summary"] for r in rs] == [r["summary"] for r in rp], (rs, rp)
 
-        # find_similar_recent_events
-        rs = sq.find_similar_recent_events(_emb(6), days_back=30, threshold=0.5, top_k=3)
-        rp = pg.find_similar_recent_events(_emb(6), days_back=30, threshold=0.5, top_k=3)
-        assert len(rs) == len(rp), (rs, rp)
+    # get_all_with_embedding 数量
+    assert len(subject.get_all_with_embedding()) == len(ref.get_all_with_embedding())
 
-        # list_by_type
-        assert len(sq.list_by_type("event")) == len(pg.list_by_type("event"))
+    # find_similar_recent_events
+    rs = subject.find_similar_recent_events(_emb(6), days_back=30, threshold=0.5, top_k=3)
+    rp = ref.find_similar_recent_events(_emb(6), days_back=30, threshold=0.5, top_k=3)
+    assert len(rs) == len(rp), (rs, rp)
+
+    # list_by_type
+    assert len(subject.list_by_type("event")) == len(ref.list_by_type("event"))
+
+
+@pytest.mark.postgres
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_memory_contract(backend: str, pg_url: str, tmp_path) -> None:
+    tenant = _unique_tenant("ct_mem")
+    if backend == "postgres":
+        _clean_pg(pg_url, tenant)
+    ref = MemoryStore2(tmp_path / f"ref_m_{uuid.uuid4().hex[:6]}.db", vec_dim=DIM)
+    subject = _open_memory(backend, pg_url, tmp_path, tenant)
+    try:
+        _seed_memory(subject)
+        _seed_memory(ref)
+        _assert_memory_contract(subject, ref)
     finally:
-        sq.close()
-        pg.close()
+        subject.close()
+        ref.close()
 
 
 # ---------------------------------------------------------------------------
-# session parity（原 tmp/parity_session_smoke.py）
+# session contract matrix
 # ---------------------------------------------------------------------------
 
 
@@ -186,95 +199,105 @@ def _seed_sessions(st) -> None:
     )
 
 
-@pytest.mark.postgres
-def test_session_parity(pg_url: str, tmp_path) -> None:
-    tenant = _unique_tenant("parity_sess")
-    _clean_pg(pg_url, tenant)
+def _open_session(backend: str, pg_url: str, tmp_path: Path, tenant: str) -> SessionStore | PostgresSessionStore:
+    if backend == "sqlite":
+        return SessionStore(tmp_path / f"s_{uuid.uuid4().hex[:6]}.db")
+    return PostgresSessionStore(pg_url, tenant_id=tenant)
 
-    sq = SessionStore(tmp_path / "s.db")
-    pg = PostgresSessionStore(pg_url, tenant_id=tenant)
+
+def _assert_session_contract(subject, ref) -> None:
+    # 1. next_seq 序列一致
+    for k in ["tg:3", "tg:3", "tg:3"]:
+        assert subject.next_seq(k) == ref.next_seq(k)
+
+    # 2. session meta 一致（created_at 由 now() 自动生成，只比格式与 metadata）
+    assert _norm_ts(subject.get_session_meta("tg:1")["created_at"]) is not None
+    assert _norm_ts(ref.get_session_meta("tg:1")["created_at"]) is not None
+    assert subject.get_session_meta("tg:1")["metadata"] == ref.get_session_meta("tg:1")["metadata"]
+    assert subject.get_session_meta("tg:nope") == ref.get_session_meta("tg:nope") is None
+
+    # 3. fetch_session_messages 归一化一致
+    ms = [_msg_norm(m) for m in subject.fetch_session_messages("tg:1")]
+    mp = [_msg_norm(m) for m in ref.fetch_session_messages("tg:1")]
+    assert ms == mp, (ms, mp)
+
+    # 4. list_sessions 集合一致
+    assert {r["key"] for r in subject.list_sessions()} == {r["key"] for r in ref.list_sessions()}
+
+    # 5. presence
+    assert _norm_ts(subject.get_presence("tg:1")["last_user_at"]) == _norm_ts(
+        ref.get_presence("tg:1")["last_user_at"]
+    )
+    assert set(subject.list_presence()) == set(ref.list_presence())
+    assert _norm_ts(subject.most_recent_user_at()) == _norm_ts(ref.most_recent_user_at())
+    assert [c["chat_id"] for c in subject.get_channel_metadata("tg")] == [
+        c["chat_id"] for c in ref.get_channel_metadata("tg")
+    ]
+
+    # 6. dashboard 分页
+    ds, ts_ = subject.list_sessions_for_dashboard(has_proactive=True)
+    dp, tp = ref.list_sessions_for_dashboard(has_proactive=True)
+    assert [r["key"] for r in ds] == [r["key"] for r in dp] and ts_ == tp
+    md, mt = subject.list_messages_for_dashboard(q="猫咪")
+    mdp, mtp = ref.list_messages_for_dashboard(q="猫咪")
+    assert mt == mtp and [_msg_norm(m) for m in md] == [_msg_norm(m) for m in mdp]
+
+    # 7. search_messages：集合 + 总数一致（排序可不同：FTS bm25 vs 命中词数）
+    for q in ["猫咪", "疫苗", "爬山", "不存在词xyz"]:
+        rs, cts = subject.search_messages(q)
+        rp, ctp = ref.search_messages(q)
+        assert cts == ctp, (q, cts, ctp)
+        assert {m["id"] for m in rs} == {m["id"] for m in rp}, (q, rs, rp)
+        assert [_msg_norm(m) for m in sorted(rs, key=lambda x: x["id"])] == [
+            _msg_norm(m) for m in sorted(rp, key=lambda x: x["id"])
+        ]
+
+    # 8. fetch_by_ids 保序 + context
+    assert [m["id"] for m in subject.fetch_by_ids(["tg:1:2", "tg:1:0"])] == [
+        m["id"] for m in ref.fetch_by_ids(["tg:1:2", "tg:1:0"])
+    ]
+    cs = subject.fetch_by_ids_with_context(["tg:1:0"], context=1)
+    cp = ref.fetch_by_ids_with_context(["tg:1:0"], context=1)
+    assert len(cs) == len(cp)
+    assert all("in_source_ref" in m for m in cp)
+
+    # 9. delete 语义
+    assert subject.delete_message("tg:1:2") == ref.delete_message("tg:1:2") is True
+    assert subject.delete_message("tg:1:2") == ref.delete_message("tg:1:2") is False
+    n1 = subject.delete_messages_batch(["tg:1:0", "tg:2:0"])
+    n2 = ref.delete_messages_batch(["tg:1:0", "tg:2:0"])
+    assert n1 == n2 == 2
     try:
-        _seed_sessions(sq)
-        _seed_sessions(pg)
+        subject.delete_session("tg:1")
+        subject_raise = True
+    except ValueError:
+        subject_raise = False
+    try:
+        ref.delete_session("tg:1")
+        ref_raise = True
+    except ValueError:
+        ref_raise = False
+    assert subject_raise == ref_raise is False
+    assert subject.delete_session("tg:1", cascade=True) == ref.delete_session("tg:1", cascade=True) is True
 
-        # 1. next_seq 序列一致
-        for k in ["tg:3", "tg:3", "tg:3"]:
-            assert sq.next_seq(k) == pg.next_seq(k)
+    # 10. delete_sessions_batch
+    assert subject.delete_sessions_batch(["tg:2"], cascade=True) == ref.delete_sessions_batch(
+        ["tg:2"], cascade=True
+    ) == 1
 
-        # 2. session meta 一致（created_at 由 now() 自动生成，只比格式与 metadata）
-        assert _norm_ts(sq.get_session_meta("tg:1")["created_at"]) is not None
-        assert _norm_ts(pg.get_session_meta("tg:1")["created_at"]) is not None
-        assert sq.get_session_meta("tg:1")["metadata"] == pg.get_session_meta("tg:1")["metadata"]
-        assert sq.get_session_meta("tg:nope") == pg.get_session_meta("tg:nope") is None
 
-        # 3. fetch_session_messages 归一化一致
-        ms = [_msg_norm(m) for m in sq.fetch_session_messages("tg:1")]
-        mp = [_msg_norm(m) for m in pg.fetch_session_messages("tg:1")]
-        assert ms == mp, (ms, mp)
-
-        # 4. list_sessions 集合一致
-        assert {r["key"] for r in sq.list_sessions()} == {r["key"] for r in pg.list_sessions()}
-
-        # 5. presence
-        assert _norm_ts(sq.get_presence("tg:1")["last_user_at"]) == _norm_ts(
-            pg.get_presence("tg:1")["last_user_at"]
-        )
-        assert set(sq.list_presence()) == set(pg.list_presence())
-        assert _norm_ts(sq.most_recent_user_at()) == _norm_ts(pg.most_recent_user_at())
-        assert [c["chat_id"] for c in sq.get_channel_metadata("tg")] == [
-            c["chat_id"] for c in pg.get_channel_metadata("tg")
-        ]
-
-        # 6. dashboard 分页
-        ds, ts_ = sq.list_sessions_for_dashboard(has_proactive=True)
-        dp, tp = pg.list_sessions_for_dashboard(has_proactive=True)
-        assert [r["key"] for r in ds] == [r["key"] for r in dp] and ts_ == tp
-        md, mt = sq.list_messages_for_dashboard(q="猫咪")
-        mdp, mtp = pg.list_messages_for_dashboard(q="猫咪")
-        assert mt == mtp and [_msg_norm(m) for m in md] == [_msg_norm(m) for m in mdp]
-
-        # 7. search_messages：集合 + 总数一致（排序可不同：FTS bm25 vs 命中词数）
-        for q in ["猫咪", "疫苗", "爬山", "不存在词xyz"]:
-            rs, cts = sq.search_messages(q)
-            rp, ctp = pg.search_messages(q)
-            assert cts == ctp, (q, cts, ctp)
-            assert {m["id"] for m in rs} == {m["id"] for m in rp}, (q, rs, rp)
-            assert [_msg_norm(m) for m in sorted(rs, key=lambda x: x["id"])] == [
-                _msg_norm(m) for m in sorted(rp, key=lambda x: x["id"])
-            ]
-
-        # 8. fetch_by_ids 保序 + context
-        assert [m["id"] for m in sq.fetch_by_ids(["tg:1:2", "tg:1:0"])] == [
-            m["id"] for m in pg.fetch_by_ids(["tg:1:2", "tg:1:0"])
-        ]
-        cs = sq.fetch_by_ids_with_context(["tg:1:0"], context=1)
-        cp = pg.fetch_by_ids_with_context(["tg:1:0"], context=1)
-        assert len(cs) == len(cp)
-        assert all("in_source_ref" in m for m in cp)
-
-        # 9. delete 语义
-        assert sq.delete_message("tg:1:2") == pg.delete_message("tg:1:2") is True
-        assert sq.delete_message("tg:1:2") == pg.delete_message("tg:1:2") is False
-        n1 = sq.delete_messages_batch(["tg:1:0", "tg:2:0"])
-        n2 = pg.delete_messages_batch(["tg:1:0", "tg:2:0"])
-        assert n1 == n2 == 2
-        try:
-            sq.delete_session("tg:1")
-            sq_raise = True
-        except ValueError:
-            sq_raise = False
-        try:
-            pg.delete_session("tg:1")
-            pg_raise = True
-        except ValueError:
-            pg_raise = False
-        assert sq_raise == pg_raise is False
-        assert sq.delete_session("tg:1", cascade=True) == pg.delete_session("tg:1", cascade=True) is True
-
-        # 10. delete_sessions_batch
-        assert sq.delete_sessions_batch(["tg:2"], cascade=True) == pg.delete_sessions_batch(
-            ["tg:2"], cascade=True
-        ) == 1
+@pytest.mark.postgres
+@pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+def test_session_contract(backend: str, pg_url: str, tmp_path) -> None:
+    tenant = _unique_tenant("ct_sess")
+    if backend == "postgres":
+        _clean_pg(pg_url, tenant)
+    ref = SessionStore(tmp_path / f"ref_s_{uuid.uuid4().hex[:6]}.db")
+    subject = _open_session(backend, pg_url, tmp_path, tenant)
+    try:
+        _seed_sessions(subject)
+        _seed_sessions(ref)
+        _assert_session_contract(subject, ref)
     finally:
-        sq.close()
-        pg.close()
+        subject.close()
+        ref.close()
