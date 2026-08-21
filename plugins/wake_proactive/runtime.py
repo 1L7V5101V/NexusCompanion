@@ -942,7 +942,11 @@ class WakeRuntime:
                 ).fetchone()
             return _parse_optional_time(row[0]) if row is not None else None
         getter = getattr(getattr(self._scope, "presence", None), "get_last_user_at", None)
-        value = getter(session_key) if callable(getter) else None
+        value = (
+            getter(self._scope.sense.target_tenant(), session_key)
+            if callable(getter)
+            else None
+        )
         return value if isinstance(value, datetime) else None
 
     def _active_contexts(self, now: datetime) -> list[NormalizedContext]:

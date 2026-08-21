@@ -659,7 +659,7 @@ def build_core_runtime(
             storage_runtime=storage_runtime,
         )
     )
-    presence = PresenceStore(session_manager._store)
+    presence = PresenceStore(lambda ctx: storage_runtime.for_tenant(ctx).sessions)
     processing_state = ProcessingState()
 
     # ── 日志系统 ──────────────────────────────────────────────────────

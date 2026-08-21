@@ -14,12 +14,14 @@ class ProactiveScheduler:
         presence: Any,
         rng: Any,
         target_session_key_fn: Callable[[], str],
+        target_tenant_fn: Callable[[], str],
         trace_fn: Callable[..., None],
     ) -> None:
         self._cfg = cfg
         self._presence = presence
         self._rng = rng
         self._target_session_key_fn = target_session_key_fn
+        self._target_tenant_fn = target_tenant_fn
         self._trace_fn = trace_fn
 
     def next_interval(self, base_score: float | None = None) -> int:
@@ -33,7 +35,9 @@ class ProactiveScheduler:
             return interval
         if base_score is None:
             session_key = self._target_session_key_fn()
-            last_user_at = self._presence.get_last_user_at(session_key)
+            last_user_at = self._presence.get_last_user_at(
+                self._target_tenant_fn(), session_key
+            )
             energy = compute_energy(last_user_at)
             base_score = d_energy(energy) * self._cfg.score_weight_energy
         interval = next_tick_from_score(

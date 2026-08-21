@@ -34,8 +34,8 @@ async def test_fetch_messages_returns_rows_in_input_order(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 2)
 
-    tool = FetchMessagesTool(store)
-    payload = json.loads(await tool.execute(ids=["tg:1:1", "tg:1:0"]))
+    tool = FetchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(ids=["tg:1:1", "tg:1:0"], tenant_id=DEFAULT_TENANT))
 
     assert payload["count"] == 2
     assert payload["matched_count"] == 2
@@ -62,8 +62,8 @@ async def test_fetch_messages_strips_internal_metadata(tmp_path):
         extra={"tools_used": ["fetch_messages"], "reasoning_content": "think"},
     )
 
-    tool = FetchMessagesTool(store)
-    payload = json.loads(await tool.execute(ids=["tg:1:0"]))
+    tool = FetchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(ids=["tg:1:0"], tenant_id=DEFAULT_TENANT))
 
     assert payload["messages"] == [
         {
@@ -82,9 +82,9 @@ async def test_fetch_messages_with_context(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 7)  # seq 0..6
 
-    tool = FetchMessagesTool(store)
+    tool = FetchMessagesTool(lambda ctx: store)
     # fetch seq=3, context=2 → expect seq 1..5
-    payload = json.loads(await tool.execute(ids=["tg:1:3"], context=2))
+    payload = json.loads(await tool.execute(ids=["tg:1:3"], context=2, tenant_id=DEFAULT_TENANT))
 
     ids = [m["id"] for m in payload["messages"]]
     assert "tg:1:3" in ids
@@ -107,8 +107,8 @@ async def test_fetch_messages_context_clamps_at_seq_zero(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 3)  # seq 0,1,2
 
-    tool = FetchMessagesTool(store)
-    payload = json.loads(await tool.execute(ids=["tg:1:0"], context=3))
+    tool = FetchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(ids=["tg:1:0"], context=3, tenant_id=DEFAULT_TENANT))
 
     # context before seq 0 is clamped; should get seq 0,1,2,3 — but only 0-2 exist
     ids = [m["id"] for m in payload["messages"]]
@@ -123,8 +123,8 @@ async def test_fetch_messages_context_clamps_at_max_window(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 30)  # seq 0..29
 
-    tool = FetchMessagesTool(store)
-    payload = json.loads(await tool.execute(ids=["tg:1:11"], context=999))
+    tool = FetchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(ids=["tg:1:11"], context=999, tenant_id=DEFAULT_TENANT))
 
     ids = [m["id"] for m in payload["messages"]]
     assert ids[0] == "tg:1:1"
@@ -140,9 +140,11 @@ async def test_fetch_messages_supports_window_source_ref(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 6)
 
-    tool = FetchMessagesTool(store)
+    tool = FetchMessagesTool(lambda ctx: store)
     payload = json.loads(
-        await tool.execute(source_ref='["tg:1:2","tg:1:3"]#profile', context=1)
+        await tool.execute(
+            source_ref='["tg:1:2","tg:1:3"]#profile', context=1, tenant_id=DEFAULT_TENANT
+        )
     )
 
     assert [m["id"] for m in payload["messages"]] == [
@@ -160,11 +162,12 @@ async def test_fetch_messages_supports_mixed_ids_and_source_refs(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
     _setup_session(store, "tg:1", 5)
 
-    tool = FetchMessagesTool(store)
+    tool = FetchMessagesTool(lambda ctx: store)
     payload = json.loads(
         await tool.execute(
             ids=["tg:1:4"],
             source_refs=['["tg:1:1","tg:1:2"]#h:abc', "tg:1:4"],
+            tenant_id=DEFAULT_TENANT,
         )
     )
 
@@ -191,8 +194,8 @@ async def test_search_messages_returns_preview_with_source_ref(tmp_path):
         seq=0,
     )
 
-    tool = SearchMessagesTool(store)
-    payload = json.loads(await tool.execute(query="benchmark", session_key="tg:1"))
+    tool = SearchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(query="benchmark", session_key="tg:1", tenant_id=DEFAULT_TENANT))
 
     assert payload["count"] == 1
     assert payload["matched_count"] == 1
@@ -238,7 +241,7 @@ async def test_search_messages_supports_filters(tmp_path):
     store.insert_message("tg:1", role="assistant", content="benchmark done", ts="2026-01-01T00:00:02+00:00", seq=1)
     store.insert_message("tg:2", role="user", content="benchmark other", ts="2026-01-01T00:00:03+00:00", seq=0)
 
-    tool = SearchMessagesTool(store)
+    tool = SearchMessagesTool(lambda ctx: store)
 
     payload = json.loads(
         await tool.execute(
@@ -246,6 +249,7 @@ async def test_search_messages_supports_filters(tmp_path):
             session_key="tg:1",
             role="user",
             limit=10,
+            tenant_id=DEFAULT_TENANT,
         )
     )
     assert payload["count"] == 1
@@ -275,15 +279,16 @@ async def test_search_messages_supports_offset_pagination(tmp_path):
             seq=seq,
         )
 
-    tool = SearchMessagesTool(store)
+    tool = SearchMessagesTool(lambda ctx: store)
 
-    first_page = json.loads(await tool.execute(query="benchmark", session_key="tg:1", limit=2))
+    first_page = json.loads(await tool.execute(query="benchmark", session_key="tg:1", limit=2, tenant_id=DEFAULT_TENANT))
     second_page = json.loads(
         await tool.execute(
             query="benchmark",
             session_key="tg:1",
             limit=2,
             offset=first_page["next_offset"],
+            tenant_id=DEFAULT_TENANT,
         )
     )
 
@@ -315,8 +320,8 @@ async def test_search_messages_mixed_long_and_short_terms_keeps_short_only_hits(
     store.insert_message("tg:1", role="assistant", content="只提到支付", ts="2026-01-01T00:00:02+00:00", seq=1)
     store.insert_message("tg:1", role="user", content="phase 支付 一起命中", ts="2026-01-01T00:00:03+00:00", seq=2)
 
-    tool = SearchMessagesTool(store)
-    payload = json.loads(await tool.execute(query="phase 支付", session_key="tg:1", limit=10))
+    tool = SearchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(query="phase 支付", session_key="tg:1", limit=10, tenant_id=DEFAULT_TENANT))
 
     assert payload["count"] == 3
     assert payload["matched_count"] == 3
@@ -326,8 +331,8 @@ async def test_search_messages_mixed_long_and_short_terms_keeps_short_only_hits(
 @pytest.mark.asyncio
 async def test_search_messages_empty_query_returns_empty(tmp_path):
     store = SessionStore(tmp_path / "sessions.db")
-    tool = SearchMessagesTool(store)
-    payload = json.loads(await tool.execute(query="   "))
+    tool = SearchMessagesTool(lambda ctx: store)
+    payload = json.loads(await tool.execute(query="   ", tenant_id=DEFAULT_TENANT))
     assert payload == {
         "count": 0,
         "matched_count": 0,

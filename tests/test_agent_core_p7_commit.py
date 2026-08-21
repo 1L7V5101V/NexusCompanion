@@ -23,6 +23,7 @@ from bus.events_lifecycle import TurnCommitted
 class _DummySession:
     def __init__(self, key: str) -> None:
         self.key = key
+        self.tenant_id = key
         self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
@@ -46,7 +47,9 @@ class _DummySession:
 async def test_context_store_commit_persists_commits_and_dispatches():
     order: list[str] = []
     session = _DummySession("telegram:123")
-    presence = SimpleNamespace(record_user_message=MagicMock(side_effect=lambda _key: None))
+    presence = SimpleNamespace(
+        record_user_message=MagicMock(side_effect=lambda *_args: None)
+    )
     session_manager = SimpleNamespace(
         get_or_create=MagicMock(return_value=session),
         append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
@@ -120,6 +123,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
             channel="telegram",
             sender="hua",
             chat_id="123",
+            tenant_id="telegram:123",
             content="你好",
             metadata={"req_id": "r1"},
         ),
@@ -134,7 +138,7 @@ async def test_context_store_commit_persists_commits_and_dispatches():
     assert out.metadata["tools_used"] == ["noop"]
     assert out.metadata["streamed_reply"] is True
     assert order == ["persist", "committed", "dispatch"]
-    presence.record_user_message.assert_called_once_with("telegram:123")
+    presence.record_user_message.assert_called_once_with("telegram:123", "telegram:123")
     session_manager.append_messages.assert_awaited_once()
     assert session.messages[-1]["content"] == "整理好了"
     assert session.messages[-1]["reasoning_content"] == "思考"

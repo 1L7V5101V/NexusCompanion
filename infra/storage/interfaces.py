@@ -285,6 +285,22 @@ class SessionStorage(Protocol):
 
     def count_messages(self, session_key: str) -> int: ...
 
+    def fetch_by_ids(self, ids: list[str]) -> list[dict[str, Any]]: ...
+
+    def fetch_by_ids_with_context(
+        self, ids: list[str], context: int
+    ) -> list[dict[str, Any]]: ...
+
+    def search_messages(
+        self,
+        query: str,
+        *,
+        session_key: str | None = None,
+        role: str | None = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]: ...
+
     def list_messages_for_dashboard(
         self,
         *,

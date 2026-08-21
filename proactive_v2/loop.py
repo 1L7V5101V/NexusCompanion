@@ -259,7 +259,7 @@ class ProactiveLoop:
 
     def _build_initial_slots(self, session_key: str) -> dict[str, Any]:
         last_user_at = (
-            self._presence.get_last_user_at(session_key)
+            self._presence.get_last_user_at(self._target_tenant(), session_key)
             if self._presence is not None
             else None
         )
@@ -286,6 +286,7 @@ class ProactiveLoop:
             presence=self._presence,
             rng=self._rng,
             target_session_key_fn=self._target_session_key,
+            target_tenant_fn=self._target_tenant,
             trace_fn=self._trace_proactive_rate_decision,
         )
         if self._runtime_snapshot_store is None:
@@ -445,6 +446,9 @@ class ProactiveLoop:
 
     def _target_session_key(self) -> str:
         return self._sense.target_session_key()
+
+    def _target_tenant(self) -> str:
+        return self._sense.target_tenant()
 
     def stop(self) -> None:
         self._running = False

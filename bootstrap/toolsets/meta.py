@@ -30,11 +30,15 @@ class CommonMetaToolsetProvider(ToolsetProvider):
 
     def register(self, registry: ToolRegistry, deps: ToolsetDeps):
         before = registry.get_registered_names()
+        store_for = None
+        if deps.storage_runtime is not None:
+            store_for = lambda ctx: deps.storage_runtime.for_tenant(ctx).sessions
         push_tool = register_common_meta_tools(
             registry,
             self._readonly_tools,
             deps.session_store,
             push_tool=deps.push_tool,
+            store_for=store_for,
         )
         registry.register(
             LoadSkillTool(SkillsLoader(deps.workspace)),

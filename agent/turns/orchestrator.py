@@ -76,7 +76,9 @@ class TurnOrchestrator:
         # 4. 根据是否真正发送成功，分别执行 success / failure side_effects。
         if sent:
             if self._session.presence:
-                self._session.presence.record_proactive_sent(session_key)
+                self._session.presence.record_proactive_sent(
+                    resolve_tenant(channel, chat_id).tenant_id, session_key
+                )
             await self._run_effects(result.success_side_effects)
         else:
             await self._run_effects(result.failure_side_effects)

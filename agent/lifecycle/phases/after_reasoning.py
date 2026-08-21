@@ -118,7 +118,7 @@ class _PersistUserMessageModule:
         if omit_user_turn:
             return frame
         if self._session_services.presence:
-            self._session_services.presence.record_user_message(session.key)
+            self._session_services.presence.record_user_message(session.tenant_id, session.key)
         user_kwargs: dict[str, object] = {}
         llm_user_content = ctx.context_retry.get("llm_user_content")
         if isinstance(llm_user_content, (str, list)):

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any, cast
 
 from agent.tools.base import Tool
-from session.store import SessionStore
+from infra.storage.interfaces import SessionStorage, TenantContext
+from infra.storage.tenancy import assert_tenant_resolved
 
 _MAX_CONTEXT = 10
 _MAX_PREVIEW_LINES = 50
@@ -56,8 +58,11 @@ class FetchMessagesTool(Tool):
         },
     }
 
-    def __init__(self, store: SessionStore) -> None:
-        self._store = store
+    def __init__(self, store_for: Callable[[TenantContext], SessionStorage]) -> None:
+        self._store_for = store_for
+
+    def _view(self, tenant_id: str) -> SessionStorage:
+        return self._store_for(TenantContext(tenant_id=assert_tenant_resolved(tenant_id)))
 
     async def execute(
         self,
@@ -66,6 +71,7 @@ class FetchMessagesTool(Tool):
         source_refs: list[str] | None = None,
         evidence: list[dict[str, object]] | None = None,
         context: int = 0,
+        tenant_id: str = "",
         **_: Any,
     ) -> str:
         clean_ids = _resolve_fetch_ids(
@@ -77,9 +83,10 @@ class FetchMessagesTool(Tool):
         if not clean_ids:
             return json.dumps({"count": 0, "matched_count": 0, "messages": []}, ensure_ascii=False)
 
+        store = self._view(tenant_id)
         ctx = max(0, min(int(context), _MAX_CONTEXT))
         if ctx == 0:
-            messages = [_to_public_message(m) for m in self._store.fetch_by_ids(clean_ids)]
+            messages = [_to_public_message(m) for m in store.fetch_by_ids(clean_ids)]
             return json.dumps(
                 {"count": len(messages), "matched_count": len(messages), "messages": messages},
                 ensure_ascii=False,
@@ -87,7 +94,7 @@ class FetchMessagesTool(Tool):
 
         messages = [
             _to_public_message(m)
-            for m in self._store.fetch_by_ids_with_context(clean_ids, ctx)
+            for m in store.fetch_by_ids_with_context(clean_ids, ctx)
         ]
         matched = sum(1 for m in messages if m.get("in_source_ref"))
         return json.dumps(
@@ -200,10 +207,10 @@ class SearchMessagesTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self, store: SessionStore) -> None:
-        self._store = store
+    def __init__(self, store_for: Callable[[TenantContext], SessionStorage]) -> None:
+        self._store_for = store_for
 
-    async def execute(self, query: str, **kwargs: Any) -> str:
+    async def execute(self, query: str, tenant_id: str = "", **kwargs: Any) -> str:
         term = (query or "").strip()
         if not term:
             return json.dumps(
@@ -219,10 +226,11 @@ class SearchMessagesTool(Tool):
                 ensure_ascii=False,
             )
 
+        store = self._store_for(TenantContext(tenant_id=assert_tenant_resolved(tenant_id)))
         limit = max(1, min(int(kwargs.get("limit", 10)), 50))
         offset = max(0, int(kwargs.get("offset", 0)))
 
-        matched, total = self._store.search_messages(
+        matched, total = store.search_messages(
             term,
             session_key=(kwargs.get("session_key") or "").strip() or None,
             role=(kwargs.get("role") or "").strip() or None,
