@@ -77,13 +77,23 @@ class PostgresPool:
 
     @contextmanager
     def connection(self) -> Iterator[psycopg.Connection[Any]]:
-        """借出一条连接执行事务，退出时归还（pool 自动 rollback 未结束事务）。
+        """借出一条连接执行事务，退出时归还。
 
-        并发借出由 ConnectionPool 内部协调，本层不做额外串行化。
+        成功路径由调用方决定事务边界（view 方法显式 commit / 读操作保留
+        INTRANS，归还时 psycopg_pool 自动 rollback）；异常路径**先显式
+        rollback 再归还**，避免把 aborted / 半提交状态留给下一位借用人。
+        rollback 再失败（连接已断）由 psycopg_pool 归还时丢弃并重建。
         """
         self._check_open()
         with self._pool.connection() as conn:
-            yield conn
+            try:
+                yield conn
+            except BaseException:
+                try:
+                    conn.rollback()
+                except psycopg.Error:
+                    pass
+                raise
 
     def check(self) -> None:
         """健康检查：移除并替换池中的坏连接。"""
