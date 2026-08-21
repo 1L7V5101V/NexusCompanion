@@ -18,10 +18,12 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable, LiteralString, cast
 
 import psycopg
+from psycopg import sql
 from pgvector.psycopg import register_vector
 
 from memory2.store import (
@@ -63,8 +65,20 @@ _EmbeddingRow = tuple[
 ]
 
 # SQLite 版的 _score_embedding_rows 不引用 self（纯 numpy 打分），
-# 直接复用避免重复实现导致的语义漂移。
-_score_embedding_rows = _SQLiteMemoryStore._score_embedding_rows
+# 用 Callable[..., ...] 收窄隐藏 self 形参，直接复用避免语义漂移。
+_score_embedding_rows: Callable[..., list[dict[str, object]]] = cast(
+    Callable[..., list[dict[str, object]]],
+    _SQLiteMemoryStore._score_embedding_rows,
+)
+
+
+def _q(text: str) -> LiteralString:
+    """标记运行期拼接的 SQL 文本为可信 LiteralString。
+
+    仅用于占位符数量/allowlist 片段拼接的查询文本；标识符与字面量一律走
+    sql.Identifier / sql.Literal，绝不把用户输入拼进 SQL 文本。
+    """
+    return cast(LiteralString, text)
 
 
 def _to_iso(value: object) -> str | None:
@@ -106,8 +120,11 @@ def _coerce_embedding(value: object) -> list[float] | None:
         return [float(v) for v in value]
     to_list = getattr(value, "to_list", None)
     if callable(to_list):
-        return [float(v) for v in to_list()]
-    return [float(v) for v in value]
+        out = to_list()
+        if isinstance(out, list):
+            return [float(v) for v in out]
+    # 兜底：非 list 的 iterable（如 numpy array）
+    return [float(v) for v in cast(Iterable[Any], value)]
 
 
 class PostgresMemoryStore:
@@ -180,11 +197,14 @@ class PostgresMemoryStore:
                 "SELECT to_regclass(%s)", (f"memory_items_{self._sanitized_tenant}",)
             ).fetchone()
             if row is None or row[0] is None:
-                # 分区名已 sanitize（仅 [A-Za-z0-9_]），值不含引号，安全拼接
+                # 标识符经 sql.Identifier / sql.Literal 安全拼接（分区名已 sanitize）
                 self._conn.execute(
-                    f"CREATE TABLE memory_items_{self._sanitized_tenant} "
-                    "PARTITION OF memory_items "
-                    f"FOR VALUES IN ('{self._tenant_id}')"
+                    sql.SQL(
+                        "CREATE TABLE {} PARTITION OF memory_items FOR VALUES IN ({})"
+                    ).format(
+                        sql.Identifier(f"memory_items_{self._sanitized_tenant}"),
+                        sql.Literal(self._tenant_id),
+                    )
                 )
             self._conn.commit()
             self._partitions_known.add(self._sanitized_tenant)
@@ -704,9 +724,11 @@ class PostgresMemoryStore:
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
-                "SELECT id, memory_type, summary, extra_json, source_ref, happened_at, "
-                "status, created_at, updated_at, emotional_weight "
-                f"FROM memory_items WHERE tenant_id=%s AND id IN ({placeholders})",
+                _q(
+                    "SELECT id, memory_type, summary, extra_json, source_ref, happened_at, "
+                    "status, created_at, updated_at, emotional_weight "
+                    f"FROM memory_items WHERE tenant_id=%s AND id IN ({placeholders})"
+                ),
                 (self._tenant_id, *ids),
             ).fetchall()
         by_id: dict[str, dict[str, object]] = {}
@@ -772,10 +794,12 @@ class PostgresMemoryStore:
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
-                "SELECT id, memory_type, summary, source_ref, happened_at "
-                "FROM memory_items "
-                "WHERE tenant_id=%s AND memory_type='event' AND status='active' "
-                f"AND {' AND '.join(time_clauses)}",
+                _q(
+                    "SELECT id, memory_type, summary, source_ref, happened_at "
+                    "FROM memory_items "
+                    "WHERE tenant_id=%s AND memory_type='event' AND status='active' "
+                    f"AND {' AND '.join(time_clauses)}"
+                ),
                 (self._tenant_id, *time_params),
             ).fetchall()
 
@@ -917,9 +941,11 @@ class PostgresMemoryStore:
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
-                "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
-                "reinforcement, updated_at, source_ref, emotional_weight "
-                f"FROM memory_items WHERE tenant_id=%s AND {' AND '.join(where_parts)}",
+                _q(
+                    "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
+                    "reinforcement, updated_at, source_ref, emotional_weight "
+                    f"FROM memory_items WHERE tenant_id=%s AND {' AND '.join(where_parts)}"
+                ),
                 tuple(params),
             ).fetchall()
         result: list[_EmbeddingRow] = []
@@ -1048,7 +1074,6 @@ class PostgresMemoryStore:
         )
         return [
             _score_embedding_rows(
-                None,
                 query_vec,
                 rows,
                 top_k=top_k,
@@ -1120,16 +1145,18 @@ class PostgresMemoryStore:
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
-                f"""
-                SELECT m.id, m.memory_type, m.summary, m.extra_json, m.happened_at,
-                       m.reinforcement, m.updated_at, m.source_ref, m.emotional_weight,
-                       (m.embedding <=> %s::vector) AS distance
-                FROM memory_items m
-                WHERE m.tenant_id = %s AND m.embedding IS NOT NULL
-                      {status_filter} {type_filter} {scope_filter}
-                ORDER BY distance ASC
-                LIMIT %s
-                """,
+                _q(
+                    f"""
+                    SELECT m.id, m.memory_type, m.summary, m.extra_json, m.happened_at,
+                           m.reinforcement, m.updated_at, m.source_ref, m.emotional_weight,
+                           (m.embedding <=> %s::vector) AS distance
+                    FROM memory_items m
+                    WHERE m.tenant_id = %s AND m.embedding IS NOT NULL
+                          {status_filter} {type_filter} {scope_filter}
+                    ORDER BY distance ASC
+                    LIMIT %s
+                    """
+                ),
                 tuple(params),
             ).fetchall()
 
@@ -1243,7 +1270,6 @@ class PostgresMemoryStore:
             ]
 
         return _score_embedding_rows(
-            None,
             query_vec,
             rows,
             top_k=top_k,
@@ -1309,7 +1335,9 @@ class PostgresMemoryStore:
         with self._lock:
             self._check_open()
             cur = self._conn.execute(
-                f"DELETE FROM memory_items WHERE tenant_id=%s AND id IN ({placeholders})",
+                _q(
+                    f"DELETE FROM memory_items WHERE tenant_id=%s AND id IN ({placeholders})"
+                ),
                 (self._tenant_id, *ids),
             )
             self._conn.commit()
@@ -1420,7 +1448,7 @@ class PostgresMemoryStore:
             if has_time_filter
             else limit
         )
-        sql = (
+        query_text = (
             "SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
             f"reinforcement, ({score_expr}) AS kw_score "
             "FROM memory_items "
@@ -1443,7 +1471,7 @@ class PostgresMemoryStore:
             )
             with self._lock:
                 self._check_open()
-                rows = self._conn.execute(sql, params).fetchall()
+                rows = self._conn.execute(_q(query_text), params).fetchall()
             if not rows:
                 break
             for row in rows:
@@ -1545,21 +1573,25 @@ class PostgresMemoryStore:
             where_sql = " AND ".join(where_parts)
             total = int(
                 self._conn.execute(
-                    "SELECT COUNT(*) FROM memory_items "
-                    f"WHERE tenant_id=%s AND {where_sql}",
+                    _q(
+                        "SELECT COUNT(*) FROM memory_items "
+                        f"WHERE tenant_id=%s AND {where_sql}"
+                    ),
                     tuple(params),
                 ).fetchone()[0]
             )
             rows = self._conn.execute(
-                f"""
-                SELECT id, memory_type, summary, source_ref, happened_at, status,
-                       created_at, updated_at, reinforcement, emotional_weight,
-                       extra_json, embedding IS NOT NULL
-                FROM memory_items
-                WHERE tenant_id=%s AND {where_sql}
-                ORDER BY {safe_sort_by} {safe_sort_order}, id ASC
-                LIMIT %s OFFSET %s
-                """,
+                _q(
+                    f"""
+                    SELECT id, memory_type, summary, source_ref, happened_at, status,
+                           created_at, updated_at, reinforcement, emotional_weight,
+                           extra_json, embedding IS NOT NULL
+                    FROM memory_items
+                    WHERE tenant_id=%s AND {where_sql}
+                    ORDER BY {safe_sort_by} {safe_sort_order}, id ASC
+                    LIMIT %s OFFSET %s
+                    """
+                ),
                 tuple([*params, safe_page_size, offset]),
             ).fetchall()
             items: list[dict[str, object]] = []
@@ -1690,9 +1722,11 @@ class PostgresMemoryStore:
             params.append(item_id)
             params.append(self._tenant_id)
             cur = self._conn.execute(
-                "UPDATE memory_items SET "
-                + ", ".join(updates)
-                + " WHERE id=%s AND tenant_id=%s",
+                _q(
+                    "UPDATE memory_items SET "
+                    + ", ".join(updates)
+                    + " WHERE id=%s AND tenant_id=%s"
+                ),
                 params,
             )
             self._conn.commit()

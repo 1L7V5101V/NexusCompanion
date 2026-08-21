@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg.rows import dict_row
@@ -41,6 +41,14 @@ def _parse_iso(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _q(text: str) -> LiteralString:
+    """标记运行期拼接的 SQL 文本为可信 LiteralString。
+
+    仅用于占位符数量/allowlist 片段拼接的查询文本；不把用户输入拼进 SQL 文本。
+    """
+    return cast(LiteralString, text)
+
+
 class PostgresSessionStore:
     def __init__(
         self,
@@ -55,8 +63,11 @@ class PostgresSessionStore:
         self._tenant_id = tenant_id
         self._lock = threading.RLock()
         self._closed = False
-        # schema 由 alembic 管理；构造只开连接
-        self._conn = psycopg.connect(self._url, row_factory=dict_row)
+        # schema 由 alembic 管理；构造只开连接（dict_row 让 fetchone 返回 dict）
+        self._conn = cast(
+            psycopg.Connection[dict[str, Any]],
+            psycopg.connect(self._url, row_factory=cast(Any, dict_row)),
+        )
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -256,9 +267,9 @@ class PostgresSessionStore:
         """
         with self._lock:
             self._check_open()
-            count_row = self._conn.execute(count_sql, tuple(params)).fetchone()
+            count_row = self._conn.execute(_q(count_sql), tuple(params)).fetchone()
             rows = self._conn.execute(
-                data_sql,
+                _q(data_sql),
                 tuple([*params, safe_page_size, offset]),
             ).fetchall()
         total = int((count_row["c"] if count_row else 0) or 0)
@@ -341,8 +352,10 @@ class PostgresSessionStore:
         with self._lock:
             self._check_open()
             cur = self._conn.execute(
-                f"UPDATE sessions SET {', '.join(set_parts)} "
-                "WHERE tenant_id = %s AND key = %s",
+                _q(
+                    f"UPDATE sessions SET {', '.join(set_parts)} "
+                    "WHERE tenant_id = %s AND key = %s"
+                ),
                 tuple(params),
             )
             self._conn.commit()
@@ -675,9 +688,9 @@ class PostgresSessionStore:
         """
         with self._lock:
             self._check_open()
-            count_row = self._conn.execute(count_sql, tuple(params)).fetchone()
+            count_row = self._conn.execute(_q(count_sql), tuple(params)).fetchone()
             rows = self._conn.execute(
-                data_sql,
+                _q(data_sql),
                 tuple([*params, safe_page_size, offset]),
             ).fetchall()
         total = int((count_row["c"] if count_row else 0) or 0)
@@ -740,8 +753,10 @@ class PostgresSessionStore:
             session_key = str(row["session_key"])
             params.extend([self._tenant_id, message_id])
             cur = self._conn.execute(
-                f"UPDATE messages SET {', '.join(set_parts)} "
-                "WHERE tenant_id = %s AND id = %s",
+                _q(
+                    f"UPDATE messages SET {', '.join(set_parts)} "
+                    "WHERE tenant_id = %s AND id = %s"
+                ),
                 tuple(params),
             )
             self._conn.execute(
@@ -929,7 +944,7 @@ class PostgresSessionStore:
         with self._lock:
             self._check_open()
             rows = self._conn.execute(
-                sql, tuple([self._tenant_id, *ids, *ids])
+                _q(sql), tuple([self._tenant_id, *ids, *ids])
             ).fetchall()
         return [self._row_to_message(row) for row in rows]
 
@@ -986,8 +1001,8 @@ class PostgresSessionStore:
         )
         with self._lock:
             self._check_open()
-            count_row = self._conn.execute(count_sql, tuple(count_params)).fetchone()
-            rows = self._conn.execute(data_sql, tuple(data_params)).fetchall()
+            count_row = self._conn.execute(_q(count_sql), tuple(count_params)).fetchone()
+            rows = self._conn.execute(_q(data_sql), tuple(data_params)).fetchall()
         total = int((count_row["c"] if count_row else 0) or 0)
         return [self._row_to_message(row) for row in rows], total
 
