@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 from agent.tools.base import Tool
@@ -13,6 +14,7 @@ from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
 from core.memory.engine import MemoryEngine, MemoryToolSpec
+from infra.storage.interfaces import SessionStorage, TenantContext
 
 
 class _MemorySignalTool(Tool):
@@ -43,9 +45,18 @@ class _MemorySignalTool(Tool):
 def register_common_meta_tools(
     tools: ToolRegistry,
     readonly_tools: dict[str, Tool],
-    session_store: Any,
+    session_store: Any = None,
     push_tool: MessagePushTool | None = None,
+    *,
+    store_for: Callable[[TenantContext], SessionStorage] | None = None,
 ) -> MessagePushTool:
+    resolve_store: Callable[[TenantContext], SessionStorage]
+    if store_for is not None:
+        resolve_store = store_for
+    elif session_store is not None:
+        resolve_store = lambda ctx: cast(SessionStorage, session_store)
+    else:
+        raise ValueError("register_common_meta_tools 需要 session_store 或 store_for")
     tools.register(ToolSearchTool(tools), always_on=True, risk="read-only")
     tools.register(
         ShellTool(),
@@ -89,13 +100,13 @@ def register_common_meta_tools(
         search_hint="ls 查看目录",
     )
     tools.register(
-        FetchMessagesTool(session_store),
+        FetchMessagesTool(resolve_store),
         always_on=True,
         risk="read-only",
         search_hint="消息回溯 按ID查对话原文 source_ref",
     )
     tools.register(
-        SearchMessagesTool(session_store),
+        SearchMessagesTool(resolve_store),
         always_on=True,
         risk="read-only",
         search_hint="你之前说 聊过什么 历史对话",

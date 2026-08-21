@@ -15,6 +15,7 @@ from agent.turns.result import TurnOutbound, TurnResult, TurnTrace
 class _DummySession:
     def __init__(self, key: str) -> None:
         self.key = key
+        self.tenant_id = key
         self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
@@ -46,7 +47,7 @@ async def test_orchestrator_skip_runs_side_effects_without_dispatch():
     orchestrator = TurnOrchestrator(
         TurnOrchestratorDeps(
             session=SessionServices(
-                session_manager=cast(Any, SimpleNamespace(get_or_create=lambda _key: _DummySession("telegram:123"))),
+                session_manager=cast(Any, SimpleNamespace(get_or_create=lambda _tenant_id, _key: _DummySession("telegram:123"))),
                 presence=None,
             ),
             outbound=_Outbound(),
@@ -87,9 +88,9 @@ async def test_orchestrator_proactive_reply_persists_dispatches_and_runs_success
             assert outbound.content == "hello"
             return True
 
-    presence = SimpleNamespace(record_proactive_sent=lambda _key: order.append("presence"))
+    presence = SimpleNamespace(record_proactive_sent=lambda *_args: order.append("presence"))
     session_manager = SimpleNamespace(
-        get_or_create=lambda _key: session,
+        get_or_create=lambda _tenant_id, _key: session,
         append_messages=AsyncMock(side_effect=lambda *_args, **_kwargs: order.append("persist")),
     )
     orchestrator = TurnOrchestrator(
@@ -138,7 +139,7 @@ async def test_orchestrator_proactive_reply_dispatches_media():
             return True
 
     session_manager = SimpleNamespace(
-        get_or_create=lambda _key: session,
+        get_or_create=lambda _tenant_id, _key: session,
         append_messages=AsyncMock(return_value=None),
     )
     orchestrator = TurnOrchestrator(

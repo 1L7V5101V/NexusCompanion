@@ -85,7 +85,9 @@ class AgentTickFactory:
         presence = self._deps.presence
         if presence is None:
             return lambda: None
-        return lambda: presence.get_last_user_at(session_key)
+        return lambda: presence.get_last_user_at(
+            self._deps.sense.target_tenant(), session_key
+        )
 
     def _build_llm_fn(self) -> LlmFn:
         return build_drift_llm_fn(self._deps)

@@ -45,7 +45,7 @@ class Sensor:
     def last_user_at(self) -> datetime | None:
         if self._presence is None:
             return None
-        return self._presence.get_last_user_at(self.target_session_key())
+        return self._presence.get_last_user_at(self.target_tenant(), self.target_session_key())
 
     def collect_recent(self) -> list[dict[str, object]]:
         """读取并筛选近期用户与助手消息。"""
