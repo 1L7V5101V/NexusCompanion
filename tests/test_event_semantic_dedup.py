@@ -2,6 +2,7 @@ from typing import Any, cast
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from infra.storage.interfaces import TenantContext
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
 
@@ -31,6 +32,7 @@ def test_near_duplicate_event_not_saved_again(tmp_path):
             source_ref="session@1-10#0",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_from_consolidation(
             history_entry="用户公开了脱敏后的仓库",
@@ -38,6 +40,7 @@ def test_near_duplicate_event_not_saved_again(tmp_path):
             source_ref="session@1-10#1",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -63,6 +66,7 @@ def test_distinct_event_saves_normally(tmp_path):
             source_ref="session@1-10#0",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_from_consolidation(
             history_entry="用户买了一个新键盘",
@@ -70,6 +74,7 @@ def test_distinct_event_saves_normally(tmp_path):
             source_ref="session@1-10#1",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -95,6 +100,7 @@ def test_reinforcement_incremented_on_dedup(tmp_path):
             source_ref="session@1-10#0",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_from_consolidation(
             history_entry="用户公开了脱敏后的仓库",
@@ -102,6 +108,7 @@ def test_reinforcement_incremented_on_dedup(tmp_path):
             source_ref="session@1-10#1",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -128,6 +135,7 @@ def test_emotional_weight_merged_on_event_dedup(tmp_path):
             scope_channel="telegram",
             scope_chat_id="1",
             emotional_weight=0,
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_from_consolidation(
             history_entry="用户公开了脱敏后的仓库",
@@ -136,6 +144,7 @@ def test_emotional_weight_merged_on_event_dedup(tmp_path):
             scope_channel="telegram",
             scope_chat_id="1",
             emotional_weight=8,
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -161,6 +170,7 @@ def test_dedup_window_is_7_days(tmp_path):
             source_ref="session@1-10#0",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -179,6 +189,7 @@ def test_dedup_window_is_7_days(tmp_path):
             source_ref="session@1-10#1",
             scope_channel="telegram",
             scope_chat_id="1",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run_again())

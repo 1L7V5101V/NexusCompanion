@@ -3,6 +3,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock
 
 from core.memory.events import TurnIngested
+from infra.storage.interfaces import TenantContext
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.rule_schema import build_procedure_rule_schema
@@ -68,6 +69,7 @@ def test_post_worker_run_only_handles_invalidations_no_implicit_save():
             agent_response="好的",
             tool_chain=[],
             source_ref="test@post_response",
+            tenant=TenantContext(tenant_id="test"),
         )
     )
 
@@ -96,6 +98,7 @@ def test_post_worker_handle_delegates_turn_ingested_event():
                 assistant_response="好的",
                 tool_chain=[{"text": "memo", "calls": []}],
                 source_ref="cli:1@post_response",
+                tenant_id="test",
             )
         )
     )
@@ -108,6 +111,7 @@ def test_post_worker_handle_delegates_turn_ingested_event():
         session_key="cli:1",
         channel="cli",
         chat_id="1",
+        tenant=TenantContext(tenant_id="test"),
     )
 
 
@@ -239,6 +243,7 @@ def test_merge_item_should_keep_procedure_metadata_consistent():
         memorizer.merge_item(
             item_id,
             "合并后的 Steam 查询规则：先用 steam_mcp，再补充区服确认",
+            tenant=TenantContext(tenant_id="test"),
         )
     )
 
@@ -294,6 +299,7 @@ def test_merge_item_should_refresh_trigger_tags_for_procedure():
         memorizer.merge_item(
             item_id,
             "查 Steam 必须先使用 steam_mcp",
+            tenant=TenantContext(tenant_id="test"),
         )
     )
 

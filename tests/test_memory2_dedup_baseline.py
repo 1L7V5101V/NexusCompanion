@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
+from infra.storage.interfaces import TenantContext
 from memory2.memorizer import Memorizer
 from memory2.rule_schema import procedure_rules_conflict
 from memory2.store import MemoryStore2
@@ -32,12 +33,14 @@ def test_baseline_exact_hash_prevents_double_write(tmp_path):
             memory_type="procedure",
             extra={},
             source_ref="turn1",
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_item(
             summary="查 Steam 必须用 steam MCP",
             memory_type="procedure",
             extra={},
             source_ref="turn2",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())

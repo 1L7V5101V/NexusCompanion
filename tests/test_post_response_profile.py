@@ -3,6 +3,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from memory2.post_response_worker import PostResponseMemoryWorker
+from infra.storage.interfaces import TenantContext
 
 
 class _DummyProvider:
@@ -45,6 +46,7 @@ def test_worker_run_does_not_call_profile_extractor_per_turn():
             agent_response="记住了",
             tool_chain=[],
             source_ref="test@post_response",
+            tenant=TenantContext(tenant_id="test"),
         )
     )
 

@@ -80,6 +80,7 @@ async def test_default_context_store_prepare_returns_bundle_with_legacy_metadata
         chat_id="1",
         content="请用 $refactor 再来一次 $known $refactor",
         timestamp=datetime(2026, 4, 4, 20, 0, 0),
+        tenant_id="test",
     )
 
     bundle = await store.prepare(msg=msg, session_key="cli:1", session=cast(Any, session))
@@ -117,6 +118,7 @@ async def test_default_context_store_prepare_uses_explicit_session_key_for_retri
         sender="hua",
         chat_id="7674283004",
         content="定时任务执行一下",
+        tenant_id="test",
     )
 
     await store.prepare(msg=msg, session_key="scheduler:job-123", session=cast(Any, session))
@@ -147,6 +149,7 @@ async def test_default_context_store_prepare_skips_retrieval_when_requested():
         chat_id="7674283004",
         content="查询北京天气",
         metadata={"skip_memory_retrieval": True},
+        tenant_id="test",
     )
 
     bundle = await store.prepare(
@@ -186,6 +189,7 @@ async def test_default_context_store_uses_cli_context_override_for_retrieval():
             "context_channel": "telegram",
             "context_chat_id": "7674283004",
         },
+        tenant_id="test",
     )
 
     await store.prepare(msg=msg, session_key=msg.session_key, session=cast(Any, session))

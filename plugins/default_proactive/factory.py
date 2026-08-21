@@ -7,6 +7,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 from agent.tools.web_fetch import WebFetchTool
+from infra.storage.tenancy import resolve_tenant
 from plugins.default_proactive.source import McpGatewaySource
 from plugins.default_proactive.runtime import (
     ProactiveFlowRuntime,
@@ -129,6 +130,10 @@ class AgentTickFactory:
             ack_fn=source.ack_fn,
             alert_ack_fn=source.alert_ack_fn,
             max_chars=self._deps.cfg.agent_tick_web_fetch_max_chars,
+            tenant=resolve_tenant(
+                getattr(self._deps.cfg, "default_channel", ""),
+                getattr(self._deps.cfg, "default_chat_id", ""),
+            ),
         )
 
     def _build_recent_proactive_fn(self) -> RecentProactiveFn:

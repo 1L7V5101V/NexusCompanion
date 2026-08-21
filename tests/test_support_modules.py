@@ -25,6 +25,7 @@ from bus.queue import ChatLane, MessageBus
 from core.common import timekit
 from plugins.default_memory.engine import DefaultMemoryEngine
 from infra.persistence.json_store import atomic_save_json, load_json, save_json
+from infra.storage.interfaces import TenantContext
 from memory2.memorizer import Memorizer
 from memory2.store import MemoryStore2
 
@@ -43,6 +44,7 @@ def _make_default_engine(
     engine._light_model = ""
     engine._v1_store = None
     engine._v2_store = None
+    engine._storage_runtime = None
     engine._embedder = None
     engine._memorizer = memorizer
     engine._retriever = retriever
@@ -390,6 +392,7 @@ async def test_memorize_tool_cover_branches(
         summary="记住这条流程",
         memory_kind="procedure",
         steps=["先查", "再做"],
+        tenant_id="test",
     )
 
     assert "item_id=mem-1" in result
@@ -410,8 +413,8 @@ async def test_memorize_tool_cover_branches(
             tagger=cast(Any, _BadTagger()),
         )
     )
-    await bad.execute(summary="普通偏好", memory_kind="procedure")
-    await bad.execute(summary="偏好", memory_kind="preference")
+    await bad.execute(summary="普通偏好", memory_kind="procedure", tenant_id="test")
+    await bad.execute(summary="偏好", memory_kind="preference", tenant_id="test")
 
 
 @pytest.mark.asyncio
@@ -440,6 +443,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
             "tool_requirement": "steam_mcp",
         },
         source_ref="seed",
+        tenant=TenantContext(tenant_id="test"),
     )
 
     await tool.execute(
@@ -447,6 +451,7 @@ async def test_memorize_tool_should_not_create_second_active_procedure_when_incr
         memory_kind="procedure",
         tool_requirement="steam_mcp",
         steps=["判断目标区服", "使用 steam_mcp 工具查询游戏详情"],
+        tenant_id="test",
     )
 
     rows = store._db.execute(
@@ -476,12 +481,14 @@ async def test_memorizer_profile_supersede_keeps_high_emotional_weight_item_unde
         extra={"category": "status"},
         source_ref="old",
         emotional_weight=8,
+        tenant=TenantContext(tenant_id="test"),
     )
     await memorizer.save_item_with_supersede(
         summary="用户开始等待新的 offer",
         memory_type="profile",
         extra={"category": "status"},
         source_ref="new",
+        tenant=TenantContext(tenant_id="test"),
     )
 
     rows = store._db.execute(
@@ -509,12 +516,14 @@ async def test_memorizer_profile_supersede_retires_low_emotional_weight_item_at_
         extra={"category": "status"},
         source_ref="old",
         emotional_weight=0,
+        tenant=TenantContext(tenant_id="test"),
     )
     await memorizer.save_item_with_supersede(
         summary="用户开始等待新的 offer",
         memory_type="profile",
         extra={"category": "status"},
         source_ref="new",
+        tenant=TenantContext(tenant_id="test"),
     )
 
     rows = store._db.execute(
@@ -537,6 +546,7 @@ async def test_memorize_tool_should_coerce_language_reply_rule_to_preference():
     await tool.execute(
         summary="之后跟我说话只用中文，不要夹杂英文，专有名词也尽量翻译。",
         memory_kind="procedure",
+        tenant_id="test",
     )
 
     assert (

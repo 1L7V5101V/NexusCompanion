@@ -37,7 +37,9 @@ from core.memory.utils import (
 )
 from core.net.http import SharedHttpResources
 from infra.storage.factory import create_store
-from infra.storage.interfaces import MemoryStorage
+from infra.storage.interfaces import MemoryStorage, TenantContext
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -426,6 +428,7 @@ class DefaultMemoryEngine:
         light_provider: LLMProvider | None = None,
         http_resources: SharedHttpResources,
         event_publisher: "EventBus | None" = None,
+        storage_runtime: StorageRuntime | None = None,
     ) -> None:
         self._config = config
         self._default_config = default_config
@@ -433,6 +436,7 @@ class DefaultMemoryEngine:
         self._provider = provider
         self._light_provider = light_provider or provider
         self._light_model = config.light_model or config.model
+        self._storage_runtime = storage_runtime
         self._v2_store: MemoryStorage | None = None
         self._embedder: Embedder | None = None
         self._memorizer: Memorizer | None = None
@@ -448,11 +452,13 @@ class DefaultMemoryEngine:
         )
         embedding = config.memory.embedding
         retrieval = default_config.retrieval
-        self._v2_store = create_store(
-            self._config.storage,
-            db_path,
-            vec_dim=embedding.output_dimensionality or VEC_DIM,
-        )
+        if storage_runtime is None:
+            # 无 runtime 的 legacy/single-user 路径：进程内独占一个 store。
+            self._v2_store = create_store(
+                self._config.storage,
+                db_path,
+                vec_dim=embedding.output_dimensionality or VEC_DIM,
+            )
         self._embedder = Embedder(
             base_url=embedding.base_url
             or config.light_base_url
@@ -465,9 +471,9 @@ class DefaultMemoryEngine:
             output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
         )
-        self._memorizer = Memorizer(self._v2_store, self._embedder)
+        self._memorizer = Memorizer(self._memory_for, self._embedder)
         self._retriever = Retriever(
-            self._v2_store,
+            self._memory_for,
             self._embedder,
             top_k=retrieval.top_k_history,
             score_threshold=retrieval.score_threshold,
@@ -505,7 +511,9 @@ class DefaultMemoryEngine:
             event_publisher=event_publisher,
         )
         self._wire_memory2_events()
-        self.closeables = [self._v2_store, self._embedder]
+        self.closeables = [self._embedder]
+        if self._v2_store is not None:
+            self.closeables.append(self._v2_store)
 
     @classmethod
     def ensure_workspace_storage(
@@ -556,6 +564,7 @@ class DefaultMemoryEngine:
         self,
         event: ConsolidationCommitted,
     ) -> None:
+        tenant = TenantContext(tenant_id=assert_tenant_resolved(event.tenant_id))
         save_coros = [
             self._save_from_consolidation(
                 history_entry=entry,
@@ -563,6 +572,7 @@ class DefaultMemoryEngine:
                 source_ref=_build_entry_source_ref(event.source_ref, entry),
                 scope_channel=event.scope_channel,
                 scope_chat_id=event.scope_chat_id,
+                tenant=tenant,
                 emotional_weight=emotional_weight,
             )
             for entry, emotional_weight in event.history_entry_payloads
@@ -579,6 +589,7 @@ class DefaultMemoryEngine:
                 source_ref=event.source_ref,
                 scope_channel=event.scope_channel,
                 scope_chat_id=event.scope_chat_id,
+                tenant=tenant,
             )
 
     async def _extract_implicit_long_term(
@@ -644,6 +655,7 @@ class DefaultMemoryEngine:
         memory_types = self._resolve_memory_types(request)
         items = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=memory_types,
             top_k=request.limit,
             scope_channel=scope.channel or None,
@@ -731,6 +743,7 @@ class DefaultMemoryEngine:
             session_key=scope.session_key,
             channel=scope.channel,
             chat_id=scope.chat_id,
+            tenant=request.tenant,
         )
         return MemoryIngestResult(
             accepted=True,
@@ -778,6 +791,7 @@ class DefaultMemoryEngine:
             memory_type=memory_type,
             extra=extra,
             source_ref=request.source_ref or "memorize_tool",
+            tenant=request.tenant,
         )
         write_status, actual_id = _split_write_result(result)
         return MemoryMutationResult(
@@ -790,7 +804,7 @@ class DefaultMemoryEngine:
     # 显式遗忘入口：只把条目标成 superseded，不物理删除。
     async def _forget(self, request: MemoryMutation) -> MemoryMutationResult:
         # 1. 先按 id 去重并读取现存条目。
-        store = self._require_v2_store()
+        store = self._memory_for(request.tenant)
         clean_ids = _dedupe_ids(list(request.ids))
         items = store.get_items_by_ids(clean_ids)
         found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
@@ -824,8 +838,7 @@ class DefaultMemoryEngine:
         self,
         action_tokens: list[str],
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        return store.keyword_match_procedures(action_tokens) if store is not None else []
+        return self._require_v2_store().keyword_match_procedures(action_tokens)
 
     def list_events_by_time_range(
         self,
@@ -834,10 +847,9 @@ class DefaultMemoryEngine:
         *,
         limit: int = 200,
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        if store is None:
-            return []
-        return store.list_events_by_time_range(time_start, time_end, limit=limit)
+        return self._require_v2_store().list_events_by_time_range(
+            time_start, time_end, limit=limit
+        )
 
     def list_items_for_dashboard(
         self,
@@ -939,6 +951,8 @@ class DefaultMemoryEngine:
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
+        *,
+        tenant: TenantContext,
         emotional_weight: int = 0,
     ) -> None:
         if self._memorizer is None:
@@ -949,6 +963,7 @@ class DefaultMemoryEngine:
             source_ref=source_ref,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
+            tenant=tenant,
             emotional_weight=emotional_weight,
         )
 
@@ -958,6 +973,8 @@ class DefaultMemoryEngine:
         memory_type: str,
         extra: dict[str, object],
         source_ref: str,
+        *,
+        tenant: TenantContext,
         happened_at: str | None = None,
         emotional_weight: int = 0,
     ) -> str:
@@ -968,6 +985,7 @@ class DefaultMemoryEngine:
             memory_type=memory_type,
             extra=extra,
             source_ref=source_ref,
+            tenant=tenant,
             happened_at=happened_at,
             emotional_weight=emotional_weight,
         )
@@ -976,6 +994,7 @@ class DefaultMemoryEngine:
         self,
         result: dict[str, object],
         *,
+        tenant: TenantContext,
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
@@ -999,6 +1018,7 @@ class DefaultMemoryEngine:
                     "scope_chat_id": scope_chat_id,
                 },
                 source_ref=f"{source_ref}#profile",
+                tenant=tenant,
                 happened_at=happened_at,
                 emotional_weight=_coerce_emotional_weight(
                     item.get("emotional_weight")
@@ -1028,6 +1048,7 @@ class DefaultMemoryEngine:
                     memory_type=memory_type,
                     extra=extra,
                     source_ref=f"{source_ref}#implicit",
+                    tenant=tenant,
                     emotional_weight=_coerce_emotional_weight(
                         item.get("emotional_weight")
                     ),
@@ -1052,6 +1073,7 @@ class DefaultMemoryEngine:
         types = self._resolve_memory_types(request)
         hits = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=types,
             top_k=max(request.limit, _VECTOR_TOP_K),
             scope_channel=scope.channel or None,
@@ -1113,7 +1135,7 @@ class DefaultMemoryEngine:
                     "effect": request.effect,
                 }
             )
-        hits = self.list_events_by_time_range(
+        hits = self._memory_for(request.tenant).list_events_by_time_range(
             request.filters.time_start,
             request.filters.time_end,
             limit=request.limit,
@@ -1136,6 +1158,7 @@ class DefaultMemoryEngine:
         scope = resolve_memory_scope(request.scope)
         hits = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=["preference", "profile"],
             top_k=request.limit,
             scope_channel=scope.channel or None,
@@ -1159,6 +1182,7 @@ class DefaultMemoryEngine:
         self,
         query: str,
         *,
+        tenant: TenantContext,
         memory_types: list[str] | None = None,
         top_k: int | None = None,
         scope_channel: str | None = None,
@@ -1187,6 +1211,7 @@ class DefaultMemoryEngine:
                 time_start=time_start,
                 time_end=time_end,
                 keyword_enabled=keyword_enabled,
+                tenant=tenant,
             ),
         )
 
@@ -1224,10 +1249,17 @@ class DefaultMemoryEngine:
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
 
-    def _require_v2_store(self) -> MemoryStorage:
+    def _memory_for(self, tenant: TenantContext) -> MemoryStorage:
+        if self._storage_runtime is not None:
+            return self._storage_runtime.for_tenant(tenant).memory
         if self._v2_store is None:
             raise RuntimeError("memory v2 store unavailable")
         return self._v2_store
+
+    def _require_v2_store(self) -> MemoryStorage:
+        # D1：admin/dashboard/undo 仍走显式 owner tenant（DEFAULT_TENANT）；
+        # Commit E 再按请求隔离。
+        return self._memory_for(TenantContext(tenant_id=DEFAULT_TENANT))
 
     @classmethod
     def _build_record(

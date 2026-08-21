@@ -399,6 +399,7 @@ def build_registered_tools(
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
     restart_coordinator: "RestartCoordinator | None" = None,
+    storage_runtime: "StorageRuntime | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -429,6 +430,7 @@ def build_registered_tools(
             light_provider=light_provider,
             http_resources=http_resources,
             event_publisher=event_publisher,
+            storage_runtime=storage_runtime,
         ),
     )
     memory_runtime = memory_result.extras["memory_runtime"]
@@ -464,6 +466,7 @@ def build_registered_tools(
                 memory_engine=memory_runtime.engine,
                 scheduler=scheduler,
                 event_publisher=event_publisher,
+                storage_runtime=storage_runtime,
             ),
         )
         maybe_mcp = result.extras.get("mcp_registry")
@@ -654,6 +657,7 @@ def build_core_runtime(
             event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
             restart_coordinator=restart_coordinator,
+            storage_runtime=storage_runtime,
         )
     )
     presence = PresenceStore(session_manager._store)

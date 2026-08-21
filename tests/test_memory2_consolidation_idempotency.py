@@ -1,6 +1,7 @@
 from typing import Any, cast
 import asyncio
 
+from infra.storage.interfaces import TenantContext
 from memory2.memorizer import Memorizer, _parse_history_entry_happened_at
 from memory2.store import MemoryStore2
 
@@ -57,6 +58,7 @@ def test_save_from_consolidation_writes_happened_at(tmp_path):
             source_ref="session@1-10",
             scope_channel="telegram",
             scope_chat_id="123",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())
@@ -77,6 +79,7 @@ def test_save_from_consolidation_skips_duplicate_source_ref(tmp_path):
             source_ref="session@1-10",
             scope_channel="telegram",
             scope_chat_id="123",
+            tenant=TenantContext(tenant_id="test"),
         )
         await memorizer.save_from_consolidation(
             history_entry="[2026-03-08 12:00] first",
@@ -84,6 +87,7 @@ def test_save_from_consolidation_skips_duplicate_source_ref(tmp_path):
             source_ref="session@1-10",
             scope_channel="telegram",
             scope_chat_id="123",
+            tenant=TenantContext(tenant_id="test"),
         )
 
     asyncio.run(_run())

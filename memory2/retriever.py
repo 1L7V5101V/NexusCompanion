@@ -5,13 +5,14 @@ Memory v2 检索器：查询 → top-k items + 格式化注入块
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
 import json
 import logging
 import re
 from typing import cast
 
-from infra.storage.interfaces import MemoryStorage
+from infra.storage.interfaces import MemoryStorage, TenantContext
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
 
@@ -40,7 +41,7 @@ class Retriever:
 
     def __init__(
         self,
-        store: MemoryStorage,
+        store_for: MemoryStorage | Callable[[TenantContext], MemoryStorage],
         embedder: Embedder,
         top_k: int = 8,
         score_threshold: float = 0.45,
@@ -56,7 +57,9 @@ class Retriever:
         hotness_alpha: float = 0.20,
         hotness_half_life_days: float = 14.0,
     ) -> None:
-        self._store = store
+        self._store_for = (
+            store_for if callable(store_for) else lambda _tenant: store_for
+        )
         self._embedder = embedder
         self._top_k = top_k
         self._score_threshold = score_threshold
@@ -94,7 +97,10 @@ class Retriever:
         time_start: datetime | None = None,
         time_end: datetime | None = None,
         keyword_enabled: bool = True,
+        *,
+        tenant: TenantContext,
     ) -> list[dict]:
+        store = self._store_for(tenant)
         # 1. query 与辅助 query 一起进入向量 lane，避免多入口语义漂移。
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
         actual_threshold = (
@@ -103,6 +109,7 @@ class Retriever:
         query_texts = _dedupe_texts([query, *(aux_queries or [])])
         vector_items = await self._retrieve_vector_lanes(
             query_texts,
+            store=store,
             actual_top_k=actual_top_k,
             memory_types=memory_types,
             score_threshold=actual_threshold,
@@ -118,6 +125,7 @@ class Retriever:
         if keyword_enabled:
             keyword_items = self._retrieve_keyword_lane(
                 query,
+                store=store,
                 actual_top_k=actual_top_k,
                 memory_types=memory_types,
                 scope_channel=scope_channel,
@@ -142,6 +150,7 @@ class Retriever:
         self,
         query_texts: list[str],
         *,
+        store: MemoryStorage,
         actual_top_k: int,
         memory_types: list[str] | None,
         score_threshold: float,
@@ -158,7 +167,7 @@ class Retriever:
             return []
         hit_groups: list[list[dict]] = []
         try:
-            hit_groups = self._store.vector_search_batch(
+            hit_groups = store.vector_search_batch(
                 vectors,
                 top_k=actual_top_k,
                 memory_types=memory_types,
@@ -183,7 +192,7 @@ class Retriever:
 
         for vector in vectors:
             try:
-                hits = self._store.vector_search(
+                hits = store.vector_search(
                     query_vec=vector,
                     top_k=actual_top_k,
                     memory_types=memory_types,
@@ -226,6 +235,7 @@ class Retriever:
         self,
         query: str,
         *,
+        store: MemoryStorage,
         actual_top_k: int,
         memory_types: list[str] | None,
         scope_channel: str | None,
@@ -241,11 +251,11 @@ class Retriever:
         # FTS5 BM25 (trigram tokenizer 需要 3+ 字符词条). 只在 query
         # 包含至少一个 3+ ASCII/CJK token 时启用, 否则纯 2 字 CJK
         # 查询会空结果, 直接走 OR-LIKE 保底.
-        if isinstance(self._store, MemoryStore2) and self._store._fts_available and (
+        if isinstance(store, MemoryStore2) and store._fts_available and (
             re.search(r"[a-zA-Z0-9_]{3,}", query)
             or re.search(r"[\u4e00-\u9fff]{3,}", query)
         ):
-            bm25_results = self._store.keyword_search_bm25(
+            bm25_results = store.keyword_search_bm25(
                 terms,
                 memory_types=memory_types,
                 limit=limit,
@@ -258,7 +268,7 @@ class Retriever:
             )
             if bm25_results:
                 return bm25_results
-        return self._store.keyword_search_summary(
+        return store.keyword_search_summary(
             terms,
             memory_types=memory_types,
             limit=limit,
@@ -281,10 +291,13 @@ class Retriever:
         scope_channel: str | None = None,
         scope_chat_id: str | None = None,
         require_scope_match: bool = False,
+        *,
+        tenant: TenantContext,
     ) -> list[dict]:
         """复用已有 query_vec 做本地 vector_search，跳过 embedding 步骤。"""
+        store = self._store_for(tenant)
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
-        items = self._store.vector_search(
+        items = store.vector_search(
             query_vec=query_vec,
             top_k=actual_top_k,
             memory_types=memory_types,
