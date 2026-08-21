@@ -341,7 +341,7 @@ StorageRuntime
 
 ### Phase 1：PostgreSQL + pgvector 存储基础（P0）
 
-**状态：`feature/scaling-phase1-storage` 已完成 M0-M4，尚未达到 merge/cutover gate。**
+**状态：`feature/scaling-phase1-storage` 已完成 M0-M4；M4H-1/M4H-2 已完成，M4H-3 尚未开始，仍未达到 M4.5 merge/cutover gate。**
 **旧分支：`feature/pg-migration` 已被该分支继承，视为 superseded。**
 
 详细任务记录位于该分支中的 `docs/tasks/phase1-storage/phase1-storage.md`；合并前该文件不在 `main`。
@@ -353,21 +353,22 @@ StorageRuntime
 - M2：PostgresMemoryStore、pgvector、tenant LIST 分区、HNSW、parity 基础。现有合成实验中，全局 HNSW 加 tenant filter 的小租户 recall 约为 0.180，按 tenant 分区后约为 0.990；该结果支持分区方向，但不替代真实生产基准。
 - M3：PostgresSessionStore、`pg_trgm` 搜索与接口补齐。
 - M4：工厂与主要构造点接线、undo 语义收口。
+- M4H-1：storage Protocol/interface、factory/holder 收口和 SQLite/PG 共同契约测试。
+- M4H-2：`TenantContext` / `TenantResolver` 全链路接线，以及 A/B tenant isolation、dashboard、undo 和 source_ref 越权测试。
 
-这些工作证明了“SQLite 与 PostgreSQL 可以实现相近业务语义”，但当前 adapter 仍是同步单连接、store 级 RLock、默认单 tenant。
+这些工作证明了“SQLite 与 PostgreSQL 可以实现相近业务语义”，但 M4H-3 尚未开始；当前 adapter 的连接/阻塞模型仍未达到并发与生产 merge gate。
 
 #### 1.2 merge 前必须补齐
 
-##### A. 多租户运行时接线
+##### A. 多租户运行时接线（M4H-2 已完成）
 
-- 引入 `TenantContext` / `TenantResolver`，从 inbound 一路传到 session、memory、dashboard、proactive 和附件访问。
-- 移除多用户路径中的隐式 `tenant_id="default"`。
-- 共享进程级连接池；禁止按 tenant 创建长期连接/store 单例。
-- 增加 A/B tenant 越权测试，覆盖 CRUD、vector search、BM25、dashboard、undo、source_ref 和附件 metadata。
+- `TenantContext` / `TenantResolver` 已从 inbound 贯穿到 session、memory、dashboard、proactive、undo/source_ref 和附件 metadata。
+- 多用户路径的隐式 `tenant_id="default"` 已移除，并有 A/B tenant 越权测试。
+- 后续连接池实现必须保持进程级共享；禁止按 tenant 创建长期 connection/store 单例。
 
-##### B. 连接与事件循环模型
+##### B. 连接与事件循环模型（M4H-3 尚未开始）
 
-当前 `PostgresMemoryStore` / `PostgresSessionStore` 使用同步 psycopg 单连接。二选一后形成明确决策：
+当前 `PostgresMemoryStore` / `PostgresSessionStore` 使用同步 psycopg 单连接。M4H-3 必须先形成 ADR 级决策，再实现以下两条路线之一：
 
 1. **推荐目标**：psycopg async/SQLAlchemy async + 进程级 pool；或
 2. **过渡方案**：同步 pool + 有界 thread executor，将所有 DB 调用移出 event loop。
@@ -391,16 +392,21 @@ StorageRuntime
 - 分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞；
 - HNSW 参数和小分区 seq scan 的切换阈值。
 
-若 5000 LIST 分区未通过 gate，再评估固定 hash bucket、冷热 tenant 分层或仅为大 tenant 建专属分区；不得只因已有实现就固化方案。
+若 5000 LIST 分区未通过 gate，再评估固定 hash bucket、冷热 tenant 分层或仅为大 tenant 建专属分区；当前 LIST partition 仅是 Phase 1 的 provisional 方案，不因已有实现而固化。
 
 ##### D. 接口与测试
 
-- 使用 Protocol/明确 interface 收敛 `MemoryStore2 | PostgresMemoryStore` 联合类型。
+- M4H-1 已使用 Protocol/明确 interface 收敛 `MemoryStore2 | PostgresMemoryStore` 联合类型。
+- 使用 Protocol/明确 interface 收敛其余具体实现联合类型。
 - 全量测试与 pyright 通过；不能只以局部 58 passed 作为 merge 依据。
 - 保留 SQLite adapter 的契约测试与 PostgreSQL parity 测试。
 - M7 单列 BM25/关键词搜索对等测试，明确允许的排序差异。
 
-#### 1.3 迁移与切换
+#### 1.3 当前数据平面边界
+
+M4H-2 已完成 tenant 运行时接线，但当前 PostgreSQL adapter 仍不承接 `SessionManager` 的 turn control plane 持久化；该 SQLite-only 边界必须在 M6 cutover 前明确纳入范围，或记录双存储期间的一致性、恢复和回滚策略。不能将“PostgreSQL 成为 primary”笼统解释为所有 session/turn 数据已经迁移。
+
+#### 1.4 迁移与切换
 
 M5-M7 调整为：
 
@@ -652,7 +658,7 @@ Gateway 扩缩容依据 active connections、send buffer、event-loop lag 和 re
 | 工作                        | 可立即开始       | 依赖                            | 说明                                |
 | ------------------------- | ----------- | ----------------------------- | --------------------------------- |
 | Phase 0 指标与负载工具           | 是           | 无                             | 所有后续 gate 的基础                     |
-| Phase 1 M5-M7             | 是           | M0-M4                         | 在现有 feature 分支继续                  |
+| Phase 1 M5-M7             | 否           | M4.5 Exit gate                | M4.5 通过后依次执行 M5 迁移工具、M6 主数据源切换、M7 生产基准 |
 | TenantResolver 设计与越权测试    | 是           | 身份模型确认                        | 与存储分支协调 interface，避免再次默认 tenant   |
 | WebChat 前端静态交互            | 可部分开始       | 稳定事件状态模型                      | 不得把未定的身份/session_key 写死           |
 | Phase 2 TurnAdmission     | 设计可开始，接线后合并 | Phase 1 store interface 稳定    | 会修改 `agent/looping/core.py` 和调用路径 |
@@ -890,7 +896,7 @@ worker_id, runtime_version, provider, model, attempt, duration_ms
 
 按风险和当前分支状态，推荐紧接着执行：
 
-1. 在 `feature/scaling-phase1-storage` 中先完成 **TenantContext 接线决策、连接池/阻塞模型决策、全量 CI gate**。
+1. M4H-2 已完成；在 `feature/scaling-phase1-storage` 中先完成 **M4H-3 连接池/阻塞模型 ADR 与验证**，再完成 M4H-4 分区 provisioning 和 M4H-5 全量 merge gate。
 2. 在独立低冲突分支完成 **Phase 0 metrics + load harness**，为 Phase 1 M7 和 Phase 2 提供统一证据。
 3. 用小型设计文档定型 **TurnAdmission、IngressQueue envelope、inbox/outbox schema**，再开始 Phase 2/3 编码。
 4. 暂停把 Redis cache 和公网 WebChat 当作当前关键路径；前者等待 PG 基准，后者等待身份与最终投递语义。
