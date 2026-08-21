@@ -1,8 +1,9 @@
 # M4H-2 tenant 运行时接线（计划）
 
-> 状态：进行中（2026-08-21 定案并批准）
+> 状态：已完成（A–F 全部提交，2026-08-21）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
+> 证据：A `4ac8d8c8` · B `8bffd85b` · C `597feda3` · D1–D3 `4b27de4b`/`e464e6bb`/`abce3d45` · E `555d7079` · F-1 `c7b5daee`（既有测试同步）· F（test_tenant_isolation.py + 文档）
 
 ## Context
 
@@ -135,6 +136,9 @@ StorageRuntime ──for_tenant(ctx)──► TenantStorage(ctx)
 ## 验证
 
 每 commit 跑对应定向 pytest + pyright；main 基线保持 37，Phase 1 storage 范围 0 新增。
+
+全量门禁（2026-08-21，F 后）：`pytest -q -W error --continue-on-collection-errors -k "not test_serve_smoke_loads_config_and_runs_shutdown"` 相对 main 基线
+main 83 failed/806 passed/5 收集错误 → 分支 84 failed/884 passed/0 收集错误；分支独有失败仅 `test_kernel_phase_order.py` 2 个（断言未实现的 `ProactivePhaseRunner` stub 行为，生产与 main 字节一致，main 因 conftest 收集错误从未运行，属 main 潜在缺陷非本分支引入）。
 
 ```bash
 D:\.Projects\NexusCompanion\.venv\Scripts\python.exe -m pytest -q -W error tests/test_storage_factory.py tests/test_storage_parity.py tests/test_storage_interfaces.py tests/test_storage_runtime.py tests/test_tenancy.py tests/test_tenant_isolation.py
