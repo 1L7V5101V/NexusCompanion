@@ -1,6 +1,6 @@
 # Phase 1 存储层改造计划（PostgreSQL + pgvector + Redis）
 
-> 来源：[SCALING_PLAN.md](../../../SCALING_PLAN.md) Phase 1（P0 必须）
+> 来源：[SCALING_PLAN.md](../../../scaling/SCALING_PLAN.md) Phase 1（P0 必须）
 > 分支：`feature/scaling-phase1-storage`（继承 `feature/pg-migration` 的 WIP）
 > 日期：2026-08-20
 
@@ -17,7 +17,7 @@ Phase 1 的目标：
 1. **后端可切换**：引入存储抽象，`sqlite`（单机兼容）与 `postgres` 双后端，业务代码经工厂获取 store
 2. **PostgreSQL + pgvector**：迁移到异步连接池 + pgvector 向量检索，写入并发与检索可扩展
 3. **Redis 缓存层**：缓存会话上下文、用户画像、向量检索结果，降低 DB 读压力
-4. **渐进式迁移**：灰度 → 双写校验 → 全量切换，见 [migration_checklist.md](../../migration_checklist.md)
+4. **渐进式迁移**：灰度 → 双写校验 → 全量切换，见 [migration_checklist.md](../../scaling/migration_checklist.md)
 
 ## 2. 现状盘点
 
