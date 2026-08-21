@@ -12,12 +12,14 @@ worker）按 m4h-4 ADR §2 的 commit 2-5 落地。
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
 from enum import Enum
 import re
 from typing import Any, Protocol, runtime_checkable
 
+import psycopg
 from psycopg import sql as pgsql
 
 from infra.storage.postgres_memory_store import PostgresMemoryBackend
@@ -28,6 +30,7 @@ __all__ = [
     "PartitionProvisioningFailed",
     "TenantProvisioning",
     "TenantProvisioningService",
+    "TenantProvisioningWorker",
     "partition_name_for_tenant",
 ]
 
@@ -193,6 +196,18 @@ class TenantProvisioningService:
             self._backend._partitions_known.add(name)
             self._states[tenant_id] = PartitionStatus.READY
 
+    async def submit_provision(self, tenant_id: str) -> None:
+        """把同步幂等 DDL 提交到 bounded executor（control worker 专用）。
+
+        provision_tenant 是同步执行器；worker（async）经 ``run_db`` 让它
+        在池线程执行，DDL 与锁等待都不占用 event loop。
+        """
+        await self._run_db(self.provision_tenant, tenant_id)
+
+    def mark_failed(self, tenant_id: str) -> None:
+        """PENDING → FAILED（worker 尝试耗尽）；FAILED 可经 request_provisioning 重入队。"""
+        self._states[tenant_id] = PartitionStatus.FAILED
+
     # ── 内部 ────────────────────────────────────────────────────────────
 
     def _partition_exists(self, tenant_id: str) -> bool:
@@ -209,3 +224,89 @@ class TenantProvisioningService:
 
     def status(self, tenant_id: str) -> PartitionStatus:
         return self._states.get(tenant_id, PartitionStatus.UNKNOWN)
+
+
+class TenantProvisioningWorker:
+    """独立 control worker：消费 ``_queued``，经 ``run_db`` 执行幂等 DDL（ADR §1.3）。
+
+    - 单 async task 轮询队列；同 tenant 由 ``_in_flight`` 去重（恰一次在途），
+      异 tenant 并行 dispatch（全局 advisory 锁在 DDL 层串行化）。
+    - 失败分类：``psycopg.Error``（advisory 锁超时等瞬态）→ backoff 重试至
+      ``max_attempts`` 后置 FAILED；其余异常非重试 → 立即 FAILED。事务失败已由
+      M4H-3 ``connection()`` 包装 rollback，worker 只观察并更新状态。
+    - 成功由 ``provision_tenant`` 置 READY；FAILED 可经 ``request_provisioning``
+      重新入队。stop 时在途 tenant 未 resolve 仍留 ``_queued``，重启后重处理。
+    """
+
+    def __init__(
+        self,
+        service: TenantProvisioningService,
+        *,
+        poll_interval: float = 0.05,
+        max_attempts: int = 3,
+        backoff: float = 0.05,
+    ) -> None:
+        self._service = service
+        self._poll_interval = poll_interval
+        self._max_attempts = max_attempts
+        self._backoff = backoff
+        self._in_flight: set[str] = set()
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
+
+    async def start(self) -> None:
+        """启动 worker task；已在运行时 no-op。"""
+        if self._task is None:
+            self._stop_event.clear()
+            self._task = asyncio.create_task(self._run(), name="tenant-provisioner")
+
+    async def stop(self) -> None:
+        """优雅停止：置停止标志，等待在途任务完成（不取消执行中的 DDL）。"""
+        if self._task is None:
+            return
+        self._stop_event.set()
+        try:
+            await self._task
+        finally:
+            self._task = None
+
+    async def _run(self) -> None:
+        while not self._stop_event.is_set():
+            await self._drain_once()
+            if not self._service._queued:
+                try:
+                    await asyncio.wait_for(
+                        self._stop_event.wait(), timeout=self._poll_interval
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+    async def _drain_once(self) -> None:
+        batch = list(self._service._queued - self._in_flight)
+        if not batch:
+            return
+        self._in_flight.update(batch)
+        try:
+            await asyncio.gather(
+                *(self._process(tenant_id) for tenant_id in batch),
+                return_exceptions=True,
+            )
+        finally:
+            # 批结束即清在途（_drain_once 串行，无并发冲突）；未 resolve 的
+            # tenant 仍在 _queued（_process 只在成功/FAILED 时出队），
+            # 重启 worker 会重新处理。
+            self._in_flight.clear()
+
+    async def _process(self, tenant_id: str) -> None:
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                await self._service.submit_provision(tenant_id)
+                self._service._queued.discard(tenant_id)
+                return
+            except Exception as exc:
+                retryable = isinstance(exc, psycopg.Error)
+                if not retryable or attempt == self._max_attempts:
+                    self._service.mark_failed(tenant_id)
+                    self._service._queued.discard(tenant_id)
+                    return
+                await asyncio.sleep(self._backoff * attempt)
