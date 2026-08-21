@@ -13,6 +13,7 @@ from agent.config_models import StorageConfig
 from infra.storage.interfaces import MemoryStorage, SessionStorage
 from infra.storage.postgres_memory_store import PostgresMemoryStore
 from infra.storage.postgres_session_store import PostgresSessionStore
+from infra.storage.runtime import StorageRuntime
 from memory2.store import VEC_DIM, MemoryStore2
 from session.store import SessionStore
 
@@ -64,4 +65,28 @@ def create_session_store(
     if config.backend == "postgres":
         _check_pg_schema(config.postgres_url, "sessions")
         return PostgresSessionStore(config.postgres_url, tenant_id=tenant_id)
+    raise ValueError(f"Unknown backend: {config.backend}")
+
+
+def create_storage_runtime(
+    config: StorageConfig,
+    memory_path: str | Path,
+    sessions_path: str | Path,
+    *,
+    vec_dim: int = VEC_DIM,
+) -> StorageRuntime:
+    """生产入口：进程级 StorageRuntime（bootstrap 创建一次）。
+
+    与 create_store/create_session_store 的关系：后者每调用开一条连接，仅限
+    测试 / 显式 single-store 调用方；生产统一走 runtime.for_tenant(ctx) 取
+    tenant-bound view，由 runtime 持有 backend 连接并负责关闭。
+    """
+    if config.backend == "postgres":
+        _check_pg_schema(config.postgres_url, "memory_items")
+        _check_pg_schema(config.postgres_url, "sessions")
+        return StorageRuntime(
+            config.postgres_url, memory_path, sessions_path, vec_dim=vec_dim
+        )
+    if config.backend == "sqlite":
+        return StorageRuntime(None, memory_path, sessions_path, vec_dim=vec_dim)
     raise ValueError(f"Unknown backend: {config.backend}")
