@@ -10,6 +10,7 @@ from pathlib import Path
 import psycopg
 
 from agent.config_models import StorageConfig
+from infra.storage.interfaces import MemoryStorage, SessionStorage
 from infra.storage.postgres_memory_store import PostgresMemoryStore
 from infra.storage.postgres_session_store import PostgresSessionStore
 from memory2.store import VEC_DIM, MemoryStore2
@@ -39,8 +40,8 @@ def create_store(
     *,
     tenant_id: str = "default",
     vec_dim: int = VEC_DIM,
-) -> MemoryStore2 | PostgresMemoryStore:
-    """按 backend 创建记忆 store。"""
+) -> MemoryStorage:
+    """按 backend 创建记忆 store，返回共同接口 MemoryStorage。"""
     if config.backend == "sqlite":
         return MemoryStore2(sqlite_path, vec_dim=vec_dim)
     if config.backend == "postgres":
@@ -56,8 +57,8 @@ def create_session_store(
     sqlite_path: str | Path,
     *,
     tenant_id: str = "default",
-) -> SessionStore | PostgresSessionStore:
-    """按 backend 创建 session store。"""
+) -> SessionStorage:
+    """按 backend 创建 session store，返回共同接口 SessionStorage。"""
     if config.backend == "sqlite":
         return SessionStore(sqlite_path)
     if config.backend == "postgres":

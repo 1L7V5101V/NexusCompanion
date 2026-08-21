@@ -37,6 +37,7 @@ from core.memory.utils import (
 )
 from core.net.http import SharedHttpResources
 from infra.storage.factory import create_store
+from infra.storage.interfaces import MemoryStorage
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -49,7 +50,6 @@ from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
-    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger("plugins.default_memory.engine")
 
@@ -433,7 +433,7 @@ class DefaultMemoryEngine:
         self._provider = provider
         self._light_provider = light_provider or provider
         self._light_model = config.light_model or config.model
-        self._v2_store: MemoryStore2 | PostgresMemoryStore | None = None
+        self._v2_store: MemoryStorage | None = None
         self._embedder: Embedder | None = None
         self._memorizer: Memorizer | None = None
         self._retriever: Retriever | None = None
@@ -668,9 +668,9 @@ class DefaultMemoryEngine:
             len(text_block),
         )
 
-        # SQLite: 详细检索日志。
+        # SQLite: 详细检索日志（PG adapter 不实现，按 SQLite 收窄）。
         store = getattr(self, "_v2_store", None)
-        if store is not None:
+        if isinstance(store, MemoryStore2):
             store.insert_query_log(
                 query_text=request.text.strip(),
                 intent=request.intent,
@@ -1077,9 +1077,9 @@ class DefaultMemoryEngine:
             f" <{_summaries}>" if _summaries else "",
         )
 
-        # SQLite: 详细检索日志。
+        # SQLite: 详细检索日志（PG adapter 不实现，按 SQLite 收窄）。
         store = getattr(self, "_v2_store", None)
-        if store is not None:
+        if isinstance(store, MemoryStore2):
             store.insert_query_log(
                 query_text=request.text.strip(),
                 intent=request.intent,
@@ -1223,7 +1223,7 @@ class DefaultMemoryEngine:
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
 
-    def _require_v2_store(self) -> MemoryStore2 | PostgresMemoryStore:
+    def _require_v2_store(self) -> MemoryStorage:
         if self._v2_store is None:
             raise RuntimeError("memory v2 store unavailable")
         return self._v2_store
