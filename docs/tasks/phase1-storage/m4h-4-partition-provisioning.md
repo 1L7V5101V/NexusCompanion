@@ -101,7 +101,7 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrigh
 5. 接入 + 移除懒 DDL：`1dd09385`（store 写路径 fail-fast）、`9ac95d83`（TurnStartup/Proactive/接线）、`8736740c`（dashboard/undo READY-only 验证）
 6. 5000 tenant 基准：`f056d5ea`
 
-**基准结果**（`results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
+**基准结果**（详细方法/解读见 [`m4h-4-benchmark.md`](m4h-4-benchmark.md)，原始数据 `results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
 
 | 指标 | 结果 |
 |---|---|
