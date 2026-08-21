@@ -922,10 +922,15 @@ class DefaultMemoryEngine:
         message_ids: list[str],
         *,
         dry_run: bool = False,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> dict[str, object]:
-        return self._require_v2_store().undo_by_message_sources(
-            message_ids, dry_run=dry_run
-        )
+        """按消息 source 撤销记忆。
+
+        tenant_id 默认 DEFAULT_TENANT（显式 single-user / 测试）；生产 undo 命令
+        应从触发消息的 tenant_id 解析 view 再调，确保只影响该租户的记忆。
+        """
+        store = self._memory_for(TenantContext(tenant_id=assert_tenant_resolved(tenant_id)))
+        return store.undo_by_message_sources(message_ids, dry_run=dry_run)
 
     def find_similar_items_for_dashboard(
         self,

@@ -24,11 +24,13 @@ from pydantic import BaseModel
 
 from agent.config_models import Config
 from agent.memory import MemoryStore
-from infra.storage.factory import create_session_store
+from infra.storage.factory import create_storage_runtime
+from infra.storage.interfaces import MemoryStorage, SessionStorage, TenantContext
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved, resolve_tenant
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
 from core.memory.engine import MemoryAdminApi
-from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -850,11 +852,51 @@ def create_dashboard_app(
     config: Config | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
-    store = (
-        create_session_store(config.storage, workspace / "sessions.db")
+    # dashboard 自建进程级 StorageRuntime（每进程一次）：会话/记忆读接口按请求的
+    # tenant_id 取 for_tenant(ctx).sessions/.memory 视图。PG 下 runtime 持有 backend
+    # 连接并负责关闭；sqlite 下所有 tenant 落到同一共享 store（显式 single-user）。
+    storage_runtime = (
+        create_storage_runtime(
+            config.storage,
+            workspace / "memory" / "memory2.db",
+            workspace / "sessions.db",
+        )
         if config is not None
-        else SessionStore(workspace / "sessions.db")
+        else StorageRuntime(
+            None,
+            workspace / "memory" / "memory2.db",
+            workspace / "sessions.db",
+        )
     )
+
+    def _resolve_request_tenant(tenant_id: str) -> str:
+        """解析请求级 tenant。空 tenant_id 回落到配置 owner tenant。
+
+        dashboard 是显式管理入口：接受操作者显式选择的 tenant_id（query param），
+        不用于多用户不可信入站；空值走配置 owner tenant，配置缺失回 DEFAULT_TENANT。
+        """
+        if tenant_id.strip():
+            return assert_tenant_resolved(tenant_id)
+        if config is not None:
+            channel = str(
+                getattr(getattr(config, "proactive", None), "default_channel", "") or ""
+            ).strip()
+            chat_id = str(
+                getattr(getattr(config, "proactive", None), "default_chat_id", "") or ""
+            ).strip()
+            if channel and chat_id:
+                return resolve_tenant(channel, chat_id).tenant_id
+        return DEFAULT_TENANT
+
+    def _session_view(tenant_id: str) -> SessionStorage:
+        return storage_runtime.for_tenant(
+            TenantContext(tenant_id=_resolve_request_tenant(tenant_id))
+        ).sessions
+
+    def _memory_view(tenant_id: str) -> MemoryStorage:
+        return storage_runtime.for_tenant(
+            TenantContext(tenant_id=_resolve_request_tenant(tenant_id))
+        ).memory
     proactive_reader: ProactiveDashboardReader | None = None
     log_reader: LogDashboardReader | None = None
     optimizer_task: asyncio.Task[None] | None = None
@@ -888,7 +930,7 @@ def create_dashboard_app(
                 await compile_task
             except asyncio.CancelledError:
                 pass
-            store.close()
+            storage_runtime.close()
             _close_dashboard_value(memory_admin)
             for closeable in reversed(plugin_closeables):
                 _close_dashboard_value(closeable)
@@ -987,6 +1029,7 @@ def create_dashboard_app(
 
     @app.get("/api/dashboard/sessions")
     def list_sessions(
+        tenant_id: str = "",
         q: str = "",
         channel: str = "",
         updated_from: str = "",
@@ -997,7 +1040,8 @@ def create_dashboard_app(
         sort_by: str = "updated_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = store.list_sessions_for_dashboard(
+        # view 已绑定 tenant，列表天然只含该租户会话（跨 tenant 全量列表被 gate 掉）。
+        items, total = _session_view(tenant_id).list_sessions_for_dashboard(
             q=q,
             channel=channel,
             updated_from=updated_from,
@@ -1018,6 +1062,7 @@ def create_dashboard_app(
     @app.get("/api/dashboard/sessions/{session_key:path}/messages")
     def list_session_messages(
         session_key: str,
+        tenant_id: str = "",
         q: str = "",
         role: str = "",
         page: int = 1,
@@ -1025,9 +1070,10 @@ def create_dashboard_app(
         sort_by: str = "ts",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        if not store.session_exists(session_key):
+        view = _session_view(tenant_id)
+        if not view.session_exists(session_key):
             raise HTTPException(status_code=404, detail="session 不存在")
-        items, total = store.list_messages_for_dashboard(
+        items, total = view.list_messages_for_dashboard(
             session_key=session_key,
             q=q,
             role=role,
@@ -1047,12 +1093,14 @@ def create_dashboard_app(
     async def consolidate_session(
         session_key: str,
         payload: SessionConsolidatePayload | None = None,
+        tenant_id: str = "",
     ) -> dict[str, Any]:
         archive_all = bool(payload.archive_all) if payload is not None else False
         force = bool(payload.force) if payload is not None else True
         if manual_consolidator is None:
             raise HTTPException(status_code=503, detail="manual consolidation 未启用")
-        if not store.session_exists(session_key):
+        view = _session_view(tenant_id)
+        if not view.session_exists(session_key):
             raise HTTPException(status_code=404, detail="session 不存在")
         logger.info(
             "Manual memory consolidation requested: session=%s archive_all=%s force=%s",
@@ -1068,8 +1116,8 @@ def create_dashboard_app(
             )
         except TimeoutError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        meta = store.get_session_meta(session_key) or {"key": session_key}
-        meta["message_count"] = store.count_messages(session_key)
+        meta = view.get_session_meta(session_key) or {"key": session_key}
+        meta["message_count"] = view.count_messages(session_key)
         logger.info(
             "Manual memory consolidation response: session=%s triggered=%s last_consolidated=%s message_count=%s",
             session_key,
@@ -1145,9 +1193,12 @@ def create_dashboard_app(
         return {"status": "started", "message": "Memory optimizer started"}
 
     @app.post("/api/dashboard/sessions/batch-delete")
-    def delete_sessions_batch(payload: SessionBatchDeletePayload) -> dict[str, Any]:
+    def delete_sessions_batch(
+        payload: SessionBatchDeletePayload,
+        tenant_id: str = "",
+    ) -> dict[str, Any]:
         try:
-            deleted_count = store.delete_sessions_batch(
+            deleted_count = _session_view(tenant_id).delete_sessions_batch(
                 payload.keys,
                 cascade=payload.cascade,
             )
@@ -1156,19 +1207,22 @@ def create_dashboard_app(
         return {"deleted_count": deleted_count}
 
     @app.get("/api/dashboard/sessions/{session_key:path}")
-    def get_session(session_key: str) -> dict[str, Any]:
-        meta = store.get_session_meta(session_key)
+    def get_session(session_key: str, tenant_id: str = "") -> dict[str, Any]:
+        view = _session_view(tenant_id)
+        meta = view.get_session_meta(session_key)
         if meta is None:
             raise HTTPException(status_code=404, detail="session 不存在")
-        meta["message_count"] = store.count_messages(session_key)
+        meta["message_count"] = view.count_messages(session_key)
         return meta
 
     @app.patch("/api/dashboard/sessions/{session_key:path}")
     def update_session(
         session_key: str,
         payload: SessionUpdatePayload,
+        tenant_id: str = "",
     ) -> dict[str, Any]:
-        meta = store.update_session(
+        view = _session_view(tenant_id)
+        meta = view.update_session(
             session_key,
             metadata=payload.metadata,
             last_consolidated=payload.last_consolidated,
@@ -1177,16 +1231,17 @@ def create_dashboard_app(
         )
         if meta is None:
             raise HTTPException(status_code=404, detail="session 不存在")
-        meta["message_count"] = store.count_messages(session_key)
+        meta["message_count"] = view.count_messages(session_key)
         return meta
 
     @app.delete("/api/dashboard/sessions/{session_key:path}")
     def delete_session(
         session_key: str,
         cascade: bool = Query(default=True),
+        tenant_id: str = "",
     ) -> dict[str, Any]:
         try:
-            deleted = store.delete_session(session_key, cascade=cascade)
+            deleted = _session_view(tenant_id).delete_session(session_key, cascade=cascade)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not deleted:
@@ -1195,6 +1250,7 @@ def create_dashboard_app(
 
     @app.get("/api/dashboard/messages")
     def list_messages(
+        tenant_id: str = "",
         session_key: str | None = None,
         q: str = "",
         role: str = "",
@@ -1203,7 +1259,7 @@ def create_dashboard_app(
         sort_by: str = "ts",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = store.list_messages_for_dashboard(
+        items, total = _session_view(tenant_id).list_messages_for_dashboard(
             session_key=session_key,
             q=q,
             role=role,
@@ -1220,8 +1276,8 @@ def create_dashboard_app(
         }
 
     @app.get("/api/dashboard/messages/{message_id:path}")
-    def get_message(message_id: str) -> dict[str, Any]:
-        message = store.get_message(message_id)
+    def get_message(message_id: str, tenant_id: str = "") -> dict[str, Any]:
+        message = _session_view(tenant_id).get_message(message_id)
         if message is None:
             raise HTTPException(status_code=404, detail="message 不存在")
         return message
@@ -1230,8 +1286,9 @@ def create_dashboard_app(
     def update_message(
         message_id: str,
         payload: MessageUpdatePayload,
+        tenant_id: str = "",
     ) -> dict[str, Any]:
-        message = store.update_message(
+        message = _session_view(tenant_id).update_message(
             message_id,
             role=payload.role,
             content=payload.content,
@@ -1244,19 +1301,23 @@ def create_dashboard_app(
         return message
 
     @app.delete("/api/dashboard/messages/{message_id:path}")
-    def delete_message(message_id: str) -> dict[str, Any]:
-        deleted = store.delete_message(message_id)
+    def delete_message(message_id: str, tenant_id: str = "") -> dict[str, Any]:
+        deleted = _session_view(tenant_id).delete_message(message_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="message 不存在")
         return {"deleted": True, "id": message_id}
 
     @app.post("/api/dashboard/messages/batch-delete")
-    def delete_messages_batch(payload: MessageBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = store.delete_messages_batch(payload.ids)
+    def delete_messages_batch(
+        payload: MessageBatchDeletePayload,
+        tenant_id: str = "",
+    ) -> dict[str, Any]:
+        deleted_count = _session_view(tenant_id).delete_messages_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
     @app.get("/api/dashboard/memories")
     def list_memories(
+        tenant_id: str = "",
         q: str = "",
         memory_type: str = "",
         status: str = "",
@@ -1269,7 +1330,7 @@ def create_dashboard_app(
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> dict[str, Any]:
-        items, total = memory_admin.list_items_for_dashboard(
+        items, total = _memory_view(tenant_id).list_items_for_dashboard(
             q=q,
             memory_type=memory_type,
             status=status,
@@ -1294,13 +1355,14 @@ def create_dashboard_app(
     @app.get("/api/dashboard/memories/{memory_id:path}/similar")
     def list_similar_memories(
         memory_id: str,
+        tenant_id: str = "",
         top_k: int = 8,
         memory_type: str = "",
         score_threshold: float = 0.0,
         include_superseded: bool = False,
     ) -> dict[str, Any]:
         try:
-            items = memory_admin.find_similar_items_for_dashboard(
+            items = _memory_view(tenant_id).find_similar_items_for_dashboard(
                 memory_id,
                 top_k=top_k,
                 memory_type=memory_type,
@@ -1320,9 +1382,10 @@ def create_dashboard_app(
     @app.get("/api/dashboard/memories/{memory_id:path}")
     def get_memory(
         memory_id: str,
+        tenant_id: str = "",
         include_embedding: bool = False,
     ) -> dict[str, Any]:
-        item = memory_admin.get_item_for_dashboard(
+        item = _memory_view(tenant_id).get_item_for_dashboard(
             memory_id,
             include_embedding=include_embedding,
         )
@@ -1334,9 +1397,10 @@ def create_dashboard_app(
     def update_memory(
         memory_id: str,
         payload: MemoryUpdatePayload,
+        tenant_id: str = "",
     ) -> dict[str, Any]:
         try:
-            item = memory_admin.update_item_for_dashboard(
+            item = _memory_view(tenant_id).update_item_for_dashboard(
                 memory_id,
                 status=payload.status,
                 extra_json=payload.extra_json,
@@ -1351,15 +1415,18 @@ def create_dashboard_app(
         return item
 
     @app.delete("/api/dashboard/memories/{memory_id:path}")
-    def delete_memory(memory_id: str) -> dict[str, Any]:
-        deleted = memory_admin.delete_item(memory_id)
+    def delete_memory(memory_id: str, tenant_id: str = "") -> dict[str, Any]:
+        deleted = _memory_view(tenant_id).delete_item(memory_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="memory 不存在")
         return {"deleted": True, "id": memory_id}
 
     @app.post("/api/dashboard/memories/batch-delete")
-    def delete_memories_batch(payload: MemoryBatchDeletePayload) -> dict[str, Any]:
-        deleted_count = memory_admin.delete_items_batch(payload.ids)
+    def delete_memories_batch(
+        payload: MemoryBatchDeletePayload,
+        tenant_id: str = "",
+    ) -> dict[str, Any]:
+        deleted_count = _memory_view(tenant_id).delete_items_batch(payload.ids)
         return {"deleted_count": deleted_count}
 
     @app.get("/api/dashboard/proactive/overview")
