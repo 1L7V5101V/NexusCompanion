@@ -1,5 +1,7 @@
 # 迁移执行清单（5000用户扩展）
 
+> 文档状态：历史执行清单，阶段编号和部分前置假设尚未同步 2026-08-21 的架构复审。
+> 实施前应先按 [`SCALING_PLAN.md`](./SCALING_PLAN.md) 的 Phase 0-6、exit gate 与 S0-S4 迁移状态机重切任务；发生冲突时，以主计划和已验证代码为准。
 > **向量方案已定**：pgvector + 按 `tenant_id` 分区 HNSW，不引入独立向量数据库。
 > 依据 `docs/tasks/phase1-storage/vector-validation.md`。
 >
