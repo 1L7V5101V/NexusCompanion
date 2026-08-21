@@ -18,7 +18,8 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, LiteralString, cast
 
@@ -26,6 +27,7 @@ import psycopg
 from psycopg import sql
 from pgvector.psycopg import register_vector
 
+from infra.storage.pool import PostgresPool
 from memory2.store import (
     MemoryStore2 as _SQLiteMemoryStore,
     _TIME_FILTER_KEYWORD_CANDIDATE_LIMIT,
@@ -128,13 +130,22 @@ def _coerce_embedding(value: object) -> list[float] | None:
 
 
 class PostgresMemoryBackend:
-    """resource-owner：持有连接 + RLock + 分区存在性缓存（M4H-2 C）。
+    """resource-owner：持有连接池 + RLock + 分区存在性缓存（M4H-2 C / M4H-3）。
 
     跨 tenant 共享；tenant-bound view（PostgresMemoryStore(backend, tenant_id)）
-    只委托连接与锁，不拥有 backend。底层生命周期只归 StorageRuntime.close()。
+    只委托 pool 借出的连接与锁，不拥有 backend。底层生命周期只归
+    StorageRuntime.close()。
     """
 
-    def __init__(self, postgres_url: str, *, vec_dim: int = VEC_DIM) -> None:
+    def __init__(
+        self,
+        postgres_url: str,
+        *,
+        vec_dim: int = VEC_DIM,
+        pool_size: int = 1,
+        timeout: float = 5.0,
+        max_waiting: int = 20,
+    ) -> None:
         # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容
         if postgres_url.startswith("postgresql+psycopg://"):
             postgres_url = postgres_url.replace(
@@ -149,21 +160,64 @@ class PostgresMemoryBackend:
         self._fts_available = False
         # 分区存在性是 catalog 级，天然跨 tenant 共享，放 backend
         self._partitions_known: set[str] = set()
-        # schema 由 alembic 管理；构造只开连接 + 注册 vector 适配器
-        self._conn = psycopg.connect(self._url)
-        register_vector(self._conn)
+        # pool 是连接唯一所有者；每条借出连接经 configure 注册 vector 适配器
+        self._pool = PostgresPool(
+            postgres_url,
+            min_size=min(1, pool_size),
+            max_size=pool_size,
+            timeout=timeout,
+            max_waiting=max_waiting,
+            configure=register_vector,
+            name="memory",
+        )
+        # 当前线程借出的连接（view 方法体经 connection() 借出/归还）
+        self._local = threading.local()
+
+    @property
+    def conn(self) -> psycopg.Connection[Any]:
+        """当前线程借出的连接；未借出时访问属编程错误。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            raise RuntimeError(
+                "PostgresMemoryBackend: no connection borrowed "
+                "(missing `with self._backend.connection()`)"
+            )
+        return conn
+
+    @contextmanager
+    def connection(self) -> Iterator[None]:
+        """借出一条 pool 连接供方法体使用，退出时归还。
+
+        嵌套调用复用当前连接（RLock 同线程语义），仅最外层归还。
+        """
+        self._check_open()
+        if getattr(self._local, "conn", None) is not None:
+            self._local.depth += 1
+            try:
+                yield
+            finally:
+                self._local.depth -= 1
+            return
+        with self._pool.connection() as conn:
+            self._local.conn = conn
+            self._local.depth = 1
+            try:
+                yield
+            finally:
+                self._local.depth = 0
+                self._local.conn = None
 
     def _check_open(self) -> None:
         if self._closed:
             raise psycopg.ProgrammingError(
-                "PostgresMemoryBackend: connection is closed"
+                "PostgresMemoryBackend: pool is closed"
             )
 
     def close(self) -> None:
         if self._closed:
             return
         try:
-            self._conn.close()
+            self._pool.close()
         finally:
             self._closed = True
 
@@ -188,7 +242,7 @@ class PostgresMemoryStore:
 
     @property
     def _conn(self) -> psycopg.Connection[Any]:
-        return self._backend._conn
+        return self._backend.conn
 
     @property
     def _lock(self) -> threading.RLock:
@@ -229,7 +283,7 @@ class PostgresMemoryStore:
         """
         if self._sanitized_tenant in self._backend._partitions_known:
             return
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             if self._sanitized_tenant in self._backend._partitions_known:
                 return
@@ -275,7 +329,7 @@ class PostgresMemoryStore:
             if embedding is not None and len(embedding) == self._vec_dim
             else None
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._ensure_partition()
             existing = self._conn.execute(
@@ -350,7 +404,7 @@ class PostgresMemoryStore:
             if embedding is not None and len(embedding) == self._vec_dim
             else None
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._ensure_partition()
             try:
@@ -459,7 +513,7 @@ class PostgresMemoryStore:
             if new_embedding is not None and len(new_embedding) == self._vec_dim
             else None
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._ensure_partition()
             try:
@@ -516,7 +570,7 @@ class PostgresMemoryStore:
                     )
 
     def mark_superseded(self, item_id: str) -> None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             self._conn.execute(
                 "UPDATE memory_items SET status='superseded', updated_at=%s "
@@ -529,7 +583,7 @@ class PostgresMemoryStore:
         if not ids:
             return
         now = _now_iso()
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             with self._conn.cursor() as cur:
                 cur.executemany(
@@ -555,7 +609,7 @@ class PostgresMemoryStore:
         if not clean_ids:
             return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
         target_ids = set(clean_ids)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 """
@@ -689,7 +743,7 @@ class PostgresMemoryStore:
             )
         if not rows:
             return 0
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             with self._conn.cursor() as cur:
                 cur.executemany(
@@ -706,7 +760,7 @@ class PostgresMemoryStore:
             return len(rows)
 
     def list_replacements(self) -> list[dict[str, object]]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT old_item_id, old_memory_type, old_summary, old_source_ref, "
@@ -744,7 +798,7 @@ class PostgresMemoryStore:
             return
         now = _now_iso()
         emotional_weight = _coerce_emotional_weight(emotional_weight)
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             with self._conn.cursor() as cur:
                 cur.executemany(
@@ -764,7 +818,7 @@ class PostgresMemoryStore:
         if not ids:
             return []
         placeholders = ",".join(["%s"] * len(ids))
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 _q(
@@ -802,7 +856,7 @@ class PostgresMemoryStore:
         return [by_id[item_id] for item_id in ids if item_id in by_id]
 
     def list_by_type(self, memory_type: str) -> list[dict[str, object]]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT id, memory_type, summary, extra_json, happened_at, "
@@ -834,7 +888,7 @@ class PostgresMemoryStore:
         time_clauses, time_params = _pg_time_prefilter_clauses(
             "happened_at", time_start, time_end
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 _q(
@@ -874,7 +928,7 @@ class PostgresMemoryStore:
         return [item for _, item in selected]
 
     def has_consolidation_source_ref(self, source_ref: str) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT 1 FROM consolidation_events "
@@ -888,7 +942,7 @@ class PostgresMemoryStore:
         source_ref: str,
         memory_type: str | None = None,
     ) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             if memory_type:
                 row = self._conn.execute(
@@ -913,7 +967,7 @@ class PostgresMemoryStore:
         （_ 前缀，不污染用户字段）。embedding 为 pgvector 列直读的 list[float]。
         """
         where = "" if include_superseded else "AND status='active'"
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT id, memory_type, summary, embedding, extra_json, happened_at, "
@@ -981,7 +1035,7 @@ class PostgresMemoryStore:
         where_parts.extend(time_clauses)
         params.extend(time_params)
 
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 _q(
@@ -1185,7 +1239,7 @@ class PostgresMemoryStore:
 
         params.append(fetch_k)
 
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 _q(
@@ -1332,7 +1386,7 @@ class PostgresMemoryStore:
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=max(1, int(days_back)))
         )
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT id, embedding FROM memory_items "
@@ -1352,7 +1406,7 @@ class PostgresMemoryStore:
         return [row_id for row_id, _score in scored[: max(1, int(top_k))]]
 
     def delete_by_source_ref(self, source_ref: str) -> int:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             cur = self._conn.execute(
                 "DELETE FROM memory_items WHERE tenant_id=%s AND source_ref=%s",
@@ -1362,7 +1416,7 @@ class PostgresMemoryStore:
             return int(cur.rowcount or 0)
 
     def delete_item(self, item_id: str) -> bool:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             cur = self._conn.execute(
                 "DELETE FROM memory_items WHERE tenant_id=%s AND id=%s",
@@ -1375,7 +1429,7 @@ class PostgresMemoryStore:
         if not ids:
             return 0
         placeholders = ",".join(["%s"] * len(ids))
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             cur = self._conn.execute(
                 _q(
@@ -1395,7 +1449,7 @@ class PostgresMemoryStore:
         token_set = {t.lower() for t in action_tokens if t}
         action_text = " ".join(action_tokens).lower()
 
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             rows = self._conn.execute(
                 "SELECT id, summary, extra_json FROM memory_items "
@@ -1512,7 +1566,7 @@ class PostgresMemoryStore:
                 + tuple(time_params)
                 + (batch_size, offset)
             )
-            with self._lock:
+            with self._lock, self._backend.connection():
                 self._check_open()
                 rows = self._conn.execute(_q(query_text), params).fetchall()
             if not rows:
@@ -1564,7 +1618,7 @@ class PostgresMemoryStore:
         sort_by: str = "created_at",
         sort_order: str = "desc",
     ) -> tuple[list[dict[str, object]], int]:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             safe_sort_by = (
                 sort_by
@@ -1679,7 +1733,7 @@ class PostgresMemoryStore:
         *,
         include_embedding: bool = False,
     ) -> dict[str, object] | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             row = self._conn.execute(
                 "SELECT id, memory_type, summary, content_hash, embedding, "
@@ -1734,7 +1788,7 @@ class PostgresMemoryStore:
         happened_at: str | None = None,
         emotional_weight: int | None = None,
     ) -> dict[str, object] | None:
-        with self._lock:
+        with self._lock, self._backend.connection():
             self._check_open()
             updates: list[str] = []
             params: list[object] = []

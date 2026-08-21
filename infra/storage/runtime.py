@@ -12,6 +12,7 @@ backend（或 sqlite 共享 store）的引用，不拥有连接、不暴露 clos
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -55,23 +56,33 @@ class StorageRuntime:
         sessions_path: str | Path,
         *,
         vec_dim: int = VEC_DIM,
+        pool_size: int = 20,
     ) -> None:
+        self._pool_size = pool_size
         if postgres_url:
             self._mode: Literal["postgres", "sqlite"] = "postgres"
             self._memory_backend: PostgresMemoryBackend | None = (
-                PostgresMemoryBackend(postgres_url, vec_dim=vec_dim)
+                PostgresMemoryBackend(
+                    postgres_url, vec_dim=vec_dim, pool_size=pool_size
+                )
             )
             self._session_backend: PostgresSessionBackend | None = (
-                PostgresSessionBackend(postgres_url)
+                PostgresSessionBackend(postgres_url, pool_size=pool_size)
             )
             self._memory_sqlite: MemoryStore2 | None = None
             self._session_sqlite: SessionStore | None = None
+            # bounded executor：DB 调用移出 event loop（M4H-3 commit 4 接入）。
+            # 线程数取 pool_size（单进程 worker_replicas=1，预算见 ADR §1.3）。
+            self._executor = ThreadPoolExecutor(
+                max_workers=pool_size, thread_name_prefix="pg-db"
+            )
         else:
             self._mode = "sqlite"
             self._memory_backend = None
             self._session_backend = None
             self._memory_sqlite = MemoryStore2(memory_path, vec_dim=vec_dim)
             self._session_sqlite = SessionStore(sessions_path)
+            self._executor = None
         self._closed = False
 
     def for_tenant(self, tenant: TenantContext) -> TenantStorage:
@@ -95,6 +106,9 @@ class StorageRuntime:
         if self._closed:
             return
         try:
+            # 先停 executor（等运行中的 DB 调用完成、拒绝新提交）→ 再关 pool
+            if self._executor is not None:
+                self._executor.shutdown(wait=True)
             if self._memory_backend is not None:
                 self._memory_backend.close()
             if self._session_backend is not None:

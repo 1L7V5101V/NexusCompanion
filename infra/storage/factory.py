@@ -85,7 +85,11 @@ def create_storage_runtime(
         _check_pg_schema(config.postgres_url, "memory_items")
         _check_pg_schema(config.postgres_url, "sessions")
         return StorageRuntime(
-            config.postgres_url, memory_path, sessions_path, vec_dim=vec_dim
+            config.postgres_url,
+            memory_path,
+            sessions_path,
+            vec_dim=vec_dim,
+            pool_size=config.pool_size,
         )
     if config.backend == "sqlite":
         return StorageRuntime(None, memory_path, sessions_path, vec_dim=vec_dim)

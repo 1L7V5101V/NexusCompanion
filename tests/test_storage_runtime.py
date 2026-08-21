@@ -81,6 +81,53 @@ def test_sqlite_runtime_close_is_idempotent(tmp_path) -> None:
     runtime.close()
 
 
+# ── postgres：资源所有权与显式 shutdown（M4H-3）────────────────────────────
+
+
+@pytest.mark.postgres
+def test_pg_runtime_owns_pool_and_bounded_executor(pg_alive, tmp_path) -> None:
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db", pool_size=4)
+    try:
+        # bounded executor：线程数取 pool_size（ADR §1.3 预算）
+        assert runtime._executor is not None
+        assert runtime._executor._max_workers == 4
+        # backend 的 pool 容量 = StorageConfig.pool_size，配置真实生效
+        assert runtime._memory_backend._pool.size == 4
+        assert runtime._session_backend._pool.size == 4
+    finally:
+        runtime.close()
+
+
+def test_sqlite_runtime_has_no_executor(tmp_path) -> None:
+    runtime = _make_runtime(tmp_path)
+    try:
+        assert runtime._executor is None
+    finally:
+        runtime.close()
+
+
+@pytest.mark.postgres
+def test_pg_runtime_close_shuts_executor_then_pool(pg_alive, tmp_path) -> None:
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db")
+    try:
+        view = runtime.for_tenant(_tenant("a"))
+    finally:
+        runtime.close()
+    # executor 已 shutdown：拒绝新提交
+    with pytest.raises(RuntimeError):
+        runtime._executor.submit(lambda: None)
+    # pool 已关闭：borrow 拒绝
+    assert view.memory._backend._closed
+    assert view.sessions._backend._closed
+
+
+@pytest.mark.postgres
+def test_pg_runtime_close_is_idempotent_with_executor(pg_alive, tmp_path) -> None:
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db")
+    runtime.close()
+    runtime.close()
+
+
 # ── postgres：tenant-bound view 共享 backend ──────────────────────────────
 
 
