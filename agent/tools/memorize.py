@@ -9,6 +9,8 @@ from core.memory.engine import (
     MemoryScope,
     MemoryToolSpec,
 )
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import assert_tenant_resolved
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryWriteApi
@@ -45,6 +47,7 @@ class MemorizeTool(Tool):
         current_user_source_ref: str | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        tenant_id: str = "",
         **extra_kwargs: Any,
     ) -> str:
         kind = memory_kind.strip()
@@ -57,6 +60,7 @@ class MemorizeTool(Tool):
         result = await self._memory.mutate(
             MemoryMutation(
                 kind="remember",
+                tenant=TenantContext(tenant_id=assert_tenant_resolved(tenant_id)),
                 summary=summary,
                 memory_kind=kind,
                 source_ref=str(current_user_source_ref or "").strip(),

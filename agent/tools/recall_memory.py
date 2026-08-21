@@ -15,6 +15,8 @@ from core.memory.engine import (
     MemoryScope,
     MemoryToolSpec,
 )
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import assert_tenant_resolved
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
@@ -54,6 +56,7 @@ class RecallMemoryTool(Tool):
         limit: int = 8,
         channel: str | None = None,
         chat_id: str | None = None,
+        tenant_id: str = "",
         **extra: Any,
     ) -> str:
         text = (query or "").strip()
@@ -65,6 +68,7 @@ class RecallMemoryTool(Tool):
         result = await self._memory.query(
             MemoryQuery(
                 text=text,
+                tenant=TenantContext(tenant_id=assert_tenant_resolved(tenant_id)),
                 intent=_normalize_intent(intent),
                 scope=MemoryScope(
                     session_key=f"{channel}:{chat_id}" if channel and chat_id else "",

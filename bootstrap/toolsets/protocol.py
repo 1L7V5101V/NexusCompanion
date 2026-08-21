@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from bus.event_bus import EventBus
     from bus.queue import MessageBus
     from core.net.http import SharedHttpResources
+    from infra.storage.runtime import StorageRuntime
 
 
 @dataclass
@@ -29,6 +30,7 @@ class ToolsetDeps:
     scheduler: "SchedulerService | None" = None
     memory_engine: object | None = None
     event_publisher: "EventBus | None" = None
+    storage_runtime: "StorageRuntime | None" = None
 
 
 @dataclass

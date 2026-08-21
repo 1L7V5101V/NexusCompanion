@@ -7,6 +7,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Literal, Protocol, runtime_checkable
 
+from infra.storage.interfaces import TenantContext
+
 MemoryQueryIntent = Literal["context", "answer", "timeline", "interest", "procedure"]
 MemoryQueryEffect = Literal["stateful", "read_only"]
 
@@ -50,6 +52,7 @@ class MemoryEngineDescriptor:
 @dataclass
 class MemoryIngestRequest:
     content: object
+    tenant: TenantContext
     source_kind: str
     scope: MemoryScope = field(default_factory=MemoryScope)
     hints: dict[str, object] = field(default_factory=dict[str, object])
@@ -104,6 +107,7 @@ class MemoryQueryFilters:
 @dataclass
 class MemoryQuery:
     text: str
+    tenant: TenantContext
     # answer/timeline 由模型工具公开；context/interest/procedure 是 runtime 内部入口。
     intent: MemoryQueryIntent = "answer"
     effect: MemoryQueryEffect = "stateful"
@@ -126,6 +130,7 @@ class MemoryQueryResult:
 class MemoryMutation:
     # remember 使用 summary/memory_kind/source_ref；forget 使用 ids。
     kind: Literal["remember", "forget"]
+    tenant: TenantContext
     scope: MemoryScope = field(default_factory=MemoryScope)
     summary: str = ""
     memory_kind: str = ""

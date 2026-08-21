@@ -16,6 +16,7 @@ from agent.provider import LLMProvider, LLMResponse
 from agent.tools.recall_memory import RecallMemoryTool
 from core.memory.engine import EvidenceRef, MemoryQueryResult, MemoryRecord, MemoryToolSpec
 from plugins.default_memory.engine import DefaultMemoryEngine
+from infra.storage.interfaces import TenantContext
 from memory2.embedder import Embedder
 from memory2.retriever import Retriever
 from memory2.store import MemoryStore2
@@ -42,6 +43,7 @@ def _recall_tool(store: object, embedder: object, provider: object) -> RecallMem
     facade._light_model = "test-model"
     facade._v1_store = None
     facade._v2_store = store
+    facade._storage_runtime = None
     facade._embedder = embedder
     facade._memorizer = None
     facade._retriever = retriever
@@ -72,7 +74,7 @@ async def test_recall_memory_passes_current_timestamp_to_engine() -> None:
     )
     ts = datetime(2026, 4, 4, 22, 0, 0)
 
-    _ = await tool.execute(query="Rachael", current_timestamp=ts.isoformat())
+    _ = await tool.execute(query="Rachael", current_timestamp=ts.isoformat(), tenant_id="test")
 
     assert memory.request.timestamp == ts
 
@@ -428,7 +430,7 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
     )
     retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
 
-    hits = await retriever.retrieve("支付", top_k=5)
+    hits = await retriever.retrieve("支付", top_k=5, tenant=TenantContext(tenant_id="test"))
 
     assert [item["id"] for item in hits] == ["kw1"]
     assert hits[0]["score"] == 1.0
@@ -462,7 +464,7 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
     store = _FusionStore(vector_groups=[vector_hits], keyword_hits=keyword_hits)
     retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
 
-    hits = await retriever.retrieve("支付", top_k=2)
+    hits = await retriever.retrieve("支付", top_k=2, tenant=TenantContext(tenant_id="test"))
 
     assert [item["id"] for item in hits] == ["vec1", "vec2"]
 
@@ -578,6 +580,7 @@ async def test_recall_memory_timeline_intent_lists_events_without_embedding() ->
             intent="timeline",
             time_filter="2026-04-25",
             limit=80,
+            tenant_id="test",
         )
     )
 
@@ -601,6 +604,7 @@ async def test_recall_memory_answer_intent_passes_time_range_to_searches() -> No
             query="DeepSeek 缓存命中率",
             intent="answer",
             time_filter="2026-04-25",
+            tenant_id="test",
         )
     )
 
@@ -623,7 +627,7 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_fails() -> N
     provider = _FakeProvider("用户处理过支付相关问题")
     tool = _recall_tool(store, _FailingEmbedder(), provider)
 
-    payload = json.loads(await tool.execute(query="phase 支付"))
+    payload = json.loads(await tool.execute(query="phase 支付", tenant_id="test"))
 
     assert payload["count"] == 1
     assert payload["items"][0]["id"] == "mem:1"
@@ -645,7 +649,7 @@ async def test_recall_memory_falls_back_to_keyword_when_query_embed_hangs(
     tool = _recall_tool(store, _HangingEmbedder(), provider)
 
     payload = json.loads(
-        await asyncio.wait_for(tool.execute(query="phase 支付"), timeout=0.5)
+        await asyncio.wait_for(tool.execute(query="phase 支付", tenant_id="test"), timeout=0.5)
     )
 
     assert payload["count"] == 1

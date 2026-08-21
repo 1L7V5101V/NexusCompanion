@@ -34,6 +34,8 @@ from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
 )
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import assert_tenant_resolved
 from agent.lifecycle.phase import Phase
 from agent.lifecycle.phases.after_reasoning import (
     AfterReasoningFrame,
@@ -693,6 +695,9 @@ class DefaultContextStore(ContextStore):
             retrieval_result = await self._retrieval.retrieve(
                 RetrievalRequest(
                     message=msg.content,
+                    tenant=TenantContext(
+                        tenant_id=assert_tenant_resolved(msg.tenant_id)
+                    ),
                     session_key=session_key,
                     channel=msg.context_channel,
                     chat_id=msg.context_chat_id,
