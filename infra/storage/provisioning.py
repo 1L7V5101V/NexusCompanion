@@ -12,7 +12,9 @@ worker）按 m4h-4 ADR §2 的 commit 2-5 落地。
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
+import re
 from typing import Protocol, runtime_checkable
 
 __all__ = [
@@ -20,6 +22,7 @@ __all__ = [
     "PartitionNotReady",
     "PartitionProvisioningFailed",
     "TenantProvisioning",
+    "partition_name_for_tenant",
 ]
 
 
@@ -74,3 +77,16 @@ class TenantProvisioning(Protocol):
     async def require_ready(self, tenant_id: str) -> None: ...
 
     def provision_tenant(self, tenant_id: str) -> None: ...
+
+
+def partition_name_for_tenant(tenant_id: str) -> str:
+    """稳定 memory_items 分区名：可读前缀 + 48-bit 唯一后缀（ADR §1.4）。
+
+    有损 sanitize 只用于可读前缀（[:30]），唯一性由 ``md5(原始 tenant_id)[:12]``
+    保证（5000 tenant 碰撞概率 ~4e-8），不再依赖有损字符替换；总长 ≤ 56 ≤ PG 63
+    字符标识符限制。分区 bound 值仍是原始 tenant_id（``sql.Literal``），
+    本函数只决定分区标识符。
+    """
+    readable = re.sub(r"[^A-Za-z0-9_]", "_", tenant_id)[:30]
+    digest = hashlib.md5(tenant_id.encode("utf-8")).hexdigest()[:12]
+    return f"memory_items_{readable}_{digest}"
