@@ -49,18 +49,19 @@ def _q(text: str) -> LiteralString:
     return cast(LiteralString, text)
 
 
-class PostgresSessionStore:
-    def __init__(
-        self,
-        postgres_url: str,
-        tenant_id: str = "default",
-    ) -> None:
+class PostgresSessionBackend:
+    """resource-owner：持有连接 + RLock（M4H-2 C）。
+
+    跨 tenant 共享；tenant-bound view（PostgresSessionStore(backend, tenant_id)）
+    只委托连接与锁，不拥有 backend。底层生命周期只归 StorageRuntime.close()。
+    """
+
+    def __init__(self, postgres_url: str) -> None:
         if postgres_url.startswith("postgresql+psycopg://"):
             postgres_url = postgres_url.replace(
                 "postgresql+psycopg://", "postgresql://", 1
             )
         self._url = postgres_url
-        self._tenant_id = tenant_id
         self._lock = threading.RLock()
         self._closed = False
         # schema 由 alembic 管理；构造只开连接（dict_row 让 fetchone 返回 dict）
@@ -69,14 +70,10 @@ class PostgresSessionStore:
             psycopg.connect(self._url, row_factory=cast(Any, dict_row)),
         )
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
-
     def _check_open(self) -> None:
         if self._closed:
             raise psycopg.ProgrammingError(
-                "PostgresSessionStore: connection is closed"
+                "PostgresSessionBackend: connection is closed"
             )
 
     def close(self) -> None:
@@ -86,6 +83,43 @@ class PostgresSessionStore:
             self._conn.close()
         finally:
             self._closed = True
+
+
+class PostgresSessionStore:
+    def __init__(
+        self,
+        postgres_url: str | PostgresSessionBackend,
+        tenant_id: str = "default",
+    ) -> None:
+        # 传入 PostgresSessionBackend = tenant-bound view：不建连接、不拥有 backend；
+        # 传入 URL = owned 构造（factory/tests 直连，构造即开一条连接）。
+        if isinstance(postgres_url, PostgresSessionBackend):
+            self._backend = postgres_url
+            self._owns_backend = False
+        else:
+            self._backend = PostgresSessionBackend(postgres_url)
+            self._owns_backend = True
+        self._tenant_id = tenant_id
+
+    @property
+    def _conn(self) -> psycopg.Connection[dict[str, Any]]:
+        return self._backend._conn
+
+    @property
+    def _lock(self) -> threading.RLock:
+        return self._backend._lock
+
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
+
+    def _check_open(self) -> None:
+        self._backend._check_open()
+
+    def close(self) -> None:
+        """owned 时关闭 backend；view 是 no-op（不关共享连接）。"""
+        if self._owns_backend:
+            self._backend.close()
 
     def __del__(self) -> None:
         self.close()

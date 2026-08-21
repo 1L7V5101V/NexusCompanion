@@ -127,40 +127,36 @@ def _coerce_embedding(value: object) -> list[float] | None:
     return [float(v) for v in cast(Iterable[Any], value)]
 
 
-class PostgresMemoryStore:
-    def __init__(
-        self,
-        postgres_url: str,
-        tenant_id: str = "default",
-        vec_dim: int = VEC_DIM,
-    ) -> None:
+class PostgresMemoryBackend:
+    """resource-owner：持有连接 + RLock + 分区存在性缓存（M4H-2 C）。
+
+    跨 tenant 共享；tenant-bound view（PostgresMemoryStore(backend, tenant_id)）
+    只委托连接与锁，不拥有 backend。底层生命周期只归 StorageRuntime.close()。
+    """
+
+    def __init__(self, postgres_url: str, *, vec_dim: int = VEC_DIM) -> None:
         # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容
         if postgres_url.startswith("postgresql+psycopg://"):
             postgres_url = postgres_url.replace(
                 "postgresql+psycopg://", "postgresql://", 1
             )
         self._url = postgres_url
-        self._tenant_id = tenant_id
-        self._sanitized_tenant = _sanitize_tenant(tenant_id)
         self._vec_dim = vec_dim
         self._lock = threading.RLock()
         self._closed = False
         # PG 无 FTS5；镜像 SQLite 的 _fts_available 让 retriever 守卫短路到
         # keyword_search_summary（PG store 已实现，语义等价于 SQLite 基线 OR-LIKE）
         self._fts_available = False
+        # 分区存在性是 catalog 级，天然跨 tenant 共享，放 backend
         self._partitions_known: set[str] = set()
         # schema 由 alembic 管理；构造只开连接 + 注册 vector 适配器
         self._conn = psycopg.connect(self._url)
         register_vector(self._conn)
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
-
     def _check_open(self) -> None:
         if self._closed:
             raise psycopg.ProgrammingError(
-                "PostgresMemoryStore: connection is closed"
+                "PostgresMemoryBackend: connection is closed"
             )
 
     def close(self) -> None:
@@ -170,6 +166,53 @@ class PostgresMemoryStore:
             self._conn.close()
         finally:
             self._closed = True
+
+
+class PostgresMemoryStore:
+    def __init__(
+        self,
+        postgres_url: str | PostgresMemoryBackend,
+        tenant_id: str = "default",
+        vec_dim: int = VEC_DIM,
+    ) -> None:
+        # 传入 PostgresMemoryBackend = tenant-bound view：不建连接、不拥有 backend；
+        # 传入 URL = owned 构造（factory/tests 直连，构造即开一条连接）。
+        if isinstance(postgres_url, PostgresMemoryBackend):
+            self._backend = postgres_url
+            self._owns_backend = False
+        else:
+            self._backend = PostgresMemoryBackend(postgres_url, vec_dim=vec_dim)
+            self._owns_backend = True
+        self._tenant_id = tenant_id
+        self._sanitized_tenant = _sanitize_tenant(tenant_id)
+
+    @property
+    def _conn(self) -> psycopg.Connection[Any]:
+        return self._backend._conn
+
+    @property
+    def _lock(self) -> threading.RLock:
+        return self._backend._lock
+
+    @property
+    def _vec_dim(self) -> int:
+        return self._backend._vec_dim
+
+    @property
+    def _fts_available(self) -> bool:
+        return self._backend._fts_available
+
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
+
+    def _check_open(self) -> None:
+        self._backend._check_open()
+
+    def close(self) -> None:
+        """owned 时关闭 backend；view 是 no-op（不关共享连接）。"""
+        if self._owns_backend:
+            self._backend.close()
 
     def __del__(self) -> None:
         self.close()
@@ -184,11 +227,11 @@ class PostgresMemoryStore:
         LIST 分区不建 DEFAULT 分区（会混装多租户，破坏决策 B 的 HNSW
         隔离）。新 tenant 由首次写入时在此动态建分区。
         """
-        if self._sanitized_tenant in self._partitions_known:
+        if self._sanitized_tenant in self._backend._partitions_known:
             return
         with self._lock:
             self._check_open()
-            if self._sanitized_tenant in self._partitions_known:
+            if self._sanitized_tenant in self._backend._partitions_known:
                 return
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(%s)", (_PARTITION_LOCK_KEY,)
@@ -207,7 +250,7 @@ class PostgresMemoryStore:
                     )
                 )
             self._conn.commit()
-            self._partitions_known.add(self._sanitized_tenant)
+            self._backend._partitions_known.add(self._sanitized_tenant)
 
     # ------------------------------------------------------------------
     # 写操作

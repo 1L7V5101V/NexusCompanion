@@ -48,7 +48,10 @@ from bootstrap.toolsets.meta import (
 )
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
-from infra.storage.factory import create_session_store
+from infra.storage.factory import create_session_store, create_storage_runtime
+from infra.storage.interfaces import TenantContext
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
@@ -102,6 +105,7 @@ class CoreRuntime:
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
     turn_logger: RoutingTurnLogger | None = None
+    storage_runtime: StorageRuntime | None = None
 
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
@@ -325,6 +329,11 @@ class CoreRuntime:
         async def _close_session_manager() -> None:
             self.session_manager.close()
 
+        async def _close_storage_runtime() -> None:
+            storage_runtime = self.storage_runtime
+            if storage_runtime is not None:
+                storage_runtime.close()
+
         async def _stop_workspace_mcp_watcher() -> None:
             self.workspace_mcp_watcher.stop()
             task = self.workspace_mcp_watcher_task
@@ -363,6 +372,10 @@ class CoreRuntime:
                 else _noop_async,
             ),
             ("session_manager.close", _close_session_manager),
+            (
+                "storage_runtime.close",
+                _close_storage_runtime,
+            ),
             (
                 "turn_logger.close",
                 self.turn_logger.close
@@ -612,9 +625,20 @@ def build_core_runtime(
     # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
+    # 3. 进程级存储 runtime（bootstrap 创建一次）。PG 下 runtime 持有 memory +
+    #    sessions 两条 backend 连接；SessionManager/presence 从这里取 tenant-bound
+    #    view。vec_dim 默认 VEC_DIM，memory backend 待 M4H-2 D 由 engine 消费时
+    #    按 embedding 维度对齐。
+    storage_runtime = create_storage_runtime(
+        config.storage,
+        workspace / "memory" / "memory2.db",
+        workspace / "sessions.db",
+    )
     session_manager = SessionManager(
         workspace,
-        session_store=create_session_store(config.storage, workspace / "sessions.db"),
+        session_store=storage_runtime.for_tenant(
+            TenantContext(tenant_id=DEFAULT_TENANT)
+        ).sessions,
     )
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
@@ -766,6 +790,7 @@ def build_core_runtime(
         peer_poller=peer_poller,
         plugin_manager=plugin_manager,
         turn_logger=turn_logger,
+        storage_runtime=storage_runtime,
     )
 
 
