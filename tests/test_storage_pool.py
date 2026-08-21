@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import psycopg
 import pytest
 from pgvector.psycopg import register_vector
 from psycopg import sql as pgsql
 from psycopg.rows import dict_row
+from psycopg_pool import PoolTimeout, TooManyRequests
 
 from infra.storage.pool import PostgresPool
 
@@ -194,5 +197,134 @@ def test_pool_check_replaces_broken_connection(pg_url: str) -> None:
         pool.check()
         with pool.connection() as conn:
             assert conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        pool.close()
+
+
+# ── pool exhaustion 与并发（M4H-3 commit 6）────────────────────────────────
+
+
+def test_pool_concurrent_borrow_up_to_max_size(pg_url: str) -> None:
+    pool = PostgresPool(pg_url, min_size=1, max_size=4, name="t_conc")
+    n = 4
+    barrier = threading.Barrier(n)
+    pids: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+
+    def _work() -> None:
+        try:
+            with pool.connection() as conn:
+                # 两道 barrier：确认 n 条连接同时借出、同时持有
+                barrier.wait(timeout=10)
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                with lock:
+                    pids.append(pid)
+                barrier.wait(timeout=10)
+        except BaseException as e:  # noqa: BLE001 - 收集到 errors 统一断言
+            with lock:
+                errors.append(e)
+
+    try:
+        pool.wait()
+        threads = [threading.Thread(target=_work) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert not errors, errors
+        # 并发借出到 max_size：n 条连接同时有效且后端互不相同
+        assert len(set(pids)) == n
+    finally:
+        pool.close()
+
+
+def test_pool_borrow_timeout_raises(pg_url: str) -> None:
+    pool = PostgresPool(
+        pg_url, min_size=1, max_size=1, timeout=0.5, name="t_tmo"
+    )
+    try:
+        pool.wait()
+        with pool.connection() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+            # 唯一的连接被占用：并发借出等待超过 timeout → PoolTimeout
+            with pytest.raises(PoolTimeout):
+                with pool.connection():
+                    pass
+        # 释放后借出恢复（超时者由 putconn 惰性清出等待队列）
+        with pool.connection() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+    finally:
+        pool.close()
+
+
+def test_pool_max_waiting_cap_raises(pg_url: str) -> None:
+    pool = PostgresPool(
+        pg_url, min_size=1, max_size=1, max_waiting=1, timeout=5.0, name="t_waitcap"
+    )
+    try:
+        pool.wait()
+        release = threading.Event()
+        outcomes: list[str] = []
+
+        def _waiter() -> None:
+            try:
+                with pool.connection() as conn:
+                    conn.execute("SELECT 1")
+                    release.wait(5)
+                    outcomes.append("ok")
+            except BaseException as e:  # noqa: BLE001
+                outcomes.append(f"err:{type(e).__name__}")
+
+        with pool.connection() as conn:
+            # waiter 进入等待队列（psycopg_pool 内部 _waiting）
+            t = threading.Thread(target=_waiter)
+            t.start()
+            deadline = time.monotonic() + 3
+            while (
+                len(pool._pool._waiting) < 1 and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            assert len(pool._pool._waiting) == 1
+            # 第二个等待者超出 max_waiting=1 → 立即 TooManyRequests
+            with pytest.raises(TooManyRequests):
+                with pool.connection():
+                    pass
+        # 释放连接后 waiter 拿到连接并正常完成
+        release.set()
+        t.join(5)
+        assert outcomes == ["ok"]
+    finally:
+        pool.close()
+
+
+def test_pool_concurrent_reuse_bounded_by_max_size(pg_url: str) -> None:
+    pool = PostgresPool(pg_url, min_size=1, max_size=2, name="t_reuse_conc")
+    workers = 6
+    lock = threading.Lock()
+    pids: list[int] = []
+    errors: list[BaseException] = []
+
+    def _work() -> None:
+        try:
+            with pool.connection() as conn:
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                with lock:
+                    pids.append(pid)
+                time.sleep(0.02)  # 短暂持有，制造等待/复用窗口
+        except BaseException as e:  # noqa: BLE001
+            with lock:
+                errors.append(e)
+
+    try:
+        pool.wait()
+        threads = [threading.Thread(target=_work) for _ in range(workers)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+        assert not errors, errors
+        # max_size=2 → 并发下全程后端连接数不超 2 个（归还复用而非新建）
+        assert len(set(pids)) <= 2
     finally:
         pool.close()
