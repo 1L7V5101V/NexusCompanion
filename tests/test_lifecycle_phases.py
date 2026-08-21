@@ -271,6 +271,7 @@ def _inbound() -> InboundMessage:
 class _DummySession:
     def __init__(self, key: str) -> None:
         self.key = key
+        self.tenant_id = key
         self.messages: list[dict[str, object]] = []
         self.metadata: dict[str, object] = {}
         self.last_consolidated = 0
@@ -295,7 +296,7 @@ async def test_before_turn_setup_fills_turn_state():
     session = _DummySession("telegram:123")
 
     session_mgr = SimpleNamespace(
-        get_or_create=lambda key: session,
+        get_or_create=lambda _tenant_id, key: session,
     )
 
     bundle = ContextBundle(
@@ -335,7 +336,7 @@ async def test_before_turn_setup_fills_turn_state():
 async def test_before_turn_uses_cli_session_override_context():
     bus = EventBus()
     session = _DummySession("telegram:7674283004")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=ContextBundle()))
     phase = Phase(
         default_before_turn_modules(
@@ -372,7 +373,7 @@ async def test_before_turn_chain_can_abort():
     bus = EventBus()
     session = _DummySession("telegram:123")
 
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     bundle = ContextBundle()
     ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
 
@@ -414,7 +415,7 @@ async def test_before_turn_memory_status_command_aborts_without_context_prepare(
         {"role": "user", "content": "再看一下超时问题"},
     ]
     session.last_consolidated = 3
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     phase = Phase(
@@ -453,7 +454,7 @@ async def test_before_turn_memory_context_guard_blocks_unconsolidated_tail():
         for i in range(30)
     ]
     session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     phase = Phase(
@@ -496,7 +497,7 @@ async def test_before_turn_memory_context_guard_consolidates_before_blocking():
         for i in range(30)
     ]
     session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(
         prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
     )
@@ -544,7 +545,7 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
         for i in range(30)
     ]
     session.last_consolidated = 0
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     class _Consolidator:
@@ -581,7 +582,7 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
 async def test_before_turn_accepts_custom_command_module():
     bus = EventBus()
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     class CustomCommandModule:
@@ -637,7 +638,7 @@ async def test_before_turn_accepts_custom_command_module():
 async def test_before_turn_accepts_plugin_modules():
     bus = EventBus()
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     bundle = ContextBundle(
         skill_mentions=["memo"],
         retrieved_memory_block="retrieved block",
@@ -695,7 +696,7 @@ async def test_before_turn_accepts_plugin_modules():
 async def test_before_turn_kvcache_command(tmp_path):
     bus = EventBus()
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     ctx_store = SimpleNamespace(prepare=AsyncMock())
 
     db_path = tmp_path / "observe" / "observe.db"
@@ -770,7 +771,7 @@ async def test_before_turn_chain_can_modify_skill_names():
     bus = EventBus()
     session = _DummySession("telegram:123")
 
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     bundle = ContextBundle(skill_mentions=["search"])
     ctx_store = SimpleNamespace(prepare=AsyncMock(return_value=bundle))
 
@@ -806,7 +807,7 @@ async def test_before_reasoning_setup_calls_tools_set_context():
 
     session = _DummySession("telegram:123")
     session.messages.append({"role": "user", "content": "prev", "id": "msg_42"})
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
@@ -886,7 +887,7 @@ async def test_before_reasoning_finalize_calls_render():
 
     session = _DummySession("telegram:123")
     session.my_meta = {"a": 1}
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     session_mgr.peek_next_message_id = None
 
     context_builder = Mock()
@@ -931,7 +932,7 @@ async def test_before_reasoning_chain_can_add_extra_hints():
     tools.set_context = Mock()
 
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
@@ -974,7 +975,7 @@ async def test_before_reasoning_collects_export_slots():
     tools = Mock()
     tools.set_context = Mock()
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
 
@@ -1022,7 +1023,7 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     tools.set_context = Mock()
 
     session = _DummySession("telegram:123")
-    session_mgr = SimpleNamespace(get_or_create=lambda key: session)
+    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
 
     context_builder = Mock()
     context_builder.render = Mock(return_value=None)
