@@ -108,7 +108,9 @@ async def test_core_runner_handles_spawn_completion_via_direct_helper_deps():
     out = await runner.process(item, "scheduler:job-1", dispatch_outbound=False)
 
     assert out.content == "spawn done"
-    session_svc.session_manager.get_or_create.assert_called_once_with("scheduler:job-1")
+    session_svc.session_manager.get_or_create.assert_called_once_with(
+        "telegram:123", "scheduler:job-1"
+    )
     tools.set_context.assert_called_once_with(
         channel="telegram",
         chat_id="123",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,8 @@ def make_loop() -> ProactiveLoop:
     loop._cfg = ProactiveConfig()
     loop._sense = SimpleNamespace(target_session_key=lambda: "telegram:1")
     loop._proactive_kernel = SimpleNamespace(run_tick=AsyncMock(return_value=None))
+    loop._runtime_snapshot_store = None
+    loop._reload_lock = asyncio.Lock()
     return loop
 
 
