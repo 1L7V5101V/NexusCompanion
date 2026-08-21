@@ -49,7 +49,6 @@ from bootstrap.toolsets.meta import (
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
 from infra.storage.factory import create_session_store, create_storage_runtime
-from infra.storage.interfaces import TenantContext
 from infra.storage.runtime import StorageRuntime
 from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.toolsets.schedule import (
@@ -606,7 +605,9 @@ def _bind_memory_lifecycle_if_supported(
 
     markdown.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            get_session=session_manager.get_or_create,
+            # markdown 旧记忆系统不在 M4H-2 范围（文件路径天然隔离），
+            # 其 session 访问按显式 single-user 回退到默认租户。
+            get_session=lambda key: session_manager.get_or_create(DEFAULT_TENANT, key),
             save_session=_save_session,
         )
     )
@@ -639,9 +640,7 @@ def build_core_runtime(
     )
     session_manager = SessionManager(
         workspace,
-        session_store=storage_runtime.for_tenant(
-            TenantContext(tenant_id=DEFAULT_TENANT)
-        ).sessions,
+        storage_runtime=storage_runtime,
     )
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (

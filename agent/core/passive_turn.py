@@ -609,7 +609,7 @@ class PassiveTurnPipeline:
             msg=msg,
             session_key=session_key,
             dispatch_outbound=dispatch_outbound,
-            session=self._session.session_manager.get_or_create(session_key),
+            session=self._session.session_manager.get_or_create(msg.tenant_id, session_key),
         )
         after_reasoning = await self._after_reasoning.run(
             AfterReasoningInput(state=state, turn_result=turn_result)
