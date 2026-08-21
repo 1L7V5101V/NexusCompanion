@@ -28,6 +28,10 @@ class InboundMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=_empty_media)
     metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    # 由可信入站身份派生（infra.storage.tenancy.resolve_tenant），只应由适配器/
+    # 可信入口填充；多用户路径禁止为空或隐式落到 "default"（fail-closed 由
+    # assert_tenant_resolved 在存储边界强制）。
+    tenant_id: str = ""
 
     @property
     def session_key(self) -> str:

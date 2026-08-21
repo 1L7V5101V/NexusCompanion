@@ -544,6 +544,7 @@ class DefaultMemoryEngine:
                 session_key=event.session_key,
                 channel=event.channel,
                 chat_id=event.chat_id,
+                tenant_id=event.tenant_id,
                 user_message=event.input_message,
                 assistant_response=event.assistant_response,
                 tool_chain=cast(list[dict[str, object]], event.tool_chain_raw),

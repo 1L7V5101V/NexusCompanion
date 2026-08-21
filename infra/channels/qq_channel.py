@@ -43,6 +43,7 @@ from infra.channels.group_filter import (
     strip_at_segments,
 )
 from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
+from infra.storage.tenancy import tenant_id_for_channel
 from session.manager import SessionManager
 
 # NcatBot 运行时产物（plugins、logs）放到用户目录，不污染项目目录
@@ -536,6 +537,7 @@ class QQChannel:
                 channel=_CHANNEL,
                 sender=user_id,
                 chat_id=user_id,
+                tenant_id=tenant_id_for_channel(_CHANNEL, user_id),
                 content=content,
                 media=media,
                 metadata={"chat_type": "private"},
@@ -576,6 +578,7 @@ class QQChannel:
                 channel=_CHANNEL,
                 sender=user_id,
                 chat_id=chat_id,
+                tenant_id=tenant_id_for_channel(_CHANNEL, chat_id),
                 content=content,
                 media=media,
                 metadata={

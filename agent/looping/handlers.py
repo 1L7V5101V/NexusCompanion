@@ -6,6 +6,7 @@ from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, Turn
 from agent.lifecycle.types import PromptRenderInput
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
+from infra.storage.tenancy import tenant_id_for_channel
 
 if TYPE_CHECKING:
     from agent.core.passive_turn import PassiveTurnPipeline
@@ -115,6 +116,7 @@ async def process_spawn_completion_event(
         channel=item.channel,
         sender="spawn",
         chat_id=item.chat_id,
+        tenant_id=tenant_id_for_channel(item.channel, item.chat_id),
         content=marker,
         timestamp=item.timestamp,
         media=[],

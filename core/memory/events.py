@@ -61,6 +61,7 @@ class TurnIngested:
     assistant_response: str
     tool_chain: list[dict[str, object]]
     source_ref: str
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)
