@@ -28,6 +28,10 @@ from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
 from bus.event_bus import EventBus
+from infra.storage.provisioning import (
+    TenantProvisioningService,
+    TenantProvisioningWorker,
+)
 from agent.plugins.jobs import PluginJobRuntime
 from agent.plugins.service_host import PluginServiceHost
 from agent.plugins.watcher import PluginWatcher
@@ -207,6 +211,8 @@ class AppRuntime:
         self.memory_runtime = None
         self.presence = None
         self.proactive_loop = None
+        self.provisioning_service: TenantProvisioningService | None = None
+        self.provisioning_worker: TenantProvisioningWorker | None = None
         self.peer_process_manager = None
         self.peer_poller = None
         self.dashboard_server = None
@@ -261,6 +267,17 @@ class AppRuntime:
             self.presence = self.core.presence
             self.peer_process_manager = self.core.peer_process_manager
             self.peer_poller = self.core.peer_poller
+            # PG 下装配 provisioning control path：service 供 turn gate 两阶段检查，
+            # worker 独立消费队列执行幂等 DDL（M4H-4 commit 5）。
+            storage_runtime = self.core.storage_runtime
+            if storage_runtime is not None and storage_runtime.memory_backend is not None:
+                self.provisioning_service = TenantProvisioningService(
+                    storage_runtime.memory_backend,
+                    run_db=storage_runtime.run_db,
+                )
+                self.provisioning_worker = TenantProvisioningWorker(
+                    self.provisioning_service
+                )
             await self.core.start()
             self.workspace_mcp_watcher_task = (
                 self.core.workspace_mcp_watcher_task
@@ -278,7 +295,10 @@ class AppRuntime:
                 self.session_manager.control_store,
                 _execute_control_request,
                 restart_coordinator=self.restart_coordinator,
+                provisioning=self.provisioning_service,
             )
+            if self.provisioning_worker is not None:
+                await self.provisioning_worker.start()
             if self.restart_coordinator is not None:
                 self.restart_coordinator.bind_admission(
                     quiesce=self.conversation_runtime.quiesce_for_restart,
@@ -481,6 +501,7 @@ class AppRuntime:
                     else None
                 ),
                 turn_logger=self.core.turn_logger if self.core else None,
+                provisioning=self.provisioning_service,
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:
@@ -697,6 +718,12 @@ class AppRuntime:
                     "plugin_services.stop",
                     self.plugin_service_host.stop_all
                     if self.plugin_service_host
+                    else _noop_async,
+                ),
+                (
+                    "provisioning_worker.stop",
+                    self.provisioning_worker.stop
+                    if self.provisioning_worker
                     else _noop_async,
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         RuntimeSnapshotLease,
         RuntimeSnapshotStore,
     )
+    from infra.storage.provisioning import TenantProvisioning
 
 from core.error_context import current_session_key
 from agent.looping.ports import SessionServices
@@ -41,6 +42,7 @@ from proactive_v2.runtime_scope import ProactiveRuntimeScope
 from proactive_v2.sensor import Sensor
 from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
+from infra.storage.partitioning import PartitionNotReady, PartitionProvisioningFailed
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +86,10 @@ class ProactiveLoop:
         plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
         state_store_owned: bool = False,
         turn_logger: Any | None = None,
+        provisioning: "TenantProvisioning | None" = None,
     ) -> None:
         self._turn_logger = turn_logger
+        self._provisioning = provisioning
         self._sessions = session_manager
         self._provider = provider
         self._push = push_tool
@@ -510,6 +514,25 @@ class ProactiveLoop:
         session_key = self._target_session_key()
         session_token = current_session_key.set(session_key)
         try:
+            # 0. 目标 tenant 分区 readiness gate：PENDING/UNKNOWN 跳过本轮，
+            #    不触发 provisioning（被动 turn 才是 provisioning 触发点）。
+            if self._provisioning is not None:
+                tenant = self._target_tenant()
+                if tenant:
+                    try:
+                        await self._provisioning.require_ready(tenant)
+                    except PartitionNotReady:
+                        logger.info(
+                            "[proactive] 目标 tenant 分区未就绪，跳过本轮 tenant=%s",
+                            tenant,
+                        )
+                        return None
+                    except PartitionProvisioningFailed:
+                        logger.warning(
+                            "[proactive] 目标 tenant 分区 FAILED，跳过本轮 tenant=%s",
+                            tenant,
+                        )
+                        return None
             # 1. 执行 Gate → Fetch → Judge → Resolve → Deliver 全链路。
             started = time.perf_counter()
             with diagnostic_context(session=session_key, flow="proactive", phase="tick"):

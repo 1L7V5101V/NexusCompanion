@@ -22,6 +22,7 @@ from session.manager import SessionManager
 if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryStore
     from core.memory.runtime import MemoryRuntime
+    from infra.storage.provisioning import TenantProvisioning
 
 
 def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvider:
@@ -61,6 +62,7 @@ def build_proactive_runtime(
     proactive_runtime_factories: list[object] | None = None,
     plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
     turn_logger: Any | None = None,
+    provisioning: "TenantProvisioning | None" = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -117,6 +119,7 @@ def build_proactive_runtime(
         proactive_runtime_factories=proactive_runtime_factories,
         plugin_mcp_servers=plugin_mcp_servers,
         turn_logger=turn_logger,
+        provisioning=provisioning,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

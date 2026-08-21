@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from agent.control.errors import (
     ControlExecutionError,
@@ -28,6 +28,9 @@ from agent.control.ports import ControlExecutionResult, TurnExecutor
 from agent.restart import RestartCoordinator
 from session.store import SessionStore
 from agent.looping.interrupt import InterruptResult
+
+if TYPE_CHECKING:
+    from infra.storage.provisioning import TenantProvisioning
 
 logger = logging.getLogger(__name__)
 _STREAM_END = object()
@@ -65,12 +68,14 @@ class ConversationRuntime:
         *,
         subscriber_queue_size: int = 256,
         restart_coordinator: RestartCoordinator | None = None,
+        provisioning: TenantProvisioning | None = None,
     ) -> None:
         if subscriber_queue_size < 2:
             raise ValueError("subscriber_queue_size 必须至少为 2")
         self._store = store
         self._executor = executor
         self._subscriber_queue_size = subscriber_queue_size
+        self._provisioning = provisioning
         self._admission = asyncio.Lock()
         self._active_by_thread: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -181,7 +186,19 @@ class ConversationRuntime:
                 )
                 self._publish(TurnEvent.create("turn/started", request.thread_id, turn_id, turn=record.to_dict()))
 
-                # 2. 核心执行不依赖 transport；成功结果进入正式 assistant item。
+                # 2. tenant 分区 provisioning readiness gate：READY 才进执行器。
+                #    请求内不执行 DDL；UNKNOWN 提交 job，PENDING 抛 PartitionNotReady
+                #    （retryable=True），FAILED 抛 PartitionProvisioningFailed。
+                tenant_id = request.metadata.get("tenantId")
+                if (
+                    isinstance(tenant_id, str)
+                    and tenant_id
+                    and self._provisioning is not None
+                ):
+                    await self._provisioning.request_provisioning(tenant_id)
+                    await self._provisioning.require_ready(tenant_id)
+
+                # 3. 核心执行不依赖 transport；成功结果进入正式 assistant item。
                 execution_request = TurnRequest(
                     request.thread_id,
                     request.input,

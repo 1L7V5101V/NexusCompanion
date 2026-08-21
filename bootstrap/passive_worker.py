@@ -95,6 +95,7 @@ class PassiveMessageWorker:
                     "chatId": item.chat_id,
                     "sender": item.sender,
                     "media": list(item.media),
+                    "tenantId": item.tenant_id,
                 },
             )
             while True:
