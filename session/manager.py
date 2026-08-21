@@ -6,6 +6,7 @@ import json
 import logging
 import mimetypes
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -332,6 +333,14 @@ class SessionManager:
         if self._runtime is not None:
             return self._runtime.for_tenant(TenantContext(tenant_id=tenant_id)).sessions
         return self._store
+
+    @property
+    def run_db(self) -> Callable[..., Any] | None:
+        """委托 StorageRuntime.run_db（async）：把同步 DB 调用移出 event loop。
+
+        无 runtime（显式 single-store / 测试）时为 None，调用方直接同步调。
+        """
+        return self._runtime.run_db if self._runtime is not None else None
 
     @property
     def control_store(self) -> SessionStore:

@@ -5,18 +5,20 @@ Memory v2 检索器：查询 → top-k items + 格式化注入块
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 import json
 import logging
 import re
-from typing import cast
+from typing import Any, TypeVar, cast
 
 from infra.storage.interfaces import MemoryStorage, TenantContext
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
+
+R = TypeVar("R")
 
 _RRF_K = 60
 _KEYWORD_RRF_WEIGHT = 0.5
@@ -56,11 +58,13 @@ class Retriever:
         high_inject_delta: float = 0.15,
         hotness_alpha: float = 0.20,
         hotness_half_life_days: float = 14.0,
+        run_db: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._store_for = (
             store_for if callable(store_for) else lambda _tenant: store_for
         )
         self._embedder = embedder
+        self._run_db_cb = run_db
         self._top_k = top_k
         self._score_threshold = score_threshold
         thresholds = score_thresholds or {}
@@ -123,7 +127,8 @@ class Retriever:
         # 2. 关键词 lane 只用原始 query，保留用户字面命中的召回能力。
         keyword_items: list[dict] = []
         if keyword_enabled:
-            keyword_items = self._retrieve_keyword_lane(
+            keyword_items = await self._run_db(
+                self._retrieve_keyword_lane,
                 query,
                 store=store,
                 actual_top_k=actual_top_k,
@@ -146,6 +151,12 @@ class Retriever:
         )
         return items
 
+    async def _run_db(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        # 无 run_db（legacy single-store / 测试 / sqlite 无 executor）时直接同步调。
+        if self._run_db_cb is None:
+            return fn(*args, **kwargs)
+        return await self._run_db_cb(fn, *args, **kwargs)
+
     async def _retrieve_vector_lanes(
         self,
         query_texts: list[str],
@@ -167,7 +178,8 @@ class Retriever:
             return []
         hit_groups: list[list[dict]] = []
         try:
-            hit_groups = store.vector_search_batch(
+            hit_groups = await self._run_db(
+                store.vector_search_batch,
                 vectors,
                 top_k=actual_top_k,
                 memory_types=memory_types,
@@ -192,7 +204,8 @@ class Retriever:
 
         for vector in vectors:
             try:
-                hits = store.vector_search(
+                hits = await self._run_db(
+                    store.vector_search,
                     query_vec=vector,
                     top_k=actual_top_k,
                     memory_types=memory_types,
@@ -297,7 +310,8 @@ class Retriever:
         """复用已有 query_vec 做本地 vector_search，跳过 embedding 步骤。"""
         store = self._store_for(tenant)
         actual_top_k = self._top_k if top_k is None else max(1, int(top_k))
-        items = store.vector_search(
+        items = await self._run_db(
+            store.vector_search,
             query_vec=query_vec,
             top_k=actual_top_k,
             memory_types=memory_types,
