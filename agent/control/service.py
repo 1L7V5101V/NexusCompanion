@@ -15,6 +15,7 @@ from agent.control.protocol.models import InitializeParams
 from agent.control.protocol.errors import JsonRpcError, UNAUTHORIZED
 from agent.control.runtime import ConversationRuntime, TurnHandle
 from agent.restart import RestartCoordinator
+from infra.storage.tenancy import DEFAULT_TENANT
 from session.manager import SessionManager
 
 
@@ -80,7 +81,7 @@ class ControlService:
 
     def start_thread(self, metadata: dict[str, Any]) -> dict[str, object]:
         thread_id = new_thread_id()
-        session = self.sessions.get_or_create(thread_id)
+        session = self.sessions.get_or_create(DEFAULT_TENANT, thread_id)
         session.metadata.update(metadata)
         self.sessions.save(session)
         return self._thread_record(thread_id).to_dict()
@@ -89,7 +90,7 @@ class ControlService:
         return self._thread_record(thread_id).to_dict()
 
     def list_threads(self, cursor: str | None, limit: int) -> dict[str, object]:
-        rows = self.sessions.list_sessions()
+        rows = self.sessions.list_sessions(DEFAULT_TENANT)
         start = 0
         if cursor is not None:
             matching = [index for index, row in enumerate(rows) if row["key"] == cursor]

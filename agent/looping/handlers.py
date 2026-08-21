@@ -25,7 +25,9 @@ async def process_spawn_completion_event(
     dispatch_outbound: bool = True,
 ) -> OutboundMessage:
     # 1. 先读取 session 和内部事件，准备要给主模型的回传消息。
-    session = session_svc.session_manager.get_or_create(key)
+    session = session_svc.session_manager.get_or_create(
+        tenant_id_for_channel(item.channel, item.chat_id), key
+    )
     event = item.event
     label = event.label or "后台任务"
     task = event.task.strip()

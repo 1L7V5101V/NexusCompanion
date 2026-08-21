@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
+from infra.storage.tenancy import DEFAULT_TENANT
 from prompts.agent import build_agent_behavior_rules_prompt
 from session.manager import SessionManager
 from session.store import SessionStore
@@ -340,7 +341,7 @@ async def test_search_messages_empty_query_returns_empty(tmp_path):
 
 def test_next_seq_after_seq_zero_should_return_one(tmp_path):
     manager = SessionManager(tmp_path)
-    session = manager.get_or_create("cli:test")
+    session = manager.get_or_create(DEFAULT_TENANT, "cli:test")
     session.messages = [
         {
             "role": "assistant",

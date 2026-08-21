@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import cast
 
 from agent.prompting import is_context_frame
+from infra.storage.tenancy import resolve_tenant
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.presence import PresenceStore
 from session.manager import SessionManager
@@ -35,6 +36,12 @@ class Sensor:
         chat_id = self._cfg.default_chat_id.strip()
         return f"{channel}:{chat_id}" if channel and chat_id else ""
 
+    def target_tenant(self) -> str:
+        """proactive 目标的显式 single-target tenant（B4：不越权）。"""
+        channel = (self._cfg.default_channel or "").strip()
+        chat_id = self._cfg.default_chat_id.strip()
+        return resolve_tenant(channel, chat_id).tenant_id
+
     def last_user_at(self) -> datetime | None:
         if self._presence is None:
             return None
@@ -47,7 +54,7 @@ class Sensor:
         session_key = self.target_session_key()
         if not session_key:
             return []
-        session = self._sessions.get_or_create(session_key)
+        session = self._sessions.get_or_create(self.target_tenant(), session_key)
         messages = session.messages[-self._cfg.recent_chat_messages :]
 
         # 2. 过滤系统上下文并限制注入长度
@@ -76,7 +83,7 @@ class Sensor:
         session_key = self.target_session_key()
         if not session_key:
             return []
-        session = self._sessions.get_or_create(session_key)
+        session = self._sessions.get_or_create(self.target_tenant(), session_key)
 
         # 2. 从最新消息逆序收集并恢复时间顺序
         results: list[RecentProactiveMessage] = []

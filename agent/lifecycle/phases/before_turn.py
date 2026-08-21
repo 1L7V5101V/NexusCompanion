@@ -58,7 +58,7 @@ class _AcquireSessionModule:
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
-        session = self._session_manager.get_or_create(state.session_key)
+        session = self._session_manager.get_or_create(state.tenant_id, state.session_key)
         state.session = session
         frame.slots[_SESSION_SLOT] = session
         return frame

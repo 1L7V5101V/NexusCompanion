@@ -57,7 +57,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
-    session = Session("telegram:1")
+    session = Session("telegram:1", tenant_id="test")
     session.add_message("user", "hi", media=["/tmp/a.png"])
     session.add_message(
         "assistant",
@@ -79,12 +79,12 @@ async def test_session_manager_and_proactive_loop_cover_paths(tmp_path: Path):
 
     manager = SessionManager(tmp_path)
     manager.save(session)
-    loaded = manager.get_or_create("telegram:1")
+    loaded = manager.get_or_create("test", "telegram:1")
     assert loaded.key == "telegram:1"
     await manager.append_messages(session, [{"role": "user", "content": "next"}])
-    assert manager.list_sessions()
-    assert manager.get_channel_metadata("telegram")[0]["chat_id"] == "1"
-    manager.invalidate("telegram:1")
+    assert manager.list_sessions("test")
+    assert manager.get_channel_metadata("test", "telegram")[0]["chat_id"] == "1"
+    manager.invalidate("test", "telegram:1")
 
     loop = ProactiveLoop.__new__(ProactiveLoop)
     loop._cfg = SimpleNamespace(

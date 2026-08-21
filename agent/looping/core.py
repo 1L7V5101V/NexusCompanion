@@ -51,7 +51,7 @@ from bus.events_lifecycle import (
 )
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
-from infra.storage.tenancy import tenant_id_for_channel
+from infra.storage.tenancy import DEFAULT_TENANT, tenant_id_for_channel
 from proactive_v2.presence import PresenceStore
 from agent.provider import LLMProvider
 from agent.tools.registry import ToolRegistry
@@ -568,7 +568,7 @@ class AgentLoop:
             return msg, False
 
         # 2. 有中断态时，补一段结构化历史；当前用户消息保持原文。
-        await self._persist_interrupted_turn_marker(key, interrupted)
+        await self._persist_interrupted_turn_marker(key, interrupted, tenant_id=msg.tenant_id)
         resumed = InboundMessage(
             channel=msg.channel,
             sender=msg.sender,
@@ -591,10 +591,12 @@ class AgentLoop:
         self,
         key: str,
         state: TurnInterruptState,
+        *,
+        tenant_id: str,
     ) -> None:
         if not state.original_user_message.strip():
             return
-        session = self.session_manager.get_or_create(key)
+        session = self.session_manager.get_or_create(tenant_id, key)
         start = len(getattr(session, "messages", []))
         session.add_message(
             "user",
@@ -830,7 +832,7 @@ class AgentLoop:
     ) -> bool:
         from core.memory.markdown import ConsolidateRequest
 
-        session = self.session_manager.get_or_create(session_key)
+        session = self.session_manager.get_or_create(DEFAULT_TENANT, session_key)
         if self._markdown_memory is None:
             raise RuntimeError("markdown memory runtime unavailable")
         maintenance = self._markdown_memory.maintenance

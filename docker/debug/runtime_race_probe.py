@@ -55,6 +55,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from infra.storage.tenancy import DEFAULT_TENANT
 from session.manager import SessionManager
 
 
@@ -353,6 +354,7 @@ class RaceHarness:
             channel=CHANNEL,
             sender="user",
             chat_id=chat_id,
+            tenant_id=DEFAULT_TENANT,
             content=f"user:{chat_id}",
         )
         await self.bus.publish_inbound(item)
@@ -663,6 +665,7 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
             channel=channel,
             sender="race-user",
             chat_id=chat_id,
+            tenant_id=DEFAULT_TENANT,
             content="竞态验证：请只用一句中文回复，内容包含“收到竞态验证”。",
         )
         await core.bus.publish_inbound(user)
