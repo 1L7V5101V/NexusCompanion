@@ -17,6 +17,7 @@ import pytest
 
 from infra.storage.interfaces import TenantContext
 from infra.storage.runtime import StorageRuntime
+from tests.provision_util import provision_partition
 
 PG_URL = os.environ.get(
     "NEXUS_TEST_PG_URL",
@@ -178,9 +179,14 @@ def test_pg_runtime_close_closes_backends(pg_alive, tmp_path) -> None:
 def test_pg_tenant_sql_scoping(pg_alive, tmp_path) -> None:
     runtime = StorageRuntime(PG_URL, "unused.db", "unused.db")
     try:
+        ta = _tenant("a")
+        tb = _tenant("b")
+        # 写路径已 fail-fast（M4H-4）：memory 写前先由测试前置建好分区。
+        provision_partition(PG_URL, ta.tenant_id)
+        provision_partition(PG_URL, tb.tenant_id)
         suffix = os.getpid()
-        store_a = runtime.for_tenant(_tenant("a")).memory
-        store_b = runtime.for_tenant(_tenant("b")).memory
+        store_a = runtime.for_tenant(ta).memory
+        store_b = runtime.for_tenant(tb).memory
 
         store_a.upsert_item(
             "event", f"scoped-a-{suffix}", None, source_ref=f"ref-a-{suffix}"
@@ -207,7 +213,10 @@ async def test_pg_run_db_runs_db_in_executor(pg_alive, tmp_path) -> None:
     runtime = StorageRuntime(PG_URL, "unused.db", "unused.db", pool_size=2)
     loop_thread = threading.get_ident()
     try:
-        store = runtime.for_tenant(_tenant("run_db")).memory
+        trun = _tenant("run_db")
+        # 写路径已 fail-fast（M4H-4）：memory 写前先由测试前置建好分区。
+        provision_partition(PG_URL, trun.tenant_id)
+        store = runtime.for_tenant(trun).memory
 
         def _upsert_sync() -> str:
             # executor 线程 ≠ event loop 线程：证明调用确实离开 event loop。
