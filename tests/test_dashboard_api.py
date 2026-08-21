@@ -3,13 +3,20 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 
+import psycopg
+import pytest
 from fastapi.testclient import TestClient as _RawTestClient
 
+from agent.config_models import Config, StorageConfig
 from bootstrap.dashboard_api import create_dashboard_app as _create_dashboard_app
+from infra.storage.interfaces import TenantContext
+from infra.storage.runtime import StorageRuntime
 from plugins.default_memory.engine import DefaultMemoryEngine
 from memory2.store import MemoryStore2
 from proactive_v2.state import ProactiveStateStore
@@ -882,3 +889,100 @@ def test_memory_engine_plugins_only_expose_active_engine_panels(tmp_path) -> Non
         }
         assert client.get("/plugins/default_memory/dashboard_panel_inspector.js").status_code == 200
         assert client.get("/plugins/cross_memory/dashboard_panel_inspector.js").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 跨 tenant dashboard 越权用例（PG-gated：本地无 PG 则 skip）
+# ---------------------------------------------------------------------------
+
+_PG_URL = os.environ.get(
+    "NEXUS_TEST_PG_URL",
+    "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+)
+
+
+def _pg_alive(url: str) -> bool:
+    try:
+        conn = psycopg.connect(url, connect_timeout=2)
+    except psycopg.Error:
+        return False
+    conn.close()
+    return True
+
+
+def _unique_tenant(prefix: str) -> str:
+    return f"{prefix}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+
+
+def _clean_pg(url: str, tenant: str) -> None:
+    conn = psycopg.connect(url, autocommit=True)
+    for table in ("consolidation_events", "memory_replacements", "memory_items"):
+        conn.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (tenant,))
+    conn.execute("DELETE FROM messages WHERE tenant_id = %s", (tenant,))
+    conn.execute("DELETE FROM sessions WHERE tenant_id = %s", (tenant,))
+    conn.close()
+
+
+@pytest.mark.postgres
+def test_dashboard_sessions_and_memories_isolated_by_tenant(tmp_path) -> None:
+    """tenant A 的 dashboard 请求读不到 tenant B 的会话/记忆（越权用例）。"""
+    if not _pg_alive(_PG_URL):
+        pytest.skip(f"本地 PG 不可用（{_PG_URL}），跳过 dashboard 越权用例")
+    tenant_a = _unique_tenant("dash_a")
+    tenant_b = _unique_tenant("dash_b")
+    try:
+        seed = StorageRuntime(_PG_URL, tmp_path / "m.db", tmp_path / "s.db")
+        a = seed.for_tenant(TenantContext(tenant_id=tenant_a))
+        b = seed.for_tenant(TenantContext(tenant_id=tenant_b))
+        a.sessions.create_session(key="telegram:100", metadata={"title": "alpha room"})
+        b.sessions.create_session(key="telegram:200", metadata={"title": "beta room"})
+        a.memory.upsert_item(
+            memory_type="preference",
+            summary="A 喜欢奶茶",
+            embedding=None,
+            source_ref="telegram:100:pref",
+        )
+        b.memory.upsert_item(
+            memory_type="preference",
+            summary="B 喜欢咖啡",
+            embedding=None,
+            source_ref="telegram:200:pref",
+        )
+        seed.close()
+
+        cfg = Config(
+            provider="test",
+            model="test",
+            api_key="test",
+            system_prompt="test",
+            storage=StorageConfig(backend="postgres", postgres_url=_PG_URL),
+        )
+        with TestClient(create_dashboard_app(tmp_path, config=cfg)) as client:
+            sessions_a = client.get(
+                "/api/dashboard/sessions", params={"tenant_id": tenant_a}
+            ).json()["items"]
+            sessions_b = client.get(
+                "/api/dashboard/sessions", params={"tenant_id": tenant_b}
+            ).json()["items"]
+            assert {s["key"] for s in sessions_a} == {"telegram:100"}
+            assert {s["key"] for s in sessions_b} == {"telegram:200"}
+
+            mems_a = client.get(
+                "/api/dashboard/memories", params={"tenant_id": tenant_a}
+            ).json()["items"]
+            mems_b = client.get(
+                "/api/dashboard/memories", params={"tenant_id": tenant_b}
+            ).json()["items"]
+            assert [m["source_ref"] for m in mems_a] == ["telegram:100:pref"]
+            assert [m["source_ref"] for m in mems_b] == ["telegram:200:pref"]
+
+            # 跨 tenant source_ref 检索返回空而非报错
+            cross = client.get(
+                "/api/dashboard/memories",
+                params={"tenant_id": tenant_a, "source_ref": "telegram:200:pref"},
+            )
+            assert cross.status_code == 200
+            assert cross.json()["total"] == 0
+    finally:
+        _clean_pg(_PG_URL, tenant_a)
+        _clean_pg(_PG_URL, tenant_b)

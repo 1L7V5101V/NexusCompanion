@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 
+import psycopg
+import pytest
+
+from infra.storage.interfaces import TenantContext
+from infra.storage.runtime import StorageRuntime
 from memory2.store import MemoryStore2
 from plugins.default_memory.engine import DefaultMemoryEngine
 
@@ -20,6 +27,14 @@ def _result_list(result: dict[str, object], key: str) -> list[str]:
 def _engine(store: MemoryStore2) -> DefaultMemoryEngine:
     engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
     engine._v2_store = store
+    engine._storage_runtime = None
+    return engine
+
+
+def _pg_engine(runtime: StorageRuntime) -> DefaultMemoryEngine:
+    engine = DefaultMemoryEngine.__new__(DefaultMemoryEngine)
+    engine._v2_store = None
+    engine._storage_runtime = runtime
     return engine
 
 
@@ -131,3 +146,77 @@ def test_undo_restores_old_memory_replaced_by_affected_new_memory(tmp_path: Path
         assert new_row["status"] == "superseded"
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# 跨 tenant undo 隔离（PG-gated：本地无 PG 则 skip）
+# ---------------------------------------------------------------------------
+
+_PG_URL = os.environ.get(
+    "NEXUS_TEST_PG_URL",
+    "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+)
+
+
+def _pg_alive(url: str) -> bool:
+    try:
+        conn = psycopg.connect(url, connect_timeout=2)
+    except psycopg.Error:
+        return False
+    conn.close()
+    return True
+
+
+def _unique_tenant(prefix: str) -> str:
+    return f"{prefix}_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+
+
+def _clean_pg(url: str, tenant: str) -> None:
+    conn = psycopg.connect(url, autocommit=True)
+    for table in ("consolidation_events", "memory_replacements", "memory_items"):
+        conn.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (tenant,))
+    conn.execute("DELETE FROM messages WHERE tenant_id = %s", (tenant,))
+    conn.execute("DELETE FROM sessions WHERE tenant_id = %s", (tenant,))
+    conn.close()
+
+
+@pytest.mark.postgres
+def test_undo_isolated_by_tenant(tmp_path: Path) -> None:
+    """tenant A 的 undo 只影响 A 的记忆，不影响 B 的（同 source_ref 也不串）。"""
+    if not _pg_alive(_PG_URL):
+        pytest.skip(f"本地 PG 不可用（{_PG_URL}），跳过 undo 越权用例")
+    tenant_a = _unique_tenant("undo_a")
+    tenant_b = _unique_tenant("undo_b")
+    runtime = None
+    try:
+        runtime = StorageRuntime(_PG_URL, tmp_path / "m.db", tmp_path / "s.db")
+        a = runtime.for_tenant(TenantContext(tenant_id=tenant_a))
+        b = runtime.for_tenant(TenantContext(tenant_id=tenant_b))
+        id_a = _item_id(
+            a.memory.upsert_item(
+                memory_type="preference",
+                summary="A 的偏好",
+                embedding=None,
+                source_ref="cli:1:1",
+            )
+        )
+        id_b = _item_id(
+            b.memory.upsert_item(
+                memory_type="preference",
+                summary="B 的偏好",
+                embedding=None,
+                source_ref="cli:1:1",
+            )
+        )
+
+        engine = _pg_engine(runtime)
+        result = engine.undo_by_message_sources(["cli:1:1"], tenant_id=tenant_a)
+
+        assert _result_list(result, "affected_ids") == [id_a]
+        assert a.memory.get_items_by_ids([id_a])[0]["status"] == "superseded"
+        assert b.memory.get_items_by_ids([id_b])[0]["status"] == "active"
+    finally:
+        if runtime is not None:
+            runtime.close()
+        _clean_pg(_PG_URL, tenant_a)
+        _clean_pg(_PG_URL, tenant_b)

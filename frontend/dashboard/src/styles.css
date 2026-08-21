@@ -1380,3 +1380,13 @@ body {
   border-radius: 0 3px 3px 0;
   box-shadow: 0 0 12px -2px rgb(var(--color-accent-rgb) / 0.5);
 }
+
+/* tenant selector in topbar */
+.tenant-selector {
+  flex-shrink: 0;
+}
+
+.tenant-selector input {
+  width: 14rem;
+  flex-shrink: 0;
+}
