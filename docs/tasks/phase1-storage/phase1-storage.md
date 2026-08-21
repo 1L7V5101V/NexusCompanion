@@ -4,7 +4,7 @@
 > 分支：`feature/scaling-phase1-storage`（继承 `feature/pg-migration` 的 WIP）
 > 初版日期：2026-08-20
 > 架构复审：2026-08-21
-> 当前状态：M0-M4 + M4.5（M4H-0~M4H-4）已完成并验收；M4H-5 merge readiness 进行中（范围冻结，非新功能）；M5-M7 拆独立分支
+> 当前状态：M0-M4 + M4.5（M4H-0~M4H-5）已完成并验收，PostgreSQL storage foundation merge-ready（2026-08-22）；M5-M7 拆独立分支
 > 执行交接：[m4.5-architecture-hardening.md](m4.5-architecture-hardening.md)
 >
 > **范围冻结（2026-08-22）**：M4H-0~M4H-4 已完成并验收，不回滚、不简化已落地的
@@ -137,7 +137,7 @@ Phase 1 的目标调整为：
 - [x] `infra/storage/factory.py`：`create_store` / `create_session_store` 按 `config.backend` 返回 store（`StorageConfig` 无 sqlite_path，sqlite 路径由调用方显式传入）；postgres 分支构造前 `to_regclass` 探测 schema，缺失抛含 `alembic upgrade head` 的 `RuntimeError`
 - [x] 改造构造点：`plugins/default_memory/engine.py`、`memory2/memorizer.py`、`bootstrap/tools.py`、`bootstrap/dashboard_api.py`、`bootstrap/init_workspace.py` 走工厂（`memory2/retriever.py` 经 engine 注入 store，无直接构造）
 - [x] 测试构造点保持兼容（`MemoryStore2(path, vec_dim=...)` 直连仍可用）
-- [ ] M4.5 架构硬化与 merge gate 完成，见 [m4.5-architecture-hardening.md](m4.5-architecture-hardening.md)
+- [x] M4.5 架构硬化与 merge gate 完成，见 [m4.5-architecture-hardening.md](m4.5-architecture-hardening.md)（M4H-5 2026-08-22，storage foundation merge-ready）
 
 ### M4.5 架构硬化与 merge gate（当前阶段）
 - [x] 定义 storage Protocol/interface，让 SQLite/PG 成为两个 adapter；调用方不再传播具体实现联合类型（M4H-1，`f4697e27` 起）
