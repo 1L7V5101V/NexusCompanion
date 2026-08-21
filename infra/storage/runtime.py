@@ -90,6 +90,11 @@ class StorageRuntime:
             self._executor = None
         self._closed = False
 
+    @property
+    def memory_backend(self) -> PostgresMemoryBackend | None:
+        """PG 内存 backend；sqlite 模式为 None。provisioning control seam 用。"""
+        return self._memory_backend
+
     def for_tenant(self, tenant: TenantContext) -> TenantStorage:
         if self._closed:
             raise RuntimeError("StorageRuntime is closed")
