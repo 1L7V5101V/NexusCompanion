@@ -9,13 +9,11 @@ from datetime import datetime
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
+from infra.storage.interfaces import MemoryStorage
 from memory2.store import MemoryStore2
 from memory2.embedder import Embedder
-
-if TYPE_CHECKING:
-    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +40,7 @@ class Retriever:
 
     def __init__(
         self,
-        store: MemoryStore2 | PostgresMemoryStore,
+        store: MemoryStorage,
         embedder: Embedder,
         top_k: int = 8,
         score_threshold: float = 0.45,
@@ -243,7 +241,7 @@ class Retriever:
         # FTS5 BM25 (trigram tokenizer 需要 3+ 字符词条). 只在 query
         # 包含至少一个 3+ ASCII/CJK token 时启用, 否则纯 2 字 CJK
         # 查询会空结果, 直接走 OR-LIKE 保底.
-        if self._store._fts_available and (
+        if isinstance(self._store, MemoryStore2) and self._store._fts_available and (
             re.search(r"[a-zA-Z0-9_]{3,}", query)
             or re.search(r"[\u4e00-\u9fff]{3,}", query)
         ):

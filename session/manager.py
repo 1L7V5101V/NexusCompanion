@@ -9,17 +9,15 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
 )
+from infra.storage.interfaces import SessionStorage
 from session.store import SessionStore
-
-if TYPE_CHECKING:
-    from infra.storage.postgres_session_store import PostgresSessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +301,7 @@ class SessionManager:
     def __init__(
         self,
         workspace: Path,
-        session_store: SessionStore | PostgresSessionStore | None = None,
+        session_store: SessionStorage | None = None,
     ):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
@@ -315,8 +313,18 @@ class SessionManager:
 
     @property
     def control_store(self) -> SessionStore:
-        """控制面使用的 SessionStore 实例。"""
-        return self._store
+        """控制面使用的 SessionStore 实例。
+
+        turn 持久化（create_turn/read_turn 等）当前仅由 SQLite SessionStore 提供，
+        PostgreSQL adapter 未实现，故此处按具体类型收窄并显式失败。
+        """
+        store = self._store
+        if not isinstance(store, SessionStore):
+            raise RuntimeError(
+                "control plane turn persistence requires SQLite SessionStore; "
+                "PostgreSQL backend 尚未实现 turns 表"
+            )
+        return store
 
     def close(self) -> None:
         """关闭 SessionStore 连接。"""

@@ -6,13 +6,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
 
-from memory2.store import MemoryStore2
+from infra.storage.interfaces import MemoryStorage
 from memory2.embedder import Embedder
-
-if TYPE_CHECKING:
-    from infra.storage.postgres_memory_store import PostgresMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +40,7 @@ def _parse_history_entry_happened_at(summary: str) -> str | None:
 
 
 class Memorizer:
-    def __init__(
-        self, store: MemoryStore2 | PostgresMemoryStore, embedder: Embedder
-    ) -> None:
+    def __init__(self, store: MemoryStorage, embedder: Embedder) -> None:
         self._store = store
         self._embedder = embedder
 
