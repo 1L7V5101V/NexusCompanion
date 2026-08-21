@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from infra.storage.interfaces import MemoryStorage, TenantContext
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
+
+R = TypeVar("R")
 
 _TIME_PREFIX_RE = re.compile(
     r"^\[(?P<date>\d{4}-\d{2}-\d{2})(?:[ T](?P<hour>\d{2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?)?\]"
@@ -45,11 +48,19 @@ class Memorizer:
         self,
         store_for: MemoryStorage | Callable[[TenantContext], MemoryStorage],
         embedder: Embedder,
+        run_db: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._store_for = (
             store_for if callable(store_for) else lambda _tenant: store_for
         )
         self._embedder = embedder
+        self._run_db_cb = run_db
+
+    async def _run_db(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        # 无 run_db（legacy single-store / 测试 / sqlite 无 executor）时直接同步调。
+        if self._run_db_cb is None:
+            return fn(*args, **kwargs)
+        return await self._run_db_cb(fn, *args, **kwargs)
 
     async def save_item(
         self,
@@ -65,7 +76,8 @@ class Memorizer:
         """embed → content_hash → upsert，返回 'new:id' 或 'reinforced:id'"""
         store = self._store_for(tenant)
         embedding = await self._embedder.embed(summary)
-        return store.upsert_item(
+        return await self._run_db(
+            store.upsert_item,
             memory_type=memory_type,
             summary=summary,
             embedding=embedding,
@@ -99,7 +111,8 @@ class Memorizer:
         embedding = await self._embedder.embed(summary)
 
         if memory_type in ("procedure", "preference"):
-            similar = store.vector_search(
+            similar = await self._run_db(
+                store.vector_search,
                 query_vec=embedding,
                 top_k=5,
                 memory_types=[memory_type],
@@ -131,7 +144,7 @@ class Memorizer:
             ]
             if similar:
                 supersede_ids = [str(item["id"]) for item in similar]
-                store.mark_superseded_batch(supersede_ids)
+                await self._run_db(store.mark_superseded_batch, supersede_ids)
                 logger.info(
                     "memorizer save_with_supersede: superseded %d %s items: %s",
                     len(supersede_ids), memory_type, supersede_ids,
@@ -140,7 +153,8 @@ class Memorizer:
         elif memory_type == "profile":
             category = str((extra or {}).get("category") or "")
             if category in ("status", "purchase"):
-                similar = store.vector_search(
+                similar = await self._run_db(
+                    store.vector_search,
                     query_vec=embedding,
                     top_k=5,
                     memory_types=["profile"],
@@ -163,13 +177,14 @@ class Memorizer:
                 ]
                 if same_cat:
                     supersede_ids = [str(item["id"]) for item in same_cat]
-                    store.mark_superseded_batch(supersede_ids)
+                    await self._run_db(store.mark_superseded_batch, supersede_ids)
                     logger.info(
                         "memorizer save_with_supersede: superseded %d profile/%s items: %s",
                         len(supersede_ids), category, supersede_ids,
                     )
 
-        return store.upsert_item(
+        return await self._run_db(
+            store.upsert_item,
             memory_type=memory_type,
             summary=summary,
             embedding=embedding,
@@ -196,7 +211,7 @@ class Memorizer:
         if history_entry and history_entry.strip():
             try:
                 text = history_entry.strip()
-                if store.has_consolidation_source_ref(source_ref):
+                if await self._run_db(store.has_consolidation_source_ref, source_ref):
                     logger.info(
                         "memory2 consolidation skip duplicated source_ref=%s",
                         source_ref,
@@ -204,14 +219,16 @@ class Memorizer:
                     text = ""
                 if text:
                     embedding = await self._embedder.embed(text)
-                    if self._should_semantic_dedup_event(
+                    if await self._run_db(
+                        self._should_semantic_dedup_event,
                         store,
                         embedding,
                         emotional_weight=emotional_weight,
                     ):
                         text = ""
                 if text:
-                    result = store.upsert_consolidation_event(
+                    result = await self._run_db(
+                        store.upsert_consolidation_event,
                         source_ref=source_ref,
                         summary=text,
                         embedding=embedding,
@@ -326,7 +343,7 @@ class Memorizer:
         if not merged_summary or not item_id:
             return
 
-        item = store.get_item_for_dashboard(item_id)
+        item = await self._run_db(store.get_item_for_dashboard, item_id)
         if item is None:
             logger.warning("merge_item: item %s not found", item_id)
             return
@@ -367,7 +384,8 @@ class Memorizer:
             # 下次通过 _save_item_direct 路径写入时，tagger 会重新生成。
             new_extra.pop("trigger_tags", None)
 
-        store.merge_item_raw(
+        await self._run_db(
+            store.merge_item_raw,
             item_id=item_id,
             new_summary=merged_summary,
             new_hash=new_hash,

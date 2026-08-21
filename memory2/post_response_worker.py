@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import json_repair
 
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     from bus.publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
+
+_R = TypeVar("_R")
 
 
 class PostResponseMemoryWorker:
@@ -42,15 +45,23 @@ class PostResponseMemoryWorker:
         light_provider: LLMProvider,
         light_model: str,
         event_publisher: "EventPublisher | None" = None,
+        run_db: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._memorizer = memorizer
         self._retriever = retriever
         self._provider = light_provider
         self._model = light_model
         self._event_publisher = event_publisher
+        self._run_db_cb = run_db
         self._current_run_session_key = ""
         self._current_run_channel = ""
         self._current_run_chat_id = ""
+
+    async def _run_db(self, fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+        # 无 run_db（legacy single-store / 测试 / sqlite 无 executor）时直接同步调。
+        if self._run_db_cb is None:
+            return fn(*args, **kwargs)
+        return await self._run_db_cb(fn, *args, **kwargs)
 
     async def handle(self, event: TurnIngested) -> None:
         await self.run(
@@ -226,7 +237,9 @@ class PostResponseMemoryWorker:
                 token_budget,
             )
             if supersede_ids:
-                self._memorizer.supersede_batch(supersede_ids, tenant=tenant)
+                await self._run_db(
+                    self._memorizer.supersede_batch, supersede_ids, tenant=tenant
+                )
                 logger.info(
                     "post_response invalidation: superseded %s for topic '%s'",
                     supersede_ids,

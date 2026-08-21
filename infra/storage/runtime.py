@@ -12,10 +12,15 @@ backend（或 sqlite 共享 store）的引用，不拥有连接、不暴露 clos
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar
+
+R = TypeVar("R")
 
 from infra.storage.interfaces import MemoryStorage, SessionStorage, TenantContext
 from infra.storage.postgres_memory_store import (
@@ -101,6 +106,19 @@ class StorageRuntime:
             memory=PostgresMemoryStore(memory_backend, tenant.tenant_id),
             sessions=PostgresSessionStore(session_backend, tenant.tenant_id),
         )
+
+    async def run_db(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        """把同步 DB 调用移出 event loop：submit 到 bounded executor 并 await。
+
+        - postgres：fn 在 executor 线程执行（view 的 thread-local 连接借用与
+          event loop 线程隔离，跨线程安全）。
+        - sqlite：无 executor（进程内直接访问文件），同步执行，行为不变。
+        - close 后调用：executor 已 shutdown，run_in_executor 抛 RuntimeError。
+        """
+        if self._executor is None:
+            return fn(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, partial(fn, *args, **kwargs))
 
     def close(self) -> None:
         if self._closed:

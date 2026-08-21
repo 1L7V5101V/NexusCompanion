@@ -8,6 +8,7 @@
 postgres 用例依赖本地 PG，无 PG 自动 skip。
 """
 import os
+import threading
 
 import psycopg
 import pytest
@@ -192,5 +193,52 @@ def test_pg_tenant_sql_scoping(pg_alive, tmp_path) -> None:
         # 各自 tenant 内的 source_ref 可见
         assert store_a.has_item_by_source_ref(f"ref-a-{suffix}") is True
         assert store_b.has_item_by_source_ref(f"ref-b-{suffix}") is True
+    finally:
+        runtime.close()
+
+
+# ── run_db：同步 DB 调用移出 event loop（M4H-3 commit 4）────────────────────
+
+
+@pytest.mark.postgres
+async def test_pg_run_db_runs_db_in_executor(pg_alive, tmp_path) -> None:
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db", pool_size=2)
+    loop_thread = threading.get_ident()
+    try:
+        store = runtime.for_tenant(_tenant("run_db")).memory
+
+        def _upsert_sync() -> str:
+            # executor 线程 ≠ event loop 线程：证明调用确实离开 event loop。
+            assert threading.get_ident() != loop_thread
+            return store.upsert_item(
+                "event", "run-db-executor", None, source_ref="ref-run-db"
+            )
+
+        item_id = await runtime.run_db(_upsert_sync)
+        assert item_id.startswith(("new:", "reinforced:"))
+        # 写结果可跨线程读回（pool 连接由 view 的 thread-local 管理）。
+        assert store.has_item_by_source_ref("ref-run-db") is True
+    finally:
+        runtime.close()
+
+
+@pytest.mark.postgres
+async def test_pg_run_db_after_close_raises(pg_alive, tmp_path) -> None:
+    runtime = StorageRuntime(PG_URL, "unused.db", "unused.db")
+    runtime.close()
+    with pytest.raises(RuntimeError):
+        await runtime.run_db(lambda: 1)
+
+
+async def test_sqlite_run_db_runs_inline(tmp_path) -> None:
+    runtime = _make_runtime(tmp_path)
+    try:
+        loop_thread = threading.get_ident()
+
+        def _probe() -> str:
+            # sqlite 无 executor：run_db 直接同步执行，线程保持 event loop 线程。
+            return f"thread-{threading.get_ident()}"
+
+        assert await runtime.run_db(_probe) == f"thread-{loop_thread}"
     finally:
         runtime.close()

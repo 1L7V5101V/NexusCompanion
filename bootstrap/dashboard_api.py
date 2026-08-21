@@ -1100,7 +1100,7 @@ def create_dashboard_app(
         if manual_consolidator is None:
             raise HTTPException(status_code=503, detail="manual consolidation 未启用")
         view = _session_view(tenant_id)
-        if not view.session_exists(session_key):
+        if not await storage_runtime.run_db(view.session_exists, session_key):
             raise HTTPException(status_code=404, detail="session 不存在")
         logger.info(
             "Manual memory consolidation requested: session=%s archive_all=%s force=%s",
@@ -1116,8 +1116,13 @@ def create_dashboard_app(
             )
         except TimeoutError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        meta = view.get_session_meta(session_key) or {"key": session_key}
-        meta["message_count"] = view.count_messages(session_key)
+        meta = (
+            await storage_runtime.run_db(view.get_session_meta, session_key)
+            or {"key": session_key}
+        )
+        meta["message_count"] = await storage_runtime.run_db(
+            view.count_messages, session_key
+        )
         logger.info(
             "Manual memory consolidation response: session=%s triggered=%s last_consolidated=%s message_count=%s",
             session_key,

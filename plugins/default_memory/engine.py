@@ -7,7 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, cast
 
 import json_repair
 
@@ -60,6 +60,7 @@ _HYPOTHESIS_TIMEOUT_S = 3.0
 _VECTOR_SCORE_THRESHOLD = 0.35
 _VECTOR_TOP_K = 15
 _ChatCall = Callable[..., Awaitable[LLMResponse]]
+_R = TypeVar("_R")
 
 
 def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
@@ -471,7 +472,10 @@ class DefaultMemoryEngine:
             output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
         )
-        self._memorizer = Memorizer(self._memory_for, self._embedder)
+        # M4H-3 commit 4：DB 调用经 runtime.run_db 移出 event loop（executor）。
+        # 无 runtime（legacy single-user / 测试）时 run_db 为 None，直接同步调。
+        run_db = self._storage_runtime.run_db if self._storage_runtime is not None else None
+        self._memorizer = Memorizer(self._memory_for, self._embedder, run_db=run_db)
         self._retriever = Retriever(
             self._memory_for,
             self._embedder,
@@ -491,6 +495,7 @@ class DefaultMemoryEngine:
             inject_line_max=retrieval.inject.line_max,
             procedure_guard_enabled=retrieval.procedure_guard_enabled,
             hotness_alpha=0.20,
+            run_db=run_db,
         )
         skills_loader = SkillsLoader(workspace)
         self._tagger = ProcedureTagger(
@@ -509,6 +514,7 @@ class DefaultMemoryEngine:
             light_provider=self._light_provider,
             light_model=self._light_model,
             event_publisher=event_publisher,
+            run_db=run_db,
         )
         self._wire_memory2_events()
         self.closeables = [self._embedder]
@@ -639,7 +645,7 @@ class DefaultMemoryEngine:
         if self._retriever is None:
             return MemoryQueryResult(raw={"items": []})
         if request.intent == "timeline":
-            return self._query_timeline(request)
+            return await self._query_timeline(request)
         if request.intent == "interest":
             return await self._query_interest(request)
         if request.intent in {"context", "procedure"}:
@@ -806,12 +812,12 @@ class DefaultMemoryEngine:
         # 1. 先按 id 去重并读取现存条目。
         store = self._memory_for(request.tenant)
         clean_ids = _dedupe_ids(list(request.ids))
-        items = store.get_items_by_ids(clean_ids)
+        items = await self._run_db(store.get_items_by_ids, clean_ids)
         found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
 
         # 2. 只失效能确认存在的条目，缺失 id 返回给调用方展示。
         if found_ids:
-            store.mark_superseded_batch(found_ids)
+            await self._run_db(store.mark_superseded_batch, found_ids)
         return MemoryMutationResult(
             accepted=bool(found_ids),
             status="superseded",
@@ -1128,7 +1134,7 @@ class DefaultMemoryEngine:
             raw={"items": sliced},
         )
 
-    def _query_timeline(
+    async def _query_timeline(
         self,
         request: MemoryQuery,
     ) -> MemoryQueryResult:
@@ -1140,7 +1146,8 @@ class DefaultMemoryEngine:
                     "effect": request.effect,
                 }
             )
-        hits = self._memory_for(request.tenant).list_events_by_time_range(
+        hits = await self._run_db(
+            self._memory_for(request.tenant).list_events_by_time_range,
             request.filters.time_start,
             request.filters.time_end,
             limit=request.limit,
@@ -1253,6 +1260,12 @@ class DefaultMemoryEngine:
             return
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
+
+    async def _run_db(self, fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+        # 无 runtime（legacy single-user / 测试 / sqlite）时直接同步调。
+        if self._storage_runtime is None:
+            return fn(*args, **kwargs)
+        return await self._storage_runtime.run_db(fn, *args, **kwargs)
 
     def _memory_for(self, tenant: TenantContext) -> MemoryStorage:
         if self._storage_runtime is not None:
