@@ -6,6 +6,7 @@
 
 | 入口 | 定位 |
 | --- | --- |
+| [`PROJECT_CHECKLIST.md`](./PROJECT_CHECKLIST.md) | 完整项目进度观测 checklist：phase/capability 展开为子任务条目，只含简短描述与链接 |
 | [`SCALING_ROADMAP.md`](./SCALING_ROADMAP.md) | Program 目标：North Star、capability map、依赖与状态（不承载实现任务与逐 commit 历史） |
 | [`specs/`](./specs/) | 当前规格：生效规格与治理契约（scaling-governance） |
 | [`changes/`](./changes/) | 活跃工作：增量设计、tasks 与状态；用 `openspec list` / `openspec status` 查询 |
