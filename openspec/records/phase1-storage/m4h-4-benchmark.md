@@ -3,13 +3,13 @@
 > 归属：M4.5 架构硬化 / M4H-4，见 [`m4h-4-partition-provisioning.md`](m4h-4-partition-provisioning.md)
 > 分支：`feature/scaling-phase1-storage`
 > 运行日期：2026-08-22
-> 结果原始数据：[`results/m4h4_partition_provisioning.json`](../../results/m4h4_partition_provisioning.json)
+> 结果原始数据：[`openspec/evidence/phase1-storage/results/m4h4_partition_provisioning.json`](../../evidence/phase1-storage/results/m4h4_partition_provisioning.json)
 
 ## 1. 为什么要做（依据）
 
 SCALING_PLAN 对 5000 tenant 的 PostgreSQL 分区方案有两处硬性要求：
 
-- **§C 分区生产验证**（[SCALING_PLAN-2026-08-22.md](../../scaling/archive/SCALING_PLAN-2026-08-22.md) :384-393）：合成 recall 结果不足以证明生产可用，必须验证「5000 分区下的 planning latency、catalog 大小」；「首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning」；「分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞」。
+- **§C 分区生产验证**（[SCALING_PLAN-2026-08-22.md](../../archive/SCALING_PLAN-2026-08-22.md) :384-393）：合成 recall 结果不足以证明生产可用，必须验证「5000 分区下的 planning latency、catalog 大小」；「首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning」；「分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞」。
 - **风险表**（:813「5000 LIST 分区运维退化」P1 → 5000 分区基准；:814「首次请求动态 CREATE PARTITION」P1 → provisioning control plane + 幂等 DDL worker）。
 
 M4H-4 的架构决策是「两阶段 readiness gate（`request_provisioning` + `require_ready`）+ 独立 control worker 执行幂等 DDL」——turn 路径绝不执行 DDL。本基准要回答的问题是：
@@ -56,7 +56,7 @@ D:\.Projects\NexusCompanion\.venv\Scripts\python.exe tests/provision_5000_bench.
 
 ## 3. 结果
 
-运行配置：`tenants=5000`、`pool_size=20`、`poll_interval=0.01`，完整数据见 [`results/m4h4_partition_provisioning.json`](../../results/m4h4_partition_provisioning.json)。
+运行配置：`tenants=5000`、`pool_size=20`、`poll_interval=0.01`，完整数据见 [`openspec/evidence/phase1-storage/results/m4h4_partition_provisioning.json`](../../evidence/phase1-storage/results/m4h4_partition_provisioning.json)。
 
 | 指标 | 结果 |
 |---|---|

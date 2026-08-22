@@ -1,6 +1,6 @@
 # Phase 1 存储层改造计划（PostgreSQL + pgvector）
 
-> 来源：[SCALING_PLAN-2026-08-22.md](../../scaling/archive/SCALING_PLAN-2026-08-22.md) Phase 1（P0 必须）
+> 来源：[SCALING_PLAN-2026-08-22.md](../../archive/SCALING_PLAN-2026-08-22.md) Phase 1（P0 必须）
 > 分支：`feature/scaling-phase1-storage`（继承 `feature/pg-migration` 的 WIP）
 > 初版日期：2026-08-20
 > 架构复审：2026-08-21
@@ -93,7 +93,7 @@ Phase 1 的目标调整为：
 **验证结论（`tests/`，15 万行 128 维聚类数据）：** 单全局 HNSW 索引 + `WHERE tenant_id=?` 过滤，recall@10（ef=40）随租户占比崩：50%→0.987、10%→0.463、2%→0.180、1%→0.133、0.1%→0.100；ef 提到 200 也救不回（1% 租户仅 0.257）。占比最小的租户（0.05%）planner 直接放弃索引改 seq scan——召回 1.000 但延迟 231ms vs 1.5ms（150k 行量级，生产 1M+ 更糟）。**对照实验**：同一份租户数据建独立索引，recall 回 0.99–1.00，证明退化是全局图遍历机制（过滤饿死遍历）而非数据稀疏。**缓解已用生产形态验证**：`CREATE TABLE ... PARTITION BY LIST (tenant_id)` + 父表建 HNSW → 每分区自动建索引，查询分区裁剪 + 单分区索引扫描（EXPLAIN 确认），recall 0.977–1.000、延迟 0.2–1.2ms 全量级达标。
 
 - **前置工作**：schema 迁移，embedding 从 Text 改为原生 `vector(1024)` 列；`CREATE TABLE ... PARTITION BY LIST (tenant_id)` + `CREATE INDEX ... USING hnsw`（父表建，分区自动继承）
-- 细节与复现见 [vector-validation.md](vector-validation.md)；脚本与结果在 [tests/](tests/README.md)，随文档入库
+- 细节与复现见 [vector-validation.md](vector-validation.md)；脚本与结果在 [openspec/evidence/phase1-storage/benchmark/](../../evidence/phase1-storage/benchmark/README.md)，随文档入库
 
 ### 决策 C：多租户形态
 
@@ -115,7 +115,7 @@ Phase 1 的目标调整为：
 - [x] `pg.py` 增加 `init-db`（建库 + `CREATE EXTENSION vector` + 建用户）子命令（原生路径备用）
 
 ### M1 接口界定
-- [x] 从 `MemoryStore2` / `SessionStore` 抽出完整接口清单（方法签名 + 返回类型），作为 [storage-interface.md](../storage-interface.md) 存底
+- [x] 从 `MemoryStore2` / `SessionStore` 抽出完整接口清单（方法签名 + 返回类型），作为 [storage-interface.md](storage-interface.md) 存底
 - [x] 明确 `close()` / 生命周期 / 异常语义在两个后端一致
 
 ### M2 PostgresMemoryStore（sync 后端）
@@ -127,7 +127,7 @@ Phase 1 的目标调整为：
 
 ### M3 PostgresSessionStore（sync 后端）
 - [x] 实现 `SessionStore` 全部接口，落 `infra/storage/postgres_session_store.py`（28 个 public 方法 + close/__del__，单连接 + RLock，全部按 tenant_id 作用域）；`tmp/verify_pg_session.py` 13 组验证全过
-- [x] `next_seq` 定稿为非消费式：镜像 SQLite 返回 `max(stored, max(seq)+1)`，不采用 SEQUENCE 消费式（`peek_next_message_id` 无副作用 peek，消费式会烧 seq；原子性由 `insert_message` max 自增 + UNIQUE 保证），见 [storage-interface.md](../storage-interface.md) 3 节
+- [x] `next_seq` 定稿为非消费式：镜像 SQLite 返回 `max(stored, max(seq)+1)`，不采用 SEQUENCE 消费式（`peek_next_message_id` 无副作用 peek，消费式会烧 seq；原子性由 `insert_message` max 自增 + UNIQUE 保证），见 [storage-interface.md](storage-interface.md) 3 节
 - [x] `search_messages` 用 `pg_trgm`（迁移 b6e9d2c4a8f1 建 GIN 索引加速 ILIKE 子串匹配），对标 SQLite FTS5 trigram；bm25 排序由「命中词数 DESC + seq DESC」近似
 - [x] 迁移 b6e9d2c4a8f1：sessions/messages 主键改 `(tenant_id, key)` / `(tenant_id, id)`（决策 C 跨 tenant 不撞 key）、messages UNIQUE(tenant_id, session_key, seq)、messages.id 放宽到 511、pg_trgm 扩展 + content GIN 索引
 - [x] 两后端 parity：`tmp/parity_session_smoke.py` 同数据写 SQLite + PG，next_seq 序列、session/message 结构、presence、dashboard 分页、search 命中集合、delete 语义一致（自动时间戳只比格式）

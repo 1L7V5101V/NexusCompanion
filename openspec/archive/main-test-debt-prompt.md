@@ -1,7 +1,7 @@
 # 发给 main 分支的测试债务清理 prompt
 
 > **历史参考**：本文件记录的 main 测试债务清理任务，将由后续 OpenSpec change 承接（进入正式设计/实施时创建独立 change，记录 design、tasks 与验收证据）。
-> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准。
+> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准；Program 目标以 `openspec/SCALING_ROADMAP.md` 为准。
 
 > 来源：feature/scaling-phase1-storage 合并 main 后，完整 pytest 发现 main 分支自身的测试套件存在大量既有断裂。已用临时 worktree 在**干净 main（d5c7eb68）**上复现，确认 100% 是 main 自身债务，**合并零回归**。此 prompt 供 main 分支会话直接使用。
 

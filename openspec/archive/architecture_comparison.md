@@ -1,7 +1,7 @@
 # 架构对比：当前 vs 5000 用户版本（历史参考）
 
 > **历史参考**：本文档已降级为历史参考，不作为当前事实的同步目标，不删除（保留方案演进审计价值）。
-> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准；实现事实以代码和测试证据为准。
+> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准；Program 目标以 `openspec/SCALING_ROADMAP.md` 为准；实现事实以代码和测试证据为准。
 > 本文尚未完全同步 2026-08-21 的架构复审结论，不应单独作为实施依据。
 ## 一、核心差异总览
 

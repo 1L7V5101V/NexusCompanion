@@ -1,7 +1,7 @@
 # Phase 1 向量检索验证测试（租户过滤 × HNSW 召回）
 
 > 决策 B 的前置验证。为什么测、测什么、结果如何、怎么复现，全部在这里。
-> 结论文档见 [vector-validation.md](../vector-validation.md)，本目录是可运行的脚本 + 已归档结果。
+> 结论文档见 [vector-validation.md](../../../records/phase1-storage/vector-validation.md)，本目录是可运行的脚本 + 已归档结果。
 
 ## 1. 为什么做这个测试
 
@@ -30,8 +30,8 @@ pgvector 的 HNSW 是**近似**最近邻搜索。生产查询形如
 
 | 脚本 | 回答的问题 | 产物 |
 |------|-----------|------|
-| `recall_bench2.py` | 单全局 HNSW + 租户过滤，召回是否随占比崩？planner 是否回退 seq scan？租户独立索引能否恢复？ | 结果 A + B（`results/recall_bench2.txt`） |
-| `partition_test.py` | 缓解方案的生产形态（原生 LIST 分区 + 每分区 HNSW）是否达标？ | 结果 C（`results/partition_test.txt`） |
+| `recall_bench2.py` | 单全局 HNSW + 租户过滤，召回是否随占比崩？planner 是否回退 seq scan？租户独立索引能否恢复？ | 结果 A + B（`../results/recall_bench2.txt`） |
+| `partition_test.py` | 缓解方案的生产形态（原生 LIST 分区 + 每分区 HNSW）是否达标？ | 结果 C（`../results/partition_test.txt`） |
 
 `recall_bench2.py` 可选参数：`--total`（默认 150000）、`--g` 质心数（2000）、`--nq` 每租户查询数（30）、
 `--dim`（128）、`--sigma` 噪声（0.12）、`--efs`（10,40,100,200）、`--skip-load`（复用已有 items 表重测查询）。
@@ -42,11 +42,11 @@ pgvector 的 HNSW 是**近似**最近邻搜索。生产查询形如
 # 依赖：若 tmp/pgvector-setup/py-deps 不存在，先装 psycopg2
 python -m pip install --target tmp/pgvector-setup/py-deps psycopg2-binary
 
-cd docs/tasks/phase1-storage/tests
+cd openspec/evidence/phase1-storage/benchmark
 PYTHONPATH="D:\.Projects\NexusCompanion\.claude\worktrees\scaling-phase1-storage\tmp\pgvector-setup\py-deps" \
-  "D:\.Projects\NexusCompanion\.venv\Scripts\python.exe" recall_bench2.py 2>&1 | tee results/recall_bench2.txt
+  "D:\.Projects\NexusCompanion\.venv\Scripts\python.exe" recall_bench2.py 2>&1 | tee ../results/recall_bench2.txt
 PYTHONPATH="D:\.Projects\NexusCompanion\.claude\worktrees\scaling-phase1-storage\tmp\pgvector-setup\py-deps" \
-  "D:\.Projects\NexusCompanion\.venv\Scripts\python.exe" partition_test.py 2>&1 | tee results/partition_test.txt
+  "D:\.Projects\NexusCompanion\.venv\Scripts\python.exe" partition_test.py 2>&1 | tee ../results/partition_test.txt
 ```
 
 `partition_test.py` 依赖 `recall_bench2.py` 先跑过（从 `items` 表建分区）。全量跑约 3–4 分钟（加载 18s + 全局索引 83s + 查询/对照）。

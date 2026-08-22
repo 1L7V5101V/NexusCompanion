@@ -2,7 +2,7 @@
 
 > **历史参考**：本文档已降级为历史参考，不作为当前事实的同步目标，不删除（保留执行清单演进审计价值）。
 > 阶段编号和部分前置假设尚未同步 2026-08-21 的架构复审。
-> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准；实现事实以代码和测试证据为准。
+> 当前规格以 `openspec/specs` 为准；当前 change 状态以 `openspec/changes` 与 `openspec status` 为准；Program 目标以 `openspec/SCALING_ROADMAP.md` 为准；实现事实以代码和测试证据为准。
 > **向量方案已定**：pgvector + 按 `tenant_id` 分区 HNSW，不引入独立向量数据库。
 > 依据 `docs/tasks/phase1-storage/vector-validation.md`。
 >
