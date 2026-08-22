@@ -2,7 +2,7 @@
 
 > 日期：2026-08-20
 > 目的：回答决策 B 的前置问题——「单全局 HNSW 索引 + `WHERE tenant_id` 过滤」在小租户占比下是否召回退化，以及正确形态是什么。
-> 复现脚本与结果在 [tests/](tests/README.md)（本目录随文档入库；本地 PG 17.10 + pgvector 0.8.6）。
+> 复现脚本与结果在 [openspec/evidence/phase1-storage/benchmark/](../../evidence/phase1-storage/benchmark/README.md)（本目录随文档入库；本地 PG 17.10 + pgvector 0.8.6）。
 
 ## 1. 为什么需要验证
 
@@ -87,8 +87,8 @@ CREATE INDEX ON items_part USING hnsw (embedding vector_cosine_ops);
 ## 8. 复现
 
 ```bash
-# 前提：本地 PG 17 + pgvector 0.8.6 已装，vecbench 库存在（见 tests/README.md 或 pg.py）
-cd docs/tasks/phase1-storage/tests
+# 前提：本地 PG 17 + pgvector 0.8.6 已装，vecbench 库存在（见 openspec/evidence/phase1-storage/benchmark/README.md 或 pg.py）
+cd openspec/evidence/phase1-storage/benchmark
 PYTHONPATH="D:\.Projects\NexusCompanion\.claude\worktrees\scaling-phase1-storage\tmp\pgvector-setup\py-deps" \
   "D:\.Projects\NexusCompanion\.venv\Scripts\python.exe" recall_bench2.py     # 结果 A + B
 PYTHONPATH="D:\.Projects\NexusCompanion\.claude\worktrees\scaling-phase1-storage\tmp\pgvector-setup\py-deps" \

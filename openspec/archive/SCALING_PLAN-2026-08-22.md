@@ -2,9 +2,10 @@
 
 > **历史快照（2026-08-22 冻结）**：本文件是 2026-08-22 冻结的扩展计划完整正文快照。
 > 正文可能包含跨时期积累的过期或内部不一致的状态表述，**不再修正、不再维护**，
-> **不作为当前状态或规格依据**。当前规格以 `openspec/specs` 为准，当前 change 状态以
-> `openspec/changes` 与 `openspec status` 为准，实现事实以代码和测试证据为准。
-> 导航入口见 [`../SCALING_PLAN.md`](../SCALING_PLAN.md)。
+> **不作为当前状态或规格依据**。当前规范以 `openspec/specs` 为准，当前 change 状态以
+> `openspec/changes` 与 `openspec status` 为准，当前项目目标与依赖以
+> `openspec/SCALING_ROADMAP.md` 为准，实现事实以代码、测试和 benchmark 证据为准。
+> 导航入口见 [`./SCALING_PLAN.md`](./SCALING_PLAN.md) 与 [`../SCALING_ROADMAP.md`](../SCALING_ROADMAP.md)。
 
 > 架构复审日期：2026-08-21
 > 文档定位：本文件是扩展工作的架构级 source of truth；任务级拆分、实验记录和迁移命令放在 `docs/tasks/`。
@@ -679,7 +680,7 @@ Gateway 扩缩容依据 active connections、send buffer、event-loop lag 和 re
 - `feature/pg-migration` 不再独立推进，避免两套 PG 实现漂移。
 - `worktree-webchat-jwt-rebuild` 当前不含领先 `main` 的功能提交；若重启工作，应从最新 `main` 新建明确 scope 的分支。
 - Phase 1 合并前先同步最新 `main`，运行全量测试、pyright 和 migration/parity 测试，确认没有测试覆盖回退。
-- [`architecture_comparison.md`](./archive/architecture_comparison.md) 与 [`migration_checklist.md`](./archive/migration_checklist.md) 已降级为历史参考，仍包含旧的“同步 AgentLoop/重建异步客户端”等表述；以本文件和已验证代码为准。
+- [`architecture_comparison.md`](./architecture_comparison.md) 与 [`migration_checklist.md`](./migration_checklist.md) 已降级为历史参考，仍包含旧的“同步 AgentLoop/重建异步客户端”等表述；以本文件和已验证代码为准。
 - 不在 SCALING_PLAN 中用“分支存在”代表“Phase 已完成”；完成状态以 exit gate 和可复现证据为准。
 
 ---

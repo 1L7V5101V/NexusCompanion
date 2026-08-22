@@ -3,7 +3,7 @@
 > 状态：已完成（2026-08-22，9 commits `4c50a0e0`–`f04c62c7`）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
-> 依据：[`SCALING_PLAN-2026-08-22.md`](../../scaling/archive/SCALING_PLAN-2026-08-22.md) §C 分区生产验证（:384-393）与风险表 :814
+> 依据：[`SCALING_PLAN-2026-08-22.md`](../../archive/SCALING_PLAN-2026-08-22.md) §C 分区生产验证（:384-393）与风险表 :814
 
 ## 1. ADR：partition provisioning 控制面
 
@@ -12,7 +12,7 @@ turn 路径**绝不**执行 `CREATE PARTITION`；store 写路径不再隐式建�
 
 ### 1.1 背景与问题（M4H-4 盘点结论）
 
-- 唯一分区 DDL 在 `PostgresMemoryStore._ensure_partition()`（[postgres_memory_store.py:278-307](../infra/storage/postgres_memory_store.py)），被 3 个写路径调用：`upsert_item`:334、`upsert_consolidation_event`:409、`merge_item_raw`:518。读路径从不触发（父表查询对未建分区 tenant 返回空，跨 tenant 空结果天然成立）。
+- 唯一分区 DDL 在 `PostgresMemoryStore._ensure_partition()`（[postgres_memory_store.py:278-307](../../../infra/storage/postgres_memory_store.py)），被 3 个写路径调用：`upsert_item`:334、`upsert_consolidation_event`:409、`merge_item_raw`:518。读路径从不触发（父表查询对未建分区 tenant 返回空，跨 tenant 空结果天然成立）。
 - 首次写入的 upsert 事务内执行 `CREATE PARTITION` → 用户 hot path 上的不可控 DDL 延迟，SCALING_PLAN §C:391 明令「首次写入不在用户 hot path 执行 DDL」。
 - `_sanitize_tenant`（:95）是有损字符替换（`telegram:123` 与 `telegram_123` → 同名分区）→ 命名碰撞风险，§C:392 要求「分区名使用稳定 hash/ID」。
 - 单一全局 advisory key（`_PARTITION_LOCK_KEY = 872_001_457`，:53）序列化所有 tenant 的分区创建 → 5000 tenant 并发 provisioning 的收敛点，需 `lock_timeout` 限界等待。
@@ -50,7 +50,7 @@ ConversationRuntime._run                         TenantProvisioningService
 - **`request_provisioning` 幂等**：同 tenant 只在 UNKNOWN→PENDING 时入队一次；PENDING/READY/FAILED 重复调用不重复入队。UNKNOWN 时先做只读 `to_regclass` 探测——进程重启后已存在的分区立即恢复 READY（避免每次重启后所有 tenant 首个请求误 fail-fast），不执行任何 DDL。
 - **`provision_tenant`（同步执行器）幂等**：advisory 锁 + `to_regclass` 双检，分区已存在则跳过 CREATE 直接 READY；事务失败由 M4H-3 `connection()` 包装 rollback，无 aborted transaction / 半初始化态；缓存只在 commit 后更新。
 - **并发**：同 tenant 并发 → 全局 advisory 锁串行化，恰好一次有效 DDL，其余等待后复用结果；异 tenant 并发 → 串行但各自完成。`lock_timeout`/`statement_timeout` 限界等待，provisioning 延迟可测（基准）。per-tenant 锁留 M7 基准驱动，不在本任务引入。
-- **触发点（生产链路）**：TurnStartup 放 `ConversationRuntime._run` admission 之后、TurnExecutor 之前，接收服务端已解析的 tenant（经 `TurnRequest.metadata["tenantId"]`，接线时补 [`passive_worker.py:85-99`](../bootstrap/passive_worker.py) 的 metadata）。proactive 目标 tenant 执行前 `require_ready`，PENDING 跳过本轮。dashboard/undo 等直写入口只允许 READY tenant，不在请求内 provisioning。
+- **触发点（生产链路）**：TurnStartup 放 `ConversationRuntime._run` admission 之后、TurnExecutor 之前，接收服务端已解析的 tenant（经 `TurnRequest.metadata["tenantId"]`，接线时补 [`passive_worker.py:85-99`](../../../bootstrap/passive_worker.py) 的 metadata）。proactive 目标 tenant 执行前 `require_ready`，PENDING 跳过本轮。dashboard/undo 等直写入口只允许 READY tenant，不在请求内 provisioning。
 - **store 写路径 fail-fast**：删除 `_ensure_partition`，改 `_assert_partition_ready`——冷缓存时只做只读 `to_regclass` 探测，缺分区抛 `PartitionNotReady`，**绝不执行 DDL**。
 
 ### 1.4 稳定分区命名规则
@@ -101,7 +101,7 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrigh
 5. 接入 + 移除懒 DDL：`1dd09385`（store 写路径 fail-fast）、`9ac95d83`（TurnStartup/Proactive/接线）、`8736740c`（dashboard/undo READY-only 验证）
 6. 5000 tenant 基准：`f056d5ea`
 
-**基准结果**（详细方法/解读见 [`m4h-4-benchmark.md`](m4h-4-benchmark.md)，原始数据 `results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
+**基准结果**（详细方法/解读见 [`m4h-4-benchmark.md`](m4h-4-benchmark.md)，原始数据 `openspec/evidence/phase1-storage/results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
 
 | 指标 | 结果 |
 |---|---|

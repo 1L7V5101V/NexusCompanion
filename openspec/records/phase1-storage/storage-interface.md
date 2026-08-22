@@ -1,6 +1,6 @@
 # 存储层接口契约（M1）
 
-> 来源：[phase1-storage.md](phase1-storage/phase1-storage.md) M1
+> 来源：[phase1-storage.md](phase1-storage.md) M1
 > 用途：从 `MemoryStore2` / `SessionStore` 抽取的完整接口清单，作为 M2/M3
 > `PostgresMemoryStore` / `PostgresSessionStore` 的等价实现契约。
 > 状态：以 SQLite 实现（`memory2/store.py`、`session/store.py`）为基准。
@@ -153,7 +153,7 @@
 
 继承自 `feature/pg-migration` 的 async repo 覆盖度：`AsyncMemoryRepository` 约 8/26、
 `AsyncSessionRepository` 约 18/28 对齐本清单（缺口见
-[phase1-storage.md](phase1-storage/phase1-storage.md) 2.3）。M2/M3 以本清单为准补齐。
+[phase1-storage.md](phase1-storage.md) 2.3）。M2/M3 以本清单为准补齐。
 
 ## 7. 验收
 
