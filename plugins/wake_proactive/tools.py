@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from core.memory.engine import MemoryQuery
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import DEFAULT_TENANT
 from plugins.wake_proactive.context import ScratchItem, WakeContext, event_item_aliases
 from plugins.wake_proactive.renderer import render_share
 
@@ -27,6 +29,7 @@ class ToolDeps:
     state_store: "WakeStateStore | None" = None
     max_chars: int = 8_000
     max_concurrency: int = 6
+    tenant: TenantContext | None = None
 
 
 def _schema(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -210,6 +213,7 @@ async def _recall(
             result = await deps.memory.query(
                 MemoryQuery(
                     text=query,
+                    tenant=deps.tenant or TenantContext(tenant_id=DEFAULT_TENANT),
                     intent="interest",
                     effect="read_only",
                     limit=2,

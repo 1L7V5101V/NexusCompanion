@@ -34,6 +34,7 @@ class MemoryPlugin:
         DefaultMemoryEngine.ensure_workspace_storage(
             default_config=default_config,
             workspace=workspace,
+            config=config,
         )
         return [(db_path, existed)]
 
@@ -50,6 +51,7 @@ class MemoryPlugin:
             light_provider=deps.light_provider,
             http_resources=deps.http_resources,
             event_publisher=deps.event_publisher,
+            storage_runtime=deps.storage_runtime,
         )
         return MemoryPluginRuntime(
             engine=engine,

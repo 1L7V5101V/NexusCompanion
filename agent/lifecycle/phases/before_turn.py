@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import logging
-from typing import TYPE_CHECKING, Protocol, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, TypeVar, cast
+
+R = TypeVar("R")
 
 from bus.event_bus import EventBus
 from agent.core.runtime_support import SessionLike
@@ -53,15 +56,30 @@ class _AcquireSessionModule:
     requires: tuple[str, ...] = ()
     produces = (_SESSION_SLOT,)
 
-    def __init__(self, session_manager: SessionManager) -> None:
+    def __init__(
+        self,
+        session_manager: SessionManager,
+        run_db: Callable[..., Any] | None = None,
+    ) -> None:
         self._session_manager = session_manager
+        self._run_db_cb = run_db
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         state = frame.input
-        session = self._session_manager.get_or_create(state.session_key)
+        session = await self._run_db(
+            self._session_manager.get_or_create,
+            state.tenant_id,
+            state.session_key,
+        )
         state.session = session
         frame.slots[_SESSION_SLOT] = session
         return frame
+
+    async def _run_db(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+        # run_db 为空（无 StorageRuntime / 测试）时直接同步调，行为不变。
+        if self._run_db_cb is None:
+            return fn(*args, **kwargs)
+        return await self._run_db_cb(fn, *args, **kwargs)
 
 
 class _PrepareContextModule:
@@ -252,7 +270,9 @@ def default_before_turn_modules(
     plugin_modules: BeforeTurnModules | None = None,
 ) -> BeforeTurnModules:
     builtins: BeforeTurnModules = [
-        _AcquireSessionModule(session_manager),
+        _AcquireSessionModule(
+            session_manager, run_db=getattr(session_manager, "run_db", None)
+        ),
         _MemoryContextGuardModule(keep_count, consolidator),
         _PrepareContextModule(context_store),
         _BuildBeforeTurnCtxModule(),

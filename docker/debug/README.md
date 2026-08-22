@@ -88,6 +88,23 @@ docker compose -f docker/debug/docker-compose.yml down
 
 这只会停止容器，不会删除当前 profile 目录。
 
+## PostgreSQL 开发库
+
+`postgres` 服务提供本地开发数据库（Phase 1 存储层）：
+
+```bash
+docker compose -f docker/debug/docker-compose.yml up -d postgres
+docker compose -f docker/debug/docker-compose.yml ps postgres
+```
+
+- 镜像 `pgvector/pgvector:pg17`，首次建库时自动执行 `docker/debug/postgres/init/` 下的 SQL（含 `CREATE EXTENSION vector`）。
+- 数据存命名卷 `nexus-pgdata`，`down` 不删数据，需清库时 `docker compose ... down -v`。
+- 宿主端口映射到 **5433**（避开原生 PG 17.10 的 5432，后者保留作对照）。
+- 连接串（对齐 config.example.toml）：`postgresql+psycopg://nexus:nexus_dev@localhost:5433/nexus`
+- 密码用环境变量 `POSTGRES_PASSWORD` 覆盖，默认 `nexus_dev`。
+
+原生安装的 PostgreSQL 仍是备用路径，初始化见 `python pg.py init-db`。
+
 ## 清空调试 workspace
 
 ```bash

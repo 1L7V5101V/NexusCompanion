@@ -15,6 +15,7 @@ import numpy as np
 
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryQuery, MemoryQueryIntent, MemoryScope
+from infra.storage.interfaces import TenantContext
 from agent.plugins.context import PluginContext, PluginKVStore
 from agent.config_models import Config, MemoryConfig, MemoryEmbeddingConfig
 from plugins.rachael.config import RachaelConfig
@@ -723,6 +724,7 @@ async def test_query_places_overlap_in_dense_and_ripple_only_in_ripple(
     result = await engine.query(
         MemoryQuery(
             text="用户消息",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="s"),
             timestamp=QUERY_TS,
@@ -776,6 +778,7 @@ async def test_context_block_sorts_injected_cards_by_time_desc(tmp_path: Path) -
     result = await engine.query(
         MemoryQuery(
             text="用户消息",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="s"),
             timestamp=QUERY_TS,
@@ -890,6 +893,7 @@ async def test_context_query_uses_rachael_top_k_over_default_query_limit(
     result = await engine.query(
         MemoryQuery(
             text="用户消息",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="s"),
             limit=8,
@@ -957,6 +961,7 @@ def test_query_log_keeps_context_and_answer_for_same_seq(tmp_path: Path) -> None
             engine._write_query_log(
                 request=MemoryQuery(
                     text="同一轮问题",
+                    tenant=TenantContext(tenant_id="test"),
                     intent=intent,
                     scope=MemoryScope(session_key="s"),
                     timestamp=QUERY_TS,
@@ -1013,6 +1018,7 @@ async def test_read_only_query_skips_rachael_state_effects(tmp_path: Path) -> No
     result = await engine.query(
         MemoryQuery(
             text="用户消息",
+            tenant=TenantContext(tenant_id="test"),
             intent="answer",
             effect="read_only",
             scope=MemoryScope(session_key="s"),

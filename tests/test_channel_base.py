@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from infra.channels.base import AttachmentStore, MessageDeduper, SessionIdentityIndex
+from infra.storage.tenancy import DEFAULT_TENANT
 from session.manager import SessionManager
 
 
@@ -29,7 +30,7 @@ def test_message_deduper_evicts_oldest_keys():
 @pytest.mark.asyncio
 async def test_session_identity_index_rebuilds_and_persists_metadata(tmp_path: Path):
     manager = SessionManager(tmp_path)
-    existing = manager.get_or_create("telegram:123")
+    existing = manager.get_or_create(DEFAULT_TENANT, "telegram:123")
     existing.metadata["username"] = "alice"
     manager.save(existing)
 
@@ -47,5 +48,5 @@ async def test_session_identity_index_rebuilds_and_persists_metadata(tmp_path: P
     await index.remember("Bob", "456")
 
     assert index.mapping["bob"] == "456"
-    saved = manager.get_or_create("telegram:456")
+    saved = manager.get_or_create(DEFAULT_TENANT, "telegram:456")
     assert saved.metadata["username"] == "bob"

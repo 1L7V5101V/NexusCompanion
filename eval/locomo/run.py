@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from infra.storage.tenancy import DEFAULT_TENANT
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
@@ -260,8 +261,8 @@ async def _ingest_conversation(
         ts = _parse_date(date_str)
 
         # Clear cache and get fresh session
-        sm._cache.pop(session_key, None)
-        session = sm.get_or_create(session_key)
+        sm._cache.pop((DEFAULT_TENANT, session_key), None)
+        session = sm.get_or_create(DEFAULT_TENANT, session_key)
 
         # Insert turns
         for turn in turns:
@@ -270,8 +271,8 @@ async def _ingest_conversation(
             total_turns += 1
 
         sm.save(session)
-        sm._cache.pop(session_key, None)
-        session = sm.get_or_create(session_key)
+        sm._cache.pop((DEFAULT_TENANT, session_key), None)
+        session = sm.get_or_create(DEFAULT_TENANT, session_key)
 
         # Consolidate
         await consolidation.consolidate(session, archive_all=False)
@@ -294,8 +295,8 @@ async def _ingest_conversation(
             on_progress(idx + 1, n_sessions)
 
     # Finalize tail chunks
-    sm._cache.pop(session_key, None)
-    session = sm.get_or_create(session_key)
+    sm._cache.pop((DEFAULT_TENANT, session_key), None)
+    session = sm.get_or_create(DEFAULT_TENANT, session_key)
     await _finalize_tail_chunks(rt, session)
     session.last_consolidated = len(session.messages)
     sm.save(session)
@@ -380,6 +381,7 @@ async def _run_single_qa(
             channel="benchmark",
             sender="user",
             chat_id=sample_id,
+            tenant_id=DEFAULT_TENANT,
             content=qa_pair.question + "\n\n[Respond in English only. One sentence or short phrase.]",
             timestamp=datetime.now(tz=timezone.utc),
         )
@@ -451,7 +453,7 @@ async def _run_single_qa(
 def _purge_qa_session(rt, qa_key: str) -> None:
     """Remove any existing QA session data."""
     sm = rt.core.session_manager
-    sm._cache.pop(qa_key, None)
+    sm._cache.pop((DEFAULT_TENANT, qa_key), None)
 
     # Also clean DB if session exists
     workspace = getattr(sm, "_store_path", None)
@@ -483,8 +485,8 @@ def _purge_qa_session(rt, qa_key: str) -> None:
 def _extract_tool_chain(session_manager, qa_key: str) -> list[dict]:
     """Pull tool_chain from the last assistant message."""
     try:
-        session_manager._cache.pop(qa_key, None)
-        session = session_manager.get_or_create(qa_key)
+        session_manager._cache.pop((DEFAULT_TENANT, qa_key), None)
+        session = session_manager.get_or_create(DEFAULT_TENANT, qa_key)
         for msg in reversed(session.messages):
             if msg.get("role") == "assistant" and msg.get("tool_chain"):
                 return msg["tool_chain"]

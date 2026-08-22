@@ -71,6 +71,7 @@ class TurnCommitted:
     persisted_user_message: str | None
     assistant_response: str
     tools_used: list[str]
+    tenant_id: str = ""
     turn_id: str = ""
     thinking: str | None = None
     raw_reply: str | None = None

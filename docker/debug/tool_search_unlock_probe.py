@@ -18,6 +18,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from infra.storage.tenancy import DEFAULT_TENANT
 
 
 def _as_mapping(value: object) -> Mapping[str, object] | None:
@@ -122,7 +123,7 @@ async def _run(args: argparse.Namespace) -> None:
             chat_id="tool-search-probe",
             skip_post_memory=True,
         )
-        session = core.session_manager.get_or_create(args.session_key)
+        session = core.session_manager.get_or_create(DEFAULT_TENANT, args.session_key)
         tool_calls = _tool_chain_names(cast(list[dict[str, object]], session.messages))
 
         if tool_calls[:2] != ["tool_search", "list_schedules"]:

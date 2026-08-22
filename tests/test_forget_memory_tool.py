@@ -58,7 +58,7 @@ async def test_forget_memory_marks_existing_items_superseded(tmp_path: Path):
         item_id = result.split(":", 1)[1]
         tool = _forget_tool(_MemoryWriter(store))
 
-        raw = await tool.execute(ids=[item_id])
+        raw = await tool.execute(ids=[item_id], tenant_id="test")
         payload = json.loads(raw)
 
         assert payload["superseded_ids"] == [item_id]
@@ -82,7 +82,7 @@ async def test_forget_memory_ignores_duplicates_and_reports_missing(tmp_path: Pa
         item_id = result.split(":", 1)[1]
         tool = _forget_tool(_MemoryWriter(store))
 
-        raw = await tool.execute(ids=[item_id, "missing", item_id])
+        raw = await tool.execute(ids=[item_id, "missing", item_id], tenant_id="test")
         payload = json.loads(raw)
 
         assert payload["requested_ids"] == [item_id, "missing"]

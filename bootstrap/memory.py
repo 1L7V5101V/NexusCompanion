@@ -19,6 +19,7 @@ from core.net.http import SharedHttpResources
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
     from core.memory.markdown import MarkdownMemoryRuntime
+    from infra.storage.runtime import StorageRuntime
 
 
 # 统一插件构造入口，参数化 engine_name 以支持多引擎构建。
@@ -32,6 +33,7 @@ def _build_memory_plugin_runtime(
     http_resources: SharedHttpResources,
     markdown: "MarkdownMemoryRuntime",
     event_publisher: "EventBus | None" = None,
+    storage_runtime: "StorageRuntime | None" = None,
 ) -> MemoryPluginRuntime:
     from bootstrap.wiring import resolve_memory_plugin
 
@@ -45,6 +47,7 @@ def _build_memory_plugin_runtime(
             http_resources=http_resources,
             event_publisher=event_publisher,
             markdown=markdown,
+            storage_runtime=storage_runtime,
         )
     )
 
@@ -91,6 +94,7 @@ def build_memory_runtime(
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
+    storage_runtime: "StorageRuntime | None" = None,
 ) -> MemoryRuntime:
     # 1. markdown 是默认记忆层，任何 engine 都共用。
     markdown = build_markdown_memory_runtime(
@@ -118,6 +122,7 @@ def build_memory_runtime(
                 http_resources=http_resources,
                 markdown=markdown,
                 event_publisher=event_publisher,
+                storage_runtime=storage_runtime,
             )
             engines[engine_name] = plugin_runtime.engine
             closeables.extend(plugin_runtime.closeables)
@@ -146,6 +151,7 @@ def build_memory_admin_runtime(
     light_provider: LLMProvider | None,
     http_resources: SharedHttpResources,
     event_publisher: "EventBus | None" = None,
+    storage_runtime: "StorageRuntime | None" = None,
 ) -> MemoryRuntime:
     # dashboard 不注册工具，只需要 engine admin 能力和关闭生命周期。
     markdown = build_markdown_memory_runtime(
@@ -172,6 +178,7 @@ def build_memory_admin_runtime(
                 http_resources=http_resources,
                 markdown=markdown,
                 event_publisher=event_publisher,
+                storage_runtime=storage_runtime,
             )
             engines[engine_name] = plugin_runtime.engine
             closeables[:0] = plugin_runtime.closeables

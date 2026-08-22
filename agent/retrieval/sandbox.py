@@ -14,6 +14,8 @@ RetrievalSandbox — 隔离的检索沙箱
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -22,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from agent.retrieval.fusion import FusionEngine, ScoredItem
 from core.memory.engine import MemoryQuery, MemoryQueryFilters, MemoryScope
+from infra.storage.interfaces import TenantContext
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
@@ -61,6 +64,7 @@ class RetrievalSandbox:
         query: str,
         scope: MemoryScope,
         context: dict[str, Any],
+        tenant: TenantContext,
         timestamp: datetime | None = None,
         filters: MemoryQueryFilters | None = None,
     ) -> str:
@@ -83,11 +87,11 @@ class RetrievalSandbox:
         for src in source_list:
             if src == "graph":
                 coros[src] = asyncio.ensure_future(
-                    self._query_graph(query, scope, context, timestamp, filters)
+                    self._query_graph(query, scope, context, timestamp, filters, tenant)
                 )
             elif src == "vector":
                 coros[src] = asyncio.ensure_future(
-                    self._query_vector(query, scope, context, timestamp, filters)
+                    self._query_vector(query, scope, context, timestamp, filters, tenant)
                 )
             elif src == "web":
                 coros[src] = asyncio.ensure_future(
@@ -132,12 +136,14 @@ class RetrievalSandbox:
         context: dict[str, Any],
         timestamp: datetime | None,
         filters: MemoryQueryFilters | None,
+        tenant: TenantContext,
     ) -> list[ScoredItem] | None:
         if self._rachael is None:
             return None
         try:
             result = await self._rachael.query(MemoryQuery(
                 text=query,
+                tenant=tenant,
                 intent="context",
                 scope=scope,
                 context=context,
@@ -156,12 +162,14 @@ class RetrievalSandbox:
         context: dict[str, Any],
         timestamp: datetime | None,
         filters: MemoryQueryFilters | None,
+        tenant: TenantContext,
     ) -> list[ScoredItem] | None:
         if self._vector is None:
             return None
         try:
             result = await self._vector.query(MemoryQuery(
                 text=query,
+                tenant=tenant,
                 intent="context",
                 scope=scope,
                 context=context,

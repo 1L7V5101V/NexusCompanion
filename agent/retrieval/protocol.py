@@ -5,11 +5,13 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from agent.core.types import HistoryMessage, RetrievalTrace
+from infra.storage.interfaces import TenantContext
 
 
 @dataclass
 class RetrievalRequest:
     message: str
+    tenant: TenantContext
     session_key: str
     channel: str
     chat_id: str

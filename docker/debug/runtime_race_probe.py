@@ -55,6 +55,7 @@ from core.net.http import (
     clear_default_shared_http_resources,
     configure_default_shared_http_resources,
 )
+from infra.storage.tenancy import DEFAULT_TENANT
 from session.manager import SessionManager
 
 
@@ -296,6 +297,8 @@ class RaceHarness:
     def make_agent_loop(self, reasoner: Reasoner) -> AgentLoop:
         config = self.load_config()
         self.workspace.mkdir(parents=True, exist_ok=True)
+        # 探针仅支持 sqlite 后端（SessionManager 直连 SQLite，不受 storage.backend 影响）；
+        # 如需 PG 请走生产路径。
         session_manager = SessionManager(self.workspace)
         return AgentLoop(
             AgentLoopDeps(
@@ -351,6 +354,7 @@ class RaceHarness:
             channel=CHANNEL,
             sender="user",
             chat_id=chat_id,
+            tenant_id=DEFAULT_TENANT,
             content=f"user:{chat_id}",
         )
         await self.bus.publish_inbound(item)
@@ -661,6 +665,7 @@ async def scenario_config_runtime_llm(harness: RaceHarness) -> None:
             channel=channel,
             sender="race-user",
             chat_id=chat_id,
+            tenant_id=DEFAULT_TENANT,
             content="竞态验证：请只用一句中文回复，内容包含“收到竞态验证”。",
         )
         await core.bus.publish_inbound(user)

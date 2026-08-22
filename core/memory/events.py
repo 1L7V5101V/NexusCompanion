@@ -61,6 +61,7 @@ class TurnIngested:
     assistant_response: str
     tool_chain: list[dict[str, object]]
     source_ref: str
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,3 +71,4 @@ class ConsolidationCommitted:
     scope_channel: str
     scope_chat_id: str
     conversation: str
+    tenant_id: str = ""

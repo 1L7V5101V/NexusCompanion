@@ -1,0 +1,46 @@
+{
+  "bench": "m4h4_partition_provisioning",
+  "config": {
+    "tenants": 5000,
+    "pool_size": 20,
+    "poll_interval": 0.01,
+    "pg_url_host": "localhost:5433/nexus"
+  },
+  "metrics": {
+    "sequential": {
+      "count": 5000,
+      "total_s": 114.24912009984837,
+      "mean_ms": 22.85,
+      "p50_ms": 23.056,
+      "p95_ms": 34.009,
+      "p99_ms": 47.897,
+      "max_ms": 82.42
+    },
+    "concurrent_burst": {
+      "count": 5000,
+      "total_s": 18.327,
+      "per_tenant_mean_ms": 3.665
+    },
+    "catalog": {
+      "baseline": 189,
+      "after": 10189,
+      "delta": 10000,
+      "lookup_ms": 15.466
+    },
+    "planning": {
+      "plan_latency_ms": 98.594
+    },
+    "pruning": {
+      "scanned_relations": [
+        "memory_items_bench_burst_4999_43932_d09e24c2b1a5"
+      ],
+      "selected_count": 1,
+      "pruned_to_single_partition": true
+    },
+    "failure_retry": {
+      "attempts_to_fail": 2,
+      "failed_after_ms": 224.744,
+      "requeue_converged_ms": 94.461
+    }
+  }
+}

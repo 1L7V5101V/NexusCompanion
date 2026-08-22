@@ -1,0 +1,19 @@
+# partition_test.py 完整输出（结果 C：分区缓解验证）
+# 运行：2026-08-20，本机 PG 17.10 + pgvector 0.8.6，vecbench 库
+# 前置：先跑 recall_bench2.py 生成 items 表 + 数据
+# 复现：tests/README.md
+
+[index] partitioned HNSW built in 46.5s
+
+tenant         rows                                  plan   recall@10  ms/q
+t_50pct       75000Limit  (cost=277.91..285.02 rows=10 width=16)     0.977   1.22
+t_02pct        3000Limit  (cost=194.06..200.60 rows=10 width=16)     0.987   1.22
+t_01pct        1500Limit  (cost=162.91..162.94 rows=10 width=16)     1.000   0.67
+t_001pct        150Limit  (cost=16.49..16.52 rows=10 width=16)     1.000   0.23
+t_0005pct        75Limit  (cost=8.75..8.77 rows=10 width=16)     1.000   0.25
+
+# EXPLAIN 确认（t_02pct 示例）：分区裁剪到单分区 + 分区内 HNSW 索引扫描
+#   Limit  (cost=194.06..200.60 rows=10 width=16)
+#   ->  Index Scan using items_part_t_02pct_embedding_idx on items_part_t_02pct items_part
+#         Order By: (embedding <=> '[...]'::vector)
+#         Filter: (tenant_id = 't_02pct'::text)

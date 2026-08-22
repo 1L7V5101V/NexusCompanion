@@ -1,5 +1,29 @@
 services:
+  postgres:
+    # 本地开发 PostgreSQL + pgvector（Phase 1 存储层）。
+    # 宿主端口用 5433，避开原生 PG 17.10（5432，保留作对照）。
+    image: pgvector/pgvector:pg17
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-nexus_dev}"
+      POSTGRES_DB: nexus
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - nexus-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   nexus-debug:
+    depends_on:
+      postgres:
+        condition: service_healthy
     build:
       context: ../..
       dockerfile: docker/debug/Dockerfile
@@ -22,3 +46,7 @@ services:
       - "2237:2236"
     stdin_open: true
     tty: true
+
+volumes:
+  nexus-pgdata:
+    name: nexus-pgdata

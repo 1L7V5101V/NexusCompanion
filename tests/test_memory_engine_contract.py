@@ -34,6 +34,7 @@ from core.memory.markdown import (
     MemoryLifecycleBindRequest,
 )
 from core.memory.plugin import MemoryPluginRuntime
+from infra.storage.interfaces import TenantContext
 
 
 def _make_default_engine(
@@ -53,6 +54,7 @@ def _make_default_engine(
     engine._light_provider = None
     engine._light_model = ""
     engine._v2_store = None
+    engine._storage_runtime = None
     engine._embedder = None
     engine._memorizer = memorizer
     engine._retriever = retriever
@@ -94,6 +96,7 @@ async def test_default_memory_engine_retrieve_maps_hits_and_text_block():
     result = await engine.query(
         MemoryQuery(
             text="中文回复",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(channel="cli", chat_id="1"),
             filters=MemoryQueryFilters(
@@ -134,6 +137,7 @@ async def test_default_memory_engine_retrieve_keeps_raw_items_and_mode_trace():
     result = await engine.query(
         MemoryQuery(
             text="Fitbit 型号",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="telegram:1"),
             filters=MemoryQueryFilters(
@@ -174,6 +178,7 @@ async def test_default_memory_engine_interest_preserves_read_only_effect():
     result = await engine.query(
         MemoryQuery(
             text="中文回复",
+            tenant=TenantContext(tenant_id="test"),
             intent="interest",
             effect="read_only",
             scope=MemoryScope(session_key="telegram:1"),
@@ -197,6 +202,7 @@ async def test_default_memory_engine_retrieve_falls_back_to_session_scope():
     await engine.query(
         MemoryQuery(
             text="作用域测试",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="telegram:test_user"),
             filters=MemoryQueryFilters(hints={"require_scope_match": True}),
@@ -231,6 +237,7 @@ async def test_default_engine_keeps_history_injected_ids():
     history_result = await engine.query(
         MemoryQuery(
             text="Fitbit 型号",
+            tenant=TenantContext(tenant_id="test"),
             intent="context",
             scope=MemoryScope(session_key="telegram:1", channel="telegram", chat_id="1"),
             filters=MemoryQueryFilters(
@@ -259,6 +266,7 @@ async def test_default_memory_engine_ingest_delegates_to_post_worker():
                 "assistant_response": "好的",
                 "tool_chain": [{"text": "memo", "calls": []}],
             },
+            tenant=TenantContext(tenant_id="test"),
             source_kind="conversation_turn",
             scope=MemoryScope(session_key="cli:1"),
         )
@@ -591,6 +599,7 @@ async def test_default_memory_engine_remember_uses_memorizer():
     result = await engine.mutate(
         MemoryMutation(
             kind="remember",
+            tenant=TenantContext(tenant_id="test"),
             summary="以后用中文回复",
             memory_kind="preference",
             scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
@@ -614,6 +623,7 @@ async def test_default_memory_engine_remember_merged_keeps_target_id_alive():
     result = await engine.mutate(
         MemoryMutation(
             kind="remember",
+            tenant=TenantContext(tenant_id="test"),
             summary="以后用中文回复",
             memory_kind="preference",
             scope=MemoryScope(session_key="cli:1", channel="cli", chat_id="1"),
@@ -649,6 +659,7 @@ async def test_default_memory_engine_consumes_markdown_consolidation_event():
             scope_channel="cli",
             scope_chat_id="1",
             conversation="USER: 我买了 Zigbee 网关",
+            tenant_id="test",
         )
     )
 
@@ -677,6 +688,7 @@ async def test_default_memory_engine_reports_implicit_extraction_failure():
                 scope_channel="cli",
                 scope_chat_id="1",
                 conversation="USER: 我买了 Zigbee 网关",
+                tenant_id="test",
             )
         )
 
@@ -701,6 +713,7 @@ async def test_default_memory_engine_ingest_accepts_conversation_batch_messages(
                     "tool_chain": [{"text": "memo", "calls": []}],
                 },
             ],
+            tenant=TenantContext(tenant_id="test"),
             source_kind="conversation_batch",
             scope=MemoryScope(session_key="cli:1"),
         )
@@ -727,6 +740,7 @@ async def test_default_memory_engine_ingest_falls_back_to_post_response_source_r
                 "user_message": "以后用中文",
                 "assistant_response": "好的",
             },
+            tenant=TenantContext(tenant_id="test"),
             source_kind="conversation_turn",
             scope=MemoryScope(session_key="cli:1"),
         )
@@ -748,6 +762,7 @@ async def test_default_memory_engine_ingest_rejects_unsupported_source_kind():
     result = await engine.ingest(
         MemoryIngestRequest(
             content="以后用中文",
+            tenant=TenantContext(tenant_id="test"),
             source_kind="text",
             scope=MemoryScope(session_key="cli:1"),
         )
@@ -770,6 +785,7 @@ async def test_default_memory_engine_ingest_rejects_when_worker_missing():
                 "user_message": "以后用中文",
                 "assistant_response": "好的",
             },
+            tenant=TenantContext(tenant_id="test"),
             source_kind="conversation_turn",
             scope=MemoryScope(session_key="cli:1"),
         )

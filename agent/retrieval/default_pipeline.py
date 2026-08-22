@@ -6,6 +6,8 @@ Router → RetrievalSandbox → Evaluator 质检闭环
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
@@ -125,6 +127,7 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
                 context=context,
                 timestamp=ts,
                 filters=filters,
+                tenant=request.tenant,
             )
 
             if not block:
@@ -185,6 +188,7 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
 
         return MemoryQuery(
             text=request.message,
+            tenant=request.tenant,
             intent="context",
             scope=MemoryScope(
                 session_key=request.session_key,

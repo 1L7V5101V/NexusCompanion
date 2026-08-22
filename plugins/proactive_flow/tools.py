@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from core.memory.engine import MemoryQuery
 from agent.prompting import is_context_frame
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import DEFAULT_TENANT
 from plugins.default_proactive.context import AgentTickContext
 from plugins.default_proactive.outbound_text import normalize_outbound_text
 
@@ -40,6 +42,7 @@ class ToolDeps:
     ack_fn: Any = None                  # async (compound_key: str, feedback: str) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None
     max_chars: int = 8_000
+    tenant: TenantContext | None = None
 
 
 # ── 工具 Schema ──────────────────────────────────────────────────────────
@@ -203,16 +206,18 @@ TERMINAL_TOOL_SCHEMAS: list[dict] = [
 
 # ── 工具实现 ──────────────────────────────────────────────────────────────
 
-async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory) -> str:
+async def _recall_memory(ctx: AgentTickContext, args: dict, *, memory, tenant: TenantContext | None = None) -> str:
     query = args["query"]
-    hits = await _retrieve_interest_hits(memory=memory, query=query, timestamp=ctx.now_utc)
+    hits = await _retrieve_interest_hits(
+        memory=memory, query=query, timestamp=ctx.now_utc, tenant=tenant
+    )
     if not hits:
         return json.dumps({"result": "", "hits": 0}, ensure_ascii=False)
     texts = [h.get("text", "") for h in hits if h.get("text")]
     return json.dumps({"result": "\n---\n".join(texts), "hits": len(hits)}, ensure_ascii=False)
 
 
-async def _retrieve_interest_hits(*, memory, query: str, timestamp) -> list[dict]:
+async def _retrieve_interest_hits(*, memory, query: str, timestamp, tenant: TenantContext | None = None) -> list[dict]:
     if memory is None:
         return []
 
@@ -220,6 +225,7 @@ async def _retrieve_interest_hits(*, memory, query: str, timestamp) -> list[dict
     result = await retrieval_memory.query(
         MemoryQuery(
             text=query,
+            tenant=tenant or TenantContext(tenant_id=DEFAULT_TENANT),
             intent="interest",
             effect="read_only",
             limit=2,
@@ -481,7 +487,7 @@ async def dispatch(tool_name: str, args: dict, ctx: AgentTickContext, deps: Tool
         return await _get_context_data(ctx, args)
 
     if tool_name == "recall_memory":
-        return await _recall_memory(ctx, args, memory=deps.memory)
+        return await _recall_memory(ctx, args, memory=deps.memory, tenant=deps.tenant)
 
     if tool_name == "get_content":
         return _get_content(ctx, args)

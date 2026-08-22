@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from infra.storage.tenancy import DEFAULT_TENANT
+
 from .dataset import LMEInstance
 from .runtime import BenchmarkRuntime
 
@@ -149,8 +151,8 @@ async def ingest_instance(
     for idx, (date, turns) in enumerate(zip(dates, sessions)):
         ts = _parse_date(date)
 
-        sm._cache.pop(session_key, None)
-        session = sm.get_or_create(session_key)
+        sm._cache.pop((DEFAULT_TENANT, session_key), None)
+        session = sm.get_or_create(DEFAULT_TENANT, session_key)
 
         for turn in turns:
             session.add_message(turn.role, turn.content)
@@ -158,8 +160,8 @@ async def ingest_instance(
             total_turns += 1
 
         sm.save(session)
-        sm._cache.pop(session_key, None)
-        session = sm.get_or_create(session_key)
+        sm._cache.pop((DEFAULT_TENANT, session_key), None)
+        session = sm.get_or_create(DEFAULT_TENANT, session_key)
 
         await rt.consolidation.consolidate(session, archive_all=False)
         sm.save(session)
@@ -181,8 +183,8 @@ async def ingest_instance(
 
     # Finalize the unarchived tail in bounded chunks so the benchmark
     # does not lose late-session facts while still avoiding giant prompts.
-    sm._cache.pop(session_key, None)
-    session = sm.get_or_create(session_key)
+    sm._cache.pop((DEFAULT_TENANT, session_key), None)
+    session = sm.get_or_create(DEFAULT_TENANT, session_key)
     await _finalize_tail_chunks(rt, session)
     session.last_consolidated = len(session.messages)
     sm.save(session)

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useEffectEvent, useMemo, useRef, useStat
 import { createRoot } from "react-dom/client";
 import { BookOpenText, Sparkles } from "lucide-react";
 import "./styles.css";
-import { api, asPageResult, pageCount } from "./api";
+import { api, asPageResult, pageCount, setActiveTenant } from "./api";
 import {
   encodePath,
   formatSessionKeyForTable,
@@ -195,6 +195,7 @@ function App(): React.ReactElement {
   const [logTurnType, setLogTurnType] = useState("");
   const [logTotal, setLogTotal] = useState(0);
   const [activeLogDetail, setActiveLogDetail] = useState<Record<string, unknown> | null>(null);
+  const [tenantDraft, setTenantDraft] = useState("");
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -316,6 +317,13 @@ function App(): React.ReactElement {
       await loadMessages();
     }
   }, [loadLogPanel, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+
+  const commitTenant = useCallback((value: string) => {
+    const next = value.trim();
+    setTenantDraft(value);
+    setActiveTenant(next);
+    void run(refreshCurrentView);
+  }, [refreshCurrentView, run]);
 
   useEffect(() => {
     const refresh = (): void => {
@@ -502,6 +510,21 @@ function App(): React.ReactElement {
             <div className="brand-title">Nexus Dashboard</div>
             <div className="brand-sub">Session / Memory Explorer</div>
           </div>
+        </div>
+        <div className="tenant-selector" title="tenant_id：留空回落到配置 owner tenant">
+          <input
+            type="text"
+            value={tenantDraft}
+            placeholder="tenant_id（留空=owner）"
+            spellCheck={false}
+            onChange={(event) => setTenantDraft(event.target.value)}
+            onBlur={() => commitTenant(tenantDraft)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                (event.target as HTMLInputElement).blur();
+              }
+            }}
+          />
         </div>
         <TopbarFilters
           viewMode={viewMode}
