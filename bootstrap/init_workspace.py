@@ -137,17 +137,18 @@ def _ensure_workspace_db_assets(
     config: Config,
     summary: InitSummary,
 ) -> None:
-    sessions_db = workspace / "sessions.db"
-    sessions_exists = sessions_db.exists()
-    SessionStore(sessions_db).close()
-    if not sessions_exists:
-        summary.created.append(sessions_db)
-    else:
-        summary.skipped.append(sessions_db)
+    if config.storage.backend != "postgres":
+        sessions_db = workspace / "sessions.db"
+        sessions_exists = sessions_db.exists()
+        SessionStore(sessions_db).close()
+        if not sessions_exists:
+            summary.created.append(sessions_db)
+        else:
+            summary.skipped.append(sessions_db)
 
     consolidation_db = workspace / "memory" / "consolidation_writes.db"
     consolidation_exists = consolidation_db.exists()
-    MemoryStore(workspace)
+    MemoryStore(workspace)  # markdown 旧记忆系统，与 storage.backend 无关
     if not consolidation_exists:
         summary.created.append(consolidation_db)
     else:

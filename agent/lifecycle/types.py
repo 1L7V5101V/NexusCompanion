@@ -33,6 +33,11 @@ class TurnState:
     session: SessionLike | None = None
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
 
+    @property
+    def tenant_id(self) -> str:
+        """本 turn 的 tenant，来自可信入站消息的 tenant_id（由适配器派生）。"""
+        return self.msg.tenant_id
+
 
 @dataclass
 class BeforeTurnCtx:

@@ -1,0 +1,42 @@
+# recall_bench2.py 完整输出（结果 A + B）
+# 运行：2026-08-20，本机 PG 17.10 + pgvector 0.8.6，vecbench 库
+# 参数：--total 150000 --g 2000 --nq 30 --dim 128 --sigma 0.12 --efs 10,40,100,200
+# 复现：tests/README.md
+
+[load] 150000 rows in 18.0s
+[index] global HNSW built in 83.1s
+[index] ANALYZE done
+
+[control] global HNSW recall@10 (no filter, ef=40): 0.993  plan=index
+
+tenant         share   rows   plan   recall@10 by ef_search
+                                           10       40      100      200
+t_50pct       0.500  75000  index    0.477    0.987    0.987    0.990
+t_20pct       0.200  30000  index    0.257    0.800    0.947    0.963
+t_10pct       0.100  15000  index    0.150    0.463    0.767    0.827
+t_05pct       0.050   7500  index    0.117    0.257    0.467    0.597
+t_02pct       0.020   3000  index    0.110    0.180    0.277    0.413
+t_01pct       0.010   1500  index    0.103    0.133    0.200    0.257
+t_005pct      0.005    750  index    0.087    0.123    0.137    0.193
+t_002pct      0.002    300  index    0.090    0.110    0.113    0.120
+t_001pct      0.001    150  index    0.080    0.100    0.107    0.107
+t_0005pct     0.001     75    seq    1.000    1.000    1.000    1.000
+
+tenant         rows  exact_ms   hnsw_ms   (exact=seq, hnsw=ef40 filtered index)
+t_50pct       75000     195.7      1.52
+t_20pct       30000     195.7      1.43
+t_10pct       15000     195.7      1.81
+t_05pct        7500     195.7      1.68
+t_02pct        3000     195.7      2.15
+t_01pct        1500     195.7      1.57
+t_005pct        750     195.7      1.87
+t_002pct        300     195.7      1.79
+t_001pct        150     195.7      2.09
+t_0005pct        75     195.7    231.15
+
+[control] per-tenant HNSW index (ef=40), same tenant data & queries:
+tenant         rows  global+filter  per-tenant  perT_ms
+t_50pct       75000          0.987       0.993     1.65
+t_02pct        3000          0.180       0.990     0.85
+t_001pct        150          0.100       1.000     0.34
+t_0005pct        75          1.000       1.000     0.25

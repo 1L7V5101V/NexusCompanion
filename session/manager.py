@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
 import logging
 import mimetypes
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +17,9 @@ from agent.prompting import (
     build_context_frame_content,
     build_context_frame_message,
 )
+from infra.storage.interfaces import SessionStorage, TenantContext
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved
 from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -154,6 +160,7 @@ class Session:
     """单次对话中的 session。"""
 
     key: str
+    tenant_id: str = ""
     messages: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
@@ -295,47 +302,95 @@ class Session:
 class SessionManager:
     _METADATA_REFRESH_EVERY: int = 10
 
-    def __init__(self, workspace: Path):
+    def __init__(
+        self,
+        workspace: Path,
+        session_store: SessionStorage | None = None,
+        storage_runtime: StorageRuntime | None = None,
+    ):
         self.workspace = workspace
         self.session_dir = workspace / "sessions"
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = workspace / "sessions.db"
-        self._store = SessionStore(self.db_path)
-        self._cache: dict[str, Session] = {}
-        self._write_locks: dict[str, asyncio.Lock] = {}
+        self._runtime = storage_runtime
+        if session_store is not None:
+            self._store: SessionStorage = session_store
+        elif storage_runtime is not None:
+            # 外部消费方（presence/dashboard/meta tools 等）仍读 `_store` 获取默认
+            # 租户 view；本类内部方法一律走 _view(tenant_id) 按租户解析。
+            self._store = storage_runtime.for_tenant(
+                TenantContext(tenant_id=DEFAULT_TENANT)
+            ).sessions
+        else:
+            self._store = SessionStore(self.db_path)
+        self._owns_store = session_store is None and storage_runtime is None
+        self._cache: dict[tuple[str, str], Session] = {}
+        self._write_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+    def _view(self, tenant_id: str) -> SessionStorage:
+        """按可信 tenant 解析 session store view；空 tenant 立即失败（fail-closed）。"""
+        tenant_id = assert_tenant_resolved(tenant_id)
+        if self._runtime is not None:
+            return self._runtime.for_tenant(TenantContext(tenant_id=tenant_id)).sessions
+        return self._store
+
+    @property
+    def run_db(self) -> Callable[..., Any] | None:
+        """委托 StorageRuntime.run_db（async）：把同步 DB 调用移出 event loop。
+
+        无 runtime（显式 single-store / 测试）时为 None，调用方直接同步调。
+        """
+        return self._runtime.run_db if self._runtime is not None else None
 
     @property
     def control_store(self) -> SessionStore:
-        """控制面使用的 SessionStore 实例。"""
-        return self._store
+        """控制面使用的 SessionStore 实例。
+
+        turn 持久化（create_turn/read_turn 等）当前仅由 SQLite SessionStore 提供，
+        PostgreSQL adapter 未实现，故此处按具体类型收窄并显式失败。
+        """
+        store = self._view(DEFAULT_TENANT)
+        if not isinstance(store, SessionStore):
+            raise RuntimeError(
+                "control plane turn persistence requires SQLite SessionStore; "
+                "PostgreSQL backend 尚未实现 turns 表"
+            )
+        return store
 
     def close(self) -> None:
-        """关闭 SessionStore 连接。"""
-        self._store.close()
+        """关闭本类自有的 SessionStore 连接。
 
-    def _lock(self, key: str) -> asyncio.Lock:
+        runtime 模式下连接归 StorageRuntime 持有，这里不代为关闭。
+        """
+        if self._owns_store:
+            self._store.close()
+
+    def _lock(self, key: tuple[str, str]) -> asyncio.Lock:
         if key not in self._write_locks:
             self._write_locks[key] = asyncio.Lock()
         return self._write_locks[key]
 
-    def get_or_create(self, key: str) -> Session:
-        if key in self._cache:
-            return self._cache[key]
+    def get_or_create(self, tenant_id: str, key: str) -> Session:
+        tenant_id = assert_tenant_resolved(tenant_id)
+        cache_key = (tenant_id, key)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
-        session = self._load(key)
+        session = self._load(tenant_id, key)
         if session is None:
-            session = Session(key)
+            session = Session(key=key, tenant_id=tenant_id)
             self._ensure_session_meta(session)
-        self._cache[key] = session
+        self._cache[cache_key] = session
         return session
 
-    def peek_next_message_id(self, session_key: str) -> str:
-        next_seq = self._store.next_seq(session_key)
+    def peek_next_message_id(self, tenant_id: str, session_key: str) -> str:
+        next_seq = self._view(tenant_id).next_seq(session_key)
         return f"{session_key}:{next_seq}"
 
-    def _load(self, key: str) -> Session | None:
-        meta = self._store.get_session_meta(key)
-        messages = self._store.fetch_session_messages(key)
+    def _load(self, tenant_id: str, key: str) -> Session | None:
+        store = self._view(tenant_id)
+        meta = store.get_session_meta(key)
+        messages = store.fetch_session_messages(key)
         if meta is None and not messages:
             return None
 
@@ -353,6 +408,7 @@ class SessionManager:
         last_consolidated = int(meta.get("last_consolidated", 0)) if meta else 0
         return Session(
             key=key,
+            tenant_id=tenant_id,
             messages=messages,
             created_at=created_at,
             updated_at=updated_at,
@@ -361,7 +417,7 @@ class SessionManager:
         )
 
     def _ensure_session_meta(self, session: Session) -> None:
-        self._store.upsert_session(
+        self._view(session.tenant_id).upsert_session(
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
@@ -382,7 +438,8 @@ class SessionManager:
         return {k: v for k, v in msg.items() if k not in skip}
 
     def _persist_messages(self, session: Session, messages: list[dict[str, Any]]) -> int:
-        next_seq = self._store.next_seq(session.key)
+        store = self._view(session.tenant_id)
+        next_seq = store.next_seq(session.key)
         inserted = 0
 
         # 1. 只写入尚未持久化（没有 id）的消息。
@@ -393,7 +450,7 @@ class SessionManager:
             content = msg.get("content", "")
             if not isinstance(content, str):
                 content = json.dumps(content, ensure_ascii=False)
-            row = self._store.insert_message(
+            row = store.insert_message(
                 session.key,
                 role=str(msg.get("role") or "assistant"),
                 content=content,
@@ -415,52 +472,53 @@ class SessionManager:
 
     def save(self, session: Session) -> None:
         session.updated_at = datetime.now()
+        store = self._view(session.tenant_id)
         self._ensure_session_meta(session)
         self._persist_messages(session, session.messages)
-        self._store.upsert_session(
+        store.upsert_session(
             session.key,
             created_at=session.created_at.isoformat(),
             updated_at=session.updated_at.isoformat(),
             last_consolidated=session.last_consolidated,
             metadata=session.metadata,
         )
-        self._cache[session.key] = session
+        self._cache[(session.tenant_id, session.key)] = session
 
     async def save_async(self, session: Session) -> None:
         session.updated_at = datetime.now()
-        async with self._lock(session.key):
+        async with self._lock((session.tenant_id, session.key)):
             self.save(session)
 
     async def append_messages(self, session: Session, messages: list[dict]) -> None:
         session.updated_at = datetime.now()
         msgs_copy = list(messages)
-        async with self._lock(session.key):
+        async with self._lock((session.tenant_id, session.key)):
             # 1. 确保 session 元数据存在并刷新 updated_at。
             self._ensure_session_meta(session)
             # 2. 追加写入本次新增消息，并补齐稳定 id。
             self._persist_messages(session, msgs_copy)
             # 3. 回写 session 元数据（含 last_consolidated / metadata）。
-            self._store.upsert_session(
+            self._view(session.tenant_id).upsert_session(
                 session.key,
                 created_at=session.created_at.isoformat(),
                 updated_at=session.updated_at.isoformat(),
                 last_consolidated=session.last_consolidated,
                 metadata=session.metadata,
             )
-            self._cache[session.key] = session
+            self._cache[(session.tenant_id, session.key)] = session
 
-    def invalidate(self, key: str) -> None:
-        self._cache.pop(key, None)
+    def invalidate(self, tenant_id: str, key: str) -> None:
+        self._cache.pop((tenant_id, key), None)
 
-    def list_sessions(self) -> list[dict[str, Any]]:
-        sessions = self._store.list_sessions()
+    def list_sessions(self, tenant_id: str) -> list[dict[str, Any]]:
+        sessions = self._view(tenant_id).list_sessions()
         for item in sessions:
             item["path"] = str(self.db_path)
         return sessions
 
-    def get_channel_metadata(self, channel: str) -> list[dict[str, Any]]:
+    def get_channel_metadata(self, tenant_id: str, channel: str) -> list[dict[str, Any]]:
         try:
-            return self._store.get_channel_metadata(channel)
+            return self._view(tenant_id).get_channel_metadata(channel)
         except Exception as e:
             logging.warning("Failed to read channel metadata for %s: %s", channel, e)
             return []

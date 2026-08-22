@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, cast
 
 import json_repair
 
@@ -37,6 +36,10 @@ from core.memory.utils import (
     should_require_scope_match,
 )
 from core.net.http import SharedHttpResources
+from infra.storage.factory import create_store
+from infra.storage.interfaces import MemoryStorage, TenantContext
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved
 from memory2.embedder import Embedder
 from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
@@ -57,137 +60,13 @@ _HYPOTHESIS_TIMEOUT_S = 3.0
 _VECTOR_SCORE_THRESHOLD = 0.35
 _VECTOR_TOP_K = 15
 _ChatCall = Callable[..., Awaitable[LLMResponse]]
+_R = TypeVar("_R")
 
 
 def _build_entry_source_ref(base_source_ref: str, entry: str) -> str:
     text = (entry or "").strip()
     digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12] if text else "empty"
     return f"{base_source_ref}#h:{digest}"
-
-
-def _source_ref_message_ids(source_ref: str) -> list[str]:
-    raw = str(source_ref or "").strip()
-    if not raw:
-        return []
-    base = raw.split("#", 1)[0].strip()
-    if not base.startswith("["):
-        return []
-    try:
-        loaded: object = json.loads(base)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(loaded, list):
-        return []
-    values: list[str] = []
-    for item in cast(list[object], loaded):
-        text = str(item).strip()
-        if text:
-            values.append(text)
-    return values
-
-
-def _undo_store_by_message_sources(
-    store: MemoryStore2,
-    message_ids: list[str],
-    *,
-    dry_run: bool = False,
-) -> dict[str, object]:
-    clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
-    if not clean_ids:
-        return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
-    target_ids = set(clean_ids)
-    with store._lock:
-        rows = store._db.execute(
-            """
-            SELECT id, source_ref
-            FROM memory_items
-            WHERE COALESCE(source_ref, '') != ''
-            """
-        ).fetchall()
-        affected_ids: set[str] = set()
-        rollback_source_ids: set[str] = set()
-        for item_id, source_ref in rows:
-            source = str(source_ref or "").strip()
-            base_ids = _source_ref_message_ids(source)
-            if source in target_ids:
-                affected_ids.add(str(item_id))
-                rollback_source_ids.add(source)
-                continue
-            if base_ids and target_ids.intersection(base_ids):
-                affected_ids.add(str(item_id))
-                rollback_source_ids.update(base_ids)
-
-        if affected_ids and not dry_run:
-            now = datetime.now().astimezone().isoformat()
-            store._db.executemany(
-                "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
-                [(now, item_id) for item_id in sorted(affected_ids)],
-            )
-        restored_ids = _restore_replacements_for_undo(
-            store,
-            affected_ids,
-            dry_run=dry_run,
-        )
-        if not dry_run:
-            store._db.commit()
-    return {
-        "affected_ids": sorted(affected_ids),
-        "restored_ids": sorted(restored_ids),
-        "rollback_source_ids": sorted(rollback_source_ids),
-    }
-
-
-def _restore_replacements_for_undo(
-    store: MemoryStore2,
-    affected_ids: set[str],
-    *,
-    dry_run: bool = False,
-) -> set[str]:
-    if not affected_ids:
-        return set()
-    sorted_affected = sorted(affected_ids)
-    placeholders = ",".join("?" for _ in sorted_affected)
-    rows = store._db.execute(
-        f"""
-        SELECT DISTINCT old_item_id
-        FROM memory_replacements
-        WHERE new_item_id IN ({placeholders})
-        """,
-        tuple(sorted_affected),
-    ).fetchall()
-    old_ids = {str(row[0]) for row in rows if str(row[0]).strip()}
-    restored: set[str] = set()
-    now = datetime.now().astimezone().isoformat()
-    for old_id in sorted(old_ids):
-        active_replacement = store._db.execute(
-            """
-            SELECT 1
-            FROM memory_replacements r
-            JOIN memory_items m ON m.id = r.new_item_id
-            WHERE r.old_item_id = ?
-              AND r.new_item_id NOT IN ({})
-              AND m.status = 'active'
-            LIMIT 1
-            """.format(placeholders),
-            tuple([old_id, *sorted_affected]),
-        ).fetchone()
-        if active_replacement is not None:
-            continue
-        if dry_run:
-            old_row = store._db.execute(
-                "SELECT 1 FROM memory_items WHERE id=? AND status='superseded'",
-                (old_id,),
-            ).fetchone()
-            if old_row is not None:
-                restored.add(old_id)
-            continue
-        cur = store._db.execute(
-            "UPDATE memory_items SET status='active', updated_at=? WHERE id=? AND status='superseded'",
-            (now, old_id),
-        )
-        if cur.rowcount:
-            restored.add(old_id)
-    return restored
 
 
 def _coerce_emotional_weight(value: object) -> int:
@@ -550,6 +429,7 @@ class DefaultMemoryEngine:
         light_provider: LLMProvider | None = None,
         http_resources: SharedHttpResources,
         event_publisher: "EventBus | None" = None,
+        storage_runtime: StorageRuntime | None = None,
     ) -> None:
         self._config = config
         self._default_config = default_config
@@ -557,7 +437,8 @@ class DefaultMemoryEngine:
         self._provider = provider
         self._light_provider = light_provider or provider
         self._light_model = config.light_model or config.model
-        self._v2_store: MemoryStore2 | None = None
+        self._storage_runtime = storage_runtime
+        self._v2_store: MemoryStorage | None = None
         self._embedder: Embedder | None = None
         self._memorizer: Memorizer | None = None
         self._retriever: Retriever | None = None
@@ -572,10 +453,13 @@ class DefaultMemoryEngine:
         )
         embedding = config.memory.embedding
         retrieval = default_config.retrieval
-        self._v2_store = MemoryStore2(
-            db_path,
-            vec_dim=embedding.output_dimensionality or VEC_DIM,
-        )
+        if storage_runtime is None:
+            # 无 runtime 的 legacy/single-user 路径：进程内独占一个 store。
+            self._v2_store = create_store(
+                self._config.storage,
+                db_path,
+                vec_dim=embedding.output_dimensionality or VEC_DIM,
+            )
         self._embedder = Embedder(
             base_url=embedding.base_url
             or config.light_base_url
@@ -588,9 +472,12 @@ class DefaultMemoryEngine:
             output_dimensionality=embedding.output_dimensionality,
             requester=http_resources.external_default,
         )
-        self._memorizer = Memorizer(self._v2_store, self._embedder)
+        # M4H-3 commit 4：DB 调用经 runtime.run_db 移出 event loop（executor）。
+        # 无 runtime（legacy single-user / 测试）时 run_db 为 None，直接同步调。
+        run_db = self._storage_runtime.run_db if self._storage_runtime is not None else None
+        self._memorizer = Memorizer(self._memory_for, self._embedder, run_db=run_db)
         self._retriever = Retriever(
-            self._v2_store,
+            self._memory_for,
             self._embedder,
             top_k=retrieval.top_k_history,
             score_threshold=retrieval.score_threshold,
@@ -608,6 +495,7 @@ class DefaultMemoryEngine:
             inject_line_max=retrieval.inject.line_max,
             procedure_guard_enabled=retrieval.procedure_guard_enabled,
             hotness_alpha=0.20,
+            run_db=run_db,
         )
         skills_loader = SkillsLoader(workspace)
         self._tagger = ProcedureTagger(
@@ -626,9 +514,12 @@ class DefaultMemoryEngine:
             light_provider=self._light_provider,
             light_model=self._light_model,
             event_publisher=event_publisher,
+            run_db=run_db,
         )
         self._wire_memory2_events()
-        self.closeables = [self._v2_store, self._embedder]
+        self.closeables = [self._embedder]
+        if self._v2_store is not None:
+            self.closeables.append(self._v2_store)
 
     @classmethod
     def ensure_workspace_storage(
@@ -636,13 +527,15 @@ class DefaultMemoryEngine:
         *,
         default_config: DefaultMemoryConfig,
         workspace: Path,
+        config: Config,
     ) -> None:
         db_path = resolve_memory_db_path(
             workspace=workspace,
             default_config=default_config,
         )
-        store = MemoryStore2(db_path)
-        store.close()
+        if config.storage.backend != "postgres":
+            store = create_store(config.storage, db_path)
+            store.close()
 
     def _wire_memory2_events(self) -> None:
         if self._event_bus is None:
@@ -665,6 +558,7 @@ class DefaultMemoryEngine:
                 session_key=event.session_key,
                 channel=event.channel,
                 chat_id=event.chat_id,
+                tenant_id=event.tenant_id,
                 user_message=event.input_message,
                 assistant_response=event.assistant_response,
                 tool_chain=cast(list[dict[str, object]], event.tool_chain_raw),
@@ -676,6 +570,7 @@ class DefaultMemoryEngine:
         self,
         event: ConsolidationCommitted,
     ) -> None:
+        tenant = TenantContext(tenant_id=assert_tenant_resolved(event.tenant_id))
         save_coros = [
             self._save_from_consolidation(
                 history_entry=entry,
@@ -683,6 +578,7 @@ class DefaultMemoryEngine:
                 source_ref=_build_entry_source_ref(event.source_ref, entry),
                 scope_channel=event.scope_channel,
                 scope_chat_id=event.scope_chat_id,
+                tenant=tenant,
                 emotional_weight=emotional_weight,
             )
             for entry, emotional_weight in event.history_entry_payloads
@@ -699,6 +595,7 @@ class DefaultMemoryEngine:
                 source_ref=event.source_ref,
                 scope_channel=event.scope_channel,
                 scope_chat_id=event.scope_chat_id,
+                tenant=tenant,
             )
 
     async def _extract_implicit_long_term(
@@ -748,7 +645,7 @@ class DefaultMemoryEngine:
         if self._retriever is None:
             return MemoryQueryResult(raw={"items": []})
         if request.intent == "timeline":
-            return self._query_timeline(request)
+            return await self._query_timeline(request)
         if request.intent == "interest":
             return await self._query_interest(request)
         if request.intent in {"context", "procedure"}:
@@ -764,6 +661,7 @@ class DefaultMemoryEngine:
         memory_types = self._resolve_memory_types(request)
         items = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=memory_types,
             top_k=request.limit,
             scope_channel=scope.channel or None,
@@ -789,9 +687,9 @@ class DefaultMemoryEngine:
             len(text_block),
         )
 
-        # SQLite: 详细检索日志。
+        # SQLite: 详细检索日志（PG adapter 不实现，按 SQLite 收窄）。
         store = getattr(self, "_v2_store", None)
-        if store is not None:
+        if isinstance(store, MemoryStore2):
             store.insert_query_log(
                 query_text=request.text.strip(),
                 intent=request.intent,
@@ -851,6 +749,7 @@ class DefaultMemoryEngine:
             session_key=scope.session_key,
             channel=scope.channel,
             chat_id=scope.chat_id,
+            tenant=request.tenant,
         )
         return MemoryIngestResult(
             accepted=True,
@@ -898,6 +797,7 @@ class DefaultMemoryEngine:
             memory_type=memory_type,
             extra=extra,
             source_ref=request.source_ref or "memorize_tool",
+            tenant=request.tenant,
         )
         write_status, actual_id = _split_write_result(result)
         return MemoryMutationResult(
@@ -910,14 +810,14 @@ class DefaultMemoryEngine:
     # 显式遗忘入口：只把条目标成 superseded，不物理删除。
     async def _forget(self, request: MemoryMutation) -> MemoryMutationResult:
         # 1. 先按 id 去重并读取现存条目。
-        store = self._require_v2_store()
+        store = self._memory_for(request.tenant)
         clean_ids = _dedupe_ids(list(request.ids))
-        items = store.get_items_by_ids(clean_ids)
+        items = await self._run_db(store.get_items_by_ids, clean_ids)
         found_ids = [str(item.get("id") or "") for item in items if item.get("id")]
 
         # 2. 只失效能确认存在的条目，缺失 id 返回给调用方展示。
         if found_ids:
-            store.mark_superseded_batch(found_ids)
+            await self._run_db(store.mark_superseded_batch, found_ids)
         return MemoryMutationResult(
             accepted=bool(found_ids),
             status="superseded",
@@ -944,8 +844,7 @@ class DefaultMemoryEngine:
         self,
         action_tokens: list[str],
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        return store.keyword_match_procedures(action_tokens) if store is not None else []
+        return self._require_v2_store().keyword_match_procedures(action_tokens)
 
     def list_events_by_time_range(
         self,
@@ -954,10 +853,9 @@ class DefaultMemoryEngine:
         *,
         limit: int = 200,
     ) -> list[dict[str, object]]:
-        store = self._v2_store
-        if store is None:
-            return []
-        return store.list_events_by_time_range(time_start, time_end, limit=limit)
+        return self._require_v2_store().list_events_by_time_range(
+            time_start, time_end, limit=limit
+        )
 
     def list_items_for_dashboard(
         self,
@@ -1030,12 +928,15 @@ class DefaultMemoryEngine:
         message_ids: list[str],
         *,
         dry_run: bool = False,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> dict[str, object]:
-        return _undo_store_by_message_sources(
-            self._require_v2_store(),
-            message_ids,
-            dry_run=dry_run,
-        )
+        """按消息 source 撤销记忆。
+
+        tenant_id 默认 DEFAULT_TENANT（显式 single-user / 测试）；生产 undo 命令
+        应从触发消息的 tenant_id 解析 view 再调，确保只影响该租户的记忆。
+        """
+        store = self._memory_for(TenantContext(tenant_id=assert_tenant_resolved(tenant_id)))
+        return store.undo_by_message_sources(message_ids, dry_run=dry_run)
 
     def find_similar_items_for_dashboard(
         self,
@@ -1061,6 +962,8 @@ class DefaultMemoryEngine:
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
+        *,
+        tenant: TenantContext,
         emotional_weight: int = 0,
     ) -> None:
         if self._memorizer is None:
@@ -1071,6 +974,7 @@ class DefaultMemoryEngine:
             source_ref=source_ref,
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
+            tenant=tenant,
             emotional_weight=emotional_weight,
         )
 
@@ -1080,6 +984,8 @@ class DefaultMemoryEngine:
         memory_type: str,
         extra: dict[str, object],
         source_ref: str,
+        *,
+        tenant: TenantContext,
         happened_at: str | None = None,
         emotional_weight: int = 0,
     ) -> str:
@@ -1090,6 +996,7 @@ class DefaultMemoryEngine:
             memory_type=memory_type,
             extra=extra,
             source_ref=source_ref,
+            tenant=tenant,
             happened_at=happened_at,
             emotional_weight=emotional_weight,
         )
@@ -1098,6 +1005,7 @@ class DefaultMemoryEngine:
         self,
         result: dict[str, object],
         *,
+        tenant: TenantContext,
         source_ref: str,
         scope_channel: str,
         scope_chat_id: str,
@@ -1121,6 +1029,7 @@ class DefaultMemoryEngine:
                     "scope_chat_id": scope_chat_id,
                 },
                 source_ref=f"{source_ref}#profile",
+                tenant=tenant,
                 happened_at=happened_at,
                 emotional_weight=_coerce_emotional_weight(
                     item.get("emotional_weight")
@@ -1150,6 +1059,7 @@ class DefaultMemoryEngine:
                     memory_type=memory_type,
                     extra=extra,
                     source_ref=f"{source_ref}#implicit",
+                    tenant=tenant,
                     emotional_weight=_coerce_emotional_weight(
                         item.get("emotional_weight")
                     ),
@@ -1174,6 +1084,7 @@ class DefaultMemoryEngine:
         types = self._resolve_memory_types(request)
         hits = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=types,
             top_k=max(request.limit, _VECTOR_TOP_K),
             scope_channel=scope.channel or None,
@@ -1200,9 +1111,9 @@ class DefaultMemoryEngine:
             f" <{_summaries}>" if _summaries else "",
         )
 
-        # SQLite: 详细检索日志。
+        # SQLite: 详细检索日志（PG adapter 不实现，按 SQLite 收窄）。
         store = getattr(self, "_v2_store", None)
-        if store is not None:
+        if isinstance(store, MemoryStore2):
             store.insert_query_log(
                 query_text=request.text.strip(),
                 intent=request.intent,
@@ -1223,7 +1134,7 @@ class DefaultMemoryEngine:
             raw={"items": sliced},
         )
 
-    def _query_timeline(
+    async def _query_timeline(
         self,
         request: MemoryQuery,
     ) -> MemoryQueryResult:
@@ -1235,7 +1146,8 @@ class DefaultMemoryEngine:
                     "effect": request.effect,
                 }
             )
-        hits = self.list_events_by_time_range(
+        hits = await self._run_db(
+            self._memory_for(request.tenant).list_events_by_time_range,
             request.filters.time_start,
             request.filters.time_end,
             limit=request.limit,
@@ -1258,6 +1170,7 @@ class DefaultMemoryEngine:
         scope = resolve_memory_scope(request.scope)
         hits = await self._retrieve_related(
             request.text,
+            tenant=request.tenant,
             memory_types=["preference", "profile"],
             top_k=request.limit,
             scope_channel=scope.channel or None,
@@ -1281,6 +1194,7 @@ class DefaultMemoryEngine:
         self,
         query: str,
         *,
+        tenant: TenantContext,
         memory_types: list[str] | None = None,
         top_k: int | None = None,
         scope_channel: str | None = None,
@@ -1309,6 +1223,7 @@ class DefaultMemoryEngine:
                 time_start=time_start,
                 time_end=time_end,
                 keyword_enabled=keyword_enabled,
+                tenant=tenant,
             ),
         )
 
@@ -1346,10 +1261,23 @@ class DefaultMemoryEngine:
         if trigger_tags is not None:
             extra["trigger_tags"] = trigger_tags
 
-    def _require_v2_store(self) -> MemoryStore2:
+    async def _run_db(self, fn: Callable[..., _R], *args: Any, **kwargs: Any) -> _R:
+        # 无 runtime（legacy single-user / 测试 / sqlite）时直接同步调。
+        if self._storage_runtime is None:
+            return fn(*args, **kwargs)
+        return await self._storage_runtime.run_db(fn, *args, **kwargs)
+
+    def _memory_for(self, tenant: TenantContext) -> MemoryStorage:
+        if self._storage_runtime is not None:
+            return self._storage_runtime.for_tenant(tenant).memory
         if self._v2_store is None:
             raise RuntimeError("memory v2 store unavailable")
         return self._v2_store
+
+    def _require_v2_store(self) -> MemoryStorage:
+        # D1：admin/dashboard/undo 仍走显式 owner tenant（DEFAULT_TENANT）；
+        # Commit E 再按请求隔离。
+        return self._memory_for(TenantContext(tenant_id=DEFAULT_TENANT))
 
     @classmethod
     def _build_record(

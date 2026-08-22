@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from infra.storage.tenancy import DEFAULT_TENANT
 from session.manager import SessionManager
 
 _DEFAULT_UPLOAD_DIR = Path.home() / ".nexus" / "workspace" / "uploads"
@@ -72,7 +73,9 @@ class SessionIdentityIndex:
 
     def rebuild(self) -> dict[str, str]:
         self.mapping.clear()
-        for entry in self._session_manager.get_channel_metadata(self._channel):
+        # SessionIdentityIndex 是遗留 single-user 索引（username→chat_id），
+        # 固定扫描默认租户；sqlite 忽略 tenant 行为不变。
+        for entry in self._session_manager.get_channel_metadata(DEFAULT_TENANT, self._channel):
             raw_value = entry["metadata"].get(self._metadata_key)
             if not isinstance(raw_value, str):
                 continue
@@ -92,7 +95,9 @@ class SessionIdentityIndex:
         if not normalized:
             return
         self.mapping[normalized] = chat_id
-        session = self._session_manager.get_or_create(f"{self._channel}:{chat_id}")
+        session = self._session_manager.get_or_create(
+            DEFAULT_TENANT, f"{self._channel}:{chat_id}"
+        )
         if session.metadata.get(self._metadata_key) == normalized:
             return
         session.metadata[self._metadata_key] = normalized

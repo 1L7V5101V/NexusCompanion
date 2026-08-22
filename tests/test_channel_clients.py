@@ -42,13 +42,15 @@ class _SessionManager:
         self.sessions = {}
         self.saved = []
 
-    def get_or_create(self, key: str):
-        return self.sessions.setdefault(key, SimpleNamespace(key=key, metadata={}))
+    def get_or_create(self, tenant_id: str, key: str):
+        return self.sessions.setdefault(
+            key, SimpleNamespace(key=key, tenant_id=tenant_id, metadata={})
+        )
 
     async def save_async(self, session) -> None:
         self.saved.append(session.key)
 
-    def get_channel_metadata(self, channel: str):
+    def get_channel_metadata(self, tenant_id: str, channel: str):
         return []
 
 

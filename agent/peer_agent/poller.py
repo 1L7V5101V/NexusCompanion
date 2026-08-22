@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from bus.events import InboundMessage
 from bus.queue import MessageBus
+from infra.storage.tenancy import tenant_id_for_channel
 from core.net.http import HttpRequester, RequestBudget
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,7 @@ class PeerAgentPoller:
                 channel=meta.channel,
                 sender="system",
                 chat_id=meta.chat_id,
+                tenant_id=tenant_id_for_channel(meta.channel, meta.chat_id),
                 content=text,
                 metadata={"system_injected": True, "task_id": meta.task_id},
             )
@@ -204,6 +206,7 @@ class PeerAgentPoller:
                 channel=meta.channel,
                 sender="system",
                 chat_id=meta.chat_id,
+                tenant_id=tenant_id_for_channel(meta.channel, meta.chat_id),
                 content=text,
                 metadata={"system_injected": True, "task_id": meta.task_id},
             )

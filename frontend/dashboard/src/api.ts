@@ -1,7 +1,32 @@
 import type { PageResult } from "./types";
 
+let activeTenant = "";
+
+/** 设置 dashboard 当前操作的 tenant_id（空 = 由后端回落到配置 owner tenant）。 */
+export function setActiveTenant(tenant: string): void {
+  activeTenant = tenant.trim();
+}
+
+export function getActiveTenant(): string {
+  return activeTenant;
+}
+
+/** 给 dashboard API 路径集中注入 tenant_id（保留已存在的查询参数，不覆盖显式值）。 */
+function withTenant(url: string): string {
+  if (!activeTenant || !url.startsWith("/api/dashboard/")) {
+    return url;
+  }
+  const [path, query] = url.split("?", 2);
+  const params = new URLSearchParams(query ?? "");
+  if (!params.has("tenant_id")) {
+    params.set("tenant_id", activeTenant);
+  }
+  const qs = params.toString();
+  return qs ? `${path}?${qs}` : path;
+}
+
 export async function api<T = unknown>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+  const response = await fetch(withTenant(url), {
     headers: {
       "Content-Type": "application/json",
       ...(options.headers ?? {}),

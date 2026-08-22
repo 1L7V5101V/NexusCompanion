@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Literal, cast
 
 from agent.turns.result import TurnOutbound, TurnResult, TurnSideEffect, TurnTrace
 from core.clock import Clock, ReplayClock, clock_from_env
+from infra.storage.tenancy import resolve_tenant
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.factory import (
     build_drift_llm_fn,
@@ -126,6 +127,10 @@ class WakeRuntime:
             memory=scope.memory,
             state_store=self._state,
             max_chars=int(getattr(scope.cfg, "agent_tick_web_fetch_max_chars", 8_000)),
+            tenant=resolve_tenant(
+                getattr(scope.cfg, "default_channel", ""),
+                getattr(scope.cfg, "default_chat_id", ""),
+            ),
         )
         self._drift_llm_fn = build_drift_llm_fn(scope)
         self._drift_pipeline = build_drift_pipeline(
@@ -937,7 +942,11 @@ class WakeRuntime:
                 ).fetchone()
             return _parse_optional_time(row[0]) if row is not None else None
         getter = getattr(getattr(self._scope, "presence", None), "get_last_user_at", None)
-        value = getter(session_key) if callable(getter) else None
+        value = (
+            getter(self._scope.sense.target_tenant(), session_key)
+            if callable(getter)
+            else None
+        )
         return value if isinstance(value, datetime) else None
 
     def _active_contexts(self, now: datetime) -> list[NormalizedContext]:

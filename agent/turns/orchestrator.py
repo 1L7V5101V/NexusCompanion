@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from agent.turns.result import TurnResult
+from infra.storage.tenancy import resolve_tenant
 
 if TYPE_CHECKING:
     from agent.core.runtime_support import SessionLike
@@ -44,7 +45,9 @@ class TurnOrchestrator:
 
         content = result.outbound.content
         media = list(result.outbound.media or [])
-        session = self._session.session_manager.get_or_create(session_key)
+        session = self._session.session_manager.get_or_create(
+            resolve_tenant(channel, chat_id).tenant_id, session_key
+        )
         # 2. reply 路径只写 proactive session；后处理只归 passive commit 管。
         self._persist_proactive_session(
             session=session,
@@ -73,7 +76,9 @@ class TurnOrchestrator:
         # 4. 根据是否真正发送成功，分别执行 success / failure side_effects。
         if sent:
             if self._session.presence:
-                self._session.presence.record_proactive_sent(session_key)
+                self._session.presence.record_proactive_sent(
+                    resolve_tenant(channel, chat_id).tenant_id, session_key
+                )
             await self._run_effects(result.success_side_effects)
         else:
             await self._run_effects(result.failure_side_effects)

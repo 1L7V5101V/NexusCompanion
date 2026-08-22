@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from bus.event_bus import EventBus
     from core.memory.markdown import MarkdownMemoryRuntime
     from core.net.http import SharedHttpResources
+    from infra.storage.runtime import StorageRuntime
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class MemoryPluginBuildDeps:
     http_resources: "SharedHttpResources"
     event_publisher: "EventBus | None"
     markdown: "MarkdownMemoryRuntime"
+    storage_runtime: "StorageRuntime | None" = None
 
 
 @dataclass

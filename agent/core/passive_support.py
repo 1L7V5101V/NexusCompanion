@@ -221,7 +221,8 @@ def predict_current_user_source_ref(
 ) -> str:
     peek = getattr(session_manager, "peek_next_message_id", None)
     if callable(peek):
-        return str(peek(session.key))
+        tenant_id = str(getattr(session, "tenant_id", "") or "")
+        return str(peek(tenant_id, session.key))
     if session.messages:
         last_id = str(session.messages[-1].get("id", "") or "").strip()
         if last_id:

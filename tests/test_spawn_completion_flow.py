@@ -9,8 +9,11 @@ from agent.provider import LLMResponse
 from agent.tools.registry import ToolRegistry
 from bus.events import SpawnCompletionItem
 from bus.internal_events import SpawnCompletionEvent
+from infra.storage.tenancy import resolve_tenant
 from tests.memory_fakes import FakeMemoryEngine
 from session.manager import SessionManager
+
+_TENANT = resolve_tenant("telegram", "123").tenant_id
 
 
 class _Provider:
@@ -39,7 +42,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
 
-    session = session_manager.get_or_create("telegram:123")
+    session = session_manager.get_or_create(_TENANT, "telegram:123")
     session.add_message("user", "帮我整理一下")
     session.add_message("assistant", "我开始处理了")
     session_manager.save(session)
@@ -58,7 +61,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
     )
 
     response = await loop._process(item)
-    updated = session_manager.get_or_create("telegram:123")
+    updated = session_manager.get_or_create(_TENANT, "telegram:123")
 
     assert response.channel == "telegram"
     assert response.chat_id == "123"
@@ -90,7 +93,7 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
 
-    session = session_manager.get_or_create("telegram:123")
+    session = session_manager.get_or_create(_TENANT, "telegram:123")
     session.add_message("user", "帮我补跑一下")
     session_manager.save(session)
 

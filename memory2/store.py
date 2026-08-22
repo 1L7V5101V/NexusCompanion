@@ -128,6 +128,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _source_ref_message_ids(source_ref: str) -> list[str]:
+    """从 source_ref 中解析消息 id 列表（格式 `[id1,id2]#h:digest`）。"""
+    raw = str(source_ref or "").strip()
+    if not raw:
+        return []
+    base = raw.split("#", 1)[0].strip()
+    if not base.startswith("["):
+        return []
+    try:
+        loaded: object = json.loads(base)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(loaded, list):
+        return []
+    values: list[str] = []
+    for item in cast(list[object], loaded):
+        text = str(item).strip()
+        if text:
+            values.append(text)
+    return values
+
+
 def _content_hash(summary: str, memory_type: str) -> str:
     text = re.sub(r"\s+", " ", summary.lower().strip()) + memory_type
     return hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -735,6 +757,112 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 }
             )
         return result
+
+    def undo_by_message_sources(
+        self,
+        message_ids: list[str],
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        """按消息 source 撤销记忆（引擎 undo_by_message_sources 委托此处）。
+
+        单事务：全扫带 source_ref 的条目 → 命中的 supersede → 恢复其取代的旧条目
+        （仅当旧条目无其他 active 取代时）。dry_run 只探测不改写。
+        """
+        clean_ids = [str(item).strip() for item in message_ids if str(item).strip()]
+        if not clean_ids:
+            return {"affected_ids": [], "restored_ids": [], "rollback_source_ids": []}
+        target_ids = set(clean_ids)
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT id, source_ref
+                FROM memory_items
+                WHERE COALESCE(source_ref, '') != ''
+                """
+            ).fetchall()
+            affected_ids: set[str] = set()
+            rollback_source_ids: set[str] = set()
+            for item_id, source_ref in rows:
+                source = str(source_ref or "").strip()
+                base_ids = _source_ref_message_ids(source)
+                if source in target_ids:
+                    affected_ids.add(str(item_id))
+                    rollback_source_ids.add(source)
+                    continue
+                if base_ids and target_ids.intersection(base_ids):
+                    affected_ids.add(str(item_id))
+                    rollback_source_ids.update(base_ids)
+
+            if affected_ids and not dry_run:
+                now = _now_iso()
+                self._db.executemany(
+                    "UPDATE memory_items SET status='superseded', updated_at=? WHERE id=?",
+                    [(now, item_id) for item_id in sorted(affected_ids)],
+                )
+            restored_ids = self._restore_replacements_for_undo(
+                affected_ids,
+                dry_run=dry_run,
+            )
+            if not dry_run:
+                self._db.commit()
+        return {
+            "affected_ids": sorted(affected_ids),
+            "restored_ids": sorted(restored_ids),
+            "rollback_source_ids": sorted(rollback_source_ids),
+        }
+
+    def _restore_replacements_for_undo(
+        self,
+        affected_ids: set[str],
+        *,
+        dry_run: bool = False,
+    ) -> set[str]:
+        if not affected_ids:
+            return set()
+        sorted_affected = sorted(affected_ids)
+        placeholders = ",".join("?" for _ in sorted_affected)
+        rows = self._db.execute(
+            f"""
+            SELECT DISTINCT old_item_id
+            FROM memory_replacements
+            WHERE new_item_id IN ({placeholders})
+            """,
+            tuple(sorted_affected),
+        ).fetchall()
+        old_ids = {str(row[0]) for row in rows if str(row[0]).strip()}
+        restored: set[str] = set()
+        now = _now_iso()
+        for old_id in sorted(old_ids):
+            active_replacement = self._db.execute(
+                f"""
+                SELECT 1
+                FROM memory_replacements r
+                JOIN memory_items m ON m.id = r.new_item_id
+                WHERE r.old_item_id = ?
+                  AND r.new_item_id NOT IN ({placeholders})
+                  AND m.status = 'active'
+                LIMIT 1
+                """,
+                tuple([old_id, *sorted_affected]),
+            ).fetchone()
+            if active_replacement is not None:
+                continue
+            if dry_run:
+                old_row = self._db.execute(
+                    "SELECT 1 FROM memory_items WHERE id=? AND status='superseded'",
+                    (old_id,),
+                ).fetchone()
+                if old_row is not None:
+                    restored.add(old_id)
+                continue
+            cur = self._db.execute(
+                "UPDATE memory_items SET status='active', updated_at=? WHERE id=? AND status='superseded'",
+                (now, old_id),
+            )
+            if cur.rowcount:
+                restored.add(old_id)
+        return restored
 
     def reinforce_items_batch(self, ids: list[str], emotional_weight: int = 0) -> None:
         if not ids:

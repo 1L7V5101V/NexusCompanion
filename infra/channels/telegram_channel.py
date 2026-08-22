@@ -41,6 +41,7 @@ from infra.channels.telegram_utils import (
     send_stream_markdown,
     send_thinking_block,
 )
+from infra.storage.tenancy import tenant_id_for_channel
 from session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,7 @@ class TelegramChannel:
                 channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
+                tenant_id=tenant_id_for_channel(self._channel, str(chat.id)),
                 content=inbound_text,
                 media=reply_media,
                 metadata={
@@ -400,6 +402,7 @@ class TelegramChannel:
                 channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
+                tenant_id=tenant_id_for_channel(self._channel, str(chat.id)),
                 content=str(getattr(msg, "text", "") or ""),
                 metadata={"username": user.username or ""},
             )
@@ -466,6 +469,7 @@ class TelegramChannel:
                 channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
+                tenant_id=tenant_id_for_channel(self._channel, str(chat.id)),
                 content=inbound_text,
                 media=media,
                 metadata={
@@ -519,6 +523,7 @@ class TelegramChannel:
                 channel=self._channel,
                 sender=str(user.id),
                 chat_id=str(chat.id),
+                tenant_id=tenant_id_for_channel(self._channel, str(chat.id)),
                 content=inbound_text,
                 media=[str(tmp)],
                 metadata={

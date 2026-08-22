@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 from agent.tools.base import Tool
 from core.memory.engine import MemoryMutation, MemoryToolSpec
+from infra.storage.interfaces import TenantContext
+from infra.storage.tenancy import assert_tenant_resolved
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryWriteApi
@@ -29,13 +31,17 @@ class ForgetMemoryTool(Tool):
         self.description = self._spec.description
         self.parameters = self._spec.parameters
 
-    async def execute(self, ids: list[str], **_: Any) -> str:
+    async def execute(self, ids: list[str], tenant_id: str = "", **_: Any) -> str:
         clean_ids = _clean_ids(ids)
         if not clean_ids:
             return _render_forget_result(clean_ids, [], [], [])
 
         result = await self._memory.mutate(
-            MemoryMutation(kind="forget", ids=tuple(clean_ids))
+            MemoryMutation(
+                kind="forget",
+                tenant=TenantContext(tenant_id=assert_tenant_resolved(tenant_id)),
+                ids=tuple(clean_ids),
+            )
         )
         return _render_forget_result(
             clean_ids,

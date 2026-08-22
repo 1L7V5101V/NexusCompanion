@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bus.events import InboundMessage
+from infra.storage.tenancy import DEFAULT_TENANT
 
 from .dataset import PersonaMemInstance
 
@@ -43,8 +44,8 @@ def _purge_old_qa_sessions(workspace: Path, qa_prefix: str, session_manager) -> 
 
 def _extract_tool_trace(session_manager, qa_key: str) -> list[dict]:
     try:
-        session_manager._cache.pop(qa_key, None)
-        session = session_manager.get_or_create(qa_key)
+        session_manager._cache.pop((DEFAULT_TENANT, qa_key), None)
+        session = session_manager.get_or_create(DEFAULT_TENANT, qa_key)
         for msg in reversed(session.messages):
             if msg.get("role") == "assistant" and msg.get("tool_chain"):
                 return msg["tool_chain"]
@@ -112,7 +113,7 @@ async def run_qa_instance(
     qa_prefix = instance.qa_session_key
     _purge_old_qa_sessions(rt.workspace, qa_prefix, rt.core.session_manager)
     qa_key = f"{qa_prefix}:{int(time.time() * 1000)}"
-    rt.core.session_manager._cache.pop(qa_key, None)
+    rt.core.session_manager._cache.pop((DEFAULT_TENANT, qa_key), None)
 
     t0 = time.monotonic()
     error: str | None = None
@@ -123,6 +124,7 @@ async def run_qa_instance(
             channel="benchmark",
             sender="user",
             chat_id=instance.persona_id or instance.question_id,
+            tenant_id=DEFAULT_TENANT,
             content=(
                 f"{instance.question}\n\n"
                 f"Options:\n{_render_options(instance.all_options)}\n\n"

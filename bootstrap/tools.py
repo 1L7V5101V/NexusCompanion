@@ -48,6 +48,9 @@ from bootstrap.toolsets.meta import (
 )
 from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
+from infra.storage.factory import create_session_store, create_storage_runtime
+from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
@@ -101,6 +104,7 @@ class CoreRuntime:
     plugin_manager: "PluginManager | None" = None
     workspace: Path | None = None
     turn_logger: RoutingTurnLogger | None = None
+    storage_runtime: StorageRuntime | None = None
 
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
@@ -324,6 +328,11 @@ class CoreRuntime:
         async def _close_session_manager() -> None:
             self.session_manager.close()
 
+        async def _close_storage_runtime() -> None:
+            storage_runtime = self.storage_runtime
+            if storage_runtime is not None:
+                storage_runtime.close()
+
         async def _stop_workspace_mcp_watcher() -> None:
             self.workspace_mcp_watcher.stop()
             task = self.workspace_mcp_watcher_task
@@ -363,6 +372,10 @@ class CoreRuntime:
             ),
             ("session_manager.close", _close_session_manager),
             (
+                "storage_runtime.close",
+                _close_storage_runtime,
+            ),
+            (
                 "turn_logger.close",
                 self.turn_logger.close
                 if self.turn_logger is not None
@@ -385,6 +398,7 @@ def build_registered_tools(
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
     restart_coordinator: "RestartCoordinator | None" = None,
+    storage_runtime: "StorageRuntime | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -396,8 +410,6 @@ def build_registered_tools(
 ]:
     """按配置顺序构造并注册核心工具资源。"""
 
-    from session.store import SessionStore
-
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
     wiring = getattr(config, "wiring", WiringConfig())
     tools = tools or ToolRegistry()
@@ -406,7 +418,7 @@ def build_registered_tools(
     readonly_tools = build_readonly_tools(
         http_resources, multimodal=multimodal, vl_available=vl_available
     )
-    store = session_store or SessionStore(workspace / "sessions.db")
+    store = session_store or create_session_store(config.storage, workspace / "sessions.db")
     push_tool = MessagePushTool(chat_lane=bus.chat_lane)
     memory_result = resolve_memory_toolset_provider(wiring.memory).register(
         tools,
@@ -417,6 +429,7 @@ def build_registered_tools(
             light_provider=light_provider,
             http_resources=http_resources,
             event_publisher=event_publisher,
+            storage_runtime=storage_runtime,
         ),
     )
     memory_runtime = memory_result.extras["memory_runtime"]
@@ -452,6 +465,7 @@ def build_registered_tools(
                 memory_engine=memory_runtime.engine,
                 scheduler=scheduler,
                 event_publisher=event_publisher,
+                storage_runtime=storage_runtime,
             ),
         )
         maybe_mcp = result.extras.get("mcp_registry")
@@ -591,7 +605,9 @@ def _bind_memory_lifecycle_if_supported(
 
     markdown.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            get_session=session_manager.get_or_create,
+            # markdown 旧记忆系统不在 M4H-2 范围（文件路径天然隔离），
+            # 其 session 访问按显式 single-user 回退到默认租户。
+            get_session=lambda key: session_manager.get_or_create(DEFAULT_TENANT, key),
             save_session=_save_session,
         )
     )
@@ -613,7 +629,19 @@ def build_core_runtime(
     # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
     loop_provider = agent_provider or provider
     loop_model = config.agent_model or config.model
-    session_manager = SessionManager(workspace)
+    # 3. 进程级存储 runtime（bootstrap 创建一次）。PG 下 runtime 持有 memory +
+    #    sessions 两条 backend 连接；SessionManager/presence 从这里取 tenant-bound
+    #    view。vec_dim 默认 VEC_DIM，memory backend 待 M4H-2 D 由 engine 消费时
+    #    按 embedding 维度对齐。
+    storage_runtime = create_storage_runtime(
+        config.storage,
+        workspace / "memory" / "memory2.db",
+        workspace / "sessions.db",
+    )
+    session_manager = SessionManager(
+        workspace,
+        storage_runtime=storage_runtime,
+    )
     loop_ref: dict[str, AgentLoop] = {}
     tools, push_tool, scheduler, mcp_registry, memory_runtime, peer_pm, peer_poller = (
         build_registered_tools(
@@ -628,9 +656,10 @@ def build_core_runtime(
             event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
             restart_coordinator=restart_coordinator,
+            storage_runtime=storage_runtime,
         )
     )
-    presence = PresenceStore(session_manager._store)
+    presence = PresenceStore(lambda ctx: storage_runtime.for_tenant(ctx).sessions)
     processing_state = ProcessingState()
 
     # ── 日志系统 ──────────────────────────────────────────────────────
@@ -764,6 +793,7 @@ def build_core_runtime(
         peer_poller=peer_poller,
         plugin_manager=plugin_manager,
         turn_logger=turn_logger,
+        storage_runtime=storage_runtime,
     )
 
 
