@@ -254,9 +254,9 @@ def _make_loop(
             provider=cast(Any, _Provider()),
             light_provider=cast(Any, _Provider()),
             tools=tools,
-            session_manager=MagicMock(),
+            session_manager=MagicMock(run_db=None),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=cast(Any, _FakeMemoryEngine())),
+            memory_services=MemoryServices(engines={"default": cast(Any, _FakeMemoryEngine())}),
             retrieval_pipeline=retrieval_pipeline,
         ),
         AgentLoopConfig(),
@@ -281,7 +281,7 @@ def test_agent_loop_uses_custom_retrieval_pipeline(tmp_path: Path):
     loop.session_manager.append_messages = AsyncMock(return_value=None)
     loop._reasoner.run_turn = AsyncMock(return_value=TurnRunResult(reply="ok"))
 
-    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello", tenant_id="default")
     asyncio.run(loop._core_runner.process(msg, msg.session_key))
 
     assert custom_retrieval.requests
@@ -334,7 +334,7 @@ def test_agent_loop_fanouts_turn_committed_from_passive_turn(tmp_path: Path):
         )
     )
 
-    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello")
+    msg = InboundMessage(channel="cli", sender="u", chat_id="1", content="hello", tenant_id="default")
 
     async def _process_and_drain() -> None:
         await loop._core_runner.process(msg, msg.session_key)

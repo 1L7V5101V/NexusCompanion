@@ -43,6 +43,9 @@ class _Pipe:
     async def drain(self) -> None:
         return None
 
+    def close(self) -> None:
+        return None
+
     async def readline(self) -> bytes:
         if self._lines:
             return self._lines.pop(0)
@@ -55,12 +58,19 @@ class _Proc:
         self.stdout = _Pipe(stdout_lines)
         self.stderr = _Pipe(stderr_lines)
         self.terminated = False
+        self.killed = False
+        self._exited = asyncio.Event()
 
     def terminate(self) -> None:
         self.terminated = True
+        self._exited.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        self._exited.set()
 
     async def wait(self) -> None:
-        return None
+        await self._exited.wait()
 
 
 def _as_text(value: str | ToolResult) -> str:
@@ -484,11 +494,11 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
 
     proc = _Proc(
         [
-            b'{"jsonrpc":"2.0","id":1,"result":{}}\n',
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25"}}\n',
             b'{"jsonrpc":"2.0","method":"note"}\n',
             b'{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tool1","description":"desc","inputSchema":{"type":"object"}}]}}\n',
             b'not json\n',
-            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"text":"ok"}]}}\n',
+            b'{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"ok"}]}}\n',
         ],
         [b"warn\n", b""],
     )
@@ -498,6 +508,7 @@ async def test_mcp_client_and_loop_factory_cover_core_paths(
     assert infos[0].name == "tool1"
     assert proc.stdin.writes
     assert await client.call("tool1", {"q": "x"}) == "ok"
+    monkeypatch.setattr(mcp_client_module, "_DISCONNECT_TIMEOUT", 0.01)
     await client.disconnect()
     assert proc.terminated is True
 

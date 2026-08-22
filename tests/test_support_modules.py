@@ -1035,10 +1035,17 @@ async def test_loop_trigger_and_main_entry_cover_paths(
     module.connect_cli("config.toml")
 
     runtime = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setattr(module, "_default_workspace", lambda: tmp_path)
     monkeypatch.setattr(
         module.Config,
         "load",
-        classmethod(lambda cls, path="config.toml": SimpleNamespace()),
+        classmethod(
+            lambda cls, path="config.toml": SimpleNamespace(
+                persona=None,
+                storage=SimpleNamespace(backend="sqlite"),
+                memory=SimpleNamespace(enabled=False),
+            )
+        ),
     )
     monkeypatch.setattr(module, "build_app_runtime", lambda config, workspace: runtime)
     await module.serve("config.toml")

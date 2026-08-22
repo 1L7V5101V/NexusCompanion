@@ -26,12 +26,8 @@ from core.net.http import SharedHttpResources
 
 
 class _FakeDashboardServer:
-    def __init__(self) -> None:
-        self.should_exit = False
-
     async def serve(self) -> None:
-        while not self.should_exit:
-            await asyncio.sleep(0)
+        return None
 
 
 def _toml_value(value):

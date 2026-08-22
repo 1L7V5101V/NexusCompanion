@@ -1152,7 +1152,7 @@ def test_rachael_last_command_only_registers_for_rachael_engine(tmp_path: Path) 
         memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="default")),
     )
 
-    assert rachael.telegram_bot_commands() == [("rachael_last", "查看上一轮 Rachael 检索诊断")]
+    assert rachael.telegram_bot_commands() == [("akashalast", "查看上一轮 Rachael 检索诊断")]
     assert len(rachael.before_turn_modules()) == 1
     assert default.telegram_bot_commands() == []
     assert default.before_turn_modules() == []

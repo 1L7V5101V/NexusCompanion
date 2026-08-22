@@ -399,7 +399,7 @@ async def test_send_thinking_block_splits_long_content():
         assert len(entities) == 1
         assert entities[0].type == "expandable_blockquote"
     # 第一条包含 header
-    assert bot.messages[0]["text"].startswith("💭 思考过程")
+    assert bot.messages[0]["text"].startswith("💭 Thinking")
     # 拼合所有 text 应还原完整内容
     combined = "".join(m["text"] for m in bot.messages)
     assert "思" * 5000 in combined

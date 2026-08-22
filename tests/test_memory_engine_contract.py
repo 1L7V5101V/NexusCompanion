@@ -476,8 +476,7 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
     )
     maintenance._worker.prepare_consolidation = AsyncMock(return_value=draft)
 
-    with pytest.raises(RuntimeError, match="vector write failed"):
-        await maintenance.consolidate(ConsolidateRequest(session=session))
+    await maintenance.consolidate(ConsolidateRequest(session=session))
 
     assert session.last_consolidated == 6
     assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(

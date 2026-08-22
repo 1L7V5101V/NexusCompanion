@@ -195,7 +195,7 @@ def _make_agent_loop_with_tools(
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_services=MemoryServices(engines={"default": FakeMemoryEngine(tmp_path)}),
         ),
         AgentLoopConfig(
             llm=LLMConfig(
@@ -664,7 +664,7 @@ def test_agent_loop_does_not_false_positive_when_tool_order_changes(tmp_path):
             tools=tools,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_services=MemoryServices(engines={"default": FakeMemoryEngine(tmp_path)}),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10)),
     )

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import agent.plugins.install as install_module
@@ -11,23 +11,18 @@ from agent.plugins.install import install_git_plugin
 
 def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Path) -> None:
     repo = tmp_path / "feed-mcp"
-    (repo / ".aka-plugin").mkdir(parents=True)
+    repo.mkdir(parents=True)
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "\n"
+        "class Feed(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '0.1.0'\n",
+        encoding="utf-8",
+    )
     (repo / "skills" / "feed-manage").mkdir(parents=True)
     (repo / "skills" / "feed-manage" / "SKILL.md").write_text(
         "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
-        encoding="utf-8",
-    )
-    (repo / ".aka-plugin" / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "feed",
-                "version": "0.1.0",
-                "description": "feed plugin",
-                "paths": {"skills": ["skills"]},
-                "nexus": {"runtime": {"supports": ["skills"]}},
-            },
-            ensure_ascii=False,
-        ),
         encoding="utf-8",
     )
 
@@ -49,55 +44,37 @@ def test_install_git_plugin_installs_into_cache_and_preserves_data(tmp_path: Pat
     )
 
     assert result.plugin_name == "feed"
+    assert result.plugin_version == "0.1.0"
     assert result.installed_path == home / "cache" / "lab" / "feed" / "0.1.0"
-    assert (result.installed_path / ".aka-plugin" / "plugin.json").exists()
+    assert (result.installed_path / "plugin.py").exists()
     assert (result.installed_path / "skills" / "feed-manage" / "SKILL.md").exists()
     assert (result.data_path / "state.json").read_text(encoding="utf-8").strip() == '{"keep":true}'
-    registry = json.loads((home / "registry.json").read_text(encoding="utf-8"))
-    entry = registry["plugins"]["feed@lab"]
-    assert entry["plugin_id"] == "feed@lab"
-    assert entry["install_source"] == str(repo)
-    assert entry["skills"] == ["feed-manage"]
-    assert entry["active"] is False
+    manifest = tomllib.loads((home / "manifest.toml").read_text(encoding="utf-8"))
+    assert manifest["plugins"]["feed@lab"]["enabled"] is True
 
 
-def test_install_git_plugin_prepares_mcp_venv_and_rewrites_python_command(
+def test_install_git_plugin_prepares_mcp_venv(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     repo = tmp_path / "feed-mcp"
-    (repo / ".aka-plugin").mkdir(parents=True)
+    repo.mkdir(parents=True)
+    (repo / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "from agent.plugins.specs import McpServerSpec\n"
+        "\n"
+        "class Feed(Plugin):\n"
+        "    name = 'feed'\n"
+        "    version = '0.1.0'\n"
+        "\n"
+        "    @classmethod\n"
+        "    def mcp_servers(cls):\n"
+        "        return [McpServerSpec(name='feed', command=('python', 'mcp/run_mcp.py'), env={}, cwd='.')]\n",
+        encoding="utf-8",
+    )
     (repo / "mcp").mkdir(parents=True)
     (repo / "mcp" / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
     (repo / "mcp" / "requirements.txt").write_text("requests\n", encoding="utf-8")
-    (repo / "mcp" / "servers.json").write_text(
-        json.dumps(
-            {
-                "servers": {
-                    "feed": {
-                        "command": ["python", "mcp/run_mcp.py"],
-                        "cwd": ".",
-                        "env": {},
-                    }
-                }
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    (repo / ".aka-plugin" / "plugin.json").write_text(
-        json.dumps(
-            {
-                "name": "feed",
-                "version": "0.1.0",
-                "description": "feed plugin",
-                "paths": {"mcp_servers": ["mcp/servers.json"]},
-                "nexus": {"runtime": {"supports": ["mcp"]}},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
 
     _run_git(["init"], cwd=repo)
     _run_git(["config", "user.name", "test"], cwd=repo)
@@ -122,23 +99,17 @@ def test_install_git_plugin_prepares_mcp_venv_and_rewrites_python_command(
         plugins_home=tmp_path / "plugins-home",
     )
 
-    servers = json.loads(
-        (result.installed_path / "mcp" / "servers.json").read_text(encoding="utf-8")
-    )["servers"]
+    assert [label for label, _ in calls] == ["feed venv", "feed pip install"]
+    assert all(cwd.name == "mcp" for _, cwd in calls)
+    assert (result.installed_path / "mcp" / "run_mcp.py").exists()
     expected_python = install_module._venv_python_path(
         result.installed_path / "mcp" / ".venv"
     )
-
-    assert servers["feed"]["command"][0] == str(expected_python)
-    assert servers["feed"]["env"]["AKA_PLUGIN_DATA_DIR"] == str(result.data_path)
-    assert calls == [
-        ("feed venv", result.installed_path / "mcp"),
-        ("feed pip install", result.installed_path / "mcp"),
-    ]
-    registry = json.loads(
-        ((tmp_path / "plugins-home") / "registry.json").read_text(encoding="utf-8")
+    assert expected_python.exists()
+    manifest = tomllib.loads(
+        ((tmp_path / "plugins-home") / "manifest.toml").read_text(encoding="utf-8")
     )
-    assert registry["plugins"]["feed@lab"]["mcp_servers"] == ["feed"]
+    assert manifest["plugins"]["feed@lab"]["enabled"] is True
 
 
 def _run_git(args: list[str], cwd: Path) -> None:

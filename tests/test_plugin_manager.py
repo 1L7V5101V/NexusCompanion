@@ -5,6 +5,7 @@ import json
 import shlex
 import shutil
 import tempfile
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -222,17 +223,17 @@ async def test_after_step_tap_hook_fires():
 @pytest.mark.asyncio
 async def test_counter_increments_extra_metadata():
     with tempfile.TemporaryDirectory() as tmp:
-        # counter 插件写 .kv.json，用临时目录隔离
-        fixture_counter = FIXTURES_DIR / "counter"
-        tmp_counter = Path(tmp) / "counter"
-        shutil.copytree(fixture_counter, tmp_counter)
-
-        # 清除可能从 fixture 复制过来的残留 .kv.json
-        kv = tmp_counter / ".kv.json"
+        # counter 插件写 data/counter-builtin/.kv.json，installed_cache_root 指入 tmp 隔离
+        shutil.copytree(FIXTURES_DIR / "counter", Path(tmp) / "counter")
+        kv = Path(tmp) / "data" / "counter-builtin" / ".kv.json"
         kv.unlink(missing_ok=True)
 
         bus = EventBus()
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        mgr = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus,
+        )
         await mgr.load_all()
 
         ctx1 = _before_turn_ctx()
@@ -250,14 +251,17 @@ async def test_counter_increments_extra_metadata():
 @pytest.mark.asyncio
 async def test_kv_store_persists_across_manager_instances():
     with tempfile.TemporaryDirectory() as tmp:
-        fixture_counter = FIXTURES_DIR / "counter"
-        tmp_counter = Path(tmp) / "counter"
-        shutil.copytree(fixture_counter, tmp_counter)
-        (tmp_counter / ".kv.json").unlink(missing_ok=True)
+        shutil.copytree(FIXTURES_DIR / "counter", Path(tmp) / "counter")
+        kv = Path(tmp) / "data" / "counter-builtin" / ".kv.json"
+        kv.unlink(missing_ok=True)
 
         # 第一个 manager 写入
         bus1 = EventBus()
-        mgr1 = _make_manager([Path(tmp)], event_bus=bus1)
+        mgr1 = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus1,
+        )
         await mgr1.load_all()
         await bus1.emit(_before_turn_ctx())
 
@@ -267,15 +271,18 @@ async def test_kv_store_persists_across_manager_instances():
         plugin_registry._instances.clear()
 
         bus2 = EventBus()
-        mgr2 = _make_manager([Path(tmp)], event_bus=bus2)
+        mgr2 = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus2,
+        )
         await mgr2.load_all()
         ctx = _before_turn_ctx()
         result = await bus2.emit(ctx)
         assert result.extra_metadata["turn_count"] == 2
 
-        kv_path = tmp_counter / ".kv.json"
-        assert kv_path.exists()
-        data = json.loads(kv_path.read_text())
+        assert kv.exists()
+        data = json.loads(kv.read_text())
         assert data["turn_count"] == 2
 
 
@@ -294,23 +301,6 @@ def _get_instance(name_or_id: str) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_manifest_overrides_class_attributes():
-    bus = EventBus()
-    # 用包含 manifested/ 子目录的父目录
-    with tempfile.TemporaryDirectory() as tmp:
-        shutil.copytree(FIXTURES_DIR / "manifested", Path(tmp) / "manifested")
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
-        await mgr.load_all()
-
-        instance = _get_instance("manifest_name")
-        assert instance.name == "manifest_name"
-        assert instance.version == "0.2.0"
-        assert instance.desc == "from manifest"
-        assert instance.author == "tester"
-        assert instance.context.plugin_id == "manifest_name"
-
-
-@pytest.mark.asyncio
 async def test_active_plugins_exposes_loaded_manifest():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
@@ -321,76 +311,14 @@ async def test_active_plugins_exposes_loaded_manifest():
 
         active = mgr.active_plugins()
         assert len(active) == 1
-        assert active[0].plugin_id == "manifest_name"
+        assert active[0].plugin_id == "manifested"
         assert active[0].plugin_dir == Path(tmp) / "manifested"
-        assert active[0].manifest["name"] == "manifest_name"
+        assert active[0].manifest["name"] == "manifested"
+        assert active[0].manifest["version"] == "0.1.0"
 
 
 @pytest.mark.asyncio
-async def test_loads_installed_aka_plugin_descriptor_without_lifecycle():
-    bus = EventBus()
-    with tempfile.TemporaryDirectory() as tmp:
-        cache_root = Path(tmp) / "cache"
-        plugin_root = cache_root / "lab" / "feed" / "0.1.0"
-        (plugin_root / ".aka-plugin").mkdir(parents=True)
-        (plugin_root / "skills" / "feed-manage").mkdir(parents=True)
-        (plugin_root / "skills" / "feed-manage" / "SKILL.md").write_text(
-            "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
-            encoding="utf-8",
-        )
-        (plugin_root / "mcp").mkdir()
-        (plugin_root / ".aka-plugin" / "plugin.json").write_text(
-            json.dumps(
-                {
-                    "name": "feed",
-                    "version": "0.1.0",
-                    "description": "feed plugin",
-                    "paths": {
-                        "skills": ["skills"],
-                        "mcp_servers": ["mcp/servers.json"],
-                    },
-                    "nexus": {
-                        "runtime": {"supports": ["skills", "mcp"]},
-                    },
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        (plugin_root / "mcp" / "servers.json").write_text(
-            json.dumps(
-                {
-                    "servers": {
-                        "feed": {
-                            "command": ["run_mcp.py"],
-                            "env": {"A": "1"},
-                            "cwd": ".",
-                        }
-                    }
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        (plugin_root / "run_mcp.py").write_text("print('ok')\n", encoding="utf-8")
-
-        mgr = PluginManager(
-            plugin_dirs=[],
-            installed_cache_root=cache_root,
-            event_bus=bus,
-        )
-        await mgr.load_all()
-
-        active = mgr.active_plugins()
-        assert len(active) == 1
-        assert active[0].plugin_id == "feed@lab"
-        assert active[0].skill_roots == (plugin_root / "skills",)
-        assert "feed" in active[0].mcp_servers
-        assert mgr.loaded_count == 1
-
-
-@pytest.mark.asyncio
-async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_path: Path):
+async def test_sync_manifest_covers_builtin_and_installed_plugins(tmp_path: Path):
     bus = EventBus()
     builtin_root = tmp_path / "plugins"
     shutil.copytree(FIXTURES_DIR / "hello", builtin_root / "hello")
@@ -398,21 +326,22 @@ async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_pat
     cache_root = tmp_path / "cache"
     installed_root = cache_root / "lab" / "feed" / "0.1.0"
     (installed_root / ".aka-plugin").mkdir(parents=True)
-    (installed_root / "skills" / "feed-manage").mkdir(parents=True)
-    (installed_root / "skills" / "feed-manage" / "SKILL.md").write_text(
-        "---\nname: feed-manage\ndescription: feed\n---\nbody\n",
-        encoding="utf-8",
-    )
     (installed_root / ".aka-plugin" / "plugin.json").write_text(
         json.dumps(
             {
                 "name": "feed",
                 "version": "0.1.0",
                 "description": "feed plugin",
-                "paths": {"skills": ["skills"]},
+                "nexus": {"lifecycle": {"entry": "plugin.py"}},
             },
             ensure_ascii=False,
         ),
+        encoding="utf-8",
+    )
+    (installed_root / "plugin.py").write_text(
+        "from agent.plugins import Plugin\n"
+        "class FeedPlugin(Plugin):\n"
+        "    name = 'feed'\n",
         encoding="utf-8",
     )
 
@@ -423,34 +352,39 @@ async def test_sync_global_registry_covers_builtin_and_installed_plugins(tmp_pat
     )
     await mgr.load_all()
 
-    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".nexus-plugin")
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    manifest_path = mgr.sync_manifest(plugins_home=tmp_path / ".nexus-plugin")
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
 
-    assert set(registry["plugins"]) == {"feed@lab", "hello"}
-    assert registry["plugins"]["feed@lab"]["source_type"] == "installed"
-    assert registry["plugins"]["feed@lab"]["skills"] == ["feed-manage"]
-    assert registry["plugins"]["feed@lab"]["active"] is True
-    assert registry["plugins"]["hello"]["source_type"] == "builtin"
+    assert set(manifest["plugins"]) == {"feed@lab", "hello"}
+    assert manifest["plugins"]["feed@lab"]["enabled"] is True
+    assert manifest["plugins"]["hello"]["enabled"] is True
 
 
-@pytest.mark.asyncio
-async def test_sync_global_registry_marks_inactive_memory_plugin_when_engine_differs(
-    tmp_path: Path,
-) -> None:
-    bus = EventBus()
-    mgr = PluginManager(
-        plugin_dirs=[Path(__file__).parents[1] / "plugins"],
-        event_bus=bus,
-        workspace=tmp_path,
-        memory_engine=SimpleNamespace(describe=lambda: SimpleNamespace(name="rachael")),
-    )
-    await mgr.load_all()
+def test_plugin_is_active_gates_memory_plugin_by_engine():
+    """memory 引擎不匹配的插件通过 is_active() 被标记为 inactive。"""
+    from agent.plugins.snapshot import plugin_is_active
 
-    registry_path = mgr.sync_global_registry(plugins_home=tmp_path / ".nexus-plugin")
-    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    class MemoryPlugin:
+        def __init__(self, engine: str) -> None:
+            self._engine = engine
 
-    assert registry["plugins"]["default_memory"]["active"] is False
-    assert registry["plugins"]["rachael"]["active"] is True
+        def is_active(self) -> bool:
+            return self._engine == "default"
+
+    assert plugin_is_active(MemoryPlugin("rachael"), plugin_id="default_memory") is False
+    assert plugin_is_active(MemoryPlugin("default"), plugin_id="default_memory") is True
+
+    class NoChecker:
+        pass
+
+    assert plugin_is_active(NoChecker(), plugin_id="hello") is True
+
+    class BrokenChecker:
+        def is_active(self) -> bool:
+            raise ValueError("boom")
+
+    with pytest.raises(RuntimeError):
+        plugin_is_active(BrokenChecker(), plugin_id="default_memory")
 
 
 @pytest.mark.asyncio
@@ -556,6 +490,7 @@ from agent.plugins import Plugin
 
 
 class EarlyModule:
+    slot = "phase_plugin.before_turn.early"
     requires = ("session:session",)
 
     async def run(self, frame):
@@ -563,56 +498,81 @@ class EarlyModule:
 
 
 class LateModule:
+    slot = "phase_plugin.before_turn.late"
     requires = ("session:ctx",)
 
     async def run(self, frame):
         return frame
 
 class PromptTopModule:
+    slot = "phase_plugin.prompt_render.top"
+
     async def run(self, frame):
         return frame
 
 class PromptBottomModule:
+    slot = "phase_plugin.prompt_render.bottom"
+
     async def run(self, frame):
         return frame
 
 class BeforeReasoningBeforeEmitModule:
+    slot = "phase_plugin.before_reasoning.before_emit"
+
     async def run(self, frame):
         return frame
 
 class BeforeReasoningAfterEmitModule:
+    slot = "phase_plugin.before_reasoning.after_emit"
+
     async def run(self, frame):
         return frame
 
 class BeforeStepBeforeEmitModule:
+    slot = "phase_plugin.before_step.before_emit"
+
     async def run(self, frame):
         return frame
 
 class BeforeStepAfterEmitModule:
+    slot = "phase_plugin.before_step.after_emit"
+
     async def run(self, frame):
         return frame
 
 class AfterStepBeforeFanoutModule:
+    slot = "phase_plugin.after_step.before_fanout"
+
     async def run(self, frame):
         return frame
 
 class AfterStepAfterFanoutModule:
+    slot = "phase_plugin.after_step.after_fanout"
+
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforeEmitModule:
+    slot = "phase_plugin.after_reasoning.before_emit"
+
     async def run(self, frame):
         return frame
 
 class AfterReasoningBeforePersistModule:
+    slot = "phase_plugin.after_reasoning.before_persist"
+
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeCommitModule:
+    slot = "phase_plugin.after_turn.before_commit"
+
     async def run(self, frame):
         return frame
 
 class AfterTurnBeforeFanoutModule:
+    slot = "phase_plugin.after_turn.before_fanout"
+
     async def run(self, frame):
         return frame
 
@@ -680,18 +640,22 @@ class PhasePlugin(Plugin):
 
 
 @pytest.mark.asyncio
-async def test_conf_schema_defaults_injected_into_context():
+async def test_config_model_defaults_injected_into_context():
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        mgr = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus,
+        )
         await mgr.load_all()
         instance = _get_instance("configured")
         assert instance.context.config is not None
         assert instance.context.config.api_key == "test-key"
         assert instance.context.config.max_results == 10
         assert instance.context.config.enabled is True
-        assert instance.context.config.get("missing", "fallback") == "fallback"
+        assert getattr(instance.context.config, "missing", "fallback") == "fallback"
 
 
 @pytest.mark.asyncio
@@ -709,16 +673,22 @@ async def test_missing_conf_schema_leaves_config_none():
 
 
 @pytest.mark.asyncio
-async def test_plugin_config_json_overrides_defaults():
-    """plugin_config.json 覆盖 _conf_schema.json 的 default，未覆盖字段保留原值。"""
+async def test_config_local_toml_overrides_defaults():
+    """config.local.toml 覆盖 ConfigModel 默认值，未覆盖字段保留默认值。"""
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        override = {"api_key": "override-key", "enabled": False}
-        (Path(tmp) / "configured" / "plugin_config.json").write_text(
-            json.dumps(override)
+        data_dir = Path(tmp) / "data" / "configured-builtin"
+        data_dir.mkdir(parents=True)
+        (data_dir / "config.local.toml").write_text(
+            'api_key = "override-key"\nenabled = false\n',
+            encoding="utf-8",
         )
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        mgr = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus,
+        )
         await mgr.load_all()
         instance = _get_instance("configured")
         assert instance.context.config is not None
@@ -728,30 +698,39 @@ async def test_plugin_config_json_overrides_defaults():
 
 
 @pytest.mark.asyncio
-async def test_plugin_disabled_marker_skips_plugin():
-    bus = EventBus()
-    with tempfile.TemporaryDirectory() as tmp:
-        shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        (Path(tmp) / "configured" / "plugin.disabled").write_text("", encoding="utf-8")
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
-        await mgr.load_all()
+async def test_plugin_disabled_manifest_skips_plugin(tmp_path: Path):
+    from agent.plugins.manifest import upsert_plugin_manifest
 
-        assert mgr.loaded_count == 0
-        with pytest.raises(KeyError):
-            _get_instance("configured")
+    bus = EventBus()
+    shutil.copytree(FIXTURES_DIR / "configured", tmp_path / "configured")
+    upsert_plugin_manifest("configured", enabled=False, plugins_home=tmp_path)
+    mgr = PluginManager(
+        plugin_dirs=[tmp_path],
+        installed_cache_root=tmp_path / "cache",
+        event_bus=bus,
+    )
+    await mgr.load_all()
+
+    assert mgr.loaded_count == 0
+    with pytest.raises(KeyError):
+        _get_instance("configured")
 
 
 @pytest.mark.asyncio
-async def test_no_plugin_config_json_keeps_original_defaults():
-    """没有 plugin_config.json 时行为不变。"""
+async def test_no_config_local_toml_keeps_original_defaults():
+    """没有 config.local.toml 时使用 ConfigModel 默认值。"""
     bus = EventBus()
     with tempfile.TemporaryDirectory() as tmp:
         shutil.copytree(FIXTURES_DIR / "configured", Path(tmp) / "configured")
-        mgr = _make_manager([Path(tmp)], event_bus=bus)
+        mgr = PluginManager(
+            plugin_dirs=[Path(tmp)],
+            installed_cache_root=Path(tmp) / "cache",
+            event_bus=bus,
+        )
         await mgr.load_all()
         instance = _get_instance("configured")
         assert instance.context.config is not None
-        assert instance.context.config.api_key == "test-key"       # from schema default
+        assert instance.context.config.api_key == "test-key"       # from ConfigModel default
         assert instance.context.config.max_results == 10
         assert instance.context.config.enabled is True
 
@@ -1164,6 +1143,9 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         async def load_all(self) -> None:
             self.loaded_count = 1
 
+        def assert_no_workspace_mcp_plugin_conflicts(self) -> None:
+            return None
+
     class FakeLoop:
         def __init__(self) -> None:
             self.received_hooks: list[ToolHook] | None = None
@@ -1234,6 +1216,13 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         async def shutdown(self) -> None:
             return None
 
+    class FakeWorkspaceMcpWatcher:
+        async def reconcile(self) -> None:
+            return None
+
+        async def run(self) -> None:
+            return None
+
     spawn_tool = FakeSpawnTool()
     loop = FakeLoop()
     plugin_manager = FakePluginManager()
@@ -1251,6 +1240,8 @@ async def test_core_runtime_start_wires_plugin_tool_hooks_to_loop_and_spawn():
         provider=SimpleNamespace(),  # type: ignore[arg-type]
         light_provider=None,
         mcp_registry=FakeMcpRegistry(),  # type: ignore[arg-type]
+        workspace_mcp_watcher=FakeWorkspaceMcpWatcher(),  # type: ignore[arg-type]
+        workspace_mcp_watcher_task=None,
         memory_runtime=SimpleNamespace(),  # type: ignore[arg-type]
         presence=SimpleNamespace(),  # type: ignore[arg-type]
         peer_process_manager=None,

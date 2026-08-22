@@ -557,6 +557,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
         memory_runtime=cast(
             Any,
                 SimpleNamespace(
+                    engines={"default": object()},
                     engine=object(),
                     markdown=SimpleNamespace(
                         store=markdown_store,
