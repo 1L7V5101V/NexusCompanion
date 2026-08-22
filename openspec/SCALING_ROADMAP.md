@@ -47,7 +47,7 @@ NexusCompanion 从单机单用户扩展到可服务 **5000 注册租户/身份**
 
 | Capability                           | outcome                                                                    | dependency                | active OpenSpec change                | status      | exit evidence                                                                                                                              |
 | ------------------------------------ | -------------------------------------------------------------------------- | ------------------------- | ------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| GOV 治理与文档基线                          | OpenSpec / Roadmap / 代码·测试·证据三类事实来源生效，SCALING_PLAN 退役                      | —                         | `establish-scaling-openspec-baseline` | in_progress | `openspec validate` 通过；sync 后 `openspec/specs/scaling-governance` 存在                                                                       |
+| GOV 治理与文档基线                          | OpenSpec / Roadmap / 代码·测试·证据三类事实来源生效，SCALING_PLAN 退役                      | —                         | `establish-scaling-openspec-baseline`（已 archive `2026-08-23-establish-scaling-openspec-baseline`） | verified | merge commit `e50732d6`；`openspec validate` 通过；`openspec/specs/scaling-governance`（12 requirements）已 sync                                                                       |
 | C1 Storage Foundation（PG + pgvector） | SQLite/PG 双 adapter、tenant 贯穿、pool + bounded executor、provisioning 控制面     | —                         | 已完成（merge `0a83314d`）                 | verified    | merge commit `0a83314d`；5000 tenant provisioning 基准 `evidence/phase1-storage/results/m4h4_partition_provisioning.json`；tenant isolation 测试 |
 | C1B 迁移工具（M5）                         | 批量 COPY、断点续传、机器可读校验                                                        | C1                        | 计划（未创建）                               | planned     | 导入/校验结果入库                                                                                                                                  |
 | C1C 主数据源切换（M6）                       | S0-S4 状态机切 PostgreSQL primary                                              | C1B                       | 计划（未创建）                               | planned     | staging cutover、PITR/回滚演练                                                                                                                  |
@@ -64,8 +64,8 @@ NexusCompanion 从单机单用户扩展到可服务 **5000 注册租户/身份**
 
 ## 5. 当前阶段、focus、blocker、next decision
 
-- **当前阶段**：GOV 治理基线（本 change）建立中；C1 Storage Foundation 已 verified（merge `0a83314d`）。
-- **current focus**：完成 OpenSpec + Roadmap 治理基线；随后 Phase 1B（C1B 迁移工具 + C1C 主数据源切换）在独立 branch/worktree 执行，任务状态与证据由 OpenSpec changes/specs 承载。
+- **当前阶段**：GOV 治理与文档基线已 verified（merge `e50732d6`）；C1 Storage Foundation 已 verified（merge `0a83314d`）。
+- **current focus**：Phase 1B（C1B 迁移工具 + C1C 主数据源切换）在独立 branch/worktree 执行，任务状态与证据由 OpenSpec changes/specs 承载。
 - **current blocker**：无 hard blocker。C1B/C1C 需独立 OpenSpec change 与 branch/worktree；C1D 生产基准需生产硬件与真实数据分布。
 - **next decision**：Phase 1B（M5/M6）启动范围与迁移状态机细化；是否创建 C0（Phase 0 metrics + load harness）的 OpenSpec change。
 
