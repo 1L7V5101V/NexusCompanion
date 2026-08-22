@@ -1,6 +1,6 @@
 # Phase 1 存储层改造计划（PostgreSQL + pgvector）
 
-> 来源：[SCALING_PLAN.md](../../scaling/SCALING_PLAN.md) Phase 1（P0 必须）
+> 来源：[SCALING_PLAN-2026-08-22.md](../../scaling/archive/SCALING_PLAN-2026-08-22.md) Phase 1（P0 必须）
 > 分支：`feature/scaling-phase1-storage`（继承 `feature/pg-migration` 的 WIP）
 > 初版日期：2026-08-20
 > 架构复审：2026-08-21

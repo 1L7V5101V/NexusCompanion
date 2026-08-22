@@ -3,7 +3,7 @@
 > 状态：已完成（2026-08-22，9 commits `4c50a0e0`–`f04c62c7`）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
-> 依据：[`SCALING_PLAN.md`](../../scaling/SCALING_PLAN.md) §C 分区生产验证（:384-393）与风险表 :814
+> 依据：[`SCALING_PLAN-2026-08-22.md`](../../scaling/archive/SCALING_PLAN-2026-08-22.md) §C 分区生产验证（:384-393）与风险表 :814
 
 ## 1. ADR：partition provisioning 控制面
 
