@@ -9,7 +9,7 @@
 
 SCALING_PLAN 对 5000 tenant 的 PostgreSQL 分区方案有两处硬性要求：
 
-- **§C 分区生产验证**（[SCALING_PLAN.md](../../scaling/SCALING_PLAN.md) :384-393）：合成 recall 结果不足以证明生产可用，必须验证「5000 分区下的 planning latency、catalog 大小」；「首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning」；「分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞」。
+- **§C 分区生产验证**（[SCALING_PLAN-2026-08-22.md](../../scaling/archive/SCALING_PLAN-2026-08-22.md) :384-393）：合成 recall 结果不足以证明生产可用，必须验证「5000 分区下的 planning latency、catalog 大小」；「首次写入不在用户 hot path 执行 DDL，改为 tenant provisioning」；「分区名使用稳定 hash/ID，避免简单字符替换导致命名碰撞」。
 - **风险表**（:813「5000 LIST 分区运维退化」P1 → 5000 分区基准；:814「首次请求动态 CREATE PARTITION」P1 → provisioning control plane + 幂等 DDL worker）。
 
 M4H-4 的架构决策是「两阶段 readiness gate（`request_provisioning` + `require_ready`）+ 独立 control worker 执行幂等 DDL」——turn 路径绝不执行 DDL。本基准要回答的问题是：
