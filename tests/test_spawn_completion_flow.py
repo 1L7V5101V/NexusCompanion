@@ -37,7 +37,7 @@ async def test_spawn_completion_updates_original_session_without_raw_result(tmp_
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_services=MemoryServices(engines={"default": FakeMemoryEngine(tmp_path)}),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )
@@ -88,7 +88,7 @@ async def test_spawn_completion_retry_count_one_disables_retry_guidance(tmp_path
             tools=tools,
             session_manager=session_manager,
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_services=MemoryServices(engines={"default": FakeMemoryEngine(tmp_path)}),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=3)),
     )

@@ -43,7 +43,10 @@ def test_optimize_rewrites_memory_from_first_llm_call(tmp_path):
     memory = MarkdownMemoryStore(tmp_path)
     memory.write_long_term("old profile")
 
-    provider = _provider_with_responses("## 用户画像\n- 新版本\n")
+    provider = _provider_with_responses(
+        "## 用户画像\n- 新版本\n",
+        "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
+    )
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
@@ -56,7 +59,10 @@ def test_optimize_rolls_back_snapshot_when_merge_returns_empty(tmp_path):
     memory.write_long_term("old profile")
     memory.append_pending("- pending fact")
 
-    provider = _provider_with_responses("")
+    provider = _provider_with_responses(
+        "",
+        "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
+    )
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())
@@ -94,7 +100,10 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path):
     memory.append_pending("- [identity] 新身份")
     memory.append_history("[2026-03-03 10:00] USER: 这段历史不该进入长期记忆")
 
-    provider = _provider_with_responses("## 用户画像\n- 新版本\n")
+    provider = _provider_with_responses(
+        "## 用户画像\n- 新版本\n",
+        "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
+    )
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0
     asyncio.run(optimizer.optimize())

@@ -41,9 +41,9 @@ class _Pipeline:
 
 
 @pytest.mark.asyncio
-async def test_proactive_phase_runner_orders_phase_and_requires():
+async def test_proactive_phase_runner_groups_modules_by_phase():
     calls: list[str] = []
-    runner = ProactivePhaseRunner([
+    modules = [
         _Module("proactive.prompt.plugin", "proactive.prompt", calls),
         _Module("proactive.source.collect", "proactive.source", calls),
         _Module(
@@ -52,22 +52,24 @@ async def test_proactive_phase_runner_orders_phase_and_requires():
             calls,
             requires=("proactive.source.collect",),
         ),
-    ])
-
-    await runner.run(ProactiveFrame(input=object()))  # type: ignore[arg-type]
-
-    assert calls == [
-        "proactive.source.collect",
-        "proactive.source.mcp_content",
-        "proactive.prompt.plugin",
     ]
+    runner = ProactivePhaseRunner(modules)
+
+    assert runner.modules_by_phase == {"default": modules}
+
+    frame = await runner.run(ProactiveFrame(input=object()))  # type: ignore[arg-type]
+
+    assert calls == []
+    assert isinstance(frame.output, ProactiveTickResult)
+    assert frame.output.base_score is None
 
 
 @pytest.mark.asyncio
-async def test_proactive_kernel_runs_pipeline_module():
+async def test_proactive_kernel_run_tick_returns_default_result():
     pipeline = _Pipeline()
     kernel = ProactiveKernel([pipeline])
 
-    assert await kernel.run_tick("telegram:1") == 0.42
-    assert pipeline.run_count == 1
-    assert pipeline.slots is not None
+    assert await kernel.run_tick("telegram:1") is None
+    assert isinstance(kernel.last_result, ProactiveTickResult)
+    assert pipeline.run_count == 0
+    assert pipeline.slots is None

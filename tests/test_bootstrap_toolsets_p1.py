@@ -32,6 +32,7 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
         "schedule",
         "list_schedules",
         "cancel_schedule",
+        "remind",
     }
     assert result.always_on_names == []
 

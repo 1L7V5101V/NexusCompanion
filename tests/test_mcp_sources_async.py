@@ -1,20 +1,18 @@
 from __future__ import annotations
-from typing import Any, cast
-
-from pathlib import Path
+from typing import Any, Callable, cast
 
 import pytest
 
+from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
 from proactive_v2 import mcp_sources
 
 
 class _FakePool:
     def __init__(
         self,
-        responses: dict[tuple[str, str], object],
+        responses: dict[tuple[str, str], object | Callable[[dict], object]],
         failures: set[tuple[str, str]] | None = None,
     ) -> None:
-        self._workspace = Path("unused-workspace")
         self._responses = responses
         self._failures = failures or set()
         self.calls: list[tuple[str, str, dict]] = []
@@ -32,19 +30,40 @@ class _FakePool:
         self.timeouts.append(timeout)
         if (server, tool_name) in self._failures:
             raise RuntimeError(f"failed: {server}.{tool_name}")
-        return self._responses[(server, tool_name)]
+        response = self._responses[(server, tool_name)]
+        if callable(response):
+            return response(args)
+        return response
+
+
+def _source(
+    plugin_id: str,
+    spec_id: str,
+    channels: tuple[str, ...],
+    server: str,
+    fetch_tool: str,
+    ack_tool: str = "",
+    fetch_page_size: int = 0,
+) -> RegisteredProactiveSource:
+    return RegisteredProactiveSource(
+        plugin_id=plugin_id,
+        spec=ProactiveSourceSpec(
+            id=spec_id,
+            channels=cast(Any, channels),
+            server=server,
+            fetch_tool=fetch_tool,
+            ack_tool=ack_tool,
+            fetch_page_size=fetch_page_size,
+        ),
+    )
 
 
 @pytest.mark.asyncio
-async def test_fetch_alert_events_async_filters_kind_and_sets_ack_server(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [
-            {"channel": "alert", "server": "s1", "get_tool": "get_proactive_events"},
-            {"channel": "context", "server": "ctx", "get_tool": "get_context"},
-        ],
-    )
+async def test_fetch_sources_async_filters_kind_and_sets_ack_server():
+    sources = [
+        _source("p1", "s1", ("alert",), "s1", "get_proactive_events"),
+        _source("p1", "ctx", ("context",), "ctx", "get_context"),
+    ]
     pool = _FakePool(
         {
             ("s1", "get_proactive_events"): [
@@ -55,214 +74,142 @@ async def test_fetch_alert_events_async_filters_kind_and_sets_ack_server(monkeyp
         }
     )
 
-    result = await mcp_sources.fetch_alert_events_async(cast(Any, pool))
+    result = await mcp_sources.fetch_sources_async(cast(Any, pool), sources)
 
-    assert result == [{"kind": "alert", "event_id": "a1", "ack_server": "s1"}]
+    assert result == {
+        "alert": [{"kind": "alert", "event_id": "a1", "ack_server": "p1:s1"}],
+        "content": [],
+        "context": [{"available": True, "_source": "p1:ctx"}],
+    }
 
 
 @pytest.mark.asyncio
-async def test_fetch_content_events_async_keeps_default_compat_channel_filter(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [
-            {"channel": "", "server": "s1", "get_tool": "get_proactive_events"},
-            {"channel": "alert", "server": "alert_only", "get_tool": "get_proactive_events"},
-        ],
-    )
+async def test_fetch_sources_async_keeps_items_of_all_configured_channels():
+    sources = [
+        _source("p1", "s1", ("content", "alert"), "s1", "get_proactive_events"),
+    ]
     pool = _FakePool(
         {
             ("s1", "get_proactive_events"): [
                 {"kind": "content", "event_id": "n1"},
                 {"kind": "alert", "event_id": "a1"},
             ],
-            ("alert_only", "get_proactive_events"): [{"kind": "content", "event_id": "x"}],
         }
     )
 
-    result = await mcp_sources.fetch_content_events_async(cast(Any, pool))
+    result = await mcp_sources.fetch_sources_async(cast(Any, pool), sources)
 
-    assert result == [{"kind": "content", "event_id": "n1", "ack_server": "s1"}]
+    assert result["alert"] == [{"kind": "alert", "event_id": "a1", "ack_server": "p1:s1"}]
+    assert result["content"] == [{"kind": "content", "event_id": "n1", "ack_server": "p1:s1"}]
 
 
 @pytest.mark.asyncio
-async def test_fetch_context_data_async_accepts_list(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [
-            {"channel": "context", "server": "ctx1", "get_tool": "get_context"},
-            {"channel": "context", "server": "ctx2", "get_tool": "get_context"},
-        ],
-    )
-    pool = _FakePool(
-        {
-            ("ctx1", "get_context"): [{"available": True}],
-            ("ctx2", "get_context"): [{"available": False}, "bad_item"],
-        }
-    )
-
-    result = await mcp_sources.fetch_context_data_async(cast(Any, pool))
-
-    assert result == [
-        {"available": True, "_source": "ctx1"},
-        {"available": False, "_source": "ctx2"},
+async def test_fetch_sources_async_raises_when_all_sources_failed():
+    sources = [
+        _source("p1", "s1", ("content",), "s1", "poll"),
+        _source("p1", "s2", ("content",), "s2", "poll"),
     ]
-
-
-@pytest.mark.asyncio
-async def test_poll_content_feeds_async_raises_when_any_source_failed(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [
-            {"channel": "content", "server": "s1", "poll_tool": "poll"},
-            {"channel": "content", "server": "s2", "poll_tool": "poll"},
-            {"channel": "alert", "server": "a1", "poll_tool": "poll"},
-        ],
-    )
     pool = _FakePool(
         {
             ("s1", "poll"): {"ok": True},
             ("s2", "poll"): {"ok": True},
-            ("a1", "poll"): {"ok": True},
         },
-        failures={("s2", "poll")},
+        failures={("s1", "poll"), ("s2", "poll")},
     )
 
     with pytest.raises(RuntimeError) as exc:
-        await mcp_sources.poll_content_feeds_async(cast(Any, pool))
+        await mcp_sources.fetch_sources_async(cast(Any, pool), sources)
 
-    assert "s2" in str(exc.value)
-    assert ("a1", "poll", {}) not in pool.calls
-    assert pool.timeouts == [mcp_sources._POLL_TOOL_TIMEOUT, mcp_sources._POLL_TOOL_TIMEOUT]
-
-
-@pytest.mark.asyncio
-async def test_mcp_pool_disconnects_timeout_client_without_retry():
-    class _TimeoutClient:
-        def __init__(self) -> None:
-            self.disconnected = False
-            self.calls = 0
-
-        async def call(
-            self,
-            tool_name: str,
-            args: dict[str, Any],
-            *,
-            timeout: float | None = None,
-        ) -> str:
-            self.calls += 1
-            raise TimeoutError("slow")
-
-        async def disconnect(self) -> None:
-            self.disconnected = True
-
-    pool = mcp_sources.McpClientPool(Path("unused-workspace"))
-    client = _TimeoutClient()
-    pool._configs["feed"] = (["cmd"], {})
-    pool._clients["feed"] = client
-
-    with pytest.raises(TimeoutError):
-        await pool.call("feed", "poll_feeds", {}, timeout=1.0)
-
-    assert client.calls == 1
-    assert client.disconnected is True
-    assert "feed" not in pool._clients
+    assert "p1:s1" in str(exc.value)
+    assert "p1:s2" in str(exc.value)
 
 
 @pytest.mark.asyncio
-async def test_mcp_pool_connect_all_uses_extra_server_configs(monkeypatch, tmp_path: Path):
-    class _Client:
-        def __init__(self, name: str, command: list[str], env=None, cwd=None) -> None:
-            self.name = name
-            self.command = command
-            self.env = env
-            self.cwd = cwd
-
-        async def connect(self) -> list[object]:
-            return []
-
-        async def disconnect(self) -> None:
-            return None
-
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [{"channel": "content", "server": "feed", "poll_tool": "poll_feeds"}],
-    )
-    monkeypatch.setattr("agent.mcp.client.McpClient", _Client)
-
-    pool = mcp_sources.McpClientPool(
-        tmp_path,
-        extra_server_configs={
-            "feed": {
-                "command": ["python", "run_mcp.py"],
-                "env": {"AKA_PLUGIN_DATA_DIR": "/tmp/feed"},
-                "cwd": "/tmp/feed",
-            }
-        },
-    )
-
-    await pool.connect_all()
-
-    assert "feed" in pool._clients
-    assert pool._configs["feed"] == (
-        ["python", "run_mcp.py"],
-        {
-            "AKA_PLUGIN_DATA_DIR": "/tmp/feed",
-            "PWD": "/tmp/feed",
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_acknowledge_events_async_groups_by_ack_server(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [
-            {"server": "fitbit", "ack_tool": "ack_events"},
-            {"server": "feed", "ack_tool": "ack_events"},
-        ],
-    )
+async def test_fetch_sources_async_keeps_successes_when_partial_failure():
+    sources = [
+        _source("p1", "s1", ("alert",), "s1", "get_proactive_events"),
+        _source("p1", "bad", ("content",), "bad", "poll"),
+    ]
     pool = _FakePool(
         {
-            ("fitbit", "ack_events"): {"ok": True},
-            ("feed", "ack_events"): {"ok": True},
+            ("s1", "get_proactive_events"): [{"kind": "alert", "event_id": "a1"}],
+            ("bad", "poll"): [],
+        },
+        failures={("bad", "poll")},
+    )
+
+    result = await mcp_sources.fetch_sources_async(cast(Any, pool), sources)
+
+    assert result["alert"] == [{"kind": "alert", "event_id": "a1", "ack_server": "p1:s1"}]
+    assert result["content"] == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_strict_async_rejects_item_without_event_id():
+    source = _source("p1", "s1", ("alert",), "s1", "get_proactive_events")
+    pool = _FakePool({("s1", "get_proactive_events"): [{"kind": "alert"}]})
+
+    with pytest.raises(RuntimeError):
+        await mcp_sources.fetch_source_strict_async(cast(Any, pool), source)
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_strict_async_paginates_when_page_size_set():
+    source = _source("p1", "s1", ("content",), "s1", "poll", fetch_page_size=2)
+    pool = _FakePool(
+        {
+            ("s1", "poll"): lambda args: (
+                [
+                    {"kind": "content", "event_id": "n1"},
+                    {"kind": "content", "event_id": "n2"},
+                ]
+                if args["offset"] == 0
+                else [{"kind": "content", "event_id": "n3"}]
+            ),
         }
     )
 
-    events = [
-        ("fitbit", "a1"),
-        ("fitbit", "a2"),
-        ("feed", "a3"),
-        ("unknown", "x"),
-    ]
-    await mcp_sources.acknowledge_events_async(cast(Any, pool), events)
+    result = await mcp_sources.fetch_source_strict_async(cast(Any, pool), source)
 
-    assert ("fitbit", "ack_events", {"event_ids": ["a1", "a2"]}) in pool.calls
-    assert ("feed", "ack_events", {"event_ids": ["a3"]}) in pool.calls
+    assert len(result["content"]) == 3
+    assert ("s1", "poll", {"offset": 0, "limit": 2}) in pool.calls
+    assert ("s1", "poll", {"offset": 2, "limit": 2}) in pool.calls
 
 
 @pytest.mark.asyncio
-async def test_acknowledge_content_entries_async_passes_ttl_hours(monkeypatch):
-    monkeypatch.setattr(
-        mcp_sources,
-        "_load_sources",
-        lambda _w=None: [{"server": "feed", "ack_tool": "ack_content"}],
-    )
-    pool = _FakePool({("feed", "ack_content"): {"ok": True}})
-
-    entries = [
-        ("mcp:feed:evt-1", "fallback-1"),
-        ("mcp:feed", "evt-2"),
-        ("rss:other", "skip"),
+async def test_acknowledge_async_dispatches_to_source_ack_tool_with_feedback():
+    sources = [
+        _source("p1", "s1", ("content",), "s1", "fetch", ack_tool="ack_events"),
+        _source("p1", "s2", ("content",), "s2", "fetch", ack_tool="ack_events"),
     ]
-    await mcp_sources.acknowledge_content_entries_async(cast(Any, pool), entries, ttl_hours=24)
+    pool = _FakePool(
+        {
+            ("s1", "ack_events"): {"ok": True},
+            ("s2", "ack_events"): {"ok": True},
+        }
+    )
 
-    assert (
-        "feed",
-        "ack_content",
-        {"event_ids": ["evt-1", "evt-2"], "ttl_hours": 24},
-    ) in pool.calls
+    await mcp_sources.acknowledge_async(
+        cast(Any, pool), sources, "p1:s1", ["a1", "a2"], feedback="good"
+    )
+
+    assert ("s1", "ack_events", {"event_ids": ["a1", "a2"], "feedback": "good"}) in pool.calls
+    assert ("s2", "ack_events", {}) not in pool.calls
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_async_skips_without_ack_tool_or_events():
+    no_ack = _source("p1", "s1", ("content",), "s1", "fetch")
+    no_events = _source("p1", "s2", ("content",), "s2", "fetch", ack_tool="ack_events")
+    pool = _FakePool({("s2", "ack_events"): {"ok": True}})
+
+    await mcp_sources.acknowledge_async(cast(Any, pool), [no_ack, no_events], "p1:s1", [])
+    await mcp_sources.acknowledge_async(cast(Any, pool), [no_ack, no_events], "p1:s2", [])
+    await mcp_sources.acknowledge_async(cast(Any, pool), [no_ack, no_events], "unknown", ["x"])
+
+    assert pool.calls == []
+
+
+def test_source_key_combines_plugin_and_spec_id():
+    source = _source("p1", "s1", ("content",), "s1", "fetch")
+    assert mcp_sources.source_key(source) == "p1:s1"

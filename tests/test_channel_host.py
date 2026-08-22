@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from bootstrap.channel_host import ChannelHost
+
+
+def _make_context_factory():
+    def ctx_factory(channel):
+        return SimpleNamespace(
+            bus=SimpleNamespace(),
+            session_manager=SimpleNamespace(),
+            event_bus=SimpleNamespace(),
+            push_tool=SimpleNamespace(),
+            attachment_store=SimpleNamespace(),
+            http_resources=SimpleNamespace(),
+            interrupt_controller=None,
+            bot_commands=[],
+            log=SimpleNamespace(),
+        )
+
+    return ctx_factory
 
 
 class _Channel:
@@ -20,7 +39,7 @@ class _Channel:
         self._fail_stop = fail_stop
 
     async def start(self, ctx: object) -> None:
-        self._events.append(f"start:{self.name}:{ctx}")
+        self._events.append(f"start:{self.name}")
         if self._fail_start:
             raise RuntimeError("start failed")
 
@@ -33,28 +52,33 @@ class _Channel:
 @pytest.mark.asyncio
 async def test_channel_host_start_failure_does_not_block_others():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_make_context_factory())
     host.add(_Channel("a", events))  # type: ignore[arg-type]
     host.add(_Channel("b", events, fail_start=True))  # type: ignore[arg-type]
     host.add(_Channel("c", events))  # type: ignore[arg-type]
 
-    await host.start_all()
+    with pytest.raises(RuntimeError, match="b"):
+        await host.start_all()
 
-    assert events == [
-        "start:a:ctx:a",
-        "start:b:ctx:b",
-        "start:c:ctx:c",
-    ]
+    assert events == ["start:a", "start:b", "stop:b", "start:c"]
 
 
 @pytest.mark.asyncio
 async def test_channel_host_stops_in_reverse_order():
     events: list[str] = []
-    host = ChannelHost(lambda channel: f"ctx:{channel.name}")  # type: ignore[arg-type]
+    host = ChannelHost(_make_context_factory())
     host.add(_Channel("a", events))  # type: ignore[arg-type]
     host.add(_Channel("b", events, fail_stop=True))  # type: ignore[arg-type]
     host.add(_Channel("c", events))  # type: ignore[arg-type]
 
+    await host.start_all()
     await host.stop_all()
 
-    assert events == ["stop:c", "stop:b", "stop:a"]
+    assert events == [
+        "start:a",
+        "start:b",
+        "start:c",
+        "stop:c",
+        "stop:b",
+        "stop:a",
+    ]

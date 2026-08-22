@@ -1630,6 +1630,7 @@ class PluginManager:
             plugin_config = _load_plugin_config(
                 data_dir,
                 getattr(cls, "ConfigModel", None),
+                overrides=self._plugin_configs.get(name, {}),
             )
         except Exception as error:
             self._remove_module_tree(mp)
@@ -1936,6 +1937,7 @@ class PluginManager:
             generation.initialization_started = True
             await instance.initialize()
             load_phase = "publish"
+            self._bind_handlers(instance, mp, scope)
             self._register_tools(instance, mp, tool_names)
             self._bind_tool_hooks(instance, mp)
             self._publish_contributions(contributions)
@@ -2744,12 +2746,14 @@ def _with_gate_check(
 def _load_plugin_config(
     data_dir: Path,
     config_model: type[BaseModel] | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
 ) -> Any:
     config_path = data_dir / "config.local.toml"
-    raw_config: dict[str, Any] = {}
+    raw_config: dict[str, Any] = dict(overrides or {})
     if config_path.exists():
         try:
-            raw_config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+            raw_config.update(tomllib.loads(config_path.read_text(encoding="utf-8")))
         except (OSError, tomllib.TOMLDecodeError) as e:
             raise _PluginConfigError(str(e)) from e
     if config_model is not None:

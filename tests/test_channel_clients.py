@@ -779,13 +779,13 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
         )
     ]
     assert any(
-        "临时回复" in text and "事件片段" in text and "思考过程" in text and "事件思考" in text
+        "临时回复" in text and "事件片段" in text and "Thinking" in text and "事件思考" in text
         for text in live_texts
     )
     assert any(
-        text.find("思考过程") < text.find("临时回复")
+        text.find("Thinking") < text.find("临时回复")
         for text in live_texts
-        if "思考过程" in text and "临时回复" in text
+        if "Thinking" in text and "临时回复" in text
     )
     before_threshold_edit = channel._app.bot.edit_message_text.await_count
     await event_bus.observe(
@@ -897,13 +897,13 @@ async def test_telegram_channel_paths(monkeypatch: pytest.MonkeyPatch, tmp_path:
     mod.send_thinking_block.reset_mock()
     sender = channel.create_stream_sender("123")
     assert sender is not None
-    await sender({"thinking_delta": "分析中"})
+    await sender({"thinking_delta": "正在分析中"})
     await channel._on_response(
         OutboundMessage(
             channel="telegram",
             chat_id="123",
             content="final",
-            thinking="分析中",
+            thinking="正在分析中",
             metadata={"streamed_reply": True},
         )
     )

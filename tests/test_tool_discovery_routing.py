@@ -79,7 +79,7 @@ def _make_loop(
             tools=registry,
             session_manager=MagicMock(),
             workspace=tmp_path,
-            memory_services=MemoryServices(engine=FakeMemoryEngine(tmp_path)),
+            memory_services=MemoryServices(engines={"default": FakeMemoryEngine(tmp_path)}),
         ),
         AgentLoopConfig(llm=LLMConfig(max_iterations=10, tool_search_enabled=True)),
     )
