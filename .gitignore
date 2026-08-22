@@ -78,6 +78,9 @@ stdout*.log
 .github/workflows/
 .nova/
 .omo/
+.pi/
+.agents/
+.opencode/
 /memory_annotation_from_*.json
 .squad/
 /nexus-plugin
