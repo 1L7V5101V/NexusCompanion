@@ -51,6 +51,9 @@
 
 - [x] 9.1 全量复跑 `python -m pytest -q --timeout=120 --continue-on-collection-errors`，确认 `0 failed / 0 collection error`，输出存档为 evidence
   - **evidence（full-suite）**：`1031 passed in 105.56s (0:01:45)`，0 failed / 0 collection error / 0 挂起。基线对比：clean main = 83 failed + 5 collection errors → 本 change 后 1031 passed，合并零回归。evidence 同时保留在 git（本 change commit）。
-- [ ] 9.2 提交修复（commit 不加 Co-Authored-By、无 emoji），merge 到 main；记录 merge commit 为 evidence
-- [ ] 9.3 `openspec status --change main-test-debt-cleanup` 确认 artifacts 齐备；更新本 tasks 全部 checkbox
-- [ ] 9.4 若有 roadmap 相关行的证据引用受影响才更新 `openspec/SCALING_ROADMAP.md`（本 change 不新增/改动 capability 行；默认无更新）
+- [x] 9.2 提交修复（commit 不加 Co-Authored-By、无 emoji），merge 到 main；记录 merge commit 为 evidence
+  - commit `e67e56e4`（branch `fix/main-test-debt`）→ fast-forward merge 到 main（main tip = `e67e56e4`）；merge 后工作树仅剩无关的 phase1b/roadmap 改动。evidence：commit + tasks/design 记录。
+- [x] 9.3 `openspec status --change main-test-debt-cleanup` 确认 artifacts 齐备；更新本 tasks 全部 checkbox
+  - `openspec status`：proposal.md / design.md / tasks.md 齐备，specs 按 `.openspec.yaml` skip_specs 正确缺席；全部 checkbox 已勾。
+- [x] 9.4 若有 roadmap 相关行的证据引用受影响才更新 `openspec/SCALING_ROADMAP.md`（本 change 不新增/改动 capability 行；默认无更新）
+  - 本 change 不新增/改动 capability 行，SCALING_ROADMAP.md 无更新（其工作树修改为 phase1b 无关内容，未触碰）。
