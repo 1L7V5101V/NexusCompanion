@@ -81,9 +81,11 @@ if TYPE_CHECKING:
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tool_hooks.base import ToolHook
     from agent.tools.registry import ToolRegistry
+    from core.telemetry.trace_store import TraceStore
     from turn_logging.turn_logger import RoutingTurnLogger
     from session.manager import SessionManager
 from core.common.diagnostic_log import diagnostic_context, diagnostic_line
+from core.telemetry.trace_store import trace_phase
 
 # 1. 统一通过模块 logger 记录关键分支，供排障和回归测试抓取。
 logger = logging.getLogger(__name__)
@@ -174,6 +176,7 @@ class AgentCoreDeps:
     after_reasoning_plugin_modules: list[object] | None = None
     after_turn_plugin_modules: list[object] | None = None
     turn_logger: "RoutingTurnLogger | None" = None
+    trace_store: "TraceStore | None" = None
 
 
 class AgentCore:
@@ -269,6 +272,7 @@ class PassiveTurnPipeline:
         )
         self._after_turn_plugin_modules = list(deps.after_turn_plugin_modules or [])
         self._turn_logger = deps.turn_logger
+        self._trace_store = deps.trace_store
         bus = deps.event_bus or EventBus()
         self._bus = bus
 
@@ -389,8 +393,9 @@ class PassiveTurnPipeline:
             # try/except 只包前置模块链和 reasoning：在派发前兜底并返回错误提示。
             try:
                 # Phase 1: BeforeTurn 模块链（会话、上下文、BeforeTurn 事件）。
-                with diagnostic_context(phase="before_turn"):
-                    before_turn = await self._before_turn.run(state)
+                with trace_phase(self._trace_store, turn_id, "before_turn"):
+                    with diagnostic_context(phase="before_turn"):
+                        before_turn = await self._before_turn.run(state)
                 # TurnState 存内部默认 metadata；BeforeTurnCtx 存插件导出，同名 key 以后者覆盖。
                 state.extra_metadata.update(before_turn.extra_metadata)
                 if before_turn.abort:
@@ -429,10 +434,11 @@ class PassiveTurnPipeline:
                 )
 
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
-                with diagnostic_context(phase="before_reasoning"):
-                    before_reasoning = await self._before_reasoning.run(
-                        BeforeReasoningInput(state=state, before_turn=before_turn)
-                    )
+                with trace_phase(self._trace_store, turn_id, "before_reasoning"):
+                    with diagnostic_context(phase="before_reasoning"):
+                        before_reasoning = await self._before_reasoning.run(
+                            BeforeReasoningInput(state=state, before_turn=before_turn)
+                        )
                 if before_reasoning.abort:
                     logger.info(
                         diagnostic_line(
@@ -473,15 +479,16 @@ class PassiveTurnPipeline:
                 session = state.session
                 if session is None:
                     raise RuntimeError("Passive turn requires TurnState.session")
-                with diagnostic_context(phase="reasoner"):
-                    turn_result = await self._reasoner.run_turn(
-                        msg=msg,
-                        skill_names=list(before_reasoning.skill_names) or None,
-                        session=session,
-                        base_history=None,
-                        retrieved_memory_block=before_reasoning.retrieved_memory_block,
-                        extra_hints=list(before_reasoning.extra_hints) or None,
-                    )
+                with trace_phase(self._trace_store, turn_id, "reasoner"):
+                    with diagnostic_context(phase="reasoner"):
+                        turn_result = await self._reasoner.run_turn(
+                            msg=msg,
+                            skill_names=list(before_reasoning.skill_names) or None,
+                            session=session,
+                            base_history=None,
+                            retrieved_memory_block=before_reasoning.retrieved_memory_block,
+                            extra_hints=list(before_reasoning.extra_hints) or None,
+                        )
                 logger.info(
                     diagnostic_line(
                         "PassiveTurnPipeline.run",
@@ -521,10 +528,11 @@ class PassiveTurnPipeline:
 
             try:
                 # Phase 5: AfterReasoning 模块链（parse、AfterReasoning 事件、持久化、出站消息）。
-                with diagnostic_context(phase="after_reasoning"):
-                    after_reasoning = await self._after_reasoning.run(
-                        AfterReasoningInput(state=state, turn_result=turn_result)
-                    )
+                with trace_phase(self._trace_store, turn_id, "after_reasoning"):
+                    with diagnostic_context(phase="after_reasoning"):
+                        after_reasoning = await self._after_reasoning.run(
+                            AfterReasoningInput(state=state, turn_result=turn_result)
+                        )
             except Exception as exc:
                 logger.exception(
                     diagnostic_line(
@@ -557,14 +565,15 @@ class PassiveTurnPipeline:
 
             try:
                 # Phase 6: AfterTurn 模块链（TurnCommitted fanout、AfterTurn fanout、dispatch）。
-                with diagnostic_context(phase="after_turn"):
-                    outbound = await self._after_turn.run(
-                        TurnSnapshot(
-                            state=state,
-                            outbound=after_reasoning.outbound,
-                            ctx=after_reasoning.ctx,
+                with trace_phase(self._trace_store, turn_id, "after_turn"):
+                    with diagnostic_context(phase="after_turn"):
+                        outbound = await self._after_turn.run(
+                            TurnSnapshot(
+                                state=state,
+                                outbound=after_reasoning.outbound,
+                                ctx=after_reasoning.ctx,
+                            )
                         )
-                    )
             except Exception as exc:
                 logger.exception(
                     diagnostic_line(

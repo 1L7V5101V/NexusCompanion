@@ -5,6 +5,7 @@ import "./styles.css";
 import { api, asPageResult, pageCount, setActiveTenant } from "./api";
 import {
   encodePath,
+  formatNumber,
   formatSessionKeyForTable,
   proactiveFlowLabel,
   proactiveResultLabel,
@@ -18,11 +19,13 @@ import {
 } from "./format";
 import { attachJsonViewers, installDashboardGlobals, jvPlaceholder, loadPluginAssets } from "./pluginRuntime";
 import { exposeRuntime } from "./design/runtime";
+import { MetricTile } from "./design/charts";
 import { PluginDetail, PluginMain } from "./PluginDetail";
 import type {
   DashboardColumn,
   LogRow,
   MessageRow,
+  MetricSample,
   PageResult,
   PluginBatchAction,
   PluginConfig,
@@ -195,6 +198,9 @@ function App(): React.ReactElement {
   const [logTurnType, setLogTurnType] = useState("");
   const [logTotal, setLogTotal] = useState(0);
   const [activeLogDetail, setActiveLogDetail] = useState<Record<string, unknown> | null>(null);
+  const [metricSamples, setMetricSamples] = useState<MetricSample[]>([]);
+  const [metricSpark, setMetricSpark] = useState<Record<string, number[]>>({});
+  const [metricsAt, setMetricsAt] = useState<number | null>(null);
   const [tenantDraft, setTenantDraft] = useState("");
   const [hiddenPlugins, setHiddenPlugins] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
@@ -283,6 +289,22 @@ function App(): React.ReactElement {
     });
   }, [logPage, logTurnType]);
 
+  const loadMetrics = useCallback(async () => {
+    const samples = await api<MetricSample[]>("/metrics?format=json");
+    setMetricSamples(samples);
+    setMetricsAt(Date.now());
+    setMetricSpark((prev) => {
+      const next: Record<string, number[]> = {};
+      for (const name of ["turns_total", "storage_ops_total", "migration_imported_rows_total"]) {
+        const total = samples
+          .filter((s) => s.name === name && s.type === "counter")
+          .reduce((acc, s) => acc + (s.value ?? 0), 0);
+        next[name] = [...(prev[name] ?? []), total].slice(-20);
+      }
+      return next;
+    });
+  }, []);
+
   const loadPluginPanel = useCallback(async (pluginId: string) => {
     const plugin = plugins.find((item) => item.id === pluginId);
     const state = pluginState[pluginId];
@@ -311,12 +333,14 @@ function App(): React.ReactElement {
       await loadProactivePanel();
     } else if (viewMode === "logs") {
       await loadLogPanel();
+    } else if (viewMode === "metrics") {
+      await loadMetrics();
     } else if (viewMode.startsWith("plugin:")) {
       await loadPluginPanel(viewMode.slice(7));
     } else {
       await loadMessages();
     }
-  }, [loadLogPanel, loadMessages, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
+  }, [loadLogPanel, loadMessages, loadMetrics, loadPluginPanel, loadProactiveOverview, loadProactivePanel, loadSessions, viewMode]);
 
   const commitTenant = useCallback((value: string) => {
     const next = value.trim();
@@ -394,6 +418,8 @@ function App(): React.ReactElement {
         await loadProactivePanel();
       } else if (next === "logs") {
         await loadLogPanel();
+      } else if (next === "metrics") {
+        await loadMetrics();
       } else await loadPluginPanel(next.slice(7));
     });
   };
@@ -436,6 +462,14 @@ function App(): React.ReactElement {
   useEffect(() => {
     if (viewMode === "logs") void run(loadLogPanel);
   }, [loadLogPanel, run, viewMode]);
+
+  // 指标视图按 5s 轮询 /metrics，滚动 sparkline 反映最近 20 次采样趋势。
+  useEffect(() => {
+    if (viewMode !== "metrics") return;
+    void run(loadMetrics);
+    const timer = window.setInterval(() => void run(loadMetrics), 5000);
+    return () => window.clearInterval(timer);
+  }, [loadMetrics, run, viewMode]);
 
   const currentPageCount = currentPluginState
     ? pageCount(currentPluginState.total, currentPluginState.pageSize)
@@ -579,6 +613,10 @@ function App(): React.ReactElement {
               <span className="section-tab-label">Logs</span>
               <span className="section-tab-count">{logTotal}</span>
             </button>
+            <button type="button" className={`section-tab ${viewMode === "metrics" ? "active" : ""}`} onClick={() => selectView("metrics")}>
+              <span className="section-tab-label">指标</span>
+              <span className="section-tab-count">{metricSamples.length}</span>
+            </button>
             {plugins.filter((p) => !hiddenPlugins[p.id]).map((plugin) => (
               <button key={plugin.id} type="button" className={`section-tab ${viewMode === `plugin:${plugin.id}` ? "active" : ""}`} onClick={() => selectView(`plugin:${plugin.id}`)}>
                 <span className="section-tab-label">{plugin.label}</span>
@@ -677,6 +715,15 @@ function App(): React.ReactElement {
         ) : (
           <>
             <section className="messages-pane">
+              {viewMode === "metrics" ? (
+                <MetricsView
+                  samples={metricSamples}
+                  spark={metricSpark}
+                  lastUpdated={metricsAt}
+                  onRefresh={() => void run(loadMetrics)}
+                />
+              ) : (
+              <>
               {batchCount > 0 && (
                 <div className="batch-bar">
                   <span>已选 {batchCount} 条</span>
@@ -773,6 +820,8 @@ function App(): React.ReactElement {
                   <button className="ghost" type="button" disabled={currentPage >= currentPageCount} onClick={() => changePage(1)}>›</button>
                 </div>
               </footer>
+              </>
+              )}
             </section>
 
             <aside className="detail-pane">
@@ -893,7 +942,7 @@ function TopbarFilters(props: {
 }): React.ReactElement {
   return (
     <div className="topbar-filters">
-      {props.viewMode.startsWith("plugin:") ? (
+      {props.viewMode === "metrics" ? null : props.viewMode.startsWith("plugin:") ? (
           props.currentPlugin?.renderFilters && props.currentPluginState && props.onSetPluginState
             ? <PluginFilters
                 plugin={props.currentPlugin}
@@ -1074,6 +1123,9 @@ function DetailPane(props: {
   setProactiveSessionFilter(key: string): void;
   onClose: () => void;
 }): React.ReactElement {
+  if (props.viewMode === "metrics") {
+    return <EmptyDetail text="指标是进程级数据，经 /metrics 端点导出，供 Prometheus 抓取与 dashboard 展示，与 session / 记忆数据相互独立。" />;
+  }
   if (props.viewMode.startsWith("plugin:") && props.plugin) {
     return <PluginDetail plugin={props.plugin} item={props.pluginState?.activeDetail ?? null} dispatch={props.dispatch} />;
   }
@@ -1201,10 +1253,144 @@ function proactiveSectionCount(section: string, overview: ProactiveOverview | nu
   return overview.result_counts[section] ?? 0;
 }
 
+// ---- 指标视图（C0 4.2）----
+// 数据源是 /metrics 的 JSON 导出（与 Prometheus 抓取同路径，见 D4）。counter 跨
+// 系列求和，histogram/timer 展示平均耗时（sum/count），spark 是前端轮询滚动窗口。
+function counterTotal(samples: MetricSample[] | undefined): number {
+  if (!samples) return 0;
+  return samples.reduce((acc, s) => acc + (s.value ?? 0), 0);
+}
+
+function histogramCount(samples: MetricSample[] | undefined): number {
+  if (!samples) return 0;
+  return samples.reduce((acc, s) => acc + (s.count ?? 0), 0);
+}
+
+function avgDurationMs(samples: MetricSample[] | undefined): number | null {
+  if (!samples) return null;
+  const count = samples.reduce((acc, s) => acc + (s.count ?? 0), 0);
+  const sum = samples.reduce((acc, s) => acc + (s.sum ?? 0), 0);
+  if (count <= 0) return null;
+  return (sum / count) * 1000;
+}
+
+function labelBreakdown(samples: MetricSample[] | undefined, labelKey: string): string {
+  if (!samples || samples.length === 0) return "";
+  return samples
+    .map((s) => {
+      const label = s.labels?.[labelKey] ?? "?";
+      const n = s.type === "counter" ? (s.value ?? 0) : (s.count ?? 0);
+      return `${label} ${formatNumber(n)}`;
+    })
+    .join(" · ");
+}
+
+function metricClock(ts: number | null): string {
+  if (ts == null) return "等待首次采样";
+  return new Date(ts).toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function MetricsView(props: {
+  samples: MetricSample[];
+  spark: Record<string, number[]>;
+  lastUpdated: number | null;
+  onRefresh(): void;
+}): React.ReactElement {
+  const byName = useMemo(() => {
+    const map = new Map<string, MetricSample[]>();
+    for (const s of props.samples) {
+      const arr = map.get(s.name);
+      if (arr) arr.push(s);
+      else map.set(s.name, [s]);
+    }
+    return map;
+  }, [props.samples]);
+
+  const turnTotal = counterTotal(byName.get("turns_total"));
+  const turnLatency = avgDurationMs(byName.get("turn_duration_seconds"));
+  const turnCount = histogramCount(byName.get("turn_duration_seconds"));
+  const storageTotal = counterTotal(byName.get("storage_ops_total"));
+  const storageLatency = avgDurationMs(byName.get("storage_op_duration_seconds"));
+  const storageCount = histogramCount(byName.get("storage_op_duration_seconds"));
+  const migrationRows = counterTotal(byName.get("migration_imported_rows_total"));
+  const migrationLatency = avgDurationMs(byName.get("migration_batch_duration_seconds"));
+  const migrationCount = histogramCount(byName.get("migration_batch_duration_seconds"));
+  const hasData = props.samples.length > 0;
+
+  return (
+    <div className="metrics-view">
+      <div className="metrics-view-head">
+        <div>
+          <div className="metrics-view-title">进程指标</div>
+          <div className="metrics-view-sub">
+            <span className="metrics-dot" />
+            <span>{metricClock(props.lastUpdated)} · {props.samples.length} 个系列</span>
+          </div>
+        </div>
+        <button className="ghost" type="button" onClick={props.onRefresh}>刷新</button>
+      </div>
+      <div className="metrics-grid">
+        <MetricTile
+          label="Turn 总数"
+          value={formatNumber(turnTotal)}
+          unit="turns"
+          tone="accent"
+          sub={labelBreakdown(byName.get("turns_total"), "channel") || "尚无 turn 记录"}
+          spark={props.spark.turns_total}
+        />
+        <MetricTile
+          label="Turn 平均耗时"
+          value={turnLatency != null ? formatNumber(Math.round(turnLatency)) : "—"}
+          unit="ms"
+          tone="accent"
+          sub={turnCount > 0 ? `${formatNumber(turnCount)} 次采样` : "尚无采样"}
+        />
+        <MetricTile
+          label="存储操作数"
+          value={formatNumber(storageTotal)}
+          unit="ops"
+          tone="success"
+          sub={labelBreakdown(byName.get("storage_ops_total"), "backend") || "尚无存储记录"}
+          spark={props.spark.storage_ops_total}
+        />
+        <MetricTile
+          label="存储操作平均耗时"
+          value={storageLatency != null ? formatNumber(Math.round(storageLatency)) : "—"}
+          unit="ms"
+          tone="success"
+          sub={storageCount > 0 ? `${formatNumber(storageCount)} 次采样` : "尚无采样"}
+        />
+        <MetricTile
+          label="迁移导入行数"
+          value={formatNumber(migrationRows)}
+          unit="rows"
+          tone="warning"
+          sub="由 C1B 导入记录点写入"
+          spark={props.spark.migration_imported_rows_total}
+        />
+        <MetricTile
+          label="迁移批处理平均耗时"
+          value={migrationLatency != null ? formatNumber(Math.round(migrationLatency)) : "—"}
+          unit="ms"
+          tone="warning"
+          sub={migrationCount > 0 ? `${formatNumber(migrationCount)} 次采样` : "尚无采样"}
+        />
+      </div>
+      {!hasData && (
+        <div className="metrics-empty">
+          暂无指标数据。运行负载工具（<code>scripts/load</code>）驱动 turn，或由 C1B / C1D
+          记录点写入存储 / 迁移指标后，这里会展示实时值。
+        </div>
+      )}
+    </div>
+  );
+}
+
 function viewLabel(viewMode: ViewMode, plugin: PluginConfig | null): string {
   if (plugin) return plugin.viewLabel || plugin.label;
   if (viewMode === "proactive") return "proactive";
   if (viewMode === "logs") return "logs";
+  if (viewMode === "metrics") return "指标";
   return "messages";
 }
 
