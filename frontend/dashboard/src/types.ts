@@ -1,6 +1,25 @@
 export type SortOrder = "asc" | "desc";
-export type BuiltinView = "sessions" | "proactive" | "logs";
+export type BuiltinView = "sessions" | "proactive" | "logs" | "metrics";
 export type ViewMode = BuiltinView | `plugin:${string}`;
+
+/** /metrics 导出（JSON 格式）的单个样本：counter 含 value，histogram/timer 含 count/sum/buckets。 */
+export interface MetricBucket {
+  /** 桶上界；+Inf bucket 在 JSON 导出中为 null（JSON 无 Infinity 字面量）。 */
+  le: number | null;
+  count: number;
+}
+
+export interface MetricSample {
+  name: string;
+  type: "counter" | "histogram" | "timer";
+  help?: string;
+  label_names?: string[];
+  labels?: Record<string, string>;
+  value?: number;
+  count?: number;
+  sum?: number;
+  buckets?: MetricBucket[];
+}
 
 export interface PageResult<T> {
   items: T[];

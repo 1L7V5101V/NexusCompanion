@@ -24,13 +24,16 @@ from pydantic import BaseModel
 
 from agent.config_models import Config
 from agent.memory import MemoryStore
+from core.memory.engine import MemoryAdminApi
+from core.telemetry.builtin import register_builtin_metrics
+from core.telemetry.metrics import MetricRegistry, get_default_registry
+from core.telemetry.metrics_export import export_json, export_prometheus_text
 from infra.storage.factory import create_storage_runtime
 from infra.storage.interfaces import MemoryStorage, SessionStorage, TenantContext
 from infra.storage.runtime import StorageRuntime
 from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved, resolve_tenant
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
-from core.memory.engine import MemoryAdminApi
 
 logger = logging.getLogger(__name__)
 
@@ -850,6 +853,7 @@ def create_dashboard_app(
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,  # markdown 旧记忆系统，与 storage.backend 无关
     config: Config | None = None,
+    metric_registry: MetricRegistry | None = None,
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     # dashboard 自建进程级 StorageRuntime（每进程一次）：会话/记忆读接口按请求的
@@ -942,6 +946,10 @@ def create_dashboard_app(
     app = FastAPI(title="Nexus Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
     app.state.memory_store = memory_store or MemoryStore(workspace)  # markdown 旧记忆系统，与 storage.backend 无关
+    # 指标导出源（D1 进程内 MetricRegistry）：显式传入或取进程级默认，并注册
+    # turn/存储/迁移内建族，保证 /metrics 始终包含可展示的指标定义。
+    metrics_registry = metric_registry or get_default_registry()
+    register_builtin_metrics(metrics_registry)
     # Vite build output is gitignored, so a fresh clone (or CI) may lack it. Keep
     # the directory present and mount without a dir check so app creation never
     # depends on the build having run; dashboard_index() reports if it's missing.
@@ -976,6 +984,24 @@ def create_dashboard_app(
             )
         html = index_file.read_text(encoding="utf-8")
         return Response(content=html, media_type="text/html")
+
+    @app.get("/metrics")
+    def export_metrics(format: str = "") -> Response:
+        """指标导出端点（D1 双格式）：默认 Prometheus 文本，?format=json 返回 JSON。
+
+        Prometheus 抓取器可直接刮取；dashboard metric tile 经 ?format=json 读同一份
+        export 数据（D4：与真实消费者同路径）。
+        """
+        samples = metrics_registry.snapshot()
+        if format == "json":
+            return Response(
+                content=export_json(samples),
+                media_type="application/json; charset=utf-8",
+            )
+        return Response(
+            content=export_prometheus_text(samples),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.get("/api/dashboard/plugins")
     def list_dashboard_plugins() -> list[dict[str, Any]]:

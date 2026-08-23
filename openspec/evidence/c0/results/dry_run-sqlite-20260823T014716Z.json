@@ -1,0 +1,45 @@
+{
+  "duration_seconds": 0.0,
+  "finished_at": "20260823T014716Z",
+  "git_revision": "9455faef39e03fe398ff253027f4d419d90db636",
+  "notes": [
+    "dry-run：未执行真实 turn，attempted=0 为预期"
+  ],
+  "runs": {
+    "sqlite": {
+      "backend": "sqlite",
+      "by_bucket": {},
+      "overall": {
+        "attempted": 0,
+        "failed": 0,
+        "latency_ms": {
+          "max": null,
+          "mean": null,
+          "p50": null,
+          "p90": null,
+          "p95": null,
+          "p99": null
+        },
+        "succeeded": 0,
+        "success_rate": null
+      }
+    }
+  },
+  "spec": {
+    "backend": "sqlite",
+    "channels": [
+      "cli"
+    ],
+    "concurrency": 2,
+    "dry_run": true,
+    "reasoner": "script",
+    "rounds": 5,
+    "scenario": "dry_run",
+    "seed": 42,
+    "tenants": [
+      "default"
+    ],
+    "workspace": ""
+  },
+  "started_at": "20260823T014716Z"
+}
