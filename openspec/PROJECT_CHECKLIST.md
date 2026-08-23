@@ -14,10 +14,10 @@
 
 ## 当前进度（来自 SCALING_ROADMAP §5）
 
-- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；C0 前置 change `c0-observability-load` 已 apply 并 archive（代码在 `feature/c0-observability` 分支，待 merge main 后 verified）；Phase 1B change（C1B+C1C）planning 完成待 apply。
+- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；C0 可观测性与负载工具 verified（merge `a777ded2`，change `c0-observability-load` 已 archive）；Phase 1B change（C1B+C1C）planning 完成待 apply。
 - **current focus**：Phase 1B（C1B 迁移工具 + C1C 主数据源切换）——OpenSpec change [`phase1b-migration-cutover`](changes/phase1b-migration-cutover/) 已创建（4/4 artifacts，`openspec validate` 通过），apply 在独立 branch/worktree 执行。
 - **current blocker**：无 hard blocker。
-- **next decision**：开始 Phase 1B apply（建立 `feature/phase1b-migration` worktree）；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）；C0 change `c0-observability-load` 已 archive（`2026-08-23-c0-observability-load`），待 merge `feature/c0-observability` 到 main 后标 verified。
+- **next decision**：开始 Phase 1B apply（建立 `feature/phase1b-migration` worktree）；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）；C0 change `c0-observability-load` 已 archive 并 merge main（`a777ded2`），capability 已标 verified。
 - 详见 [`SCALING_ROADMAP.md` §5](./SCALING_ROADMAP.md)。
 
 ## GOV 治理与文档基线
@@ -43,10 +43,10 @@
 
 > change：[`c0-observability-load`](changes/archive/2026-08-23-c0-observability-load/)（已 archive `2026-08-23-c0-observability-load`；spec `observability-load` 已 sync 至 [spec](specs/observability-load/spec.md)）；与 Phase 1B 并行，为 C1B 基准与 C1D 验收提供可重复工具
 
-- [ ] **C0 可观测性与负载工具** — 可重复负载/基准工具、指标导出、turn_id 追踪（分段到当前 hop）；`in_progress`（change 已 archive、代码在 `feature/c0-observability` 已验证，待 merge main 满足 §8 后勾选）
-  - [ ] **可重复负载工具**（turn 级 harness，sqlite/postgres 双后端，结果 JSON 入库） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **指标注册与导出**（JSON + Prometheus 文本，dashboard `/metrics` 消费） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **turn_id 统一追踪表面**（当前 hop；C2/C3 端到端明确留后） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
+- [x] **C0 可观测性与负载工具** — 可重复负载/基准工具、指标导出、turn_id 追踪（分段到当前 hop）；`verified`
+  - [x] **可重复负载工具**（turn 级 harness，sqlite/postgres 双后端，结果 JSON 入库） → [load-harness 证据](evidence/c0/load-harness.md) · [results](evidence/c0/results/)
+  - [x] **指标注册与导出**（JSON + Prometheus 文本，dashboard `/metrics` 消费） → [dashboard-metrics 证据](evidence/c0/dashboard-metrics.md)
+  - [x] **turn_id 统一追踪表面**（当前 hop；C2/C3 端到端明确留后） → [trace-store 证据](evidence/c0/trace-store.md)
 
 ## Phase 1B 进行中（M5/M6，独立 branch/worktree）
 
