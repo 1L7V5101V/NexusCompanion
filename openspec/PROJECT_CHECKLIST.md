@@ -14,10 +14,10 @@
 
 ## 当前进度（来自 SCALING_ROADMAP §5）
 
-- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）。
-- **current focus**：Phase 1B（C1B 迁移工具 + C1C 主数据源切换）在独立 branch/worktree 执行。
+- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；Phase 1B change（C1B+C1C）planning 完成待 apply；C0 前置 change `c0-observability-load` planning 完成待 apply。
+- **current focus**：Phase 1B（C1B 迁移工具 + C1C 主数据源切换）——OpenSpec change [`phase1b-migration-cutover`](changes/phase1b-migration-cutover/) 已创建（4/4 artifacts，`openspec validate` 通过），apply 在独立 branch/worktree 执行。
 - **current blocker**：无 hard blocker。
-- **next decision**：Phase 1B（M5/M6）启动范围与迁移状态机细化；是否创建 C0 的 OpenSpec change。
+- **next decision**：开始 Phase 1B apply（建立 `feature/phase1b-migration` worktree）；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）；C0 change `c0-observability-load` 已创建（4/4 planning 完成，前置 Phase 1B 之前，与 Phase 1B 并行）。
 - 详见 [`SCALING_ROADMAP.md` §5](./SCALING_ROADMAP.md)。
 
 ## GOV 治理与文档基线
@@ -39,7 +39,18 @@
   - [x] **5000 tenant provisioning 基准** → [m4h-4-benchmark](records/phase1-storage/m4h-4-benchmark.md) · [原始结果](evidence/phase1-storage/results/m4h4_partition_provisioning.json)
   - [x] **merge readiness 与全量验证**（M4H-5） → [m4.5-architecture-hardening](records/phase1-storage/m4.5-architecture-hardening.md)
 
+## Phase 0 前置 · C0 可观测性与负载工具（独立 change/worktree）
+
+> change：[`c0-observability-load`](changes/c0-observability-load/)（planning 4/4，待 apply；spec `observability-load` 增量见 change specs/）；与 Phase 1B 并行，为 C1B 基准与 C1D 验收提供可重复工具
+
+- [ ] **C0 可观测性与负载工具** — 可重复负载/基准工具、指标导出、turn_id 追踪（分段到当前 hop）；`planned`
+  - [ ] **可重复负载工具**（turn 级 harness，sqlite/postgres 双后端，结果 JSON 入库） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
+  - [ ] **指标注册与导出**（JSON + Prometheus 文本，dashboard `/metrics` 消费） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
+  - [ ] **turn_id 统一追踪表面**（当前 hop；C2/C3 端到端明确留后） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
+
 ## Phase 1B 进行中（M5/M6，独立 branch/worktree）
+
+> change：[`phase1b-migration-cutover`](changes/phase1b-migration-cutover/)（planning 完成，待 apply；spec `storage-migration` 增量见 change specs/）
 
 - [ ] **C1B 迁移工具（M5）** — 批量 COPY、断点续传、机器可读校验；`planned`
   - [ ] **批量 COPY / 批量 insert**（可配置 batch、进度） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
@@ -60,10 +71,6 @@
 
 ## Phase 2 后续能力
 
-- [ ] **C0 可观测性与负载工具** — turn_id 全链路追踪、指标导出、可重复负载工具；`proposed`
-  - [ ] **turn_id 全链路追踪**（ingress→queue→worker→LLM→store→delivery） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **指标导出与 dashboard** → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **可重复负载工具**（负载脚本与数据入库） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
 - [ ] **C2 单进程并发与容量治理** — TurnAdmission + ModelGateway：同 session 串行、有界 inflight、限流预算；`planned`
   - [ ] **TurnAdmission**（同 session 串行、有界 inflight） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
   - [ ] **ModelGateway 限流预算**（per provider/model RPM/TPM） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
