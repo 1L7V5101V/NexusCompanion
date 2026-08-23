@@ -1,0 +1,60 @@
+{
+  "duration_seconds": 2.298902,
+  "finished_at": "20260823T015451Z",
+  "git_revision": "9455faef39e03fe398ff253027f4d419d90db636",
+  "notes": [],
+  "runs": {
+    "postgres": {
+      "backend": "postgres",
+      "by_bucket": {
+        "default:cli": {
+          "attempted": 20,
+          "failed": 10,
+          "latency_ms": {
+            "max": 263.95839999895543,
+            "mean": 185.76406499778386,
+            "p50": 181.0906999744475,
+            "p90": 223.19859999697655,
+            "p95": 242.92379996040836,
+            "p99": 263.95839999895543
+          },
+          "succeeded": 10,
+          "success_rate": 0.5
+        }
+      },
+      "overall": {
+        "attempted": 20,
+        "failed": 10,
+        "latency_ms": {
+          "max": 263.95839999895543,
+          "mean": 185.76406499778386,
+          "p50": 181.0906999744475,
+          "p90": 223.19859999697655,
+          "p95": 242.92379996040836,
+          "p99": 263.95839999895543
+        },
+        "succeeded": 10,
+        "success_rate": 0.5
+      }
+    }
+  },
+  "spec": {
+    "backend": "postgres",
+    "channels": [
+      "cli"
+    ],
+    "concurrency": 5,
+    "dry_run": false,
+    "reasoner": "script",
+    "rounds": 20,
+    "scenario": "simulate",
+    "seed": 42,
+    "sim_fail_rate": 0.3,
+    "sim_latency_ms": 100.0,
+    "tenants": [
+      "default"
+    ],
+    "workspace": "openspec/evidence/c0/workspace"
+  },
+  "started_at": "20260823T015449Z"
+}
