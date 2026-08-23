@@ -1,0 +1,60 @@
+{
+  "duration_seconds": 2.27828,
+  "finished_at": "20260823T015423Z",
+  "git_revision": "9455faef39e03fe398ff253027f4d419d90db636",
+  "notes": [],
+  "runs": {
+    "sqlite": {
+      "backend": "sqlite",
+      "by_bucket": {
+        "default:cli": {
+          "attempted": 20,
+          "failed": 10,
+          "latency_ms": {
+            "max": 203.15800001844764,
+            "mean": 162.6297150127357,
+            "p50": 158.6782000376843,
+            "p90": 192.28730001486838,
+            "p95": 197.86249997559935,
+            "p99": 203.15800001844764
+          },
+          "succeeded": 10,
+          "success_rate": 0.5
+        }
+      },
+      "overall": {
+        "attempted": 20,
+        "failed": 10,
+        "latency_ms": {
+          "max": 203.15800001844764,
+          "mean": 162.6297150127357,
+          "p50": 158.6782000376843,
+          "p90": 192.28730001486838,
+          "p95": 197.86249997559935,
+          "p99": 203.15800001844764
+        },
+        "succeeded": 10,
+        "success_rate": 0.5
+      }
+    }
+  },
+  "spec": {
+    "backend": "sqlite",
+    "channels": [
+      "cli"
+    ],
+    "concurrency": 5,
+    "dry_run": false,
+    "reasoner": "script",
+    "rounds": 20,
+    "scenario": "simulate",
+    "seed": 42,
+    "sim_fail_rate": 0.3,
+    "sim_latency_ms": 100.0,
+    "tenants": [
+      "default"
+    ],
+    "workspace": "openspec/evidence/c0/workspace"
+  },
+  "started_at": "20260823T015421Z"
+}

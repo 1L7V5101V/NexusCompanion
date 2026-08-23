@@ -1390,3 +1390,49 @@ body {
   width: 14rem;
   flex-shrink: 0;
 }
+
+/* ── Metrics view (C0 4.2) ── */
+
+.metrics-view {
+  @apply flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-5;
+}
+
+.metrics-view-head {
+  @apply flex flex-shrink-0 items-start justify-between gap-4;
+}
+
+.metrics-view-title {
+  @apply font-mono text-[12px] font-semibold uppercase tracking-[0.16em] text-fg;
+}
+
+.metrics-view-sub {
+  @apply mt-1.5 flex items-center gap-2 font-mono text-[11px] tabular-nums text-subtle;
+}
+
+.metrics-dot {
+  @apply h-1.5 w-1.5 rounded-full bg-success;
+  box-shadow: 0 0 8px -1px rgb(var(--color-success-rgb) / 0.7);
+  animation: metrics-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes metrics-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.metrics-empty {
+  @apply rounded-2xl border border-dashed border-border bg-surface px-5 py-6 font-mono text-[11.5px] leading-relaxed text-muted;
+}
+
