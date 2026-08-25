@@ -1,0 +1,8 @@
+{
+  "telegram": "tenant_alpha",
+  "discord": "tenant_alpha",
+  "whatsapp": "tenant_beta",
+  "wechat": "tenant_beta",
+  "slack": "tenant_gamma",
+  "memory": "tenant_memory"
+}
