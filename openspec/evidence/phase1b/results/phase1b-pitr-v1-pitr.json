@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "workspace": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample",
+    "pg_url": "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+    "batch_size": 5000,
+    "run_id": "phase1b-pitr-v1",
+    "checkpoint_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\checkpoints\\phase1b-pitr-v1.json"
+  },
+  "elapsed_sec": 9.235,
+  "slo": {
+    "rpo_max_seconds": 300,
+    "rto_max_seconds": 1800
+  },
+  "scratch_db": "nexus_pitrtest",
+  "baseline_counts": {
+    "sessions": 64,
+    "messages": 10008,
+    "memory_items": 2004,
+    "memory_replacements": 50,
+    "consolidation_events": 120,
+    "deliveries": 120,
+    "session_state": 60,
+    "context_only_timestamps": 60,
+    "tick_log": 60,
+    "tick_step_log": 20,
+    "scheduled_jobs": 15,
+    "app_configs": 2
+  },
+  "restored_counts": {
+    "sessions": 64,
+    "messages": 10008,
+    "memory_items": 2004,
+    "memory_replacements": 50,
+    "consolidation_events": 120,
+    "deliveries": 120,
+    "session_state": 60,
+    "context_only_timestamps": 60,
+    "tick_log": 60,
+    "tick_step_log": 20,
+    "scheduled_jobs": 15,
+    "app_configs": 2
+  },
+  "counts_match": true,
+  "post_t0_marker_absent": true,
+  "runbook_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\runbook-pitr.md",
+  "ok": true
+}

@@ -1,0 +1,47 @@
+{
+  "meta": {
+    "workspace": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample",
+    "pg_url": "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+    "batch_size": 5000,
+    "run_id": "phase1b-audit-v1",
+    "checkpoint_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\checkpoints\\phase1b-audit-v1.json"
+  },
+  "elapsed_sec": 0.219,
+  "cycle": {
+    "prefix": "audit",
+    "n_sessions": 3,
+    "messages_per_session": 2
+  },
+  "cycle_reconciliation": [
+    {
+      "session_key": "audit:0",
+      "next_seq": 2,
+      "message_count": 2,
+      "turn_readback": true
+    },
+    {
+      "session_key": "audit:1",
+      "next_seq": 2,
+      "message_count": 2,
+      "turn_readback": true
+    },
+    {
+      "session_key": "audit:2",
+      "next_seq": 2,
+      "message_count": 2,
+      "turn_readback": true
+    }
+  ],
+  "memory_readback": [
+    true,
+    true,
+    true
+  ],
+  "shadow": {
+    "stopped": true,
+    "sqlite_archive_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sqlite_archive.json"
+  },
+  "ok": true,
+  "evidence_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-audit-v1-audit.json",
+  "state": "S3"
+}

@@ -1,0 +1,200 @@
+{
+  "meta": {
+    "workspace": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample",
+    "pg_url": "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+    "batch_size": 5000,
+    "run_id": "idem-rerun",
+    "checkpoint_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\checkpoints\\idem-rerun.json"
+  },
+  "elapsed_sec": 2.765,
+  "plan": {
+    "dry_run": false,
+    "source_identities": [
+      "discord",
+      "memory",
+      "slack",
+      "telegram",
+      "wechat",
+      "whatsapp"
+    ],
+    "mapping": {
+      "telegram": "tenant_alpha",
+      "discord": "tenant_alpha",
+      "whatsapp": "tenant_beta",
+      "wechat": "tenant_beta",
+      "slack": "tenant_gamma",
+      "memory": "tenant_memory"
+    },
+    "tenants": [
+      "tenant_alpha",
+      "tenant_beta",
+      "tenant_gamma",
+      "tenant_memory"
+    ],
+    "tables": [
+      "sessions",
+      "messages",
+      "memory_items",
+      "memory_replacements",
+      "consolidation_events",
+      "deliveries",
+      "session_state",
+      "context_only_timestamps",
+      "tick_log",
+      "tick_step_log",
+      "scheduled_jobs",
+      "app_configs"
+    ]
+  },
+  "tables": {
+    "sessions": {
+      "table": "sessions",
+      "source_count": 60,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 60,
+      "tenants": {
+        "tenant_alpha": 24,
+        "tenant_gamma": 12,
+        "tenant_beta": 24
+      }
+    },
+    "messages": {
+      "table": "messages",
+      "source_count": 10000,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 10000,
+      "tenants": {
+        "tenant_alpha": 4008,
+        "tenant_gamma": 1992,
+        "tenant_beta": 4000
+      }
+    },
+    "memory_items": {
+      "table": "memory_items",
+      "source_count": 2000,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 2000,
+      "tenants": {
+        "tenant_memory": 2000
+      }
+    },
+    "memory_replacements": {
+      "table": "memory_replacements",
+      "source_count": 50,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 50,
+      "tenants": {
+        "tenant_memory": 50
+      }
+    },
+    "consolidation_events": {
+      "table": "consolidation_events",
+      "source_count": 120,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 120,
+      "tenants": {
+        "tenant_memory": 120
+      }
+    },
+    "deliveries": {
+      "table": "deliveries",
+      "source_count": 120,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 120,
+      "tenants": {
+        "tenant_alpha": 48,
+        "tenant_gamma": 24,
+        "tenant_beta": 48
+      }
+    },
+    "session_state": {
+      "table": "session_state",
+      "source_count": 60,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 60,
+      "tenants": {
+        "tenant_alpha": 24,
+        "tenant_gamma": 12,
+        "tenant_beta": 24
+      }
+    },
+    "context_only_timestamps": {
+      "table": "context_only_timestamps",
+      "source_count": 60,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 60,
+      "tenants": {
+        "tenant_alpha": 24,
+        "tenant_beta": 24,
+        "tenant_gamma": 12
+      }
+    },
+    "tick_log": {
+      "table": "tick_log",
+      "source_count": 60,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 60,
+      "tenants": {
+        "tenant_alpha": 24,
+        "tenant_beta": 24,
+        "tenant_gamma": 12
+      }
+    },
+    "tick_step_log": {
+      "table": "tick_step_log",
+      "source_count": 20,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 20,
+      "tenants": {
+        "tenant_alpha": 8,
+        "tenant_beta": 8,
+        "tenant_gamma": 4
+      }
+    },
+    "scheduled_jobs": {
+      "table": "scheduled_jobs",
+      "source_count": 15,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 15,
+      "tenants": {
+        "tenant_alpha": 6,
+        "tenant_beta": 6,
+        "tenant_gamma": 3
+      }
+    },
+    "app_configs": {
+      "table": "app_configs",
+      "source_count": 2,
+      "inserted": 0,
+      "skipped_resume": 0,
+      "skipped_invalid": 0,
+      "skipped_conflict": 2,
+      "tenants": {
+        "tenant_memory": 2
+      }
+    }
+  },
+  "ok": true
+}

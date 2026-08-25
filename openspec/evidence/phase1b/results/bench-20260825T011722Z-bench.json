@@ -1,0 +1,88 @@
+{
+  "meta": {
+    "bench": "phase1b-copy-vs-rowwise",
+    "run_id": "bench-20260825T011722Z",
+    "workspace": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample",
+    "batch_size": 5000,
+    "total_source_rows": 12567,
+    "total_inserted": 12567
+  },
+  "copy_elapsed_sec": 10.235,
+  "rowwise_elapsed_sec": 17.703,
+  "speedup_x": 1.73,
+  "parity": {
+    "sessions": {
+      "source": 60,
+      "inserted": 60,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "messages": {
+      "source": 10000,
+      "inserted": 10000,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "memory_items": {
+      "source": 2000,
+      "inserted": 2000,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "memory_replacements": {
+      "source": 50,
+      "inserted": 50,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "consolidation_events": {
+      "source": 120,
+      "inserted": 120,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "deliveries": {
+      "source": 120,
+      "inserted": 120,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "session_state": {
+      "source": 60,
+      "inserted": 60,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "context_only_timestamps": {
+      "source": 60,
+      "inserted": 60,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "tick_log": {
+      "source": 60,
+      "inserted": 60,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "tick_step_log": {
+      "source": 20,
+      "inserted": 20,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "scheduled_jobs": {
+      "source": 15,
+      "inserted": 15,
+      "conflict": 0,
+      "invalid": 0
+    },
+    "app_configs": {
+      "source": 2,
+      "inserted": 2,
+      "conflict": 0,
+      "invalid": 0
+    }
+  },
+  "ok": true
+}
