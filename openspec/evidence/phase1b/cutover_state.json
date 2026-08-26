@@ -1,0 +1,71 @@
+{
+  "current": "S3",
+  "phases": {
+    "S0": {
+      "entered_at": null,
+      "exited_at": "2026-08-25T01:53:10Z",
+      "enter_evidence": [],
+      "exit_evidence": []
+    },
+    "S1": {
+      "entered_at": "2026-08-25T01:53:10Z",
+      "exited_at": "2026-08-25T01:57:36Z",
+      "enter_evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-import-v2-import.json"
+      ],
+      "exit_evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-verify-v2-verify.json"
+      ]
+    },
+    "S2": {
+      "entered_at": "2026-08-25T01:57:36Z",
+      "exited_at": "2026-08-25T01:57:44Z",
+      "enter_evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-promote-v1-promote.json",
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\promote-config.toml"
+      ],
+      "exit_evidence": []
+    },
+    "S3": {
+      "entered_at": "2026-08-25T01:57:44Z",
+      "exited_at": null,
+      "enter_evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-audit-v1-audit.json",
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sqlite_archive.json"
+      ],
+      "exit_evidence": []
+    }
+  },
+  "history": [
+    {
+      "from": "S0",
+      "to": "S1",
+      "at": "2026-08-25T01:53:10Z",
+      "note": "快照导入完成，生产仍 SQLite（S1 shadow 校验窗口）",
+      "evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-import-v2-import.json"
+      ]
+    },
+    {
+      "from": "S1",
+      "to": "S2",
+      "at": "2026-08-25T01:57:36Z",
+      "note": "config backend=postgres；staging 全链路 smoke 通过；新写入以 PG 为准；turn control 保持 SQLite 审计副本（D6）",
+      "evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-promote-v1-promote.json",
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\promote-config.toml"
+      ]
+    },
+    {
+      "from": "S2",
+      "to": "S3",
+      "at": "2026-08-25T01:57:44Z",
+      "note": "业务周期对账通过；shadow 停止，SQLite 归档只读快照",
+      "evidence": [
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-audit-v1-audit.json",
+        "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sqlite_archive.json"
+      ]
+    }
+  ],
+  "updated_at": "2026-08-25T01:57:44Z"
+}

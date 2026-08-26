@@ -1,0 +1,10 @@
+{
+  "archived_at": "2026-08-25T01:57:44Z",
+  "mode": "readonly-archive",
+  "databases": [
+    "sessions.db",
+    "memory/memory2.db",
+    "proactive.db"
+  ],
+  "note": "S2→S3 audit：停止 shadow 写入，SQLite 仅归档只读快照"
+}
