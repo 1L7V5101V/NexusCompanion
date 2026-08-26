@@ -36,6 +36,7 @@ plugins/*/config.local.toml
 logs/
 /logs
 workspace/
+.load-workspace/
 data/
 **/.kv.json
 plugins/**/.data/
