@@ -1,0 +1,44 @@
+{
+  "meta": {
+    "workspace": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample",
+    "pg_url": "postgresql://nexus:nexus_dev@localhost:5433/nexus",
+    "batch_size": 5000,
+    "run_id": "phase1b-promote-v1",
+    "checkpoint_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\checkpoints\\phase1b-promote-v1.json"
+  },
+  "elapsed_sec": 0.422,
+  "gate": {
+    "ok": true,
+    "missing": []
+  },
+  "config_flip": {
+    "path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\promote-config.toml",
+    "backend": "postgres",
+    "postgres_url": "postgresql://nexus:nexus_dev@localhost:5433/nexus"
+  },
+  "smoke": {
+    "session_key": "smoke:1000",
+    "tenant": "tenant_a",
+    "messages_written": 2,
+    "session_meta_found": true,
+    "next_seq_readback": 2,
+    "message_count_readback": 2,
+    "turn_id": "turn-smoke-1000",
+    "turn_readback": true,
+    "turn_store_db": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample\\turn_audit.db",
+    "memory_item_id": "82d3cac64ec4",
+    "memory_readback": true,
+    "memory_tenant": "tenant_mem"
+  },
+  "smoke_ok": true,
+  "dual_store": {
+    "primary": "postgres",
+    "turn_control": "sqlite-audit-copy",
+    "turn_store_db": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\sample\\turn_audit.db",
+    "declaration": "PG 为 sessions/messages/memory_items/memory_replacements/插件数据的primary；turn control plane（turn 记录 + 查询日志）在审计窗口（S2/S3）继续落 SQLite 审计副本。turn 记录是可由 PG 消息重建的派生态，非 source of truth；S2 期间 SQLite turns store 保留可读审计副本，回滚到 S1 时 SQLite 仍完整；完整 turn control 上 PG 属Phase 2（C2/C3 transactional outbox + turn admission）。",
+    "recovery_rollback": "S1 内回滚 → SQLite primary，turn 审计副本保持完整；S2 起无PG→SQLite 反向同步，回退应用版本后仍指向 PG。"
+  },
+  "ok": true,
+  "evidence_path": "D:\\.Projects\\NexusCompanion\\.claude\\worktrees\\feature+phase1b-migration\\openspec\\evidence\\phase1b\\results\\phase1b-promote-v1-promote.json",
+  "state": "S2"
+}

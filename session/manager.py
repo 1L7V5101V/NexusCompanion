@@ -315,14 +315,27 @@ class SessionManager:
         self._runtime = storage_runtime
         if session_store is not None:
             self._store: SessionStorage = session_store
+            # 控制面（turn 持久化）始终要求 SQLite SessionStore：显式传入 SQLite
+            # 即复用，否则自建审计副本（D6 dual-store）。
+            self._control_store: SessionStore = (
+                session_store if isinstance(session_store, SessionStore)
+                else SessionStore(self.db_path)
+            )
+            self._owns_control_store = not isinstance(session_store, SessionStore)
         elif storage_runtime is not None:
             # 外部消费方（presence/dashboard/meta tools 等）仍读 `_store` 获取默认
             # 租户 view；本类内部方法一律走 _view(tenant_id) 按租户解析。
             self._store = storage_runtime.for_tenant(
                 TenantContext(tenant_id=DEFAULT_TENANT)
             ).sessions
+            # D6 dual-store：PG-primary 下 turn 控制面（create_turn/read_turn 等）
+            # 保留 SQLite 审计副本，不随用户数据切到 PG；审计窗口覆盖 S2/S3。
+            self._control_store = SessionStore(workspace / "turn_audit.db")
+            self._owns_control_store = True
         else:
             self._store = SessionStore(self.db_path)
+            self._control_store = self._store
+            self._owns_control_store = False
         self._owns_store = session_store is None and storage_runtime is None
         self._cache: dict[tuple[str, str], Session] = {}
         self._write_locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -344,26 +357,23 @@ class SessionManager:
 
     @property
     def control_store(self) -> SessionStore:
-        """控制面使用的 SessionStore 实例。
+        """控制面使用的 SessionStore 实例（turn 持久化 create_turn/read_turn）。
 
-        turn 持久化（create_turn/read_turn 等）当前仅由 SQLite SessionStore 提供，
-        PostgreSQL adapter 未实现，故此处按具体类型收窄并显式失败。
+        D6 dual-store：PG-primary 下返回 SQLite turn 审计副本（turn_audit.db），
+        PostgreSQL backend 不承担 turn 记录持久化；SQLite 单库模式即主 store。
         """
-        store = self._view(DEFAULT_TENANT)
-        if not isinstance(store, SessionStore):
-            raise RuntimeError(
-                "control plane turn persistence requires SQLite SessionStore; "
-                "PostgreSQL backend 尚未实现 turns 表"
-            )
-        return store
+        return self._control_store
 
     def close(self) -> None:
         """关闭本类自有的 SessionStore 连接。
 
-        runtime 模式下连接归 StorageRuntime 持有，这里不代为关闭。
+        runtime 模式下用户数据连接归 StorageRuntime 持有，这里不代为关闭；
+        仅关闭本类自建的控制面审计副本（如有）。
         """
         if self._owns_store:
             self._store.close()
+        if self._owns_control_store:
+            self._control_store.close()
 
     def _lock(self, key: tuple[str, str]) -> asyncio.Lock:
         if key not in self._write_locks:

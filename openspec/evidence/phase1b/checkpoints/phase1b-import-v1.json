@@ -1,0 +1,45 @@
+{
+  "run_id": "phase1b-import-v1",
+  "tables": {
+    "sessions": [
+      "whatsapp:1035"
+    ],
+    "messages": [
+      "whatsapp:1035",
+      167
+    ],
+    "memory_items": [
+      "mem01999"
+    ],
+    "memory_replacements": [
+      50
+    ],
+    "consolidation_events": [
+      "m0000119"
+    ],
+    "deliveries": [
+      "whatsapp:1035",
+      "d-35-1"
+    ],
+    "session_state": [
+      "whatsapp:1035",
+      "last_proactive_at"
+    ],
+    "context_only_timestamps": [
+      60
+    ],
+    "tick_log": [
+      60
+    ],
+    "tick_step_log": [
+      20
+    ],
+    "scheduled_jobs": [
+      "job-056"
+    ],
+    "app_configs": [
+      "proactive_quota"
+    ]
+  },
+  "updated_at": ""
+}
