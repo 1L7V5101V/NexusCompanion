@@ -14,10 +14,10 @@
 
 ## 当前进度（来自 SCALING_ROADMAP §5）
 
-- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；C0 可观测性与负载工具 verified（merge `a777ded2`，change `c0-observability-load` 已 archive）；Phase 1B change（C1B+C1C）planning 完成待 apply。
-- **current focus**：Phase 1B（C1B 迁移工具 + C1C 主数据源切换）——OpenSpec change [`phase1b-migration-cutover`](changes/phase1b-migration-cutover/) 已创建（4/4 artifacts，`openspec validate` 通过），apply 在独立 branch/worktree 执行。
-- **current blocker**：无 hard blocker。
-- **next decision**：开始 Phase 1B apply（建立 `feature/phase1b-migration` worktree）；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）；C0 change `c0-observability-load` 已 archive 并 merge main（`a777ded2`），capability 已标 verified。
+- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；C0 可观测性与负载工具 verified（merge `a777ded2`，change `c0-observability-load` 已 archive）；Phase 1B（C1B+C1C）verified（merge `1788de40`，change `phase1b-migration-cutover` 已 archive）。
+- **current focus**：C1D 生产规模验证（M7，Phase 1C）——真实 1024 维 embedding、5000 并发用户、autovacuum/REINDEX、PITR 生产基准；或按证据推进 C2/C3。
+- **current blocker**：无 hard blocker。C1D 生产基准需生产硬件与真实数据分布。
+- **next decision**：开始 Phase 1C（C1D 生产规模验证）——确定生产硬件与真实数据分布基线；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）。
 - 详见 [`SCALING_ROADMAP.md` §5](./SCALING_ROADMAP.md)。
 
 ## GOV 治理与文档基线
@@ -48,18 +48,19 @@
   - [x] **指标注册与导出**（JSON + Prometheus 文本，dashboard `/metrics` 消费） → [dashboard-metrics 证据](evidence/c0/dashboard-metrics.md)
   - [x] **turn_id 统一追踪表面**（当前 hop；C2/C3 端到端明确留后） → [trace-store 证据](evidence/c0/trace-store.md)
 
-## Phase 1B 进行中（M5/M6，独立 branch/worktree）
+## Phase 1B 已完成（M5/M6，merge `1788de40`）
 
-> change：[`phase1b-migration-cutover`](changes/phase1b-migration-cutover/)（planning 完成，待 apply；spec `storage-migration` 增量见 change specs/）
+> change：[`phase1b-migration-cutover`](changes/archive/2026-08-26-phase1b-migration-cutover/)（已 archive `2026-08-26-phase1b-migration-cutover`；spec `storage-migration` 已 sync 至 [spec](specs/storage-migration/spec.md)）
 
-- [ ] **C1B 迁移工具（M5）** — 批量 COPY、断点续传、机器可读校验；`planned`
-  - [ ] **批量 COPY / 批量 insert**（可配置 batch、进度） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **断点续传与幂等重跑** → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **机器可读校验（逐表行数/字段 hash/语义抽样）+ 迁移证据入库** → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-- [ ] **C1C 主数据源切换（M6）** — S0-S4 状态机切 PostgreSQL primary；`planned`
-  - [ ] **S0-S4 状态机**（SQLite primary → shadow import → PG shadow write/read verify → PG primary → SQLite retirement） → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **staging cutover + 对账** → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
-  - [ ] **PITR 恢复与回滚演练** → outcome 见 [SCALING_ROADMAP §4](SCALING_ROADMAP.md)
+- [x] **C1B 迁移工具（M5）** — 批量 COPY、断点续传、机器可读校验；`verified`
+  - [x] **批量 COPY / 批量 insert**（可配置 batch、进度） → [导入证据](evidence/phase1b/results/phase1b-import-v1-import.json)（12,567 行，10.11s）
+  - [x] **断点续传与幂等重跑** → [idem 证据](evidence/phase1b/results/idem-rerun-import.json) · [checkpoint.py](../scripts/migrate/checkpoint.py)
+  - [x] **机器可读校验（逐表行数/字段 hash/语义抽样）+ 迁移证据入库** → [校验证据](evidence/phase1b/results/phase1b-verify-v1-verify.json)（四维全绿，exit_code=0）
+- [x] **C1C 主数据源切换（M6）** — S0-S4 状态机切 PostgreSQL primary；`verified`
+  - [x] **S0-S4 状态机**（SQLite primary → shadow import → PG shadow write/read verify → PG primary → SQLite retirement） → [state.py](../scripts/migrate/state.py) · [promote 证据](evidence/phase1b/results/phase1b-promote-v1-promote.json)
+  - [x] **staging cutover + 对账** → [audit 证据](evidence/phase1b/results/phase1b-audit-v1-audit.json) · [promote 证据](evidence/phase1b/results/phase1b-promote-v1-promote.json)
+  - [x] **PITR 恢复与回滚演练** → [PITR 证据](evidence/phase1b/results/phase1b-pitr-v1-pitr.json)（RPO≤5min/RTO≤30min runbook）
+  - [x] **全量验证无回归**（pytest 1096 passed / 0 failed，pyright 基线一致） → [baseline](evidence/phase1b/baselines/baseline_feature_phase1b_migration.md)
 
 ## Phase 1C（M7 生产规模验证）
 

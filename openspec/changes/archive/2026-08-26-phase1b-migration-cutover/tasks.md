@@ -56,5 +56,7 @@
 
 - [x] 5.1 全量验证：pyright（project + tests 两配置）与 pytest 相对 main 基线无回归。验证：命令结果 + 与 `openspec/evidence/phase1b/baselines/` 记录的 main 基线 diff，无本分支新增失败
   - 证据：`openspec/evidence/phase1b/baselines/baseline_feature_phase1b_migration.md`（最终验证节）。pytest 全量 **1096 passed / 0 skipped / 0 failed**（`-W error`，144.57s）：main 在 PG 可用时为 1060 passed / 0 failed，新增 36 个 `tests/migration/*` 用例，无收集错误、无失败。pyright project 配置 **38 errors / 4290 warnings** 与 main 完全一致；pyright tests 配置 **21 errors**（与 main 一致，warnings +403 来自新增 `tests/migration/*`，无新增 error）。修复了 alembic env.py `fileConfig` 在 pytest 进程内 disable 现有 logger 导致 caplog 断言的 5 用例回归：`scripts/migrate/alembic_util.py`（`upgrade_head` 升级前后快照/恢复日志配置）供 `tests/migration/conftest.py::mig_pg_url` 与 `state._upgrade_scratch` 复用。
-- [ ] 5.2 更新 change 状态与跟踪文档：tasks 全勾选 → `openspec validate` 通过 → `openspec status` 显示 apply 完成 → sync-specs 把 `storage-migration` 增量合入主 spec → archive change。验证：`openspec validate` 通过、change archived
-- [ ] 5.3 更新 `SCALING_ROADMAP.md` 与 `PROJECT_CHECKLIST.md`：仅在 evidence 齐全（merge commit + 可复现测试/基准）时把 C1B/C1C 标 `verified`，Phase 1B 移入已完成节。验证：两文档状态与 evidence 一致、`verified` 满足 §8 规则
+- [x] 5.2 更新 change 状态与跟踪文档：tasks 全勾选 → `openspec validate` 通过 → `openspec status` 显示 apply 完成 → sync-specs 把 `storage-migration` 增量合入主 spec → archive change。验证：`openspec validate` 通过、change archived
+  - 证据：`openspec validate --specs` 3 specs 全通过（含新建 `specs/storage-migration`）；change 已 archive 为 `2026-08-26-phase1b-migration-cutover`；`openspec/specs/storage-migration/spec.md`（10 requirements）已 sync。
+- [x] 5.3 更新 `SCALING_ROADMAP.md` 与 `PROJECT_CHECKLIST.md`：仅在 evidence 齐全（merge commit + 可复现测试/基准）时把 C1B/C1C 标 `verified`，Phase 1B 移入已完成节。验证：两文档状态与 evidence 一致、`verified` 满足 §8 规则
+  - 证据：merge `1788de40` + `openspec/evidence/phase1b/`（import/verify/promote/audit/pitr JSON + baselines，pytest 1096 passed 无回归）；SCALING_ROADMAP §4 C1B/C1C 标 `verified`、§5 focus 移至 C1D；PROJECT_CHECKLIST Phase 1B 移入已完成节并链 evidence。
