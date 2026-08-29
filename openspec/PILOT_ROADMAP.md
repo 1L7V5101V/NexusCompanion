@@ -533,12 +533,12 @@ ChannelPolicyPromptBlock
 
 `self_model` 可以继续作为新用户的初始化 seed，但 seed 的具体内容以当前单体实际使用的 `SELF.md` / `self_model` 语义为准，不为了多租户化另造一套关系模板。初始化时复制 seed；之后每个 tenant 的关系状态独立演化，不应因为全局配置变化而静默覆盖已有状态。
 
-`SELF.md` 不被视为不可变文件。按照当前单体实现，PersonaProfile 与 RelationshipState 的行为不同：PersonaProfile 对应 `identity + personality_rules`，onboarding 提交后作为该 tenant 的当前固定配置；RelationshipState 对应当前 `SELF.md`，Memory Optimizer 可以随着互动原地更新当前内容。关键约束是：
+`SELF.md` 不被视为不可变文件。按照当前单体实现，PersonaProfile 与 RelationshipState 的行为不同：PersonaProfile 对应 `identity + personality_rules`，一次性人设设置流程提交后作为该 tenant 的当前固定配置；RelationshipState 对应当前 `SELF.md`，Memory Optimizer 可以随着互动原地更新当前内容。关键约束是：
 
-- 用户只在首次登录的 Persona onboarding 中直接设置一次 PersonaProfile；提交后用户侧锁定，日常运行不自动改写 PersonaProfile；
+- 用户只在首次登录的一次性人设设置流程中直接设置一次 PersonaProfile；提交后用户侧锁定，日常运行不自动改写 PersonaProfile；
 - RelationshipState 按当前单体 `read_self()` → optimizer 计算 → `write_self(updated)` 的语义更新：数据库中直接覆盖该 tenant 的当前状态，不建设产品级 revision 链；
 - PersonaProfile、RelationshipState 和运行时规则在 prompt 中有可识别的来源；
-- 更新必须绑定当前 tenant，不能跨用户共享或污染，并记录来源、更新时间和触发 turn 等最小审计元数据，但不复制保存每一版完整正文；
+- 更新必须绑定当前 tenant，不能跨用户共享或污染，并写入专门的 Persona 审计记录，至少包含来源、更新时间和触发 turn，但不复制保存每一版完整正文；
 - 同一 tenant 的更新必须经过 tenant 串行 lane / maintenance lock，并在一个数据库事务内完成，避免两个 optimizer 同时覆盖；既然写入者被约束为单写者，Pilot 不额外引入 compare-and-swap；
 - 用户侧不提供 RelationshipState 历史浏览或回滚入口。异常恢复使用常规 PostgreSQL 备份/PITR，而不是另建 Persona 历史版本产品；
 - RelationshipState 随互动变化是正常能力。只有缺少当前 tenant 对话依据、违反运行时规则或跨 tenant 的错误变化才需要被拦截。
@@ -554,7 +554,7 @@ ChannelPolicyPromptBlock
 
 现有 identity、personality_rules、self_model 的内容和优先关系先以当前单体行为为准；本阶段不因为引入多租户而强行改变语言、称呼、句式或情绪表达。用户首次设置人设后，目标是让对应 tenant 保持自己的 PersonaProfile，并让 RelationshipState 按当前单体语义继续演化，而不是让所有 tenant 共享一个进程级 Persona 全局变量。
 
-RelationshipState 的系统更新不修改已经开始执行的 turn：当前 turn 继续使用组装时取得的不可变 prompt snapshot，写入成功后从该 tenant 的下一轮 turn 开始重新解析并注入新的 RelationshipStatePromptBlock。PersonaProfile 在 onboarding 后保持当前固定值。这样既不要求重启进程，也不会让同一轮执行过程中途改变关系状态。
+RelationshipState 的系统更新不修改已经开始执行的 turn：当前 turn 继续使用组装时取得的不可变 prompt snapshot，写入成功后从该 tenant 的下一轮 turn 开始重新解析并注入新的 RelationshipStatePromptBlock。PersonaProfile 在一次性人设设置流程提交后保持当前固定值。这样既不要求重启进程，也不会让同一轮执行过程中途改变关系状态。
 
 ### 5.8 Agent 工具调用的多租户隔离与作用管理
 
@@ -912,7 +912,7 @@ WebSocket、spawn job、scheduler、MCP runtime、外部工具调用和 outbound
 | 队列与串行键 | `MessageBus` 队列无界；`PassiveMessageWorker` 当前按 `session_key` 建 lane，不是按 tenant；不同 session 可并行 | admission key 固定为 `tenant_id`；同 tenant 单 active work，不同 tenant 可并行；所有队列有界且定义 overload 行为 | 新 queue adapter、并发调度和限流 |
 | durable control plane | PostgreSQL 模式下 session/message 已走 PG，但 turn control 仍可落到 SQLite `turn_audit.db`；lane/event queue 在内存 | P0.5 dev-only 可保留兼容路径；P1 面向受邀用户前，账号、会话、规范消息、turn/tool/work 状态统一以 PostgreSQL 为 durable source of truth | 公网 Pilot、重启恢复承诺 |
 | Tool context | `ToolRegistry` 有共享可变 `_context`；现有参数合并路径不能作为多租户授权边界 | 采用 immutable catalog + per-call `ToolExecutionContext`；系统派生字段优先且不可被模型/客户端参数覆盖，`set_context()` 不再承担授权 | tenant-facing 工具、用户 MCP |
-| Persona | 进程级 `NEXUS_IDENTITY`/`PERSONALITY_RULES` 会在启动时被全局修改；PG memory 已有 tenant-specific SELF 基础；当前单体 `SELF.md` 由 optimizer 原地覆盖 | PersonaProfile/RelationshipState 按 tenant 保存当前值并在 turn 开始时形成 prompt snapshot；PersonaProfile onboarding 后固定，RelationshipState 沿用单体的当前值覆盖语义，并由 tenant 串行 lane / maintenance lock 防止并发写入 | 多 tenant prompt、optimizer 写入 |
+| Persona | 进程级 `NEXUS_IDENTITY`/`PERSONALITY_RULES` 会在启动时被全局修改；PG memory 已有 tenant-specific SELF 基础；当前单体 `SELF.md` 由 optimizer 原地覆盖 | PersonaProfile/RelationshipState 按 tenant 保存当前值并在 turn 开始时形成 prompt snapshot；PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 沿用单体的当前值覆盖语义，并由 tenant 串行 lane / maintenance lock 防止并发写入 | 多 tenant prompt、optimizer 写入 |
 | 表约束与序号 | `sessions.key` 是全局主键；message `seq` 和 `next_seq()` 仍依赖应用层约定，尚无账号、binding、stream、attachment ownership 模型 | 在 Pilot DB design 中先冻结主键、外键、唯一约束、软删除和序号分配；sequence 必须由数据库事务原子分配 | Alembic initial schema、repository 改造 |
 
 
@@ -1034,9 +1034,9 @@ P1 公网门禁前必须把以下对象纳入 PostgreSQL durable control plane�
 #### 5.9.8 Persona 当前值更新与调试权限
 
 - 本节按已核对的单体实现冻结，不新增 append-only revision、current pointer 或 compare-and-swap。当前代码的 `MemoryStore.read_self()` 读取当前 `SELF.md`，`MemoryStore.write_self()` 直接覆盖当前内容；`MemoryOptimizer` 通过单个 `asyncio.Lock` 串行执行 SELF 更新。
-- onboarding 在一个事务中写入该 tenant 的当前 PersonaProfile 和初始 RelationshipState。PersonaProfile 对应 `identity + personality_rules`，提交后作为当前固定值并锁定用户侧再次编辑；RelationshipState 对应 `SELF.md`，后续可由 optimizer 原地更新。
-- 多租户实现把单体的单写者约束平移到 tenant：同一 tenant 的 optimizer/maintenance 更新必须经过 tenant 串行 lane 或 tenant maintenance lock，并在一个 PostgreSQL 事务中读取当前 RelationshipState、写入新当前值和审计元数据。既然不允许两个写入者并发，Pilot 不需要额外 CAS；如果未来允许 lane 外多写者，再单独设计版本冲突策略。
-- 不建设 Persona/Relationship 产品级历史版本，因此也不存在“revision 保留多少天”的周期决策。数据库只保存当前正文和最小审计元数据（来源、更新时间、触发 turn、操作类型），不为每次更新复制完整历史正文。
+- 一次性人设设置流程在一个事务中写入该 tenant 的当前 PersonaProfile 和初始 RelationshipState。PersonaProfile 对应 `identity + personality_rules`，提交后作为当前固定值并锁定用户侧再次编辑；RelationshipState 对应 `SELF.md`，后续可由 optimizer 原地更新。
+- 多租户实现把单体的单写者约束平移到 tenant：同一 tenant 的 optimizer/maintenance 更新必须经过 tenant 串行 lane 或 tenant maintenance lock，并在一个 PostgreSQL 事务中读取当前 RelationshipState、写入新当前值，并追加 Persona 审计记录。既然不允许两个写入者并发，Pilot 不需要额外 CAS；如果未来允许 lane 外多写者，再单独设计版本冲突策略。
+- 不建设 Persona/Relationship 产品级历史版本，因此也不存在“revision 保留多少天”的周期决策。数据库只保存当前正文和 Persona 审计记录（来源、更新时间、触发 turn、操作类型）。这里的 Persona 审计记录专门记录 PersonaProfile / RelationshipState 的变更，不与账号、工具或管理员操作的其他审计记录混用；每次更新不复制完整历史正文。
 - 异常恢复沿用数据库运维能力：通过 PostgreSQL backup/PITR 恢复整体一致状态，而不是让管理员在产品里浏览并切换旧 Persona revision。
 - prompt source breakdown 是调试视图，用来说明最终 prompt 由 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 哪些区块组成；optimizer 依据是触发本次 RelationshipState 更新的 pending memory/input 引用。两者可能暴露系统安全规则和用户私密记忆，因此默认只对 admin/debug 开放；这里不包含、也不承诺展示模型隐藏思维链。普通用户只看到产品允许展示的当前 Persona 文本。
 
@@ -1259,11 +1259,11 @@ Pilot canonical store 冻结如下：
 - `tenant_id` 由认证账号服务端派生，并贯穿 Passive、Proactive、Drift、ToolExecutor、memory retrieval、consolidation 和 optimizer；
 - 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，但不复制 `PluginManager`/`RuntimeSnapshot`；普通配置从下一 work 生效，hard revocation 在副作用前即时生效；
 - `tenant_id` 同时绑定该用户的 PersonaProfile 与 RelationshipState，确保主对话、Proactive 和 Drift 不读取其他 tenant 的人设或关系上下文；
-- 用户首次登录完成一次 Persona onboarding：可以选择管理员提供的可选 Persona，也可以编辑并提交完整自由文本；提交后保存 tenant 独立快照并锁定用户侧编辑入口；
+- 用户首次登录时进入一次性人设设置流程：可以选择管理员提供的可选 Persona，也可以编辑并提交完整自由文本；提交后保存 tenant 独立快照并锁定用户侧编辑入口；
 - WebChat 登录账号与 Telegram Bot 用户私聊身份绑定的可信关联；按 `account → tenant → canonical conversation` 映射两种入口，并对 channel 重试和客户端重发做幂等去重；
-- 落地 `persona_templates`、tenant PersonaProfile 与 RelationshipState 的 PostgreSQL 当前值存储；PersonaProfile onboarding 后固定，RelationshipState 由 tenant 串行 lane / maintenance lock 保护并原地更新，沿用当前单体语义。
+- 落地 `persona_templates`、tenant PersonaProfile 与 RelationshipState 的 PostgreSQL 当前值存储；PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 串行 lane / maintenance lock 保护并原地更新，沿用当前单体语义。
 
-**出口条件**：用户只输入一次 Token；首次进入时可以完成 Persona onboarding，提交后的 tenant PersonaProfile / RelationshipState 可从 PostgreSQL 正确恢复且用户侧不能再次修改；刷新页面、重新打开浏览器后仍能登录（在会话有效期内）；越权请求全部被拒绝；重复兑换同一 Token 不会产生多个账号。
+**出口条件**：用户只输入一次 Token；首次进入时可以完成一次性人设设置流程，提交后的 tenant PersonaProfile / RelationshipState 可从 PostgreSQL 正确恢复且用户侧不能再次修改；刷新页面、重新打开浏览器后仍能登录（在会话有效期内）；越权请求全部被拒绝；重复兑换同一 Token 不会产生多个账号。
 
 ### P2：账号控制与长期试用
 
@@ -1272,8 +1272,8 @@ Pilot canonical store 冻结如下：
 - 复用现有 React Dashboard，增加 Pilot 账号管理视图或插件面板，不新建独立管理后台；
 - Dashboard 支持账号签发、Token 状态查询、登录会话查看、账号封禁和解除封禁；
 - 增加账号选择器，将现有单用户 sessions、proactive、logs、metrics、memory 和插件页面复用为 tenant-scoped 用户视图；
-- Dashboard 为管理员提供可选 Persona 模板的新增、停用和预览能力；模板变更只影响后续 onboarding，不静默覆盖已创建的 tenant 快照；
-- 用户侧 PersonaProfile 只在首次登录 onboarding 中设置一次，提交后不再提供修改入口；RuntimeInvariant 和 channel 硬限制始终不向用户开放；
+- Dashboard 为管理员提供可选 Persona 模板的新增、停用和预览能力；模板变更只影响后续的一次性人设设置流程，不静默覆盖已创建的 tenant 快照；
+- 用户侧 PersonaProfile 只在首次登录的一次性人设设置流程中设置一次，提交后不再提供修改入口；RuntimeInvariant 和 channel 硬限制始终不向用户开放；
 - 新 tenant 从当前单体语义对应的 self seed 初始化 RelationshipState；已有 tenant 的关系状态不因默认人设或模板修改而静默覆盖；
 - CLI 保留 `issue`、`list`、`revoke`、`expire`，作为应急恢复与自动化入口；
 - 账号级撤销、Token 级撤销和原因记录；
@@ -1554,9 +1554,9 @@ result=success
 | Telegram 身份 | 管理员预绑定或一次性绑定码关联 test account                                         | 信任客户端提交的 user/chat 参数               |
 | Persona 规范存储 | PostgreSQL 按 tenant 保存 PersonaProfile 与 RelationshipState；`config.toml` 只保留实例默认、单体兼容和迁移 seed | 运行时文件与数据库双写，或所有 tenant 共享进程级 Persona 全局变量 |
 | Persona 首次设置 | 用户首次登录时可选择管理员提供的 Persona，也可编辑完整自由文本；提交后保存 tenant 独立快照并锁定用户侧修改 | 把 Persona 简化成少量滑杆，或允许用户在日常使用中反复手动切换人格 |
-| Persona 模板 | 管理员可新增、停用可选 Persona；模板只服务后续 onboarding，已有 tenant 不跟随模板更新 | 管理员修改模板后静默改变所有已选择该模板的用户 |
-| Persona 动态变化 | PersonaProfile onboarding 后保持固定；RelationshipState 按当前单体 `SELF.md` 语义由系统随 tenant 互动原地更新 | 把 `SELF.md` 视为不可变，或允许跨 tenant、无来源的自动改写 PersonaProfile |
-| Persona 生效时机 | RelationshipState 更新成功后，从该 tenant 下一轮 turn 注入新 block；进行中的 turn 使用原 prompt snapshot；PersonaProfile onboarding 后固定 | 在同一轮 turn 中途替换 prompt，或要求重启整个进程才生效 |
+| Persona 模板 | 管理员可新增、停用可选 Persona；模板只服务后续的一次性人设设置流程，已有 tenant 不跟随模板更新 | 管理员修改模板后静默改变所有已选择该模板的用户 |
+| Persona 动态变化 | PersonaProfile 在一次性人设设置流程提交后保持固定；RelationshipState 按当前单体 `SELF.md` 语义由系统随 tenant 互动原地更新 | 把 `SELF.md` 视为不可变，或允许跨 tenant、无来源的自动改写 PersonaProfile |
+| Persona 生效时机 | RelationshipState 更新成功后，从该 tenant 下一轮 turn 注入新 block；进行中的 turn 使用原 prompt snapshot；PersonaProfile 在一次性人设设置流程提交后固定 | 在同一轮 turn 中途替换 prompt，或要求重启整个进程才生效 |
 | Persona 当前值与异常恢复 | 沿用单体：PersonaProfile 保存当前固定值，RelationshipState 保存当前可演化值并由 tenant 单写者原地更新；不建产品级 revision 链，异常恢复走 PostgreSQL backup/PITR | 在没有 tenant 串行保护时并发覆盖，或额外建设与单体行为不一致的 Persona 版本系统 |
 | Persona 语义 | 第一版沿用当前单体 `identity`、`personality_rules`、`self_model` 的自由文本语义，不新增复杂人格参数或强制章节 | 先建设关系状态机、好感度数值或多 Persona 编排平台 |
 | Prompt 责任边界 | 分为 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 四类来源 | 把运行时硬规则、人格正文、动态关系和渠道限制继续混成一段不可追踪文本 |
@@ -1578,7 +1578,7 @@ result=success
 | DECIDED | Provisioning lifecycle | account 从 `provisioning` 到 `active`；ready 后才签发 Token；pending/failed 可恢复、可审计 retry | 固化 job/status schema、启动扫描、admin retry 与幂等测试 |
 | DECIDED | Tenant admission | 一个 tenant 只有一个 canonical conversation；tenant 内所有 flow/tool 串行，不同 tenant 异步 | 实现 tenant-scoped lane、取消/封禁传播和全局资源上限；不引入跨 tenant maintenance lock |
 | DECIDED | Consolidation 阈值与失败语义 | 保持当前默认 `memory_window=40`、`keep_count=20`、guard threshold=30；失败立即阻断当前 turn | 若要改变语义，另开 change；当前 change 只做 tenant/recovery 接缝 |
-| DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile onboarding 后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、最小审计和 tenant 并发写入约束 |
+| DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、Persona 审计记录和 tenant 并发写入约束 |
 | DECIDED | Explicit schedule 语义 | tenant-owned durable business work；`(job_id, scheduled_for)` 幂等；suspend 暂停、revoke 禁用；recurring 不回放全部 missed occurrence | 固化 schedule/execution/delivery schema、IANA timezone 与 DST contract test |
 | DECIDED | RuntimeSnapshot/hooks/revocation | `installed`、`active generation`、`tenant binding` 分离，插件可安装后不挂任何 Hook；共享 `PluginManager` 通过 tenant plan 按稳定 contribution ID 过滤插件/Hook；contribution 使用 `required`、`default_on`、`opt_in` 区分平台基础设施、租户默认能力和可选扩展；代码更新使用新 generation + 旧 lease drain，tenant Hook 启停/排序/配置从下一 work 热生效；管理员承担插件可信判断 | P0 固化最小正确性 gate、contribution hook/type/binding policy/`tenant_configurable`、tenant plugin settings/catalog/KV、memory infrastructure 默认 binding、统一 invocation seam 和副作用前 revocation recheck；不建设插件安全扫描、sandbox 或滚动重启 |
 | DECIDED | 工具取消 | 断线不取消当前服务器端 turn/tool；账号封禁截断 tenant work；协作式取消为主、工具 timeout 兜底 | 每次 tool call 保留 owner、取消请求、timer 来源和 terminal/unknown 状态 |
