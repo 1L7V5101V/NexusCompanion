@@ -930,7 +930,7 @@ Pilot 冻结以下语义：
 - 本路线图中的“服务端身份映射”是一个可信查表过程，不是让客户端把 `tenant_id` 传给服务端：adapter 先验证 auth session、Telegram source identity 或其他已登记 principal，再查询 binding 得到 `account_id → tenant_id → canonical_conversation_id`，最后由服务端写入 `WorkEnvelope`。因此攻击者即使修改请求中的 tenant/chat/session 字段，也只能提供待校验输入，不能改变实际数据归属；没有 binding 的请求必须拒绝，不能通过 `DEFAULT_TENANT` 或 session 字符串猜测。
 - Telegram 入口继续使用现有 **Telegram Bot API**。首版只把“某个 Telegram 用户与 Bot 的私聊身份”绑定到测试账号；不登录 Telegram 个人账号，也不把群聊绑定为 tenant。每个测试账号最多绑定一个 Telegram 用户身份，同一 Telegram 用户身份也只能绑定一个测试账号。
 - 绑定支持管理员预绑定和一次性绑定码；绑定码 10 分钟过期、单次使用，兑换和解除绑定都写审计。解绑不删除历史消息，新绑定不得自动继承另一账号的历史。
-- 现有 `channel:chat_id` session 不做隐式合并。这里的 `legacy` 只表示“迁移前的现有旧格式”，不是“无用数据”。显式 mapping 的意思是：每一个旧 session 都必须明确写出要迁到哪个 account、tenant 和 canonical conversation；不能靠程序猜归属，也不能把两个旧 session 自动合并。
+- 现有 `channel:chat_id` session 不做隐式合并。这里的“迁移”主要指现有持久化数据及其身份关系的迁移：把旧 `sessions`、`messages` 等记录映射并回填到新的 account、tenant、canonical conversation 数据模型，再把应用读写切换到新模型；它还包含 schema 变更、校验、兼容和 cutover，不是本节所说的服务器/VPS 搬迁。这里的 `legacy` 只表示“迁移前的现有旧格式”，不是“无用数据”。显式 mapping 的意思是：每一个旧 session 都必须明确写出要迁到哪个 account、tenant 和 canonical conversation；不能靠程序猜归属，也不能把两个旧 session 自动合并。
 - `dry-run` 是迁移预演：只读取、统计并生成报告，不修改数据库。冲突报告列出归属不明、一个源对应多个目标、重复消息或顺序冲突；无法确认归属的旧数据继续保留在兼容路径中。
 - 这里的“实际数据 mapping 清单”是迁移 dry-run 从现有数据库生成的逐 session 清册，不是开发者手写猜测值。清册逐行说明“这个旧 session 当前是谁、准备迁到哪里、采取什么动作、为什么”。默认字段和示例如下：
 
@@ -942,7 +942,7 @@ Pilot 冻结以下语义：
 - 表中的 `target_*` 就是“迁移后的目标位置”：`target_account_id` 是目标测试账号，`target_tenant_id` 是目标数据隔离空间，`target_canonical_conversation_id` 是目标规范会话。`action` 只允许 `migrate`、`keep_legacy`、`conflict`、`skip_empty`：`migrate` 表示已确认归属并进入切换；`keep_legacy` 表示旧数据继续只读保留；`conflict` 表示一个源映射到多个目标或目标约束冲突，必须人工处理；`skip_empty` 只用于确认无消息、无记忆、无业务状态的空 session。
 - dry-run 输出至少包含源/目标行数、消息数、首末时间、重复 source id、sequence 冲突和 mapping 原因；只有 `migrate` 行可以进入 backfill。`keep_legacy` 与 `conflict` 不得在 cutover 中被自动合并、删除或改归属。
 - 每条入站消息包含服务端生成的 canonical `message_id`，并保留 `source_channel`、`source_identity_id`、`source_message_id` 和 `client_message_id`。Telegram update 以 source identity + source message id 去重；WebChat 以 account + client message id 去重。
-- 规范消息 `sequence` 是每个 canonical conversation 各自独立递增的消息序号：会话 A 可以是 1、2、3，会话 B 也可以从 1、2、3 开始。`BIGINT` 是 PostgreSQL 的 64 位整数类型，容量足够大。该序号由数据库事务原子分配，用于稳定排序和断线补拉；禁止继续使用“读取 `next_seq`、在应用内加一、再提交”的无锁并发语义。
+- 规范消息 `sequence` 是每个 canonical conversation 各自独立递增的消息序号，并固定从 `0` 开始：会话 A 可以是 0、1、2，会话 B 也可以独立从 0、1、2 开始。当前单体已经有相同的基本思路和起始值：`SessionStore.next_seq(session_key)` 按旧 `session_key` 读取 `sessions.next_seq` 与 `MAX(messages.seq) + 1`，空 session 返回 0，`insert_message()` 再写入该序号，所以不同 session 各自编号。但当前“取号”和“插入”是两个操作，不能视为多进程并发下的最终原子保证。Pilot 保留 0-based 编号以便迁移旧消息，把编号范围改为 canonical conversation，并在同一个 PostgreSQL 事务中原子分配 `BIGINT` sequence 和写入消息，用于稳定排序和断线补拉；禁止退回“读取 `next_seq`、在应用内加一、再单独提交”的并发语义。
 
 #### 5.9.3 Auth、admin credential 与浏览器安全
 
@@ -969,13 +969,13 @@ python main.py pilot-admin enable
 
 - `bootstrap` 只能在部署受信主机的交互式 TTY 中运行；仅当 admin principal 尚不存在时成功。它生成 32-byte CSPRNG recovery token，只向当前 TTY 显示一次，数据库仅写带 pepper 的 digest；禁止通过命令行参数、环境变量、配置文件或 stdin 重定向传入/回显 token。
 - `status` 只显示 admin enabled 状态、recovery credential revision、最近轮换时间和 active session 数，不显示 digest、token 或 CSRF secret。
-- `rotate-recovery-token` 默认要求交互式输入当前 recovery token；`--force-local` 仅用于凭据丢失后的受信主机恢复，不允许由 HTTP API、Dashboard 或非交互式远程任务触发。轮换会让旧 recovery token 立即失效，并默认让所有已登录的管理员浏览器 session 一起失效，所以现有管理页面需要用新 token 重新登录；新 token 只显示一次。
+- `rotate-recovery-token` 默认要求交互式输入当前 recovery token；`--force-local` 仅用于凭据丢失后的受信主机恢复，不允许由 HTTP API、Dashboard 或非交互式远程任务触发。轮换只让旧 recovery token 立即失效并生成新 token，新 token 只显示一次；现有、未过期且未被撤销的管理员浏览器 session 默认继续有效。token 轮换与浏览器 session 撤销是两个独立操作，只有怀疑凭据或浏览器 session 泄露时才显式执行 `revoke-sessions --all`。
 - `revoke-sessions --all` 用于紧急清除所有 admin browser sessions，但不改变 recovery token；`disable` 表示临时关闭管理员网页登录入口：新的 recovery-token exchange 一律拒绝，已经登录的管理员浏览器也立即退出。之后只能在受信主机本地执行 `enable` 重新开放；旧 session 不会自动恢复。
 - 所有命令写 admin audit metadata，但日志、shell history、进程参数、环境 dump、数据库和审计都不得出现明文 recovery token。
 
 Admin recovery runbook 冻结为：
 
-1. **Recovery token 丢失**：取得部署主机的 OS/SSH 管理权限，在交互式 TTY 运行 `python main.py pilot-admin rotate-recovery-token --force-local`；将新 token 保存到密码管理器；确认 active admin session 数为 0，并复查轮换审计。
+1. **Recovery token 丢失**：取得部署主机的 OS/SSH 管理权限，在交互式 TTY 运行 `python main.py pilot-admin rotate-recovery-token --force-local`；将新 token 保存到密码管理器；确认旧 recovery token 已失效并复查轮换审计。现有有效 admin browser sessions 可继续使用；只有同时怀疑泄露时才显式运行 `revoke-sessions --all`。
 2. **怀疑 token 或 admin session 泄露**：先运行 `python main.py pilot-admin revoke-sessions --all`，随后运行 `python main.py pilot-admin rotate-recovery-token --force-local`；若仍有异常，执行 `disable` 并关闭公网 Dashboard/Tunnel，按 IP 摘要、时间和 action 复查审计，确认后再本地 `enable`。
 3. **数据库恢复**：PostgreSQL 与 pepper/secret 必须恢复到可对应的备份代次；恢复后先撤销备份中复活的 admin sessions。若 recovery digest 无法验证，执行本地强制轮换；最后验证 admin exchange、CSRF、session timeout 和 audit continuity。
 - Cookie 认证的 mutation API（会修改数据的 `POST`/`PUT`/`PATCH`/`DELETE` 请求）必须同时检查 `Origin`/`Referer` 和 session-bound CSRF token。服务端先确认请求来自允许的前端站点，再由 `GET /api/auth/csrf` 或 admin 等价端点签发一段与当前登录 session 绑定的随机值；前端只把它放在页面内存，并通过 `X-CSRF-Token` 回传，不写 LocalStorage。这样可阻止恶意网站借用浏览器自动携带的 Cookie 替用户执行操作。`Origin allowlist` 是明确允许访问服务的前端来源清单，来源由协议、域名和可选端口组成，例如 `https://chat.example.com` 或 `https://admin.example.com`。WebSocket handshake 同样使用 Cookie + Origin allowlist；CORS 默认也只允许部署的 WebChat/Dashboard origin。
@@ -1571,7 +1571,7 @@ result=success
 | --- | --- | --- | --- |
 | DECIDED | Canonical 历史迁移 | legacy `channel:chat_id` 不隐式合并；dry-run 生成逐 session mapping 清单，action 只允许 `migrate/keep_legacy/conflict/skip_empty` | identity/storage design 实现 mapping report、checksum、冲突处理和可回滚 cutover；无法确认归属的保留 legacy |
 | DECIDED | Migration rollout/rollback | Expand → 500-row idempotent backfill → verify → cutover → 30-day read-only compatibility → separate contract；不可表达新数据时 forward-fix/PITR，不盲 downgrade | 每个 capability spec 补精确 DDL/SQL；保存 counts、hash、conflict、cursor、backup id 和 rollback drill evidence |
-| DECIDED | Admin bootstrap | 单一 admin principal；`pilot-admin bootstrap/status/rotate-recovery-token/revoke-sessions/disable/enable`；本地强制恢复只允许 trusted-host TTY | auth design 按 5.9.3 实现 lost-token、suspected-leak、database-restore runbook 与应急测试；明文不写进程参数、仓库、配置或数据库 |
+| DECIDED | Admin bootstrap | 单一 admin principal；`pilot-admin bootstrap/status/rotate-recovery-token/revoke-sessions/disable/enable`；本地强制恢复只允许 trusted-host TTY；token 轮换默认不撤销有效 browser sessions | auth design 按 5.9.3 将 token 轮换与 session 撤销实现为独立操作，并覆盖 lost-token、suspected-leak、database-restore runbook 与应急测试；明文不写进程参数、仓库、配置或数据库 |
 | DECIDED | Ingress/outbox/delivery | 采用 5.9.11 的 acceptance transaction、execution completion transaction 和独立 delivery ack | 固化表字段、状态机、幂等键、provider receipt 与 dead-letter/retry API |
 | DECIDED | Persistence ownership | 采用 5.9.12 的 PostgreSQL canonical ownership 和显式 backup manifest | 每个 change 标明 canonical/compatibility/derived store；设计恢复一致性点和 secret 处理 |
 | DECIDED | Provisioning lifecycle | account 从 `provisioning` 到 `active`；ready 后才签发 Token；pending/failed 可恢复、可审计 retry | 固化 job/status schema、启动扫描、admin retry 与幂等测试 |

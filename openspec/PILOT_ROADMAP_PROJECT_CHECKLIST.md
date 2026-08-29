@@ -65,8 +65,8 @@
 ## Pilot 阶段
 
 - [ ] **P-1 编码前决策冻结** — 将影响协议、表结构、授权和恢复的选择固化为 ADR/design/spec；`planned`
-  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、dry-run 生成逐旧 session 迁移去向/动作/冲突清单） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
-  - [ ] **Auth/admin/browser security**（分离 Cookie、CSRF/Origin、timeout、401/403、原子兑换、`pilot-admin` bootstrap/rotate/revoke/disable/enable 与 recovery runbook） → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
+  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、现有持久化数据/身份关系迁移、dry-run 生成逐旧 session 迁移去向/动作/冲突清单） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [ ] **Auth/admin/browser security**（分离 Cookie、CSRF/Origin、timeout、401/403、原子兑换、`pilot-admin` bootstrap/rotate/revoke/disable/enable；recovery token 轮换默认保留有效 browser sessions，泄露时再显式 revoke） → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **WebSocket protocol contract**（hello、client_message_id、sequence、durable terminal、slow consumer） → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **Admission 与 overload policy**（tenant lane；interactive 128 / per-tenant 16 / maintenance 64 / WS 256-soft 192；LLM/embedding/MCP/process 30/4/8/2；LLM 429 退避与指标） → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **PostgreSQL durable control plane 与 restart recovery**（turn/tool/work/outbound final、unknown/compensation） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
@@ -90,7 +90,7 @@
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
 - [ ] **P0.5 WebChat 最小可用闭环** — 仅 local/dev identity，完成 channel、Gateway、协议和前端；`planned`
-  - [ ] **canonical conversation/message stream 与 per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
   - [ ] **WebSocket hello/send/delta/completed/error/replay 协议** → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **client_message_id 幂等、重连补拉和慢消费者测试** → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
