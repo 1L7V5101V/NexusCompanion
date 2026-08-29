@@ -106,6 +106,10 @@ FastAPI / Uvicorn Web Gateway（应用层）
 | Executor | 执行一次具体操作的组件或调用边界 | `ToolExecutor`、记忆检索 executor、LLM executor、`MemoryOptimizer` | 否；它是被调用的执行器 |
 | Scheduler / Loop | 按时间、事件或条件产生 work item 的触发器 | `ProactiveLoop`、`MemoryOptimizerLoop`、turn-level consolidation gate | 否；它负责触发，不负责定义业务链路 |
 | Work item / Envelope | 一次待执行任务及其可信上下文 | `work_kind`、`flow`、`stage`、`tenant_id`、`session_key`、`trigger`、`snapshot_id`、幂等键 | 否；这是任务数据 |
+| Tenant identity binding | 服务端把已认证的入口 principal 绑定到 `account_id → tenant_id → canonical_conversation_id` 的可信关系；`tenant_id` 不是客户端字段 | WebChat auth session、Telegram 私聊 identity binding、admin provisioning | 否；这是身份映射 |
+| RuntimeSnapshot lease | 一次 work 固定使用的进程级插件 generation 快照引用；保证代码与普通配置在 work 内一致，不承担 tenant 授权 | `snapshot_id`、generation、lease 生命周期 | 否；这是运行时租约 |
+| TenantRuntimePlan | 根据 `snapshot_id`、tenant policy revision 和 tenant 配置解析出的不可变租户插件视图 | enabled plugins、lifecycle modules、tool catalog、jobs、config revision | 否；这是租户视图 |
+| PluginInvocationContext | 每次 hook/tool 调用收到的 tenant-bound 调用上下文 | `WorkContext`、plugin config/KV、secret/policy/effect capability | 否；这是调用上下文 |
 | In-process Worker | 当前进程内消费队列、建立 lane 并驱动任务执行的组件 | `PassiveMessageWorker`、Markdown background maintenance worker | 是 Worker，但不是独立进程 |
 | Horizontal Worker | 未来可独立部署、从持久队列或 Redis Streams consumer group 消费任务的进程实例 | 当前不引入 | 是扩展部署单元 |
 | Maintenance | 不直接产生用户可见 turn 的记忆维护工作 | background consolidation、recent-context refresh、optimizer | 它是工作类型，不是 Worker |
@@ -165,9 +169,15 @@ Shared Runtime Controls
   - consolidation 抛异常或返回 `False`：当前实现会立即阻断当前 turn；不是“先跳过、下个 turn 再试”的 10–20 区间策略。
   - 当前日志会记录异常、pending 和 threshold；用户可见的 abort reply 会显示 pending、threshold、keep_count、`last_consolidated` 和 total messages，但不会把内部异常原因拼进用户文案。Pilot 先保持这个单体行为，不额外要求用户看到失败原因。
 - **租户上下文**：所有入口、Pipeline、Stage/Executor、consolidation 和 optimizer 都使用服务端派生的 `tenant_id`。任务 envelope 显式携带 `tenant_id + session_key`；禁止从客户端参数或 `DEFAULT_TENANT` fallback 推导租户。
+  - **服务端派生**的含义是：channel/HTTP/WebSocket adapter 先验证入口携带的可信 principal（例如有效 WebChat auth session，或管理员预绑定的 Telegram 用户私聊 identity），再由服务端数据库中的 binding 查询得到 `account_id → tenant_id → canonical_conversation_id`。客户端提交的 `tenant_id`、`account_id`、`chat_id`、`session_key` 或 tool 参数只能作为不可信输入，不能决定数据查询、工具授权或副作用目标；`session_key` 只是路由/兼容标识，不是授权凭据。
+  - 认证账号与 tenant 的映射在 work 创建时固化到 `WorkEnvelope`，后续 hook、tool、后台 job 和恢复流程只接受该可信归属；如果入口没有可验证的 binding，必须拒绝或进入显式 dev-only 单用户路径，不能猜测归属。
 - **工具调用与连接状态**：WebSocket 断线只影响实时显示和事件投递，不自动取消服务器端正在执行的 turn/tool call；完成状态必须可通过重连补拉。账号封禁则立即阻断该 tenant 的后续执行，并取消或截断正在执行的 turn/tool call。
 - **外部副作用**：工具即使有外部副作用，也只能作用于当前 tenant 的资源；不得允许客户端在执行过程中切换 tenant。断线后允许当前服务器端调用作为当前 turn 的一部分完成，但不允许把它脱离 turn 变成没有归属、没有终态和没有取消边界的永久后台任务。重连不得重复执行；以当前单体工具行为为基线，后续只补齐每类工具已有的超时、取消、失败和幂等记录。
 - **插件快照**：Pilot 目标契约是每个 Passive、Proactive、Drift、maintenance 和 plugin job 在 work 开始时取得并绑定一次 `RuntimeSnapshot` lease，执行中不切换 snapshot。当前代码已在 proactive loop、plugin jobs 和 Dashboard plugin host 显式取得 lease，但尚未证明所有 Passive/control path 都普遍满足该契约，因此必须在 P0 做 binding audit。`RuntimeSnapshot` 是插件热重载的一致性快照，不是 memory maintenance lock。
+- **租户插件集合**：保留一个进程级 `PluginManager` 和共享的 immutable base `RuntimeSnapshot`；不同 tenant 可以启用不同插件集合，但 tenant 的“安装/启用”在 Pilot 中表示对已由管理员加载的 trusted plugin definition 建立 tenant binding，不表示允许用户在进程内上传并执行任意插件代码。每个 work 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 解析不可变 `TenantRuntimePlan`，过滤该 tenant 可见的 lifecycle modules、EventBus handlers、tool hooks、proactive contributions 和 plugin jobs。未被 tenant plan 选中的插件，即使存在于 base snapshot，也不得进入该 tenant 的 prompt、hook、tool catalog 或后台任务。
+- **插件实例状态**：插件 generation/definition 和无 tenant 内容的共享连接池可以进程级复用；tenant enable/config/policy/KV/credential 必须按 tenant 绑定；当前 turn、tool 参数、hook 临时结果和 cancellation 必须放在 work/call context 中。插件实例不得保存可变的 `current_tenant`、`current_session`、当前 prompt/tool 参数或未分区的 tenant 业务缓存；`ContextVar` 只可用于 trace/log 和兼容适配，不能作为授权、资源定位或副作用路由的唯一依据。
+- **插件热更新**：代码更新由进程级 `PluginManager` 编译并原子发布新的 committed `RuntimeSnapshot` generation；发布失败继续使用上一份 committed snapshot。新 work 取得新 generation 的 lease，正在执行的 work 继续持有旧 lease，旧 generation 进入 drain，禁止再分配给新 work，待 lease 和其后台调用全部结束后再释放资源。tenant plugin enable/disable/config 变更只提升该 tenant 的 policy/config revision，从下一个 work 生效；账号封禁、credential revocation、资源 ownership 变化等 hard revocation 不等待 generation 切换，必须在副作用 dispatch 前即时重查。Pilot 不支持 tenant 间运行不同的 plugin binary version；若未来需要不可信或版本完全独立的第三方插件，应转为独立进程/容器隔离，而不是复制整个 `PluginManager`。
+- **插件调用边界**：所有生命周期 hook 都通过统一的 `PluginInvocationContext`/dispatcher 调用，显式携带同一个 `WorkContext`、tenant-bound session/memory/KV/policy/effect capability 和 snapshot lease；后台 EventBus handler、proactive、optimizer、consolidation、recovery 和 plugin job 若会修改状态或产生副作用，必须转换为带 tenant ownership 的 work 并重新进入 tenant lane。
 - **“全局 maintenance lock”不采用**：全局锁就是所有 tenant 共用的一把锁，任何一个 tenant 做 consolidation/optimizer 时都会挡住其他 tenant。这个模型与“租户互不影响”冲突，Pilot 不引入它；只使用 tenant/session 级串行 lane。当前代码中的 `_maintenance_locks` 已是按 session 建立的锁，optimizer 自身 lock 仍需在多租户化时按 tenant 隔离，不能让单个 tenant 的 optimizer 锁住所有租户。
 - **可靠性术语**：`at-least-once` 表示任务至少尝试执行一次，失败后允许重试，因此必须幂等；`best-effort` 表示尽力执行，失败或重启后可以跳过，之后从持久化状态重新生成即可。这里不是要新增抽象，而是描述不同任务的恢复要求。
 - **重启基线**：当前单体的 `MessageBus._inbound`、outbound queue、Passive lane queue、Markdown maintenance queue 和大多数 `asyncio.create_task` 都只存在于进程内；`AppRuntime.shutdown()` 会取消 runtime tasks，`PassiveMessageWorker` 会取消 lane tasks，`ProactiveLoop`/`MemoryOptimizerLoop` 停止循环。因此当前重启不会自动恢复这些内存队列中的未完成任务，也没有统一的启动补偿扫描。
@@ -212,6 +222,7 @@ Shared Runtime Controls
 | Tenant provisioning | partition readiness service 有 `unknown/pending/ready/failed`，但状态和队列只在单进程内存；首次 turn 可触发 provisioning 后立即因 not-ready 失败 | 账号签发后首轮体验不稳定；重启后 pending/failed provisioning 不可可靠恢复 | account `provisioning` 生命周期、ready 后发 Token、启动恢复和 admin retry | P1/P3 |
 | 显式用户 schedule | `ScheduledJob` 只保存 channel/chat target，落在全局 `schedules.json`；one-shot 超过 5 分钟 grace 会丢弃，recurring 只跳到下一未来时间；execution task/outcome 不 durable | 用户创建的业务任务可能跨 tenant 误投递或重启后无法解释；它不能与可重算 proactive tick 混为一类 | tenant/account/conversation owner、服务端 target binding、misfire、execution idempotency/outcome | P2/P3 |
 | RuntimeSnapshot 与 tenant 配置 | snapshot 是进程级共享 immutable generation，含工具 registry、workspace MCP generation、plugin generations、channel/hooks/jobs；tenant catalog/credential/revocation 不能安全地被旧 snapshot 隐含缓存 | 热重载一致性与 tenant 授权是两套边界；旧 snapshot 不能绕过封禁或密钥轮换 | base snapshot 与 per-task tenant context 分层、lease 覆盖面、revocation recheck、hook failure policy | P0/P2 |
+| 单体 PluginManager 与租户插件集合 | 当前 plugin definitions、instances、KV/data dir 和 hooks 主要按进程/插件组织，没有统一 tenant plugin catalog；共享 context 过宽，插件实例若保存当前调用状态会发生串租户 | 不需要每 tenant 一个 PluginManager；保留共享 base snapshot，由 tenant policy 解析 `TenantRuntimePlan`，所有 hook/tool/job 通过 tenant-bound invocation context 调用；Pilot 只允许管理员管理的 trusted plugin package，tenant 自定义先限于 enable/config/binding | tenant settings/KV namespace、依赖闭包、dispatcher、旧 generation drain、插件实例状态审计和跨 tenant 负向测试 | P0/P1/P2 |
 | Attachments/media | `AttachmentStore` 以 UUID 文件名写 workspace uploads 或 `/tmp/nexus_uploads`；Inbound media 暴露本地路径；没有 tenant namespace、canonical attachment metadata、quota、retention 或 backup manifest | 路径泄露、越权读取、临时文件丢失和无界存储风险 | immutable `attachment_id`、ownership、MIME/size、清理、备份和下载授权 | P1/P3 |
 | Dashboard/admin edge | 当前 Dashboard API 没有可作为公网 Pilot 边界的统一认证中间件，部分页面/API 仍依赖 owner/single-user 假设或 tenant filter 参数 | Dashboard 一旦公网暴露会把“筛选参数”误当授权 | admin principal、session、CSRF/Origin、tenant 下钻审计、内容访问权限 | P1/P2 |
 | Observability/privacy | 已有结构化指标与 turn trace 基础，但 provider payload、prompt、tool args、secret/PII/path 的默认采集与脱敏边界尚未统一 | 可能为了排障把跨 tenant 内容或密钥写入日志/指标 | 默认采集字段、redaction、content access audit、retention；SLO 数值后置 | P-1/P3 |
@@ -916,6 +927,7 @@ WebSocket、spawn job、scheduler、MCP runtime、外部工具调用和 outbound
 Pilot 冻结以下语义：
 
 - 一个 `test_account` 对应一个 `tenant_id`，一个 tenant 对应一个 `canonical_conversation_id`；WebChat auth session 和 Telegram Bot identity binding 都只负责把入口映射到该规范会话。
+- 本路线图中的“服务端身份映射”是一个可信查表过程，不是让客户端把 `tenant_id` 传给服务端：adapter 先验证 auth session、Telegram source identity 或其他已登记 principal，再查询 binding 得到 `account_id → tenant_id → canonical_conversation_id`，最后由服务端写入 `WorkEnvelope`。因此攻击者即使修改请求中的 tenant/chat/session 字段，也只能提供待校验输入，不能改变实际数据归属；没有 binding 的请求必须拒绝，不能通过 `DEFAULT_TENANT` 或 session 字符串猜测。
 - Telegram 入口继续使用现有 **Telegram Bot API**。首版只把“某个 Telegram 用户与 Bot 的私聊身份”绑定到测试账号；不登录 Telegram 个人账号，也不把群聊绑定为 tenant。每个测试账号最多绑定一个 Telegram 用户身份，同一 Telegram 用户身份也只能绑定一个测试账号。
 - 绑定支持管理员预绑定和一次性绑定码；绑定码 10 分钟过期、单次使用，兑换和解除绑定都写审计。解绑不删除历史消息，新绑定不得自动继承另一账号的历史。
 - 现有 `channel:chat_id` session 不做隐式合并。这里的 `legacy` 只表示“迁移前的现有旧格式”，不是“无用数据”。显式 mapping 的意思是：每一个旧 session 都必须明确写出要迁到哪个 account、tenant 和 canonical conversation；不能靠程序猜归属，也不能把两个旧 session 自动合并。
@@ -1167,6 +1179,9 @@ Pilot canonical store 冻结如下：
 #### 5.9.16 RuntimeSnapshot、hooks、credentials 与 revocation
 
 - Process-wide immutable base `RuntimeSnapshot` 可以保留，用于 plugin definitions、generation 和共享只读 wiring；tenant tool catalog、MCP binding、credential、policy 和 config revision 必须作为 per-task/per-call context 解析，不能作为共享可变 snapshot state。
+- **Tenant 插件隔离**：一个共享 `PluginManager` 可以加载多个 tenant 所需插件的 union，但每个 work 必须由 `TenantRuntimeResolver` 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 生成不可变 `TenantRuntimePlan`。该 plan 决定当前 tenant 的 lifecycle modules、EventBus handlers、tool hooks、proactive sources、jobs 和 plugin config；未在 plan 中的插件不可见、不可调用、不可由后台任务隐式触发。Pilot 的 tenant “安装插件”先定义为对管理员已加载 trusted plugin package 的 tenant binding；不在同进程内执行用户上传的任意第三方代码。
+- **Plugin invocation seam**：`PluginContext` 保持 generation/process-scoped，不放 `current_tenant`；每次 hook/tool/job 调用都创建 `PluginInvocationContext`，显式携带不可变 `WorkContext`、tenant-bound session/memory/KV/secret/policy/effect services。插件实例不得保存跨 await 的当前 tenant/session/turn 状态；`ContextVar` 只做观测和兼容，不做授权边界。
+- **热更新**：代码更新先由 `PluginManager` 编译并原子发布新的 committed snapshot；发布失败继续使用上一份 committed snapshot。新 work 使用新 generation，进行中 work 保持旧 lease；旧 generation 进入 drain，禁止新 work 使用，待相关 lease/task 结束后释放。tenant enable/disable/config 只从下一 work 使用新的 policy/config revision；suspension、credential revocation、binding 删除和 resource ownership 变化属于 hard revocation，副作用 dispatch 前必须即时重查，不等待 snapshot 切换。Pilot 不提供 tenant 间不同 plugin binary version；未来若要运行不可信或完全独立版本的插件，使用独立进程/容器隔离。
 - Passive、Proactive、Drift、consolidation、optimizer、recovery work 和 plugin job 在 work start 时各取得一次 snapshot lease；P0 必须审计所有入口并用测试证明 lease coverage。进行中 work 不切 snapshot。
 - 旧 snapshot 不得绕过账号 suspension/revocation、secret rotation 或资源 ownership；在外部副作用、schedule trigger 和 outbound delivery 前再次读取当前 account/policy 状态。
 - snapshot compile/publish 失败时继续使用上一份 committed snapshot，并记录 generation/error；不能发布半成品，也不能清空当前可用 snapshot。
@@ -1209,6 +1224,7 @@ Pilot canonical store 冻结如下：
 - 建立工具调用的 tenant scope/effect 基线：普通 tenant 不开放宿主机 shell、全局 MCP、Peer Agent 和插件管理；文件、记忆、消息、推送、scheduler 与后台任务必须绑定服务端派生的 tenant context；
 - 收束人设 prompt 的来源边界：以当前单体的 `identity`、`personality_rules`、`self_model` 语义为默认基线，拆出 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 四类 prompt 来源；不新增复杂人格参数模型；
 - 完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation；
+- 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
 - HyDE-style hypothesis、query rewrite 与 reranker 都保留开关和离线评测入口，但 Pilot 默认关闭，后续通过消融实验决定是否启用。
 
 **出口条件**：Telegram Bot 通道可以连续运行 7 天；重启后已提交到现有持久化存储的数据不丢失，进程内 queue/task 的已知丢失窗口、恢复缺口和 P0.5 durable ingress/outbox 前置条件有明确记录；数据库、配置和 workspace 可以恢复；同一 canonical conversation 不会无序并发执行多个状态写入任务；后台 maintenance 不会长期挤压 interactive turn；FastAPI 应用层能够启动并提供后续 WebChat 建设所需的基础运行环境。
@@ -1225,6 +1241,7 @@ Pilot canonical store 冻结如下：
 - 接通 durable ingress/inbox、canonical conversation/message stream 和 outbox/delivery record：入站接受、执行完成、channel 送达分别按 5.9.11 收束；按 per-conversation sequence 原子落库，持久化 final message 与 turn/tool 终态，流式 delta 只作为在线优化；
 - 为 WebChat channel、Gateway、Cookie/Origin handshake、WebSocket 重连、client_message_id 幂等、消息顺序、慢消费者和前端基本交互增加 contract test；
 - 完成 ToolExecutionContext、TenantToolCatalog 和统一 ToolPolicy 的最小接缝；在没有 P1 认证、资源 scope 和负向测试前，不得向公网暴露任何 tenant-facing 工具；
+- 将 WebChat auth session、Telegram 私聊 identity binding 和其他入口统一收敛到服务端 `account_id → tenant_id → canonical_conversation_id` 映射；客户端 tenant/chat/session 字段不参与授权；
 - 本阶段只允许本地或显式 dev mode 使用临时单用户身份，不得在没有 P1 认证和 tenant 隔离能力的情况下将 WebChat 暴露给公网测试用户。
 
 **出口条件**：在本地或受控 dev mode 下，用户可以打开 WebChat、发送消息、收到 AgentLoop 回复和流式更新；刷新或断线重连后不会重复消息；消息顺序稳定；异常连接能够清理；相关后端、协议和前端测试通过。此时仍不视为可供受邀用户使用的 Pilot 客户端。
@@ -1239,6 +1256,7 @@ Pilot canonical store 冻结如下：
 - HTTP API、上传、媒体读取和 WebSocket 统一接入认证依赖；attachment/media 按 5.9.15 使用 tenant ownership、immutable attachment id、MIME/size limit 和清理策略；
 - 登录会话过期、退出登录和失效后的 401/403 行为；
 - `tenant_id` 由认证账号服务端派生，并贯穿 Passive、Proactive、Drift、ToolExecutor、memory retrieval、consolidation 和 optimizer；
+- 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，但不复制 `PluginManager`/`RuntimeSnapshot`；普通配置从下一 work 生效，hard revocation 在副作用前即时生效；
 - `tenant_id` 同时绑定该用户的 PersonaProfile 与 RelationshipState，确保主对话、Proactive 和 Drift 不读取其他 tenant 的人设或关系上下文；
 - 用户首次登录完成一次 Persona onboarding：可以选择管理员提供的可选 Persona，也可以编辑并提交完整自由文本；提交后保存 tenant 独立快照并锁定用户侧编辑入口；
 - WebChat 登录账号与 Telegram Bot 用户私聊身份绑定的可信关联；按 `account → tenant → canonical conversation` 映射两种入口，并对 channel 重试和客户端重发做幂等去重；
@@ -1528,6 +1546,7 @@ result=success
 | Provisioning readiness | account 先 `provisioning`，tenant ready 后进入 `active` 并签发 Token；pending/failed 可恢复和重试 | 在用户第一轮 turn 临时建 partition |
 | Explicit schedule | tenant/account/conversation owned durable work；`(job_id, scheduled_for)` 幂等；one-shot 默认 5 分钟 grace，recurring 不回放全部 missed occurrence | 继续保存任意 channel/chat target 的全局 JSON job |
 | Attachment lifecycle | immutable `attachment_id` + tenant blob namespace + PG ownership metadata；MIME/size/retention/backup 受控 | 对客户端暴露本地路径，或把 `/tmp` 当长期存储 |
+| RuntimeSnapshot 与插件热更新 | process-wide immutable base snapshot + per-task `TenantRuntimePlan`/`PluginInvocationContext`；新 work 用新 generation，旧 work 持有旧 lease 并 drain；副作用前重查 revocation | 每 tenant 复制 `PluginManager`/snapshot，或让共享插件实例切换可变 `current_tenant` |
 | RuntimeSnapshot | process-wide base snapshot + per-task tenant catalog/credential/policy；所有 work 取得 lease，副作用前重查 revocation | 把共享 snapshot/registry 当 tenant 授权缓存 |
 | Observability/privacy | 默认结构化 metadata；content/payload/tool args 默认关闭并脱敏；admin 内容访问可审计 | 把 prompt、secret、路径或高基数字段写入普通日志/metrics |
 | Tool context | immutable definitions/catalog + per-call `ToolExecutionContext`；用户 MCP 独立 capability 后置开放 | 共享可变 Registry context 作为授权，或让参数覆盖系统 identity |
@@ -1560,7 +1579,7 @@ result=success
 | DECIDED | Consolidation 阈值与失败语义 | 保持当前默认 `memory_window=40`、`keep_count=20`、guard threshold=30；失败立即阻断当前 turn | 若要改变语义，另开 change；当前 change 只做 tenant/recovery 接缝 |
 | DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile onboarding 后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、最小审计和 tenant 并发写入约束 |
 | DECIDED | Explicit schedule 语义 | tenant-owned durable business work；`(job_id, scheduled_for)` 幂等；suspend 暂停、revoke 禁用；recurring 不回放全部 missed occurrence | 固化 schedule/execution/delivery schema、IANA timezone 与 DST contract test |
-| DECIDED | RuntimeSnapshot/hooks/revocation | base snapshot 与 per-task tenant context 分层；所有 work 取得 lease；gate fail closed，telemetry best-effort | P0 做入口覆盖审计；固化 credential revision 和副作用前 revocation recheck |
+| DECIDED | RuntimeSnapshot/hooks/revocation | base snapshot 与 per-task tenant context 分层；所有 work 取得 lease；gate fail closed，telemetry best-effort；共享 `PluginManager` 通过 tenant plan 过滤插件，旧 generation drain | P0 做入口覆盖审计；固化 tenant plugin settings/catalog/KV、credential revision、统一 invocation seam 和副作用前 revocation recheck |
 | DECIDED | 工具取消 | 断线不取消当前服务器端 turn/tool；账号封禁截断 tenant work；协作式取消为主、工具 timeout 兜底 | 每次 tool call 保留 owner、取消请求、timer 来源和 terminal/unknown 状态 |
 | DECIDED | 副作用工具契约 | 已产生副作用时先 outcome query，再执行声明的 compensation；审计保留原调用 + 补偿 | 建 capability inventory；无补偿或结果未知时标记 `compensation_required`/`unknown`，不盲重试 |
 | DECIDED | Queue 容量初始值 | global interactive 128、per-tenant pending 16、maintenance 64、per-kind maintenance 1、WS outbound 256/soft 192/1 MiB hard；LLM/embedding/MCP/process 默认 30/4/8/2 | 作为可配置 Pilot 初始值实现；P0/P0.5 压测记录拒绝率、backlog、429/退避和内存后，后续 change 才可调整 |
