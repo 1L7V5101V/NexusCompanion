@@ -1,4 +1,4 @@
-# PROJECT_CHECKLIST — 完整项目进度观测
+# SCALING_ROADMAP_PROJECT_CHECKLIST — Scaling 项目进度观测
 
 > **定位**：本文件是完整项目的**进度观测 checklist**，只含 checklist + 一行简短描述 + 状态。
 > 详细描述一律以链接指向既有细节文件（`specs/`、`changes/`、`records/`、`evidence/`、代码）。
