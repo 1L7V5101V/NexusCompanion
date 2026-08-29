@@ -174,9 +174,9 @@ Shared Runtime Controls
 - **工具调用与连接状态**：WebSocket 断线只影响实时显示和事件投递，不自动取消服务器端正在执行的 turn/tool call；完成状态必须可通过重连补拉。账号封禁则立即阻断该 tenant 的后续执行，并取消或截断正在执行的 turn/tool call。
 - **外部副作用**：工具即使有外部副作用，也只能作用于当前 tenant 的资源；不得允许客户端在执行过程中切换 tenant。断线后允许当前服务器端调用作为当前 turn 的一部分完成，但不允许把它脱离 turn 变成没有归属、没有终态和没有取消边界的永久后台任务。重连不得重复执行；以当前单体工具行为为基线，后续只补齐每类工具已有的超时、取消、失败和幂等记录。
 - **插件快照**：Pilot 目标契约是每个 Passive、Proactive、Drift、maintenance 和 plugin job 在 work 开始时取得并绑定一次 `RuntimeSnapshot` lease，执行中不切换 snapshot。当前代码已在 proactive loop、plugin jobs 和 Dashboard plugin host 显式取得 lease，但尚未证明所有 Passive/control path 都普遍满足该契约，因此必须在 P0 做 binding audit。`RuntimeSnapshot` 是插件热重载的一致性快照，不是 memory maintenance lock。
-- **租户插件集合**：保留一个进程级 `PluginManager` 和共享的 immutable base `RuntimeSnapshot`；不同 tenant 可以启用不同插件集合，但 tenant 的“安装/启用”在 Pilot 中表示对已由管理员加载的 trusted plugin definition 建立 tenant binding，不表示允许用户在进程内上传并执行任意插件代码。每个 work 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 解析不可变 `TenantRuntimePlan`，过滤该 tenant 可见的 lifecycle modules、EventBus handlers、tool hooks、proactive contributions 和 plugin jobs。未被 tenant plan 选中的插件，即使存在于 base snapshot，也不得进入该 tenant 的 prompt、hook、tool catalog 或后台任务。
+- **租户插件集合与 Hook 选择**：保留一个进程级 `PluginManager` 和共享的 immutable base `RuntimeSnapshot`；不同 tenant 可以启用不同插件集合，但 tenant 的“安装/启用”在 Pilot 中表示对已由管理员加载的 trusted plugin definition 建立 tenant binding，不表示允许用户在进程内上传并执行任意插件代码。每个 work 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 解析不可变 `TenantRuntimePlan`，过滤该 tenant 可见的 lifecycle modules、EventBus handlers、tool hooks、proactive contributions 和 plugin jobs。插件代码/manifest 必须先声明稳定的 `contribution_id`、合法 hook 位置、scope、依赖和 `tenant_configurable`；tenant 只能在这些已声明且允许租户配置的 contribution 中启用子集，不能把任意插件方法动态挂到任意 Hook。安全 gate、授权 interceptor、process-scoped channel/managed service 以及插件声明为原子 bundle 的 contributions 只能由管理员控制或整体启停。未被 tenant plan 选中的插件/contribution，即使存在于 base snapshot，也不得进入该 tenant 的 prompt、hook、tool catalog 或后台任务。
 - **插件实例状态**：插件 generation/definition 和无 tenant 内容的共享连接池可以进程级复用；tenant enable/config/policy/KV/credential 必须按 tenant 绑定；当前 turn、tool 参数、hook 临时结果和 cancellation 必须放在 work/call context 中。插件实例不得保存可变的 `current_tenant`、`current_session`、当前 prompt/tool 参数或未分区的 tenant 业务缓存；`ContextVar` 只可用于 trace/log 和兼容适配，不能作为授权、资源定位或副作用路由的唯一依据。
-- **插件热更新**：代码更新由进程级 `PluginManager` 编译并原子发布新的 committed `RuntimeSnapshot` generation；发布失败继续使用上一份 committed snapshot。新 work 取得新 generation 的 lease，正在执行的 work 继续持有旧 lease，旧 generation 进入 drain，禁止再分配给新 work，待 lease 和其后台调用全部结束后再释放资源。tenant plugin enable/disable/config 变更只提升该 tenant 的 policy/config revision，从下一个 work 生效；账号封禁、credential revocation、资源 ownership 变化等 hard revocation 不等待 generation 切换，必须在副作用 dispatch 前即时重查。Pilot 不支持 tenant 间运行不同的 plugin binary version；若未来需要不可信或版本完全独立的第三方插件，应转为独立进程/容器隔离，而不是复制整个 `PluginManager`。
+- **插件热更新**：目标语义是管理员安装或升级 trusted plugin package 后，不重启整个 Agent 服务即可生效。当前 `PluginWatcher` 已会检测本地插件 revision，并通过 `PluginManager.reconcile_changed()` 准备候选 generation、编译 snapshot 和发布；Pilot 还需把管理员上传/安装入口、安全校验、审计和失败回滚接到这条路径。新包必须先写入不可变 staging/version 目录，完成 manifest/来源/依赖/readiness 校验后再原子发布，禁止直接覆盖正在运行的 generation。发布失败继续使用上一份 committed snapshot；新 work 取得新 generation 的 lease，正在执行的 work 继续持有旧 lease，旧 generation 进入 drain，禁止再分配给新 work，待 lease 和其后台调用全部结束后再释放资源。tenant plugin enable/disable/config/hook contribution 变更只提升该 tenant 的 policy/config revision，从下一个 work 生效；账号封禁、credential revocation、资源 ownership 变化等 hard revocation 不等待 generation 切换，必须在副作用 dispatch 前即时重查。含不可卸载 native extension、不可逆 process-global side effect、无法兼容迁移或不能 drain 的独占端点的插件不宣称支持 in-process hot reload，应拒绝热发布并走滚动重启。Pilot 不支持 tenant 间运行不同的 plugin binary version；若未来需要不可信或版本完全独立的第三方插件，应转为独立进程/容器隔离，而不是复制整个 `PluginManager`。
 - **插件调用边界**：所有生命周期 hook 都通过统一的 `PluginInvocationContext`/dispatcher 调用，显式携带同一个 `WorkContext`、tenant-bound session/memory/KV/policy/effect capability 和 snapshot lease；后台 EventBus handler、proactive、optimizer、consolidation、recovery 和 plugin job 若会修改状态或产生副作用，必须转换为带 tenant ownership 的 work 并重新进入 tenant lane。
 - **“全局 maintenance lock”不采用**：全局锁就是所有 tenant 共用的一把锁，任何一个 tenant 做 consolidation/optimizer 时都会挡住其他 tenant。这个模型与“租户互不影响”冲突，Pilot 不引入它；只使用 tenant/session 级串行 lane。当前代码中的 `_maintenance_locks` 已是按 session 建立的锁，optimizer 自身 lock 仍需在多租户化时按 tenant 隔离，不能让单个 tenant 的 optimizer 锁住所有租户。
 - **可靠性术语**：`at-least-once` 表示任务至少尝试执行一次，失败后允许重试，因此必须幂等；`best-effort` 表示尽力执行，失败或重启后可以跳过，之后从持久化状态重新生成即可。这里不是要新增抽象，而是描述不同任务的恢复要求。
@@ -903,14 +903,14 @@ WebSocket、spawn job、scheduler、MCP runtime、外部工具调用和 outbound
 
 | 决策域 | 当前代码事实 | Pilot 冻结结论 | 未冻结时禁止开始 |
 | --- | --- | --- | --- |
-| 账号、tenant 与规范会话 | `InboundMessage.session_key` 和 `tenant_id_for_channel()` 都仍以 `channel:chat_id` 派生；WebChat 与 Telegram 会自然形成不同 key | `account_id` 是登录主体，`tenant_id` 是资源边界；Pilot 每个 tenant 恰有一个 `canonical_conversation_id`，所有 channel binding 映射到该会话 | WebChat channel adapter、Telegram 绑定、历史迁移 |
+| 账号、tenant 与规范会话 | `InboundMessage.session_key` 和 `tenant_id_for_channel()` 都仍以 `channel:chat_id` 派生；WebChat 与 Telegram 会自然形成不同 key | `account_id` 是登录主体，`tenant_id` 是资源边界；Pilot 每个 tenant 恰有一个 `canonical_conversation_id`，所有 channel binding 映射到该会话；旧单体数据留在 SQLite | WebChat channel adapter、Telegram 绑定、Pilot 新身份初始化 |
 | Dashboard 鉴权 | 前端 `activeTenant`/`tenant_id` 只是路由参数；现有 Dashboard API 仍有 owner/single-user 假设 | Dashboard 的 tenant 选择只影响管理员查看范围，不能成为授权来源；普通用户和管理员使用分离的服务端 principal/session | `/api/admin/*`、跨 tenant Dashboard 页面 |
 | WebSocket replay | `ConversationRuntime` 的 subscriber queue/history 在内存，进程重启后无法补回流式事件 | 规范消息和终态使用 PostgreSQL durable stream；token delta 只作在线展示，断线后按 message/turn 终态补拉，不承诺逐 token 重放 | WebSocket 消息协议、前端重连逻辑 |
 | 队列与串行键 | `MessageBus` 队列无界；`PassiveMessageWorker` 当前按 `session_key` 建 lane，不是按 tenant；不同 session 可并行 | admission key 固定为 `tenant_id`；同 tenant 单 active work，不同 tenant 可并行；所有队列有界且定义 overload 行为 | 新 queue adapter、并发调度和限流 |
 | durable control plane | PostgreSQL 模式下 session/message 已走 PG，但 turn control 仍可落到 SQLite `turn_audit.db`；lane/event queue 在内存 | P0.5 dev-only 可保留兼容路径；P1 面向受邀用户前，账号、会话、规范消息、turn/tool/work 状态统一以 PostgreSQL 为 durable source of truth | 公网 Pilot、重启恢复承诺 |
 | Tool context | `ToolRegistry` 有共享可变 `_context`；现有参数合并路径不能作为多租户授权边界 | 采用 immutable catalog + per-call `ToolExecutionContext`；系统派生字段优先且不可被模型/客户端参数覆盖，`set_context()` 不再承担授权 | tenant-facing 工具、用户 MCP |
 | Persona | 进程级 `NEXUS_IDENTITY`/`PERSONALITY_RULES` 会在启动时被全局修改；PG memory 已有 tenant-specific SELF 基础；当前单体 `SELF.md` 由 optimizer 原地覆盖 | PersonaProfile/RelationshipState 按 tenant 保存当前值并在 turn 开始时形成 prompt snapshot；PersonaProfile onboarding 后固定，RelationshipState 沿用单体的当前值覆盖语义，并由 tenant 串行 lane / maintenance lock 防止并发写入 | 多 tenant prompt、optimizer 写入 |
-| 表约束与序号 | `sessions.key` 是全局主键；message `seq` 和 `next_seq()` 仍依赖应用层约定，尚无账号、binding、stream、attachment ownership 模型 | 在 migration design 中先冻结主键、外键、唯一约束、软删除和序号分配；sequence 必须由数据库事务原子分配 | Alembic migration、repository 改造 |
+| 表约束与序号 | `sessions.key` 是全局主键；message `seq` 和 `next_seq()` 仍依赖应用层约定，尚无账号、binding、stream、attachment ownership 模型 | 在 Pilot DB design 中先冻结主键、外键、唯一约束、软删除和序号分配；sequence 必须由数据库事务原子分配 | Alembic initial schema、repository 改造 |
 
 
 本轮实现复查的主要锚点如下，后续 design 不得脱离这些现状自行假设：
@@ -930,19 +930,13 @@ Pilot 冻结以下语义：
 - 本路线图中的“服务端身份映射”是一个可信查表过程，不是让客户端把 `tenant_id` 传给服务端：adapter 先验证 auth session、Telegram source identity 或其他已登记 principal，再查询 binding 得到 `account_id → tenant_id → canonical_conversation_id`，最后由服务端写入 `WorkEnvelope`。因此攻击者即使修改请求中的 tenant/chat/session 字段，也只能提供待校验输入，不能改变实际数据归属；没有 binding 的请求必须拒绝，不能通过 `DEFAULT_TENANT` 或 session 字符串猜测。
 - Telegram 入口继续使用现有 **Telegram Bot API**。首版只把“某个 Telegram 用户与 Bot 的私聊身份”绑定到测试账号；不登录 Telegram 个人账号，也不把群聊绑定为 tenant。每个测试账号最多绑定一个 Telegram 用户身份，同一 Telegram 用户身份也只能绑定一个测试账号。
 - 绑定支持管理员预绑定和一次性绑定码；绑定码 10 分钟过期、单次使用，兑换和解除绑定都写审计。解绑不删除历史消息，新绑定不得自动继承另一账号的历史。
-- 现有 `channel:chat_id` session 不做隐式合并。这里的“迁移”主要指现有持久化数据及其身份关系的迁移：把旧 `sessions`、`messages` 等记录映射并回填到新的 account、tenant、canonical conversation 数据模型，再把应用读写切换到新模型；它还包含 schema 变更、校验、兼容和 cutover，不是本节所说的服务器/VPS 搬迁。这里的 `legacy` 只表示“迁移前的现有旧格式”，不是“无用数据”。显式 mapping 的意思是：每一个旧 session 都必须明确写出要迁到哪个 account、tenant 和 canonical conversation；不能靠程序猜归属，也不能把两个旧 session 自动合并。
-- `dry-run` 是迁移预演：只读取、统计并生成报告，不修改数据库。冲突报告列出归属不明、一个源对应多个目标、重复消息或顺序冲突；无法确认归属的旧数据继续保留在兼容路径中。
-- 这里的“实际数据 mapping 清单”是迁移 dry-run 从现有数据库生成的逐 session 清册，不是开发者手写猜测值。清册逐行说明“这个旧 session 当前是谁、准备迁到哪里、采取什么动作、为什么”。默认字段和示例如下：
-
-| legacy_session_key | channel | chat_id | current_tenant_id | target_account_id | target_tenant_id | target_canonical_conversation_id | action | reason |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `telegram:123` | `telegram` | `123` | `telegram:123` | `acct_001` | `tenant_001` | `conv_001` | `migrate` | admin-confirmed binding |
-| `telegram:456` | `telegram` | `456` | `telegram:456` |  |  |  | `keep_legacy` | ownership unknown |
-
-- 表中的 `target_*` 就是“迁移后的目标位置”：`target_account_id` 是目标测试账号，`target_tenant_id` 是目标数据隔离空间，`target_canonical_conversation_id` 是目标规范会话。`action` 只允许 `migrate`、`keep_legacy`、`conflict`、`skip_empty`：`migrate` 表示已确认归属并进入切换；`keep_legacy` 表示旧数据继续只读保留；`conflict` 表示一个源映射到多个目标或目标约束冲突，必须人工处理；`skip_empty` 只用于确认无消息、无记忆、无业务状态的空 session。
-- dry-run 输出至少包含源/目标行数、消息数、首末时间、重复 source id、sequence 冲突和 mapping 原因；只有 `migrate` 行可以进入 backfill。`keep_legacy` 与 `conflict` 不得在 cutover 中被自动合并、删除或改归属。
+- **现有单体数据不迁入 Pilot PostgreSQL。** 旧 `channel:chat_id` session、消息、记忆和其他既有 SQLite 内容继续留在原 SQLite/workspace 中，不生成逐 session mapping 清单，不做 dry-run、backfill、合并或 canonical identity 改写。
+- Pilot 的 `test_account → tenant_id → canonical_conversation_id` 由 provisioning 全新创建，canonical conversation 从空历史开始；即使绑定的是以前使用过单体 Telegram Bot 的用户，也不会自动继承旧消息、旧记忆或旧 Persona/Relationship 状态。
+- 旧 SQLite 是独立的 legacy single-user store，不是 Pilot 的 fallback、第二 source of truth 或双写目标。Pilot 代码不得在 PostgreSQL 查不到数据时回退读取旧 SQLite，也不得把 Pilot 新消息反向写回旧库。
+- 如果继续运行旧单体模式，它仍可独立使用自己的 SQLite；但同一个 Telegram Bot token/更新流不能同时由旧单体和 Pilot 消费。切换 Bot 接入时只切入口，不搬历史数据。
+- 旧 SQLite 文件及其 workspace 按独立 legacy backup 项保留。未来若确实需要导入历史，必须另开 change，重新定义身份确认、内容范围、去重、sequence 和隐私规则；不属于当前 Pilot 范围。
 - 每条入站消息包含服务端生成的 canonical `message_id`，并保留 `source_channel`、`source_identity_id`、`source_message_id` 和 `client_message_id`。Telegram update 以 source identity + source message id 去重；WebChat 以 account + client message id 去重。
-- 规范消息 `sequence` 是每个 canonical conversation 各自独立递增的消息序号，并固定从 `0` 开始：会话 A 可以是 0、1、2，会话 B 也可以独立从 0、1、2 开始。当前单体已经有相同的基本思路和起始值：`SessionStore.next_seq(session_key)` 按旧 `session_key` 读取 `sessions.next_seq` 与 `MAX(messages.seq) + 1`，空 session 返回 0，`insert_message()` 再写入该序号，所以不同 session 各自编号。但当前“取号”和“插入”是两个操作，不能视为多进程并发下的最终原子保证。Pilot 保留 0-based 编号以便迁移旧消息，把编号范围改为 canonical conversation，并在同一个 PostgreSQL 事务中原子分配 `BIGINT` sequence 和写入消息，用于稳定排序和断线补拉；禁止退回“读取 `next_seq`、在应用内加一、再单独提交”的并发语义。
+- 规范消息 `sequence` 是每个 canonical conversation 各自独立递增的消息序号，并固定从 `0` 开始：会话 A 可以是 0、1、2，会话 B 也可以独立从 0、1、2 开始。当前单体已经有相同的基本思路和起始值：`SessionStore.next_seq(session_key)` 按旧 `session_key` 读取 `sessions.next_seq` 与 `MAX(messages.seq) + 1`，空 session 返回 0，`insert_message()` 再写入该序号，所以不同 session 各自编号。但当前“取号”和“插入”是两个操作，不能视为多进程并发下的最终原子保证。Pilot 保留当前实现的 0-based 编号以减少 adapter 和 contract 差异，把编号范围改为 canonical conversation，并在同一个 PostgreSQL 事务中原子分配 `BIGINT` sequence 和写入消息，用于稳定排序和断线补拉；禁止退回“读取 `next_seq`、在应用内加一、再单独提交”的并发语义。
 
 #### 5.9.3 Auth、admin credential 与浏览器安全
 
@@ -1043,7 +1037,7 @@ P1 公网门禁前必须把以下对象纳入 PostgreSQL durable control plane�
 - 异常恢复沿用数据库运维能力：通过 PostgreSQL backup/PITR 恢复整体一致状态，而不是让管理员在产品里浏览并切换旧 Persona revision。
 - prompt source breakdown 是调试视图，用来说明最终 prompt 由 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 哪些区块组成；optimizer 依据是触发本次 RelationshipState 更新的 pending memory/input 引用。两者可能暴露系统安全规则和用户私密记忆，因此默认只对 admin/debug 开放；这里不包含、也不承诺展示模型隐藏思维链。普通用户只看到产品允许展示的当前 Persona 文本。
 
-#### 5.9.9 数据模型与 migration 约束
+#### 5.9.9 数据模型、首次启用与 schema evolution 约束
 
 首批 design 至少覆盖以下逻辑实体。这里“逻辑实体”是业务数据类别/职责的名字，用来先决定系统必须分别管理哪些东西；它还不是最终数据库表名。例如“登录会话”是一个逻辑实体，落库时可以命名为 `auth_sessions`。表名可以在 change 中调整，但责任边界不能合并回任意 JSON blob：
 
@@ -1068,28 +1062,36 @@ persona_templates, tenant_persona_profiles, tenant_relationship_states
 - schedule execution 在 `(job_id, scheduled_for)` 唯一；provisioning job 对同一 tenant/operation revision 幂等；attachment metadata 必须绑定 tenant owner 和 immutable storage key。
 - account 状态使用 `provisioning`、`active`、`suspended`、`revoked`；只有 provisioning readiness 完成后才能进入 `active` 并签发邀请 Token。`suspended` 可解除但旧凭据不复活，`revoked` 是终态。binding、token/session 使用状态字段 + 时间戳软撤销；历史 message、turn、tool/audit 不级联物理删除。
 - repository 的所有 tenant-facing 查询必须从 tenant-bound view 或可信 context 获取 tenant；客户端传入的 `tenant_id` 只能作为管理员筛选条件，不能作为普通用户授权条件。
-- Alembic change 必须说明现有 `sessions.key`、`messages.session_key/seq`、SQLite compatibility 和 legacy `channel:chat_id` 数据的迁移/回滚路径，并提供重复消息、并发 sequence 和跨租户负向测试。
+- 初始 Pilot schema 不承担旧 `sessions.key`、`messages.session_key/seq` 或 legacy `channel:chat_id` 的数据导入；相关测试只验证新 PostgreSQL 模型的唯一约束、并发 sequence、跨租户隔离和新账号空历史。
 
-Pilot migration 的默认发布流程冻结为 **Expand → Backfill → Verify → Cutover → 30-day compatibility window → Contract**：
+Pilot **首次启用**流程冻结为 **Create → Verify → Enable**：
 
-1. **Expand**：Alembic 先创建新表、nullable 新列、唯一约束所需的辅助索引和兼容字段；同一 release 不删除 legacy 表/列、不改写原始主键，也不执行不可逆 data loss SQL。
-2. **Backfill**：按稳定 source primary key 每批 500 行迁移；使用 `INSERT ... ON CONFLICT DO NOTHING` 或带 deterministic comparison 的 upsert，保证中断后可从 cursor 重跑。legacy identity 按 5.9.2 的 mapping 清单迁移，只有 `action=migrate` 的行进入 backfill。
-3. **Verify**：至少核对源/目标 row count、按稳定字段计算的 deterministic hash、重复 source id、缺失 foreign key、`(conversation_id, sequence)` 唯一性和跨 tenant negative query；冲突必须落报告，不能用“最后写入覆盖”消失。
-4. **Cutover（正式切换）**：这是应用停止读写旧存储路径、开始只读写新 PostgreSQL canonical 路径的受控时刻。在短维护窗口暂停相关写入，执行最后一批 delta backfill 和 verify，再通过单一 feature/config flag 完成切换；切换时记录 migration revision、mapping report checksum 和前后计数。
-5. **Compatibility window**：legacy 表/列和 adapter 保留只读 30 天，不再作为第二 source of truth；新写入只进入 canonical PostgreSQL。若业务需要回投 compatibility projection，必须由明确 worker 生成并监控，不允许双主写。
-6. **Contract**：30 天证据窗口结束、备份验证和 rollback drill 通过后，才在独立 Alembic revision 删除 legacy schema/adapter；不得在 cutover release 同时 drop。
+1. **Create**：Alembic 在 PostgreSQL 创建 Pilot 新表、索引、约束和必要 seed；不连接旧 SQLite，不复制旧 session/message/memory，也不修改旧库。
+2. **Verify**：验证 schema revision、约束、空库基线、provisioning 幂等、并发 sequence 和跨 tenant negative query；测试数据与正式 test account 分离。
+3. **Enable**：通过单一 feature/config flag 开放 Pilot provisioning、WebChat 和 Telegram binding。新账号创建后只写 PostgreSQL；旧单体 SQLite 路径保持独立，不参与切换事务。
 
-`Migration SQL` 指由 Alembic/SQL 执行的数据库结构创建与旧数据搬迁语句，例如建新表、加列、批量复制和增加约束；它不是应用业务代码。Capability spec 中采用以下默认形态：
+首次启用的 rollback 是关闭 Pilot 入口并停止新 provisioning/work，保留已经产生的 PostgreSQL Pilot 数据用于修复后继续使用；不得把 Pilot 数据反向同步到 SQLite，也不得把旧单体库当成 Pilot 回滚目标。需要恢复业务数据时使用 PostgreSQL backup/PITR。
+
+Pilot 上线后的 **PostgreSQL schema evolution** 仍采用 **Expand → Backfill → Verify → Cutover → Compatibility → Contract**，但这里的 backfill 只发生在 Pilot PostgreSQL 的旧/新 schema revision 之间，不包含现有单体 SQLite 数据：
+
+1. **Expand**：先增加新表、nullable 列、辅助索引或兼容字段；同一 release 不做不可逆 data loss SQL。
+2. **Backfill**：确有存量 Pilot 数据需要转换时，按稳定 PostgreSQL primary key 默认每批 500 行，使用可重跑 cursor 和幂等 upsert；没有存量数据时明确标记 `not_applicable`，不为了流程形式制造迁移任务。
+3. **Verify**：核对 PostgreSQL 内的前后 row count、deterministic hash、foreign key、唯一约束和跨 tenant negative query；冲突必须落报告。
+4. **Cutover**：在受控窗口通过单一 feature/config flag 把 Pilot 应用切到新 schema 路径，并记录 revision、前后计数和 backup id。
+5. **Compatibility**：需要旧 schema/adapter 时默认只读保留 30 天；新写入只进入新 canonical 路径，不双主写。若变更没有兼容对象，可在 spec 中标记 `not_applicable`。
+6. **Contract**：兼容窗口、备份验证和 rollback drill 通过后，才在独立 Alembic revision 删除旧 Pilot schema/adapter。
+
+`Migration SQL` 指 Alembic/SQL 执行的 PostgreSQL schema 创建或版本演进语句，例如建表、加列、在 Pilot PostgreSQL 内批量转换数据和增加约束；在当前 Pilot 首次启用中，它不指 SQLite 历史数据导入。Capability spec 中采用以下默认形态：
 
 ```sql
--- expand: additive only
+-- initial create or additive expand
 CREATE TABLE new_entity (...);
-ALTER TABLE legacy_entity ADD COLUMN canonical_id UUID NULL;
+ALTER TABLE current_entity ADD COLUMN canonical_id UUID NULL;
 
--- backfill: repeatable, cursor-based, 500 rows per transaction
+-- only when existing Pilot PostgreSQL rows need conversion
 INSERT INTO new_entity (...)
 SELECT ...
-FROM legacy_entity
+FROM current_entity
 WHERE id > :last_id
 ORDER BY id
 LIMIT 500
@@ -1103,14 +1105,8 @@ ALTER TABLE new_entity VALIDATE CONSTRAINT fk_name;
 
 - 普通 DDL 在 Alembic transaction 中执行；PostgreSQL `CREATE INDEX CONCURRENTLY` 等不能在普通 transaction block 中执行的操作单独 revision/step，并显式记录失败后的重跑方式。
 - 新 required column 先 nullable 或带安全 server default，backfill/verify 后再 `SET NOT NULL` 并移除临时 default；大表不在一次事务中全表 `UPDATE`。
-- `downgrade()` 只负责尚未 cutover、确认无人读取的新对象；cutover 后的回退按下述 runbook 处理，不把 destructive reverse SQL 伪装成安全自动 downgrade。
-
-Rollback 默认语义冻结为：
-
-- **Cutover 前**：停止 migration worker；新表可保留，应用继续使用旧路径。由于 backfill 幂等，修复后从 cursor 续跑，不执行反向删除。
-- **Cutover 后且 compatibility projection 仍完整、验证通过**：进入维护窗口，停止新写入，核对 projection 与 canonical delta，切回旧应用 flag，撤销新 session/worker lease；保留新表用于取证，不立即 downgrade/drop。
-- **Cutover 后但旧路径已无法表达新数据或 projection 不完整**：禁止盲目 Alembic downgrade；保持 PostgreSQL canonical source of truth，执行 forward-fix 或恢复到已验证的 PostgreSQL backup/PITR 点。
-- 每次 migration evidence 必须保存 before/after counts、hash/冲突报告、batch cursor、持续时间、cutover revision、backup id 和 rollback drill 结果。精确表名、列名与 DDL 仍由对应 capability spec 冻结，但不得改变上述发布与回滚语义。
+- `downgrade()` 只负责尚未 cutover、确认无人读取的新对象；cutover 后优先 forward-fix 或 PostgreSQL backup/PITR，不把 destructive reverse SQL 伪装成安全自动 downgrade。
+- 每次 schema change evidence 保存适用的 before/after counts、hash/冲突报告、batch cursor、持续时间、revision、backup id 和 rollback drill 结果；不适用项明确记录 `not_applicable`。
 
 #### 5.9.10 Change 拆分与开工顺序
 
@@ -1147,9 +1143,9 @@ Pilot 冻结以下事务与状态边界：
 Pilot canonical store 冻结如下：
 
 - PostgreSQL 负责 account/binding/conversation/message、inbox/dedupe、turn/tool/work、outbox/delivery、tenant memory/persona/relationship metadata、显式用户 schedule、attachment metadata 和 provisioning readiness。
-- SQLite、JSON 和 Markdown 只作为 dev/single-user compatibility、迁移输入或可重建派生物；任何仍保留为 Pilot canonical state 的例外必须在对应 design 中逐项声明，不能默认沿用。
+- SQLite、JSON 和 Markdown 只作为 dev/single-user compatibility、独立 legacy single-user store 或可重建派生物；现有单体 SQLite 不作为 Pilot 迁移输入、fallback 或双写目标。任何仍保留为 Pilot canonical state 的例外必须在对应 design 中逐项声明，不能默认沿用。
 - Attachment bytes 可以继续使用文件系统或后续对象存储，但路径必须 tenant-namespaced，业务 API 只暴露 immutable `attachment_id`，ownership/size/MIME/checksum/retention/reference 落 PostgreSQL。
-- backup manifest 必须显式列出 PostgreSQL、tenant workspace/blob root、必要配置和 secret 恢复方式，并给出一致性点、加密、校验与恢复顺序；`/tmp` 不属于 durable backup 范围。
+- backup manifest 必须显式列出 PostgreSQL、tenant workspace/blob root、必要配置和 secret 恢复方式，并给出一致性点、加密、校验与恢复顺序；旧单体 SQLite/workspace 作为独立 legacy backup 项记录路径、checksum 和保留策略，只恢复到 legacy 模式，不恢复进 Pilot PostgreSQL；`/tmp` 不属于 durable backup 范围。
 - config/secrets 不与普通业务备份混成明文归档；需要分别说明密钥来源、轮换与灾难恢复权限。
 
 #### 5.9.13 Account provisioning 与 readiness
@@ -1179,9 +1175,9 @@ Pilot canonical store 冻结如下：
 #### 5.9.16 RuntimeSnapshot、hooks、credentials 与 revocation
 
 - Process-wide immutable base `RuntimeSnapshot` 可以保留，用于 plugin definitions、generation 和共享只读 wiring；tenant tool catalog、MCP binding、credential、policy 和 config revision 必须作为 per-task/per-call context 解析，不能作为共享可变 snapshot state。
-- **Tenant 插件隔离**：一个共享 `PluginManager` 可以加载多个 tenant 所需插件的 union，但每个 work 必须由 `TenantRuntimeResolver` 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 生成不可变 `TenantRuntimePlan`。该 plan 决定当前 tenant 的 lifecycle modules、EventBus handlers、tool hooks、proactive sources、jobs 和 plugin config；未在 plan 中的插件不可见、不可调用、不可由后台任务隐式触发。Pilot 的 tenant “安装插件”先定义为对管理员已加载 trusted plugin package 的 tenant binding；不在同进程内执行用户上传的任意第三方代码。
+- **Tenant 插件隔离与 Hook 选择**：一个共享 `PluginManager` 可以加载多个 tenant 所需插件的 union，但每个 work 必须由 `TenantRuntimeResolver` 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 生成不可变 `TenantRuntimePlan`。该 plan 决定当前 tenant 的 lifecycle modules、EventBus handlers、tool hooks、proactive sources、jobs 和 plugin config。插件 package 必须给每个 contribution 声明稳定 `contribution_id`、合法 hook、scope、依赖、是否 `tenant_configurable` 以及是否属于不可拆分 bundle；tenant binding 只能选择允许租户配置的已声明 contribution 子集，不能创造新 hook 绑定。安全 gate/授权 interceptor 和 process-scoped channel/managed service 只允许管理员控制。未在 plan 中的插件/contribution 不可见、不可调用、不可由后台任务隐式触发。Pilot 的 tenant “安装插件”先定义为对管理员已加载 trusted plugin package 的 tenant binding；不在同进程内执行用户上传的任意第三方代码。
 - **Plugin invocation seam**：`PluginContext` 保持 generation/process-scoped，不放 `current_tenant`；每次 hook/tool/job 调用都创建 `PluginInvocationContext`，显式携带不可变 `WorkContext`、tenant-bound session/memory/KV/secret/policy/effect services。插件实例不得保存跨 await 的当前 tenant/session/turn 状态；`ContextVar` 只做观测和兼容，不做授权边界。
-- **热更新**：代码更新先由 `PluginManager` 编译并原子发布新的 committed snapshot；发布失败继续使用上一份 committed snapshot。新 work 使用新 generation，进行中 work 保持旧 lease；旧 generation 进入 drain，禁止新 work 使用，待相关 lease/task 结束后释放。tenant enable/disable/config 只从下一 work 使用新的 policy/config revision；suspension、credential revocation、binding 删除和 resource ownership 变化属于 hard revocation，副作用 dispatch 前必须即时重查，不等待 snapshot 切换。Pilot 不提供 tenant 间不同 plugin binary version；未来若要运行不可信或完全独立版本的插件，使用独立进程/容器隔离。
+- **热更新**：管理员安装或升级 trusted plugin package 的目标是无需重启 Agent 服务。当前本地 `PluginWatcher → PluginManager.reconcile_changed()` 已具备 revision 检测、候选 generation 和 snapshot 发布基础；Pilot 控制面仍需补齐上传/安装鉴权、不可变 staging、来源与 manifest/依赖/readiness 校验、审计和失败回滚。验证通过后原子发布新的 committed snapshot，禁止原地覆盖 active generation；发布失败继续使用上一份 committed snapshot。新 work 使用新 generation，进行中 work 保持旧 lease；旧 generation 进入 drain，禁止新 work 使用，待相关 lease/task 结束后释放。tenant enable/disable/config/contribution 选择只从下一 work 使用新的 policy/config revision；suspension、credential revocation、binding 删除和 resource ownership 变化属于 hard revocation，副作用 dispatch 前必须即时重查，不等待 snapshot 切换。含不可卸载 native extension、不可逆 process-global side effect、无法兼容迁移或不能 drain 的独占端点时必须拒绝 in-process 发布并走滚动重启。Pilot 不提供 tenant 间不同 plugin binary version；未来若要运行不可信或完全独立版本的插件，使用独立进程/容器隔离。
 - Passive、Proactive、Drift、consolidation、optimizer、recovery work 和 plugin job 在 work start 时各取得一次 snapshot lease；P0 必须审计所有入口并用测试证明 lease coverage。进行中 work 不切 snapshot。
 - 旧 snapshot 不得绕过账号 suspension/revocation、secret rotation 或资源 ownership；在外部副作用、schedule trigger 和 outbound delivery 前再次读取当前 account/policy 状态。
 - snapshot compile/publish 失败时继续使用上一份 committed snapshot，并记录 generation/error；不能发布半成品，也不能清空当前可用 snapshot。
@@ -1202,12 +1198,12 @@ Pilot canonical store 冻结如下：
 
 **目标**：先把 5.9 中会影响协议、表结构、授权和恢复的决策转成 ADR/design/spec，不写对应的应用功能代码。
 
-- 完成 5.9 的全部设计门禁：canonical identity、Auth/browser security、WebSocket、admission/overload、durable ingress/outbox/delivery、persistence/backup、provisioning、ToolExecutionContext、Persona、schedule、attachment、RuntimeSnapshot/hooks/secrets、observability/privacy 和 schema/migration；
+- 完成 5.9 的全部设计门禁：canonical identity、Auth/browser security、WebSocket、admission/overload、durable ingress/outbox/delivery、persistence/backup、provisioning、ToolExecutionContext、Persona、schedule、attachment、RuntimeSnapshot/hooks/secrets、observability/privacy 和 DB initial rollout/schema evolution；
 - 按 5.9.10 为 identity/control-plane、WebChat、auth/provisioning、attachment、tool/snapshot、Persona、Telegram、schedule、observability 和 retrieval 建立独立 change 边界、依赖图和验收命令；
 - 固定协议 fixture、状态机、表约束、错误码和回滚路径；
 - 对尚未确定的纯运行参数给出配置项、默认值和压测后调整方式，避免把参数常量散落在实现中。
 
-**出口条件**：5.9 表中不存在会阻塞首个 change 的“由实现决定”事项；每个 change 都能明确说明输入、输出、状态、失败语义、迁移和测试证据。P-1 完成只代表设计冻结，不标记任何目标能力为 `verified`。
+**出口条件**：5.9 表中不存在会阻塞首个 change 的“由实现决定”事项；每个 change 都能明确说明输入、输出、状态、失败语义、DB rollout/schema evolution 和测试证据。P-1 完成只代表设计冻结，不标记任何目标能力为 `verified`。
 
 ### P0：Pilot 基础运行基线
 
@@ -1224,7 +1220,7 @@ Pilot canonical store 冻结如下：
 - 建立工具调用的 tenant scope/effect 基线：普通 tenant 不开放宿主机 shell、全局 MCP、Peer Agent 和插件管理；文件、记忆、消息、推送、scheduler 与后台任务必须绑定服务端派生的 tenant context；
 - 收束人设 prompt 的来源边界：以当前单体的 `identity`、`personality_rules`、`self_model` 语义为默认基线，拆出 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 四类 prompt 来源；不新增复杂人格参数模型；
 - 完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation；
-- 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
+- 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；为插件 contributions 固化稳定 ID、hook/scope/dependency/`tenant_configurable` 元数据，允许 tenant 选择授权的 Hook 子集但禁止任意动态挂钩；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
 - HyDE-style hypothesis、query rewrite 与 reranker 都保留开关和离线评测入口，但 Pilot 默认关闭，后续通过消融实验决定是否启用。
 
 **出口条件**：Telegram Bot 通道可以连续运行 7 天；重启后已提交到现有持久化存储的数据不丢失，进程内 queue/task 的已知丢失窗口、恢复缺口和 P0.5 durable ingress/outbox 前置条件有明确记录；数据库、配置和 workspace 可以恢复；同一 canonical conversation 不会无序并发执行多个状态写入任务；后台 maintenance 不会长期挤压 interactive turn；FastAPI 应用层能够启动并提供后续 WebChat 建设所需的基础运行环境。
@@ -1293,7 +1289,7 @@ Pilot canonical store 冻结如下：
 - PostgreSQL 自动备份与恢复演练；
 - 以 PostgreSQL durable control plane 为基线补齐进程重启后的 inbox、turn/tool、outbox/delivery、显式用户 schedule、provisioning、background consolidation 和 optimizer 恢复契约；明确 delta 不重放、幂等 work 可重算、副作用 tool 先 outcome query/compensation；
 - PersonaProfile/RelationshipState 不建设产品级 revision 链；验证 tenant 当前值备份、PostgreSQL PITR 恢复和 optimizer 单写者约束，避免引入与当前单体行为不同的版本浏览/回滚系统；
-- 按 5.9.12 执行 PostgreSQL、workspace/blob、配置和 secret 的 backup manifest 与恢复顺序；对 attachment orphan/missing blob 执行 reconciliation 和 24 小时临时文件清理；
+- 按 5.9.12 执行 PostgreSQL、workspace/blob、配置和 secret 的 backup manifest 与恢复顺序；旧单体 SQLite/workspace 独立备份和恢复到 legacy 模式，不导入 Pilot PostgreSQL；对 attachment orphan/missing blob 执行 reconciliation 和 24 小时临时文件清理；
 - 进程崩溃自动重启；
 - 建设 Dashboard 全局总控制台，聚合所有 tenant 的缓存命中率、`input_tokens`、`output_tokens`、`cache_hit_tokens`、请求量、错误率、P50/P95 延迟、WebSocket 在线数与队列 backlog；
 - 支持按时间、账号、tenant、channel 和 model 筛选、聚合与下钻；
@@ -1569,8 +1565,8 @@ result=success
 
 | 状态 | 主题 | 当前结论 / 建议 | 编码前或后续动作 |
 | --- | --- | --- | --- |
-| DECIDED | Canonical 历史迁移 | legacy `channel:chat_id` 不隐式合并；dry-run 生成逐 session mapping 清单，action 只允许 `migrate/keep_legacy/conflict/skip_empty` | identity/storage design 实现 mapping report、checksum、冲突处理和可回滚 cutover；无法确认归属的保留 legacy |
-| DECIDED | Migration rollout/rollback | Expand → 500-row idempotent backfill → verify → cutover → 30-day read-only compatibility → separate contract；不可表达新数据时 forward-fix/PITR，不盲 downgrade | 每个 capability spec 补精确 DDL/SQL；保存 counts、hash、conflict、cursor、backup id 和 rollback drill evidence |
+| DECIDED | 旧单体数据边界 | 现有 SQLite session/message/memory 不导入 Pilot PostgreSQL；Pilot 账号和 canonical conversation 从空历史开始；旧库独立保留 | identity/storage design 禁止 SQLite fallback、双写和反向同步；备份分别覆盖 Pilot PostgreSQL 与 legacy SQLite/workspace |
+| DECIDED | DB rollout/rollback | Pilot 首次启用使用 Create → Verify → Enable，不导入 SQLite；后续 PostgreSQL schema evolution 才使用 Expand → 500-row idempotent backfill → verify → cutover → compatibility → contract | 每个 capability spec 区分 initial create 与 future schema evolution；回滚关闭 Pilot 入口或使用 PostgreSQL forward-fix/PITR，不反向同步 SQLite |
 | DECIDED | Admin bootstrap | 单一 admin principal；`pilot-admin bootstrap/status/rotate-recovery-token/revoke-sessions/disable/enable`；本地强制恢复只允许 trusted-host TTY；token 轮换默认不撤销有效 browser sessions | auth design 按 5.9.3 将 token 轮换与 session 撤销实现为独立操作，并覆盖 lost-token、suspected-leak、database-restore runbook 与应急测试；明文不写进程参数、仓库、配置或数据库 |
 | DECIDED | Ingress/outbox/delivery | 采用 5.9.11 的 acceptance transaction、execution completion transaction 和独立 delivery ack | 固化表字段、状态机、幂等键、provider receipt 与 dead-letter/retry API |
 | DECIDED | Persistence ownership | 采用 5.9.12 的 PostgreSQL canonical ownership 和显式 backup manifest | 每个 change 标明 canonical/compatibility/derived store；设计恢复一致性点和 secret 处理 |
@@ -1579,14 +1575,14 @@ result=success
 | DECIDED | Consolidation 阈值与失败语义 | 保持当前默认 `memory_window=40`、`keep_count=20`、guard threshold=30；失败立即阻断当前 turn | 若要改变语义，另开 change；当前 change 只做 tenant/recovery 接缝 |
 | DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile onboarding 后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、最小审计和 tenant 并发写入约束 |
 | DECIDED | Explicit schedule 语义 | tenant-owned durable business work；`(job_id, scheduled_for)` 幂等；suspend 暂停、revoke 禁用；recurring 不回放全部 missed occurrence | 固化 schedule/execution/delivery schema、IANA timezone 与 DST contract test |
-| DECIDED | RuntimeSnapshot/hooks/revocation | base snapshot 与 per-task tenant context 分层；所有 work 取得 lease；gate fail closed，telemetry best-effort；共享 `PluginManager` 通过 tenant plan 过滤插件，旧 generation drain | P0 做入口覆盖审计；固化 tenant plugin settings/catalog/KV、credential revision、统一 invocation seam 和副作用前 revocation recheck |
+| DECIDED | RuntimeSnapshot/hooks/revocation | base snapshot 与 per-task tenant context 分层；所有 work 取得 lease；gate fail closed，telemetry best-effort；共享 `PluginManager` 通过 tenant plan 按稳定 contribution ID 过滤插件/Hook；trusted package 可无服务重启发布新 generation，旧 generation drain | P0 做入口覆盖审计；固化 contribution hook/scope/dependency/`tenant_configurable`、tenant plugin settings/catalog/KV、credential revision、上传校验/回滚、统一 invocation seam 和副作用前 revocation recheck |
 | DECIDED | 工具取消 | 断线不取消当前服务器端 turn/tool；账号封禁截断 tenant work；协作式取消为主、工具 timeout 兜底 | 每次 tool call 保留 owner、取消请求、timer 来源和 terminal/unknown 状态 |
 | DECIDED | 副作用工具契约 | 已产生副作用时先 outcome query，再执行声明的 compensation；审计保留原调用 + 补偿 | 建 capability inventory；无补偿或结果未知时标记 `compensation_required`/`unknown`，不盲重试 |
 | DECIDED | Queue 容量初始值 | global interactive 128、per-tenant pending 16、maintenance 64、per-kind maintenance 1、WS outbound 256/soft 192/1 MiB hard；LLM/embedding/MCP/process 默认 30/4/8/2 | 作为可配置 Pilot 初始值实现；P0/P0.5 压测记录拒绝率、backlog、429/退避和内存后，后续 change 才可调整 |
 | PROPOSED DEFAULT | Attachment policy | 常见图片、纯文本、PDF；20 MiB/文件；未引用临时上传 24 小时清理；可执行内容拒绝 | P-1 接受或修改精确 MIME、扩展名、大小、TTL，并固化 sniffing/reconciliation 测试 |
 | PROPOSED DEFAULT | Schedule misfire | one-shot grace 5 分钟，超过后标记 `missed`；recurring 前进到下一未来 occurrence | 产品确认是否保留 5 分钟；无论数值如何都必须持久化 miss/attempt/outcome |
 | PROPOSED DEFAULT | 日志与审计保留 | operational metadata 30 天，audit metadata 180 天；内容型 debug 更短且默认关闭 | P-1 接受或调整 retention、访问审批和删除 job；指标 label 规则不可放宽为内容采集 |
-| OPEN FOR P-1 SPEC | Exact schema/DDL | 实体、发布阶段和 rollback 语义已冻结；精确表名、列、index、constraint 名及 capability-specific SQL 尚未冻结 | 各 capability design/spec 给出可执行 DDL/SQL 和并发/唯一性测试，不得改变 5.9.9 的 expand/backfill/cutover 语义 |
+| OPEN FOR P-1 SPEC | Exact schema/DDL | 实体、首次启用和后续 schema evolution/rollback 语义已冻结；精确表名、列、index、constraint 名及 capability-specific SQL 尚未冻结 | 各 capability design/spec 给出可执行 DDL/SQL 和并发/唯一性测试，并明确哪些步骤适用或为 `not_applicable` |
 | OPEN FOR P-1 SPEC | WebSocket frame/error schema | hello/send/delta/completed/error/replay 语义已冻结，精确 JSON 字段、版本、错误码和 close code 尚未冻结 | P0.5 开工前提交 protocol fixture 与 contract test vectors |
 | OPEN FOR P-1 SPEC | Digest/encryption/key rotation | token/session 只存 digest、tenant secret 静态加密已冻结，具体算法、key source、rotation/recovery 未冻结 | Auth/tool-secret design 指定算法、版本字段、rotation 和 disaster recovery runbook |
 | DEFERRED BY EVIDENCE | SLO/容量阈值 | 先采集真实 latency、backlog、failure、recovery 数据 | Pilot 运行后再设 P95、最长等待、错误率、RPO/RTO 红线 |
@@ -1617,7 +1613,7 @@ result=success
 
 - `memory retrieval` 是 Stage/Executor，`tool call` 是 Executor operation，不统称 Worker。
 - 一个 tenant 只有一个 canonical conversation（旧称规范 session）；同一 tenant 内 Passive、Proactive、Drift、consolidation、optimizer 和 tool call 串行；不同 tenant 异步运行、互不阻塞。
-- 规范 identity 固定为 `account_id → tenant_id → canonical_conversation_id`；Telegram 继续使用 Bot API，首版只绑定 Telegram 用户与 Bot 的私聊身份，不绑定群聊；迁移前的 `channel:chat_id` 旧格式只能按清册显式迁移。
+- 规范 identity 固定为 `account_id → tenant_id → canonical_conversation_id`；Telegram 继续使用 Bot API，首版只绑定 Telegram 用户与 Bot 的私聊身份，不绑定群聊；旧单体 `channel:chat_id` 数据继续留在 SQLite，Pilot 不导入、不 fallback、不双写。
 - canonical `sequence` 按规范会话由 PostgreSQL 原子分配；入站 acceptance、final message/turn terminal/outbox intent、channel delivery ack 是三个明确边界；流式 delta 非 durable。
 - P1 公网开放前，account/binding/message/inbox/turn/tool/work/outbox/delivery/schedule/provisioning/attachment metadata 以 PostgreSQL 为规范源；SQLite/JSON/Markdown 只保留明确的 dev/single-user compatibility 或派生用途。
 - Tool 授权采用 per-call immutable context；共享 `ToolRegistry.set_context()` 不得作为多租户授权依据。
