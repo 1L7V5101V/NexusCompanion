@@ -15,7 +15,7 @@
 ## 当前进度（来自 PILOT_ROADMAP §6）
 
 - **当前阶段**：P-1 编码前决策冻结；现有 PostgreSQL + pgvector 存储基础、迁移和可观测性已有 verified 证据，但 Pilot 目标能力尚未实现。
-- **current focus**：把 canonical identity、durable ingress/outbox/delivery、Auth/provisioning/browser security、WebSocket、bounded admission、persistence/backup ownership、ToolExecutionContext、RuntimeSnapshot/hooks/secrets、Persona、schedule、attachment、observability/privacy 和 schema/migration 固化为 ADR/design/spec。
+- **current focus**：把 canonical identity、durable ingress/outbox/delivery、Auth/provisioning/browser security、WebSocket、bounded admission、persistence/backup ownership、ToolExecutionContext、RuntimeSnapshot/hooks/secrets、Persona、schedule、attachment、observability/privacy 和 DB initial rollout/schema evolution 固化为 ADR/design/spec。
 - **current blocker**：在 5.9 对应设计门禁完成前，不开始 WebChat、认证/provisioning、Telegram binding、durable delivery、tenant tool/runtime snapshot、schedule/attachment 或相关 migration 的实现。
 - **next decision**：按 [`PILOT_ROADMAP.md` §5.9.10](./PILOT_ROADMAP.md) 拆分首批 OpenSpec changes，并先完成 canonical identity/control-plane change。
 - 详见 [`PILOT_ROADMAP.md` §5.9](./PILOT_ROADMAP.md)。
@@ -50,7 +50,7 @@
 
 ## Phase 1B 已完成（M5/M6，merge `1788de40`）
 
-> change：[`phase1b-migration-cutover`](changes/archive/2026-08-26-phase1b-migration-cutover/)（已 archive `2026-08-26-phase1b-migration-cutover`；spec `storage-migration` 已 sync 至 [spec](specs/storage-migration/spec.md)）
+> change：[`phase1b-migration-cutover`](changes/archive/2026-08-26-phase1b-migration-cutover/)（已 archive `2026-08-26-phase1b-migration-cutover`；spec `storage-migration` 已 sync 至 [spec](specs/storage-migration/spec.md)）。该阶段证明迁移工具能力，不代表 Pilot 会导入现有单体 SQLite；当前 Pilot 决策是旧数据原库保留。
 
 - [x] **C1B 迁移工具（M5）** — 批量 COPY、断点续传、机器可读校验；`verified`
   - [x] **批量 COPY / 批量 insert**（可配置 batch、进度） → [导入证据](evidence/phase1b/results/phase1b-import-v1-import.json)（12,567 行，10.11s）
@@ -65,14 +65,14 @@
 ## Pilot 阶段
 
 - [ ] **P-1 编码前决策冻结** — 将影响协议、表结构、授权和恢复的选择固化为 ADR/design/spec；`planned`
-  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、现有持久化数据/身份关系迁移、dry-run 生成逐旧 session 迁移去向/动作/冲突清单） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、Pilot 从空历史开始；旧单体 SQLite 原库保留且不 fallback/双写） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
   - [ ] **Auth/admin/browser security**（分离 Cookie、CSRF/Origin、timeout、401/403、原子兑换、`pilot-admin` bootstrap/rotate/revoke/disable/enable；recovery token 轮换默认保留有效 browser sessions，泄露时再显式 revoke） → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **WebSocket protocol contract**（hello、client_message_id、sequence、durable terminal、slow consumer） → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **Admission 与 overload policy**（tenant lane；interactive 128 / per-tenant 16 / maintenance 64 / WS 256-soft 192；LLM/embedding/MCP/process 30/4/8/2；LLM 429 退避与指标） → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **PostgreSQL durable control plane 与 restart recovery**（turn/tool/work/outbound final、unknown/compensation） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
   - [ ] **ToolExecutionContext 三层注入边界与普通 tenant 首版工具白名单（精确 tool id）** → outcome 见 [PILOT_ROADMAP §5.9.7](PILOT_ROADMAP.md)
   - [ ] **Persona/Relationship 当前值语义**（Persona onboarding 后固定、RelationshipState 沿用单体原地更新、tenant 单写者、无产品级 revision/CAS、PITR 恢复与 debug 权限） → outcome 见 [PILOT_ROADMAP §5.9.8](PILOT_ROADMAP.md)
-  - [ ] **数据模型、唯一约束和 migration/rollback**（expand → 500-row idempotent backfill → verify → cutover → 30-day compatibility → contract） → outcome 见 [PILOT_ROADMAP §5.9.9](PILOT_ROADMAP.md)
+  - [ ] **数据模型、唯一约束和 DB rollout/rollback**（首次 Create → Verify → Enable，不导入 SQLite；后续 PostgreSQL schema evolution 才按 expand/backfill/cutover） → outcome 见 [PILOT_ROADMAP §5.9.9](PILOT_ROADMAP.md)
   - [ ] **独立 capability/change 依赖图**（identity/control-plane、WebChat、auth/provisioning、attachment、tool/snapshot、Persona、Telegram、schedule、observability、retrieval） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
   - [ ] **Ingress acceptance、canonical message、outbox 与 delivery transaction** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
   - [ ] **Persistence ownership 与 backup manifest** → outcome 见 [PILOT_ROADMAP §5.9.12](PILOT_ROADMAP.md)
@@ -116,8 +116,8 @@
   - [ ] **RuntimeSnapshot/per-task tenant context + hook failure/revocation gate** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
   - [ ] **用户 MCP tenant namespace**（不随 Token 登录自动开放；独立 binding/runtime/catalog/secret/audit 与负向测试完成后再单独开放） → outcome 见 [PILOT_ROADMAP §5.8.4](PILOT_ROADMAP.md)
 - [ ] **P3 稳定性与备份** — 恢复演练、崩溃重启、运行指标和维护 runbook；`planned`
-  - [ ] **PostgreSQL / workspace / attachment 备份恢复演练** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
-  - [ ] **canonical migration cutover、30-day compatibility、pre/post-cutover rollback 与 forward-fix/PITR 演练** → outcome 见 [PILOT_ROADMAP §5.9.9](PILOT_ROADMAP.md)
+  - [ ] **PostgreSQL / workspace / attachment 备份恢复演练，并独立保存 legacy SQLite/workspace** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
+  - [ ] **Pilot 空白 PostgreSQL 首次启用/关闭入口回滚，以及后续 PG schema evolution、forward-fix/PITR 演练；不演练 SQLite 历史导入** → outcome 见 [PILOT_ROADMAP §5.9.9](PILOT_ROADMAP.md)
   - [ ] **admin recovery token 丢失、疑似泄露和数据库恢复 runbook 演练** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **启动恢复扫描、unknown outcome query 与 compensation 演练** → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
   - [ ] **outbox delivery retry/dead-letter/重投与 provider ack 恢复演练** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
