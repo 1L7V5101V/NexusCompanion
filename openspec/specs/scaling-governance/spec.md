@@ -1,27 +1,27 @@
 # scaling-governance Specification
 
 ## Purpose
-定义 NexusCompanion Scaling 治理契约：三类事实来源（OpenSpec / Scaling Roadmap / 代码·测试·证据）各自职责、capability → change → evidence 追踪闭环、active change 管理规则、verified 状态证据要求、apply→review→sync-specs→archive 生命周期、SCALING_PLAN 历史快照退役规则、openspec/records 与 openspec/evidence 的 evidence-only 角色，使 Program 目标、当前规范、独立变更与历史证据分离且状态可核验。
+定义 NexusCompanion Pilot 治理契约：三类事实来源（OpenSpec / Pilot Roadmap / 代码·测试·证据）各自职责、capability → change → evidence 追踪闭环、active change 管理规则、verified 状态证据要求、apply→review→sync-specs→archive 生命周期、SCALING_PLAN 历史快照退役规则、openspec/records 与 openspec/evidence 的 evidence-only 角色，使 Pilot 目标、当前规范、独立变更与历史证据分离且状态可核验。
 
 ## Requirements
 
-### Requirement: Scaling Program 必须有可度量的 North Star 和目标维度
+### Requirement: Pilot Program 必须有可度量的 North Star 和目标维度
 
-Scaling Program 必须有明确的 North Star 和一组可度量的目标维度。Program 级目标（如"5000 users"）必须拆分为可观测维度（registered tenants / concurrent online sessions / active turns / ingress rate / LLM concurrency / data volume），由 `openspec/SCALING_ROADMAP.md` 承载，不在 main specs 中作为已实现行为声明。
+Pilot Program 必须有明确的 North Star 和一组可度量的目标维度。Pilot 级目标（如"10–30 invited accounts"）必须拆分为可观测维度（invited accounts / concurrent WebChat sessions / active turns / queue backlog / recovery window），由 `openspec/PILOT_ROADMAP.md` 承载，不在 main specs 中作为已实现行为声明。
 
 #### Scenario: 新读者了解 Program 目标
 
-- **WHEN** 需要了解 Scaling Program 的 North Star 或"5000 users"的目标拆分
-- **THEN** 从 `openspec/SCALING_ROADMAP.md` 获取可度量维度，而不是从 main specs 或历史快照
+- **WHEN** 需要了解 Pilot Program 的 North Star 或"10–30 invited accounts"的目标拆分
+- **THEN** 从 `openspec/PILOT_ROADMAP.md` 获取可度量维度，而不是从 main specs 或历史快照
 
 #### Scenario: 目标维度缺失
 
 - **WHEN** Roadmap 声称达到某目标却没有可度量维度支撑
 - **THEN** 该目标视为未定义，不能作为 verified 依据
 
-### Requirement: Scaling Roadmap 只跟踪 program-level outcome、依赖、状态和 evidence
+### Requirement: Pilot Roadmap 只跟踪 program-level outcome、依赖、状态和 evidence
 
-`openspec/SCALING_ROADMAP.md` 只承载 program-level 的 outcome、capability map、依赖、状态、exit evidence、current focus、blockers 与 next decision。它不作为当前系统行为的规范 source of truth，不承载 implementation task、逐 commit 记录或手动完成 checkbox。
+`openspec/PILOT_ROADMAP.md` 只承载 program-level 的 outcome、capability map、依赖、状态、exit evidence、current focus、blockers 与 next decision。它不作为当前系统行为的规范 source of truth，不承载 implementation task、逐 commit 记录或手动完成 checkbox。
 
 #### Scenario: Roadmap 与当前规格分工
 
@@ -30,26 +30,26 @@ Scaling Program 必须有明确的 North Star 和一组可度量的目标维度�
 
 #### Scenario: Roadmap 更新范围
 
-- **WHEN** 更新 SCALING_ROADMAP.md
+- **WHEN** 更新 PILOT_ROADMAP.md
 - **THEN** 只更新 outcome、依赖、状态与 evidence，不写入实现步骤或逐 commit 历史
 
 ### Requirement: Roadmap 不得承载 implementation task 和逐 commit 历史
 
-SCALING_ROADMAP 不得包含 implementation task 清单、逐 commit 记录或阶段完成时间线；这些由 OpenSpec change 的 design/tasks 与 `openspec status` 承载。
+PILOT_ROADMAP 不得包含 implementation task 清单、逐 commit 记录或阶段完成时间线；这些由 OpenSpec change 的 design/tasks 与 `openspec status` 承载。
 
 #### Scenario: 任务归属检查
 
-- **WHEN** 在 SCALING_ROADMAP 中发现 implementation task 或逐 commit 记录
+- **WHEN** 在 PILOT_ROADMAP 中发现 implementation task 或逐 commit 记录
 - **THEN** 该内容应迁移到对应 OpenSpec change 的 tasks，Roadmap 只保留 capability 状态与 exit evidence
 
 #### Scenario: 无永久 roadmap change
 
 - **WHEN** 需要表达长期演进设想
-- **THEN** 不创建永久存在的 `scaling-roadmap` OpenSpec change；Program 级跟踪由 SCALING_ROADMAP.md 承担，能力级工作进入正式设计或实施时才创建独立 change
+- **THEN** 不创建永久存在的 `pilot-roadmap` OpenSpec change；Program 级跟踪由 PILOT_ROADMAP.md 承担，能力级工作进入正式设计或实施时才创建独立 change
 
 ### Requirement: 每个 capability 必须可关联到一个或多个 OpenSpec change
 
-SCALING_ROADMAP 中的每个 capability 必须能关联到一个或多个 OpenSpec change；每个 active change 必须明确其服务的能力或目标。
+PILOT_ROADMAP 中的每个 capability 必须能关联到一个或多个 OpenSpec change；每个 active change 必须明确其服务的能力或目标。
 
 #### Scenario: capability 到 change 的追溯
 
@@ -119,12 +119,12 @@ change 的生命周期顺序固定为：apply（实施）→ review（审阅）�
 
 ### Requirement: 历史文档不能覆盖 current-state specs 或 active roadmap 状态
 
-openspec/archive、openspec/records、openspec/evidence 中的历史文档不得作为当前规格来源，不得覆盖 openspec/specs；不得覆盖 openspec/SCALING_ROADMAP 的 active 状态。历史文档如声明其内容以某活跃文档为准，该引用必须指向 OpenSpec 或 openspec/SCALING_ROADMAP。
+openspec/archive、openspec/records、openspec/evidence 中的历史文档不得作为当前规格来源，不得覆盖 openspec/specs；不得覆盖 openspec/PILOT_ROADMAP 的 active 状态。历史文档如声明其内容以某活跃文档为准，该引用必须指向 OpenSpec 或 openspec/PILOT_ROADMAP。
 
 #### Scenario: 历史文档的效力
 
 - **WHEN** 阅读 openspec/archive 历史文档或 openspec/records 实施记录
-- **THEN** 其表述视为历史证据；当前规格以 openspec/specs 为准，当前状态以 openspec/changes 与 `openspec status` 为准，Program 目标以 openspec/SCALING_ROADMAP 为准
+- **THEN** 其表述视为历史证据；当前规格以 openspec/specs 为准，当前状态以 openspec/changes 与 `openspec status` 为准，Program 目标以 openspec/PILOT_ROADMAP 为准
 
 ### Requirement: 同时最多一个 implementation change
 
@@ -142,7 +142,7 @@ openspec/archive、openspec/records、openspec/evidence 中的历史文档不得
 
 ### Requirement: SCALING_PLAN 历史快照退役规则
 
-`SCALING_PLAN` 不再作为活跃 source of truth，其完整正文冻结为历史快照 `openspec/archive/SCALING_PLAN-2026-08-22.md`，tombstone/navigation 页 `openspec/archive/SCALING_PLAN.md` 与快照同目录：不再维护 Phase 状态、不再修正任务状态、不作为冲突裁决依据。tombstone 只提供导航，指向 openspec/SCALING_ROADMAP、openspec/specs、openspec/changes、历史快照与 openspec/records、openspec/evidence。
+`SCALING_PLAN` 不再作为活跃 source of truth，其完整正文冻结为历史快照 `openspec/archive/SCALING_PLAN-2026-08-22.md`，tombstone/navigation 页 `openspec/archive/SCALING_PLAN.md` 与快照同目录：不再维护 Phase 状态、不再修正任务状态、不作为冲突裁决依据。tombstone 只提供导航，指向 openspec/PILOT_ROADMAP、openspec/specs、openspec/changes、历史快照与 openspec/records、openspec/evidence。
 
 #### Scenario: 历史快照内容过期
 
@@ -152,11 +152,11 @@ openspec/archive、openspec/records、openspec/evidence 中的历史文档不得
 #### Scenario: tombstone 导航
 
 - **WHEN** 读者访问 `openspec/archive/SCALING_PLAN.md` tombstone
-- **THEN** 看到导航，指向 openspec/SCALING_ROADMAP、openspec/specs、openspec/changes、历史快照与 openspec/records、openspec/evidence，而不是当前状态内容
+- **THEN** 看到导航，指向 openspec/PILOT_ROADMAP、openspec/specs、openspec/changes、历史快照与 openspec/records、openspec/evidence，而不是当前状态内容
 
-### Requirement: openspec 为 Scaling 唯一维护目录，records 与 evidence 分离
+### Requirement: openspec 为 Pilot 唯一维护目录，records 与 evidence 分离
 
-Scaling Program 的文档与证据全部位于 `openspec/`：`specs/`（当前规格）、`changes/`（活跃变更）、`changes/archive/`（已完成变更）、`SCALING_ROADMAP.md`（program 目标）、`archive/`（历史材料）、`records/`（已完成任务记录）、`evidence/`（可复现脚本与原始结果）。`docs/scaling/`、`docs/tasks/`、`results/` 不作为维护目录。已完成任务记录（叙述、验证方法与 gate 结论）与 evidence（可复现脚本、原始结果）必须分开存放，任务记录引用 evidence 路径。
+Pilot Program 的文档与证据全部位于 `openspec/`：`specs/`（当前规格）、`changes/`（活跃变更）、`changes/archive/`（已完成变更）、`PILOT_ROADMAP.md`（program 目标）、`archive/`（历史材料）、`records/`（已完成任务记录）、`evidence/`（可复现脚本与原始结果）。`docs/scaling/`、`docs/tasks/`、`results/` 不作为维护目录。已完成任务记录（叙述、验证方法与 gate 结论）与 evidence（可复现脚本、原始结果）必须分开存放，任务记录引用 evidence 路径。
 
 #### Scenario: 新证据落盘位置
 
