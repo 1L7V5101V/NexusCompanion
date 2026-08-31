@@ -4,9 +4,9 @@
 >
 > 本文件承载目标、范围、技术决策、阶段出口和升级触发条件；不承载具体实现 task、逐 commit 记录或行为规范的完整 source of truth。认证行为的最终契约应在后续 OpenSpec change/spec 中落地，当前代码行为仍以代码和测试为准。
 >
-> 上次审阅：2026-08-29。
+> 上次审阅：2026-08-31。
 >
-> **当前实现状态（截至 2026-08-29）**：WebChat 尚不可用。仓库中已有 `bootstrap/chat_api.py` 路由骨架和 `bootstrap/app.py` 的配置/装配入口，但缺少 `infra/channels/web_chat_channel.py` adapter 和 WebChat 前端 bundle；现有骨架也没有 Pilot 所需的认证、tenant-bound principal、CSRF/Origin、上传限额与媒体 ownership 契约。因此 WebChat、邀请 Token 登录、WebSocket 会话、跨端消息同步和 WebChat 前端仍全部属于目标能力，不能视为当前可用功能。当前可用的对话入口仍是 Telegram Bot 通道。
+> **当前实现状态（截至 2026-08-31）**：WebChat 尚不可用。仓库中已有 `bootstrap/chat_api.py` 路由骨架和 `bootstrap/app.py` 的配置/装配入口，但缺少 `infra/channels/web_chat_channel.py` adapter 和 WebChat 前端 bundle；现有骨架也没有 Pilot 所需的认证、tenant-bound principal、CSRF/Origin、上传限额与媒体 ownership 契约。因此 WebChat、邀请 Token 登录、WebSocket 会话、跨端消息同步和 WebChat 前端仍全部属于目标能力，不能视为当前可用功能。当前可用的对话入口仍是 Telegram Bot 通道。记忆运行时已经具备按配置加载多个 engine 的基础，代码中已有 `default` 和 `rachael` 两个 memory engine 实现；但 WebChat 尚未提供租户级的 memory engine 目录、持久化选择和前端切换入口。
 
 ## 1. North Star
 
@@ -20,6 +20,7 @@
 - 实现后，后续 HTTP 请求和 WebSocket 连接自动使用该登录状态，不再反复输入邀请 Token；
 - 实现后，WebChat 将能读取已绑定 Telegram 身份的历史对话，并实时接收 Telegram Bot 通道收到的新消息；
 - 目标能力包括：管理员可以按账号或单个 Token 查看、过期、撤销和封禁；
+- 实现后，每个租户可以在 WebChat 中从管理员允许的 memory engine 插件中选择当前使用的引擎；首版提供 `default` 和 `rachael`，默认选择 `default`，切换在下一次 work 开始时生效；
 - 实现后，封禁将拒绝新的请求，并主动断开该账号已有的 WebSocket 连接；
 - 保持实现简单：单进程、单 Gateway、进程内队列、PostgreSQL + pgvector。
 
@@ -84,6 +85,7 @@ FastAPI / Uvicorn Web Gateway（应用层）
 | Cloudflare Tunnel            | 提供公网 HTTPS/WSS 和隐藏家庭网络入口                               | 面向外部用户时建议                                                                |
 | PostgreSQL                   | 账号、登录会话、tenant、统一 session/message、消息游标与 delivery 状态    | 是，长期测试建议使用                                                               |
 | pgvector                     | 稠密向量存储、ANN 检索与 tenant 过滤                               | 使用语义记忆时是                                                                 |
+| memory engine plugins        | 按统一 `MemoryPlugin` / `MemoryEngine` 契约提供记忆写入、召回、管理和诊断能力；首版包含 `default` 与 `rachael` | 是；两个引擎都由平台安装和维护，具体租户通过 WebChat 选择允许的一个                           |
 | 阿里云 `text-embedding-v3`      | 生成查询与记忆条目的稠密向量                                         | 是；当前 `Embedder` 已按此模型配置                                                  |
 | jieba + ParadeDB `pg_search` | Pilot 目标中的中文分词与 BM25 稀疏检索                              | 是；当前代码尚未接入，见记忆召回链路                                                       |
 | hotness score                | 在 dense 与 BM25 两条召回 lane 内将检索分数与记忆热度融合                 | 是；当前 dense lane 已使用 `hotness_alpha=0.20`，BM25 lane 需按目标方案补齐，半衰期默认 `14` 天 |
@@ -232,7 +234,7 @@ Shared Runtime Controls
 
 ## 4. 记忆召回链路
 
-本节区分“当前代码基线”和“Pilot 计划目标”。Pilot 明确**只使用 `default` memory engine**：主链路是 `plugins/default_memory/engine.py::DefaultMemoryEngine` 及其内部的 `memory2/retriever.py::Retriever`，不把外层 `AgenticRAGPipeline` 当作默认召回层。不能把后续计划中的 `jieba + ParadeDB pg_search + reranker` 描述成已经存在的实现。
+本节区分“当前代码基线”和“Pilot 计划目标”。Pilot 首版支持两个由平台管理的 memory engine 插件：`default` 和 `rachael`。`default` 仍是新租户的默认引擎和主要质量基线，`rachael` 作为可选替代引擎通过 WebChat 选择。每个 work 只使用一个已经解析好的 active memory engine，不把外层 `AgenticRAGPipeline` 自动当作默认召回层，也不能把后续计划中的 `jieba + ParadeDB pg_search + reranker` 描述成已经存在的实现。
 
 ### 4.1 当前 `DefaultMemoryEngine` 实现
 
@@ -300,14 +302,35 @@ DefaultMemoryEngine.build_injection_block()（仅 context/procedure）
 
 `agent/retrieval/default_pipeline.py::DefaultMemoryRetrievalPipeline` 虽然在代码中兼容到 `AgenticRAGPipeline`，但**不属于本 Pilot 的默认召回链路**：
 
-- Pilot 只注册并使用一个 `DefaultMemoryEngine`；单 engine 时直接调用 `engine.query()`，进入上面的 `DefaultMemoryEngine → Retriever` 链路。
-- 因此 Pilot 默认不经过 Agentic RAG 的 Router、`RetrievalSandbox`、外层 `FusionEngine` 或 `Evaluator`，也不把它们计入技术栈或延迟预算。
-- 只有未来引入多个 memory engine / graph / web 等异构检索源时，才重新评估这条外层多源编排链路。
+- Pilot 当前运行时已支持按 `config.memory.engine_names` 注册多个 engine；`default` 与 `rachael` 分别由各自的 memory plugin 构建，且可以保留各自的 tool profile、存储和诊断能力。当前代码的 `primary_engine` 仍按配置顺序确定，尚未把“租户选择哪个 engine”接入 WebChat。
+- 对某个租户的正式 turn，Runtime 必须先从 tenant memory-engine binding 解析一个 active engine，再将该选择固定到该 work 的 `TenantRuntimePlan`；客户端传入的 engine 名称只能作为候选设置，不能直接绕过服务端 catalog、权限和状态检查。
+- `default` 与 `rachael` 都不是外层 Agentic RAG 的强制数据源。选中 `default` 时进入上面的 `DefaultMemoryEngine → Retriever` 链路；选中 `rachael` 时进入 Rachael 自己的 engine/retrieval 链路。只有未来需要把多个 engine 的结果合并为一次召回时，才重新评估外层多源编排、融合和统一重排。
 - 外层 `Evaluator` 即使未来启用，也属于检索结果质检、重试或 query rewrite，不是 memory item reranker；不能把它记作“已经有 reranker”。
 
-### 4.3 Pilot 目标实现
+### 4.3 Memory engine 插件与 WebChat 选择
 
-Pilot 的默认目标是：**DefaultMemoryEngine + raw query + dense semantic/hotness + BM25/hotness + RRF + top-k**。其中 hotness 同时作用于 dense 与 BM25 两条召回 lane，是默认召回基线的一部分，后续仍然保留，不作为默认移除项或独立消融项。HyDE-style hypothesis、query rewrite 和 reranker 都先做成默认关闭的实验开关，不进入默认路径。
+Pilot 把完整 memory engine 视为一种可插拔的产品能力，而不是把所有引擎强行拆成同一条召回链路。首版纳入两个平台内置、管理员审核和部署的实现：
+
+| engine/plugin | 定位 | 首版策略 | 数据与能力边界 |
+| --- | --- | --- | --- |
+| `default` | 通用语义记忆引擎，使用 `DefaultMemoryEngine` 和 `Retriever` | 新 tenant 默认启用；作为召回质量基线 | 按 tenant 隔离；保留自身 ingest、context retrieval、memory tools 和 inspector 契约 |
+| `rachael` | 独立的 Rachael 记忆引擎和检索诊断链路 | 已安装但默认不选；由 tenant policy 允许后提供选择 | 不复用 `default` 的 store/retriever；按 tenant 隔离；Rachael 专属诊断只在 active engine 和 admin 权限允许时暴露 |
+
+两者都通过统一 `MemoryPlugin` / `MemoryEngine` 契约接入 runtime。插件可以拥有不同的存储、Embedding、召回、写入和诊断实现，但必须统一接受 `tenant`、`MemoryQuery`、ingest/mutation 请求和 capability 声明。这样 WebChat 可以切换产品策略，而 AgentLoop 不需要知道某个引擎的内部实现。
+
+WebChat 的选择流程固定为：
+
+1. 前端从服务端读取当前 tenant 的 allowed memory-engine catalog、active engine、显示名称、状态和能力摘要。
+2. 用户选择 `default` 或 `rachael` 后，前端提交 engine id；服务端从认证 principal 派生 tenant，检查该 engine 是否在 tenant catalog、是否 ready、是否允许用户侧切换，再持久化 active binding。
+3. 选择结果写入 PostgreSQL control-plane，并提升 `tenant_policy_revision`。客户端字段只是设置请求，不是授权依据。
+4. 正在执行的 turn、proactive、consolidation 和 optimizer work 不中途换引擎；下一项 work 取得新的 `TenantRuntimePlan` 后才使用新选择。
+5. 切换不自动迁移、合并或删除旧引擎数据。记忆记录和诊断记录至少按 `tenant_id + engine_id` 可追踪；如果未来需要跨引擎迁移，另行设计显式导入、去重、失败回滚和审计。
+
+首版不允许一次 turn 同时调用两个 engine，也不把两个 engine 的结果默认做 union。这样可以先比较两套引擎在同一 tenant、同一问题集上的命中率、延迟、成本和失败降级，再决定是否需要多引擎融合。
+
+### 4.4 `default` 引擎的 Pilot 目标实现
+
+选择 `default` engine 时，Pilot 的默认召回目标是：**DefaultMemoryEngine + raw query + dense semantic/hotness + BM25/hotness + RRF + top-k**。其中 hotness 同时作用于 dense 与 BM25 两条召回 lane，是 `default` 引擎基线的一部分，后续仍然保留，不作为默认移除项或独立消融项。HyDE-style hypothesis、query rewrite 和 reranker 都先做成默认关闭的实验开关，不进入默认路径。`rachael` 不强行复用这条链路，必须通过相同的 `MemoryEngine` 读写、能力声明、tenant scope、审计和延迟指标契约接入。
 
 ```text
 DefaultMemoryEngine.query()
@@ -407,6 +430,8 @@ POST /api/auth/exchange       一次性邀请 Token → 登录 Cookie
 GET  /api/auth/csrf           当前用户 session-bound CSRF token
 POST /api/auth/logout         撤销当前登录会话
 GET  /api/auth/me             返回当前账号的最小身份信息
+GET  /api/memory/engines       返回当前 tenant 允许使用的 memory engine catalog 与 active engine
+PUT  /api/memory/engine        更新 active memory engine（首版允许 `default` / `rachael`）
 POST /api/admin/auth/exchange 管理员 recovery token → admin Cookie
 GET  /api/admin/auth/csrf     当前 admin session-bound CSRF token
 POST /api/admin/test-accounts 发放测试账号/邀请 Token
@@ -1127,9 +1152,10 @@ ALTER TABLE new_entity VALIDATE CONSTRAINT fk_name;
 10. Telegram binding + cross-channel synchronization；
 11. tenant-owned explicit schedules + recovery semantics；
 12. observability/privacy/redaction + backup manifest；
-13. memory retrieval BM25/hotness/RRF 改造与离线评测。
+13. memory retrieval BM25/hotness/RRF 改造与离线评测；
+14. memory engine plugin catalog/binding、tenant 选择持久化与 WebChat selector。
 
-依赖顺序至少满足：1 是 2、4、5、10 的前置；2 和 3 是公网 delivery/recovery 承诺的前置；5 是 6、7、10、11 对普通 tenant 开放的前置；7 是用户 MCP 的前置；12 可以先定义契约并伴随各 change 落地。第 13 项是独立质量能力，不阻塞第 4、5 项建立安全 WebChat 登录闭环；除非阶段 spec 明确把召回质量设为出口条件，不得把认证/WebChat change 与 ParadeDB、jieba 或 reranker migration 绑成同一次发布。
+依赖顺序至少满足：1 是 2、4、5、10 的前置；2 和 3 是公网 delivery/recovery 承诺的前置；5 是 6、7、10、11 对普通 tenant 开放的前置；7 是用户 MCP 的前置；12 可以先定义契约并伴随各 change 落地。第 13 项是独立质量能力，不阻塞第 4、5 项建立安全 WebChat 登录闭环；第 14 项依赖 tenant identity、WebChat auth、RuntimeSnapshot 和 tenant plugin catalog，但不要求先完成 BM25、ParadeDB、jieba 或 reranker migration。除非阶段 spec 明确把召回质量设为出口条件，不得把认证/WebChat change 与检索质量 migration 绑成同一次发布。
 
 #### 5.9.11 Ingress、canonical message、outbox 与 delivery transaction
 
@@ -1180,13 +1206,14 @@ Pilot canonical store 冻结如下：
 - Process-wide immutable base `RuntimeSnapshot` 可以保留，用于 plugin definitions、generation 和共享只读 wiring；tenant tool catalog、MCP binding、credential、policy 和 config revision 必须作为 per-task/per-call context 解析，不能作为共享可变 snapshot state。
 - **安装态、激活态与 Tenant Hook 绑定**：`installed`、`active generation`、`tenant binding` 分离。管理员安装插件后可以不挂任何 Hook；若没有 tenant 选择其 hook/tool/job contribution，插件保持 dormant，不进入任何 `TenantRuntimePlan`。这里区分两种“注册”：安装时只把 package/manifest 登记进 catalog，不执行插件代码；Python class、decorator handler 和 module provider 的代码级注册必须在候选激活时 import 插件后发生。共享 `PluginManager` 只需承载当前有实际绑定需求的插件 union；每个 work 由 `TenantRuntimeResolver` 根据 (`snapshot_id`, `tenant_id`, `tenant_policy_revision`) 生成不可变 `TenantRuntimePlan`。AgentLoop 定义 Hook 类型与调用契约，插件通过 module provider/decorator 把 handler 注册到某个既有 Hook；每个可选择能力项使用稳定 `contribution_id`、固定 hook/tool/job 类型和是否 `tenant_configurable`。tenant 只能启停这些已注册能力项，不能创造 AgentLoop 不存在的新 Hook，也不能把签名不兼容的 handler 任意搬到其他 Hook。安全 gate/授权 interceptor 和 process-scoped channel/managed service 只允许管理员控制。未在 plan 中的 contribution 不可见、不可调用、不可由后台任务隐式触发。
 - **Hook 数据方向与回传契约**：插件通常不是主动向 `AgentLoop` 推送任意数据。work runtime 先依据当前 turn/tool 构造 Hook context 或 `PhaseFrame`，再只调用当前 `TenantRuntimePlan` 启用的插件能力项。GATE 型生命周期 handler 可以原地修改允许写字段或返回替换后的 context，结果按顺序传给下一个 handler 和后续 phase；phase module 通过返回同一个/新的 frame，并向声明过的 namespaced slot 写结果，由后续内建 module 收集；TAP/fanout 型 handler 的返回值不进入主链路，只用于观察、审计或通过 tenant-bound service 产生旁路副作用；pre-tool handler 可以返回新 arguments 或 deny，`ToolExecutor` 再使用最终参数调用真实工具。context 中的 turn/session/message/tool 数据来自 Agent runtime，不是插件自己伪造后交给 AgentLoop。
-- **基础设施插件与租户默认配置**：不是所有 plugin contribution 都交给 tenant 自由选择。每项能力声明 `binding_policy=required|default_on|opt_in` 和 `tenant_configurable`：租户隔离、认证/授权 gate 等平台正确性能力用 `required + tenant_configurable=false`；记忆、默认工具等产品基础能力通常用 `default_on`，在创建 tenant 时自动生成 binding 和默认配置，由平台策略决定 tenant/admin 是否可整体关闭；普通扩展用 `opt_in`。基础设施插件仍可共享一份进程级代码 generation/连接池，但其数据库、KV、memory scope、credentials、配置覆盖和后台 work 必须按 `tenant_id` 隔离。Pilot 同一时刻只运行一种平台选定的 memory engine binary，不让不同 tenant 选择不同二进制版本；tenant 只获得该 engine 的隔离数据视图和允许覆盖的配置。当前 `plugins/default_memory/memory_plugin.py` 实际是由 bootstrap 直接构建的 memory engine infrastructure，而 `plugins/default_memory/plugin.py` 主要是 recall inspector；自动记忆写入由 `DefaultMemoryEngine` 订阅 `TurnCommitted` 完成，并不存在独立的 `save_memory` 插件目录。多租户迁移时把前者和自动 ingest 标为 memory infrastructure/default binding，把 inspector 标为 admin-observability contribution，避免把两者当成同一个 tenant 可选开关。
-Pilot 对默认记忆能力进一步固定为下表。这里的“默认配置”不是给每个 tenant 复制一套插件进程，而是在 tenant provisioning 时创建 binding、tenant-scoped 数据命名空间和允许覆盖的配置：
+- **基础设施插件与租户默认配置**：不是所有 plugin contribution 都交给 tenant 自由选择。每项能力声明 `binding_policy=required|default_on|opt_in` 和 `tenant_configurable`：租户隔离、认证/授权 gate 等平台正确性能力用 `required + tenant_configurable=false`；记忆、默认工具等产品基础能力通常用 `default_on`，在创建 tenant 时自动生成 binding 和默认配置，由平台策略决定 tenant/admin 是否可整体关闭；普通扩展用 `opt_in`。基础设施插件仍可共享一份进程级代码 generation/连接池，但其数据库、KV、memory scope、credentials、配置覆盖和后台 work 必须按 `tenant_id` 隔离。Pilot 预装并由管理员信任 `default` 与 `rachael` 两个 memory engine plugin。不同 tenant 可以选择不同的已安装引擎，但不能上传任意 engine、选择未批准的代码版本，或在一个 work 中途切换 engine。每个 work 仍通过 `RuntimeSnapshot` 固定代码 generation，并从 tenant binding 解析一个 active engine；不同引擎的存储、KV、memory scope、配置覆盖和后台 work 必须按 `tenant_id + engine_id` 隔离。当前 `plugins/default_memory/memory_plugin.py` 实际是由 bootstrap 直接构建的 memory engine infrastructure，而 `plugins/default_memory/plugin.py` 主要是 recall inspector；自动记忆写入由 `DefaultMemoryEngine` 订阅 `TurnCommitted` 完成，并不存在独立的 `save_memory` 插件目录。多租户迁移时把 engine runtime、自动 ingest 和 engine-specific tools 按统一 memory plugin 契约接入；inspector 仍标为 admin-observability contribution，不能把它误当成普通 tenant 可选开关。
+Pilot 对 memory engine 插件及其默认配置进一步固定为下表。这里的“默认配置”不是给每个 tenant 复制一套插件进程，而是在 tenant provisioning 时创建 binding、tenant-scoped 数据命名空间和允许覆盖的配置：
 
 | 能力项 | `binding_policy` | tenant 能否关闭 | 多租户含义 |
 | --- | --- | --- | --- |
-| memory engine runtime | `required` | 否 | 平台始终提供同一种 `DefaultMemoryEngine` generation；共享代码和无 tenant 内容的连接池，但所有 query/write 必须使用 tenant-bound storage view |
-| automatic memory ingest/save | `default_on` | Pilot 默认允许管理员按 tenant 关闭 | tenant 创建时自动绑定；关闭后不再从新 `TurnCommitted` 写入记忆，但不删除已有 tenant memory |
+| memory engine slot | `required` | 不能关闭，但可以在允许目录内切换 | 每个 tenant 始终有且只有一个 active engine；初始绑定为 `default`，管理员允许后可切换到 `rachael`。active engine 名称和 policy revision 进入 `TenantRuntimePlan`，所有 query/write 必须使用该 engine 的 tenant-bound storage view |
+| memory engine implementations | `default_on` / `opt_in` | 由平台 catalog 和 tenant policy 决定 | `default` 在 tenant 创建时作为初始选择；`rachael` 作为已安装的可选实现暴露给 WebChat selector。切换只影响后续 work，不迁移或删除旧 engine 的数据 |
+| automatic memory ingest/save | `default_on` | Pilot 默认允许管理员按 tenant 关闭 | 由当前 active engine 按自身契约处理新 `TurnCommitted`；关闭后不再写入记忆，但不删除已有 tenant memory |
 | memory context retrieval/injection | `default_on` | Pilot 默认允许管理员按 tenant 关闭 | tenant 创建时自动绑定；关闭后不向 AgentLoop 的 prompt/context 注入召回结果，但不影响 memory engine 本身和已有数据 |
 | recall/memorize/forget tools | `default_on`，逐项配置 | 是 | tenant 创建时进入默认 tool catalog；可逐项关闭，工具调用仍必须经过 tenant tool policy 和 tenant-bound memory service |
 | default-memory inspector | admin observability | 普通 tenant 不控制 | 只供管理员诊断；状态、JSONL/数据库记录和 Dashboard 查询都必须按可信 `tenant_id` 过滤，不能成为普通 tenant Hook 开关 |
@@ -1195,9 +1222,10 @@ Tenant provisioning 与运行时解析规则固定为：
 
 1. 创建 tenant 时，为全部 `required` contribution 建立不可关闭的有效 binding；
 2. 为全部 `default_on` contribution 建立有效 binding，并物化该 tenant 的默认配置；
-3. 不为 `opt_in` contribution 建立有效 binding，直到管理员显式启用；
-4. 同时创建或确认 tenant-scoped memory/KV/credential namespace，禁止依赖 `DEFAULT_TENANT` fallback；
-5. 每次 binding/config 修改提升 `tenant_policy_revision`；下一个 work 使用 `base RuntimeSnapshot + required contributions + tenant bindings/config overrides` 解析新的不可变 `TenantRuntimePlan`，进行中的 work 保持原 plan。
+3. 为 memory engine slot 建立一个 active binding；默认使用 `default`，只有在 tenant policy 允许且用户在 WebChat 确认后才切换到 `rachael`；
+4. 不为其他 `opt_in` contribution 建立有效 binding，直到管理员显式启用；
+5. 同时创建或确认 `tenant_id + engine_id` 维度的 memory/KV/credential namespace，禁止依赖 `DEFAULT_TENANT` fallback；
+6. 每次 binding/config 修改提升 `tenant_policy_revision`；下一个 work 使用 `base RuntimeSnapshot + required contributions + tenant bindings/config overrides` 解析新的不可变 `TenantRuntimePlan`，进行中的 work 保持原 plan。
 
 - **Plugin invocation seam**：`PluginContext` 保持 generation/process-scoped，不放 `current_tenant`；每次 hook/tool/job 调用都创建 `PluginInvocationContext`，显式携带不可变 `WorkContext`、tenant-bound session/memory/KV/secret/policy/effect services。插件实例不得保存跨 await 的当前 tenant/session/turn 状态；`ContextVar` 只做观测和兼容，不做授权边界。
 - **Pilot 热更新边界**：管理员上传/安装代表其已经信任插件，Pilot 不建设插件签名、恶意代码扫描、sandbox、来源证明和复杂依赖审计。单纯安装只登记 package/manifest，不执行插件代码；首次激活或更新 active generation 时才执行最小正确性 gate：发现/manifest、稳定 `contribution_id` 与 Hook 类型、candidate import/initialize、snapshot compile；成功后原子发布，失败保留旧 snapshot 并返回错误。插件代码/manifest 变化走新 generation + 旧 lease drain；tenant contribution 的启停、顺序和配置变化只提升 tenant policy/config revision，从下一个 work 生效，无需重启服务或重载插件代码。进行中 work 保持原 `TenantRuntimePlan`。新增 Hook、改变未声明 Hook 映射或修改 handler 实现才走代码 generation 热更新。Pilot 不实现滚动重启和对特殊插件类型的提前分类；候选无法热发布时保持旧版本，由管理员在维护窗口手动重启当前单实例。
@@ -1243,7 +1271,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 建立工具调用的 tenant scope/effect 基线：普通 tenant 不开放宿主机 shell、全局 MCP、Peer Agent 和插件管理；文件、记忆、消息、推送、scheduler 与后台任务必须绑定服务端派生的 tenant context；
 - 收束人设 prompt 的来源边界：以当前单体的 `identity`、`personality_rules`、`self_model` 语义为默认基线，拆出 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 四类 prompt 来源；不新增复杂人格参数模型；
 - 完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation；
-- 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；区分 `installed`、`active generation`、`tenant binding`，允许插件安装后保持 dormant；为插件 contributions 固化稳定 ID、固定 hook/tool/job 类型、`binding_policy=required|default_on|opt_in` 和 `tenant_configurable` 元数据，tenant 只能热启停/排序策略允许修改的 contribution，变更从下一 work 生效；tenant provisioning 自动物化全部 `required`/`default_on` binding、默认配置和 tenant-scoped namespace，运行时按 `base snapshot + required contributions + tenant overrides` 解析 plan；将 required memory engine、default-on automatic ingest/context retrieval/memory tools 与 admin-only default-memory inspector 分开；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
+- 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；区分 `installed`、`active generation`、`tenant binding`，允许插件安装后保持 dormant；为插件 contributions 固化稳定 ID、固定 hook/tool/job 类型、`binding_policy=required|default_on|opt_in` 和 `tenant_configurable` 元数据，tenant 只能热启停/排序策略允许修改的 contribution，变更从下一 work 生效；tenant provisioning 自动物化全部 `required`/`default_on` binding、默认配置和 tenant-scoped namespace，运行时按 `base snapshot + required contributions + tenant overrides` 解析 plan；将 required memory engine slot、`default`/`rachael` 两个已安装实现、default-on automatic ingest/context retrieval/memory tools 与 admin-only inspector 分开；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
 - HyDE-style hypothesis、query rewrite 与 reranker 都保留开关和离线评测入口，但 Pilot 默认关闭，后续通过消融实验决定是否启用。
 
 **出口条件**：Telegram Bot 通道可以连续运行 7 天；重启后已提交到现有持久化存储的数据不丢失，进程内 queue/task 的已知丢失窗口、恢复缺口和 P0.5 durable ingress/outbox 前置条件有明确记录；数据库、配置和 workspace 可以恢复；同一 canonical conversation 不会无序并发执行多个状态写入任务；后台 maintenance 不会长期挤压 interactive turn；FastAPI 应用层能够启动并提供后续 WebChat 建设所需的基础运行环境。
@@ -1274,8 +1302,9 @@ Tenant provisioning 与运行时解析规则固定为：
 - 实现 `POST /api/auth/exchange` 与 HttpOnly Cookie；
 - HTTP API、上传、媒体读取和 WebSocket 统一接入认证依赖；attachment/media 按 5.9.15 使用 tenant ownership、immutable attachment id、MIME/size limit 和清理策略；
 - 登录会话过期、退出登录和失效后的 401/403 行为；
-- `tenant_id` 由认证账号服务端派生，并贯穿 Passive、Proactive、Drift、ToolExecutor、memory retrieval、consolidation 和 optimizer；
-- 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，但不复制 `PluginManager`/`RuntimeSnapshot`；普通配置从下一 work 生效，hard revocation 在副作用前即时生效；
+- WebChat 提供 memory engine selector：读取当前 tenant 被允许的 engine、展示能力/状态、提交 `default` 或 `rachael` 的选择；服务端校验 tenant binding 和 engine readiness，选择结果持久化到 PostgreSQL，切换只对下一次 work 生效；
+- `tenant_id` 由认证账号服务端派生，并贯穿 Passive、Proactive、Drift、ToolExecutor、memory retrieval、consolidation 和 optimizer；memory engine 则由同一 tenant 的 active binding 派生，不能信任客户端直接提交的 engine 作为授权依据；
+- 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，并为每个 tenant 持久化 active memory engine（首版为 `default` 或 `rachael`）；不复制 `PluginManager`/`RuntimeSnapshot`。WebChat 只展示服务端返回的允许目录并提交选择，普通配置从下一 work 生效，hard revocation 在副作用前即时生效；
 - `tenant_id` 同时绑定该用户的 PersonaProfile 与 RelationshipState，确保主对话、Proactive 和 Drift 不读取其他 tenant 的人设或关系上下文；
 - 用户首次登录时进入一次性人设设置流程：可以选择管理员提供的可选 Persona，也可以编辑并提交完整自由文本；提交后保存 tenant 独立快照并锁定用户侧编辑入口；
 - WebChat 登录账号与 Telegram Bot 用户私聊身份绑定的可信关联；按 `account → tenant → canonical conversation` 映射两种入口，并对 channel 重试和客户端重发做幂等去重；
@@ -1287,7 +1316,7 @@ Tenant provisioning 与运行时解析规则固定为：
 
 **目标**：管理员可以低成本运营十几个测试用户。
 
-- 复用现有 React Dashboard，增加 Pilot 账号管理视图或插件面板，不新建独立管理后台；
+- 复用现有 React Dashboard，增加 Pilot 账号管理视图或插件面板，不新建独立管理后台；管理员可以查看每个 tenant 的 active memory engine、允许目录、切换记录和按 engine_id 聚合的召回/延迟/失败指标；
 - Dashboard 支持账号签发、Token 状态查询、登录会话查看、账号封禁和解除封禁；
 - 增加账号选择器，将现有单用户 sessions、proactive、logs、metrics、memory 和插件页面复用为 tenant-scoped 用户视图；
 - Dashboard 为管理员提供可选 Persona 模板的新增、停用和预览能力；模板变更只影响后续的一次性人设设置流程，不静默覆盖已创建的 tenant 快照；
@@ -1297,7 +1326,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 账号级撤销、Token 级撤销和原因记录；
 - 封禁后主动断开现有 WebSocket；
 - 基础限流、单账号并发上限、消息大小限制和有界队列 overload 策略；interactive 满载明确拒绝，maintenance 可合并/延后；
-- 分别观测 interactive backlog、maintenance backlog、proactive/drift skip、tool timeout、retrieval latency、consolidation failure、optimizer 状态和账号封禁后的截断结果；
+- 分别观测 interactive backlog、maintenance backlog、proactive/drift skip、tool timeout、按 `engine_id` 区分的 retrieval latency/命中率/失败降级、consolidation failure、optimizer 状态和账号封禁后的截断结果；
 - 记录 `last_seen_at`、登录失败次数、最近 IP 摘要和撤销原因；
 - Dashboard 管理操作和跨用户切换使用独立 admin credential，并写入审计记录；
 - 显式用户 schedule 迁移为 tenant/account/conversation owned durable work，delivery target 由服务端 binding 解析；账号 suspension/revocation、misfire 和执行幂等按 5.9.14 处理；
@@ -1598,7 +1627,7 @@ result=success
 | DECIDED | Consolidation 阈值与失败语义 | 保持当前默认 `memory_window=40`、`keep_count=20`、guard threshold=30；失败立即阻断当前 turn | 若要改变语义，另开 change；当前 change 只做 tenant/recovery 接缝 |
 | DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、Persona 审计记录和 tenant 并发写入约束 |
 | DECIDED | Explicit schedule 语义 | tenant-owned durable business work；`(job_id, scheduled_for)` 幂等；suspend 暂停、revoke 禁用；recurring 不回放全部 missed occurrence | 固化 schedule/execution/delivery schema、IANA timezone 与 DST contract test |
-| DECIDED | RuntimeSnapshot/hooks/revocation | `installed`、`active generation`、`tenant binding` 分离，插件可安装后不挂任何 Hook；共享 `PluginManager` 通过 tenant plan 按稳定 contribution ID 过滤插件/Hook；contribution 使用 `required`、`default_on`、`opt_in` 区分平台基础设施、租户默认能力和可选扩展；memory engine 为 `required`，自动 ingest、context retrieval 和 memory tools 为 `default_on`，inspector 为 admin-only；代码更新使用新 generation + 旧 lease drain，tenant Hook 启停/排序/配置从下一 work 热生效；管理员承担插件可信判断 | P0 固化最小正确性 gate、contribution hook/type/binding policy/`tenant_configurable`、tenant provisioning 默认 binding/config/namespace、tenant plugin settings/catalog/KV、统一 invocation seam 和副作用前 revocation recheck；不建设插件安全扫描、sandbox 或滚动重启 |
+| DECIDED | RuntimeSnapshot/hooks/revocation | `installed`、`active generation`、`tenant binding` 分离，插件可安装后不挂任何 Hook；共享 `PluginManager` 通过 tenant plan 按稳定 contribution ID 过滤插件/Hook；contribution 使用 `required`、`default_on`、`opt_in` 区分平台基础设施、租户默认能力和可选扩展；memory engine slot 为 `required`，首版允许 tenant 在已安装且管理员批准的 `default` / `rachael` 中选择一个 active engine，自动 ingest、context retrieval 和 memory tools 绑定到当前 active engine，inspector 为 admin-only；代码更新使用新 generation + 旧 lease drain，tenant Hook 启停/排序/配置和 active engine 选择从下一 work 热生效；管理员承担插件可信判断 | P0 固化最小正确性 gate、contribution hook/type/binding policy/`tenant_configurable`、tenant provisioning 默认 binding/config/namespace、tenant plugin settings/catalog/KV、统一 invocation seam 和副作用前 revocation recheck；不建设插件安全扫描、sandbox 或滚动重启 |
 | DECIDED | 工具取消 | 断线不取消当前服务器端 turn/tool；账号封禁截断 tenant work；协作式取消为主、工具 timeout 兜底 | 每次 tool call 保留 owner、取消请求、timer 来源和 terminal/unknown 状态 |
 | DECIDED | 副作用工具契约 | 已产生副作用时先 outcome query，再执行声明的 compensation；审计保留原调用 + 补偿 | 建 capability inventory；无补偿或结果未知时标记 `compensation_required`/`unknown`，不盲重试 |
 | DECIDED | Queue 容量初始值 | global interactive 128、per-tenant pending 16、maintenance 64、per-kind maintenance 1、WS outbound 256/soft 192/1 MiB hard；LLM/embedding/MCP/process 默认 30/4/8/2 | 作为可配置 Pilot 初始值实现；P0/P0.5 压测记录拒绝率、backlog、429/退避和内存后，后续 change 才可调整 |
