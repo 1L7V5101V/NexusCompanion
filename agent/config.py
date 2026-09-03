@@ -18,6 +18,7 @@ from agent.config_models import (
     AppServerConfig,
     CacheConfig,
     ChannelsConfig,
+    ChatChannelConfig,
     Config,
     FitbitIntegrationConfig,
     LoggingConfig,
@@ -244,11 +245,18 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
     cli_chat_id = str(cli_data.get("chat_id") or "").strip()
     if not cli_session_key and cli_channel and cli_chat_id:
         cli_session_key = f"{cli_channel}:{cli_chat_id}"
+    chat_data = _as_dict(channels_data.get("chat"))
     channels = ChannelsConfig(
         telegram=telegram,
         qq=qq,
         socket=_normalize_cli_socket_endpoint(socket_value),
         cli_session_key=cli_session_key,
+        chat=ChatChannelConfig(
+            enabled=bool(chat_data.get("enabled", False)),
+            channel_name=str(chat_data.get("channel_name", "chat")),
+            host=str(chat_data.get("host", "127.0.0.1")),
+            port=int(chat_data.get("port", 6322)),
+        ),
     )
     channels.socket = _normalize_cli_socket_endpoint(channels.socket)
     return channels

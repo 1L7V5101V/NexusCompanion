@@ -137,6 +137,9 @@ class PassiveMessageWorker:
                     channel=item.channel,
                     chat_id=item.chat_id,
                     content="处理消息时出错，请稍后再试。",
+                    # channel adapter 据此映射协议级失败帧（如 WebChat turn.failed）；
+                    # 对不识别该标记的 channel 无行为影响。
+                    metadata={"nexus_error": True},
                 )
             else:
                 return

@@ -1,0 +1,117 @@
+{
+  "protocol_version": 0,
+  "note": "WebChat dev v0 shared contract fixture (roadmap 5.9.4). Backend tests and the frontend protocol.ts must both conform to these shapes. seq is stamped by the server at send time; null here means the server assigns it.",
+  "server_to_client": {
+    "hello": {
+      "type": "hello",
+      "seq": null,
+      "connection_id": "0f8b7a1c2d3e4f5a6b7c8d9e0f1a2b3c",
+      "protocol_version": 0,
+      "session_key": "chat:local",
+      "latest_seq": 42
+    },
+    "message.accepted": {
+      "type": "message.accepted",
+      "seq": null,
+      "client_message_id": "3f2a9c1e-8b4d-4c3a-9e2f-1a2b3c4d5e6f",
+      "session_key": "chat:local"
+    },
+    "message.delta": {
+      "type": "message.delta",
+      "seq": null,
+      "turn_id": "turn-0f8b",
+      "content_delta": "你好",
+      "thinking_delta": ""
+    },
+    "tool.started": {
+      "type": "tool.started",
+      "seq": null,
+      "turn_id": "turn-0f8b",
+      "call_id": "call_01",
+      "tool_name": "search_messages"
+    },
+    "tool.completed": {
+      "type": "tool.completed",
+      "seq": null,
+      "turn_id": "turn-0f8b",
+      "call_id": "call_01",
+      "tool_name": "search_messages",
+      "status": "done",
+      "result_preview": "共 3 条结果"
+    },
+    "turn.completed": {
+      "type": "turn.completed",
+      "seq": null,
+      "turn_id": "turn-0f8b",
+      "content": "完整回复正文",
+      "thinking": null,
+      "media": []
+    },
+    "turn.failed": {
+      "type": "turn.failed",
+      "seq": null,
+      "turn_id": "turn-0f8b",
+      "error": "处理消息时出错，请稍后再试。"
+    },
+    "replay_required": {
+      "type": "replay_required",
+      "seq": null,
+      "after_seq": 12
+    },
+    "error": {
+      "type": "error",
+      "seq": null,
+      "code": "bad_frame",
+      "message": "无法解析的帧"
+    },
+    "pong": {
+      "type": "pong",
+      "seq": null
+    }
+  },
+  "client_to_server": {
+    "send": {
+      "type": "send",
+      "client_message_id": "3f2a9c1e-8b4d-4c3a-9e2f-1a2b3c4d5e6f",
+      "content": "用户输入",
+      "media": []
+    },
+    "replay": {
+      "type": "replay",
+      "after_seq": 40
+    },
+    "ping": {
+      "type": "ping"
+    }
+  },
+  "error_cases": {
+    "send_missing_client_message_id": {
+      "type": "send",
+      "content": "用户输入"
+    },
+    "send_bad_client_message_id": {
+      "type": "send",
+      "client_message_id": "not-a-uuid",
+      "content": "用户输入"
+    },
+    "send_empty_content": {
+      "type": "send",
+      "client_message_id": "3f2a9c1e-8b4d-4c3a-9e2f-1a2b3c4d5e6f",
+      "content": ""
+    },
+    "unknown_type": {
+      "type": "mystery"
+    }
+  },
+  "replay_semantics": {
+    "droppable_types": ["message.delta", "tool.started", "tool.completed"],
+    "replayable_types": [
+      "hello",
+      "message.accepted",
+      "turn.completed",
+      "turn.failed",
+      "replay_required"
+    ],
+    "overload_close_code": 1013
+  }
+}

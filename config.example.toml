@@ -118,6 +118,14 @@ bot_uin = ""
 allow_from = ["your_qq_number"]
 websocket_open_timeout_seconds = 5.0
 
+[channels.chat]
+# 本地 WebChat（P0.5 dev 模式，无认证）。仅建议绑定 127.0.0.1 使用；
+# 前端 bundle 构建到 static/chat 后，浏览器访问 http://127.0.0.1:6322/。
+enabled = false
+channel_name = "chat"
+host = "127.0.0.1"
+port = 6322
+
 # 可选：允许在群组中使用（@bot 触发）
 # [[channels.qq.groups]]
 # group_id = "123456789"

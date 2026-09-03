@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 与 dashboard 相同的工业风 design token（深色主题）。 */
+:root {
+  color-scheme: dark;
+
+  --color-bg-rgb: 0 0 0;
+  --color-surface-rgb: 10 10 10;
+  --color-surface-2-rgb: 20 20 20;
+  --color-surface-3-rgb: 31 31 31;
+  --color-fg-rgb: 237 237 237;
+  --color-muted-rgb: 161 161 170;
+  --color-subtle-rgb: 113 113 122;
+  --color-accent-rgb: 255 255 255;
+  --color-accent-ink-rgb: 0 0 0;
+  --color-danger-rgb: 239 68 68;
+  --color-warning-rgb: 245 158 11;
+  --color-success-rgb: 34 197 94;
+
+  --color-bg: rgb(var(--color-bg-rgb));
+  --color-surface: rgb(var(--color-surface-rgb));
+  --color-surface-2: rgb(var(--color-surface-2-rgb));
+  --color-surface-3: rgb(var(--color-surface-3-rgb));
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.15);
+
+  --color-fg: rgb(var(--color-fg-rgb));
+  --color-muted: rgb(var(--color-muted-rgb));
+  --color-subtle: rgb(var(--color-subtle-rgb));
+
+  --color-accent: rgb(var(--color-accent-rgb));
+  --color-accent-ink: rgb(var(--color-accent-ink-rgb));
+
+  --color-danger: rgb(var(--color-danger-rgb));
+  --color-warning: rgb(var(--color-warning-rgb));
+  --color-success: rgb(var(--color-success-rgb));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
