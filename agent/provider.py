@@ -1,6 +1,8 @@
 """
 LLM Provider — OpenAI 兼容格式
 支持所有兼容 OpenAI Chat Completions API 的服务：DeepSeek、Qwen、OpenAI 等。
+protocol="codex" 时改走 Codex 协议（OpenAI Responses API），用于只暴露
+Responses 端点的网关。
 """
 
 from __future__ import annotations
@@ -12,12 +14,27 @@ import logging
 import os
 import re
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 from openai import AsyncOpenAI
+
+from agent.model_runtime.errors import TransportError
+from agent.model_runtime.transports.responses_converters import (
+    _dump,
+    _normalize_effort,
+    _normalize_tool_choice,
+    _parse_usage,
+    _responses_input,
+    _responses_tools,
+)
+
+# Codex CLI 指纹版本，与 agent/model_runtime/auth/codex.py 的
+# CODEX_CLIENT_VERSION 保持同步（不可直接 import，auth 链依赖 POSIX fcntl）
+_CODEX_CLIENT_VERSION = "0.144.1"
 
 _THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
@@ -211,9 +228,36 @@ class LLMProvider:
         provider_name: str = "",
         force_disable_thinking: bool = False,
         payload_snapshot_enabled: bool | None = None,
+        protocol: str = "openai",
     ) -> None:
+        normalized_protocol = (protocol or "openai").strip().lower()
+        if normalized_protocol in {"codex", "responses"}:
+            self._protocol = "codex"
+        elif normalized_protocol in {"openai", "chat", ""}:
+            self._protocol = "openai"
+        else:
+            raise ValueError(f"未知 LLM protocol: {protocol!r}")
         normalized_base_url = _normalize_openai_base_url(base_url)
-        self._client = AsyncOpenAI(api_key=api_key, base_url=normalized_base_url)
+        default_headers: dict[str, str] | None = None
+        if self._protocol == "codex":
+            self._codex_session_id = str(uuid.uuid4())
+            self._codex_thread_id = str(uuid.uuid4())
+            self._codex_installation_id = str(uuid.uuid4())
+            self._codex_window_id = str(uuid.uuid4())
+            # Codex CLI 兼容指纹头：部分网关按 UA/originator 做协议路由
+            default_headers = {
+                "originator": "codex_cli_rs",
+                "User-Agent": f"codex_cli_rs/{_CODEX_CLIENT_VERSION}",
+                "session-id": self._codex_session_id,
+                "thread-id": self._codex_thread_id,
+                "x-codex-installation-id": self._codex_installation_id,
+                "x-codex-window-id": self._codex_window_id,
+            }
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=normalized_base_url,
+            default_headers=default_headers,
+        )
         self._base_url = normalized_base_url or ""
         self._provider_name = provider_name
         self._system = system_prompt
@@ -259,6 +303,20 @@ class LLMProvider:
             else messages
         )
         full_messages = _merge_leading_system_messages(full_messages)
+        # Codex（Responses API）协议路径：完全绕过 chat-completions strategy
+        if self._protocol == "codex":
+            merged_extra_body = dict(self._extra_body)
+            if extra_body:
+                merged_extra_body.update(extra_body)
+            return await self._chat_responses(
+                full_messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                tool_choice=tool_choice,
+                extra_body=merged_extra_body,
+                on_content_delta=on_content_delta,
+            )
         full_messages = strategy.normalize_messages(full_messages)
         kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=full_messages)
         if tools:
@@ -407,13 +465,179 @@ class LLMProvider:
             cache_hit_tokens=cache_hit_tokens,
         )
 
-    async def _create_with_retry(self, kwargs: dict) -> object:
+    async def _chat_responses(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        tool_choice: str | dict,
+        extra_body: dict[str, Any],
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None,
+    ) -> LLMResponse:
+        """Codex 协议路径：chat 消息转 Responses input 后走 responses.create 流式接口。"""
+        # fill_tool_call_content 必须关闭：占位文本会作为 assistant 消息发进 input
+        normalized = _strip_reasoning_content(
+            _normalize_chat_messages(messages, fill_tool_call_content=False)
+        )
+        normalized = _flatten_tool_message_content(normalized)
+        try:
+            input_items, instructions = _responses_input(normalized, "")
+            responses_tools = _responses_tools(tools) if tools else []
+            resolved_choice, responses_tools = _normalize_tool_choice(
+                tool_choice, responses_tools
+            )
+        except TransportError as exc:
+            raise ValueError(str(exc)) from exc
+        payload: dict[str, Any] = {
+            "model": model,
+            "input": input_items,
+            "stream": True,
+            "store": False,
+            "max_output_tokens": max_tokens,
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        if responses_tools:
+            payload["tools"] = responses_tools
+            payload["tool_choice"] = resolved_choice
+            payload["parallel_tool_calls"] = True
+        # 只透传 reasoning_effort；enable_thinking/thinking 等 chat 专属键丢弃
+        reasoning_effort = extra_body.pop("reasoning_effort", None)
+        if reasoning_effort:
+            payload["reasoning"] = {
+                "effort": _normalize_effort(str(reasoning_effort))
+            }
+        stream = await self._create_with_retry(
+            payload,
+            create=lambda p: self._client.responses.create(**p),
+        )
+        return await self._consume_responses_stream(stream, on_content_delta)
+
+    async def _consume_responses_stream(
+        self,
+        stream: Any,
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None,
+    ) -> LLMResponse:
+        """消费 Codex Responses SSE 事件流并装配 LLMResponse。"""
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_args: dict[str, dict[str, str]] = {}
+        usage = None
+        completed = False
+
+        stream_iter = aiter(stream)
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    anext(stream_iter),
+                    timeout=self._stream_idle_timeout_s,
+                )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as exc:
+                raise LLMNetworkTimeoutError("Codex Responses 流空闲超时") from exc
+            event_type = str(_get_field(event, "type") or "")
+            delta = _get_field(event, "delta")
+            if event_type == "response.output_text.delta" and isinstance(delta, str):
+                content_parts.append(delta)
+                if on_content_delta is not None:
+                    await on_content_delta({"content_delta": delta})
+            elif event_type == "response.output_text.done":
+                done_text = _get_field(event, "text")
+                current = "".join(content_parts)
+                if isinstance(done_text, str) and done_text.startswith(current):
+                    suffix = done_text[len(current) :]
+                    if suffix:
+                        content_parts.append(suffix)
+                        if on_content_delta is not None:
+                            await on_content_delta({"content_delta": suffix})
+            elif event_type in {
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
+            } and isinstance(delta, str):
+                reasoning_parts.append(delta)
+                if on_content_delta is not None:
+                    await on_content_delta({"thinking_delta": delta})
+            elif event_type == "response.reasoning_summary_text.done":
+                done_text = _get_field(event, "text")
+                current = "".join(reasoning_parts)
+                if isinstance(done_text, str) and done_text.startswith(current):
+                    suffix = done_text[len(current) :]
+                    if suffix:
+                        reasoning_parts.append(suffix)
+                        if on_content_delta is not None:
+                            await on_content_delta({"thinking_delta": suffix})
+            elif event_type == "response.function_call_arguments.delta":
+                item_id = str(
+                    _get_field(event, "item_id") or _get_field(event, "output_index") or ""
+                )
+                slot = tool_args.setdefault(item_id, {"arguments": ""})
+                slot["arguments"] += str(delta or "")
+            elif event_type == "response.output_item.done":
+                item = _dump(_get_field(event, "item"))
+                if item.get("type") == "function_call":
+                    item_id = str(item.get("id") or item.get("call_id") or "")
+                    tool_args[item_id] = {
+                        "id": str(item.get("call_id") or item_id),
+                        "name": str(item.get("name") or ""),
+                        "arguments": str(item.get("arguments") or "{}"),
+                    }
+            elif event_type == "response.completed":
+                response = _get_field(event, "response")
+                usage = _parse_usage(_get_field(response, "usage"))
+                completed = True
+                break
+            elif event_type in {"response.failed", "response.incomplete"}:
+                response = _get_field(event, "response")
+                error = _get_field(response, "error") or _get_field(
+                    response, "incomplete_details"
+                )
+                _raise_responses_stream_error(error)
+        if not completed:
+            # 不自动重试：delta 可能已推送给上层，重试会导致内容重复
+            raise RuntimeError("Codex Responses 在 completed 事件前断流")
+
+        tool_calls: list[ToolCall] = []
+        try:
+            for call in tool_args.values():
+                if not call.get("name"):
+                    continue
+                tool_calls.append(
+                    ToolCall(
+                        id=call.get("id", ""),
+                        name=call["name"],
+                        arguments=json.loads(call.get("arguments") or "{}"),
+                    )
+                )
+        except json.JSONDecodeError as exc:
+            raise ValueError("Codex 工具调用参数不是有效 JSON") from exc
+        return LLMResponse(
+            content="".join(content_parts).strip() or None,
+            tool_calls=tool_calls,
+            thinking="".join(reasoning_parts).strip() or None,
+            cache_prompt_tokens=usage.input_tokens if usage else None,
+            cache_hit_tokens=usage.cached_input_tokens if usage else None,
+        )
+
+    async def _create_with_retry(
+        self,
+        kwargs: dict,
+        *,
+        create: Callable[[dict], Awaitable[object]] | None = None,
+    ) -> object:
+        if create is None:
+            async def _default_create(kw: dict) -> object:
+                return await self._client.chat.completions.create(**kw)
+
+            create = _default_create
         _save_llm_payload_snapshot(kwargs, enabled=self._payload_snapshot_enabled)
         last_err: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
                 return await asyncio.wait_for(
-                    self._client.chat.completions.create(**kwargs),
+                    create(kwargs),
                     timeout=self._request_timeout_s,
                 )
             except Exception as e:
@@ -601,6 +825,44 @@ def _summarize_tool_names(tools: list[dict]) -> str:
     if len(tools) > 8:
         names.append("...")
     return ",".join(names)
+
+
+def _raise_responses_stream_error(error: Any) -> None:
+    """把 Codex Responses 流内错误映射为 agent.provider 的错误类型。"""
+    code = str(_get_field(error, "code") or "").lower()
+    message = str(_get_field(error, "message") or error or "未知错误")
+    if code in {"context_length_exceeded", "context_window_exceeded"}:
+        raise ContextLengthError(f"Codex 请求超过上下文窗口: {message}")
+    if code in {"bio_policy", "cyber_policy", "policy_violation"}:
+        raise ContentSafetyError(f"Codex Responses 请求被拒绝 code={code}: {message}")
+    if code == "invalid_prompt":
+        raise ValueError(f"Codex Responses 请求结构无效: {message}")
+    raise RuntimeError(f"Codex Responses 流失败 code={code or '-'}: {message}")
+
+
+def _flatten_tool_message_content(messages: list[dict]) -> list[dict]:
+    """Responses 协议的 tool 输出必须是字符串；把 content block 列表压平成文本。"""
+    result: list[dict] = []
+    for msg in messages:
+        if msg.get("role") == "tool" and isinstance(msg.get("content"), list):
+            item = dict(msg)
+            item["content"] = _join_text_blocks(msg["content"])
+            result.append(item)
+        else:
+            result.append(msg)
+    return result
+
+
+def _join_text_blocks(blocks: list) -> str:
+    parts: list[str] = []
+    for block in blocks:
+        if isinstance(block, dict):
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        elif isinstance(block, str) and block:
+            parts.append(block)
+    return "\n".join(parts)
 
 
 def _merge_leading_system_messages(messages: list[dict]) -> list[dict]:
