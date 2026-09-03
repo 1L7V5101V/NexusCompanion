@@ -238,13 +238,14 @@ export class ChatStore {
       ],
       status: "complete",
     };
+    // Update isRunning before notifying subscribers so the composer is re-enabled.
+    this.currentAssistantId = null;
+    this.running = false;
     if (this.findMessage(existingId)) {
       this.replaceMessage(existingId, finalMessage);
     } else {
       this.commit([...this.messages, finalMessage]);
     }
-    this.currentAssistantId = null;
-    this.running = false;
   }
 
   private applyTurnFailed(frame: TurnFailedFrame): void {
@@ -260,13 +261,14 @@ export class ChatStore {
       parts: existing ? existing.parts : [{ kind: "text", text: frame.error }],
       status: "error",
     };
+    // Keep the snapshot consistent with the terminal assistant message.
+    this.currentAssistantId = null;
+    this.running = false;
     if (existing) {
       this.replaceMessage(existing.id, finalMessage);
     } else {
       this.commit([...this.messages, finalMessage]);
     }
-    this.currentAssistantId = null;
-    this.running = false;
   }
 }
 
@@ -316,7 +318,9 @@ export function useChatRuntime(): {
       id: message.id,
       role: message.role,
       content: toContent(message.parts),
-      status: toAssistantStatus(message.status),
+      ...(message.role === "assistant"
+        ? { status: toAssistantStatus(message.status) }
+        : {}),
     })),
     isRunning: snapshot.isRunning,
     onNew,
