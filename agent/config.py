@@ -88,6 +88,14 @@ def load_config(path: str | Path = "config.toml") -> Config:
     agent_tools = _as_dict(agent_cfg.get("tools"))
     agent_maintenance = _as_dict(agent_cfg.get("maintenance"))
     provider = str(llm.get("provider") or data["provider"])
+
+    def _protocol_value(slot: dict) -> str:
+        """协议槽位值: [llm.<slot>] protocol > [llm] protocol > "openai"。"""
+        raw = str(slot.get("protocol") or llm.get("protocol") or "openai").strip().lower()
+        if raw not in {"openai", "chat", "codex", "responses"}:
+            raise ValueError(f"llm protocol 无效: {raw!r}（可选 openai/codex）")
+        return raw
+
     channels = _load_channels_config(data)
     proactive = _load_proactive_config(data)
     memory = _load_memory_config(data)
@@ -125,6 +133,10 @@ def load_config(path: str | Path = "config.toml") -> Config:
             agent_context.get("memory_window", data.get("memory_window", 40))
         ),
         base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
+        protocol=_protocol_value(llm_main),
+        light_protocol=_protocol_value(llm_fast),
+        agent_protocol=_protocol_value(llm_agent),
+        vl_protocol=_protocol_value(llm_vl),
         extra_body=_load_extra_body(data),
         channels=channels,
         proactive=proactive,

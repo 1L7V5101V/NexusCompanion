@@ -176,6 +176,11 @@ class Config:
     memory_window: int = 40
     base_url: str | None = None
     extra_body: dict = field(default_factory=dict)
+    # 协议: "openai" = chat completions, "codex"/"responses" = OpenAI Responses API
+    protocol: str = "openai"
+    light_protocol: str = "openai"
+    agent_protocol: str = "openai"
+    vl_protocol: str = "openai"
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     memory_optimizer_enabled: bool = True
