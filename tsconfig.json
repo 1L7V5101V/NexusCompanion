@@ -5,6 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "skipLibCheck": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
@@ -16,5 +17,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "plugins/**/*.ts", "plugins/**/*.tsx", "types/**/*.d.ts"]
+  "include": ["frontend/dashboard/src/**/*.ts", "frontend/dashboard/src/**/*.tsx", "frontend/chat/src/**/*.ts", "frontend/chat/src/**/*.tsx", "plugins/**/*.ts", "plugins/**/*.tsx", "types/**/*.d.ts"]
 }
