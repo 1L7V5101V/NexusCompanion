@@ -41,6 +41,8 @@ def _build_proactive_provider(config: Config, provider: LLMProvider) -> LLMProvi
         extra_body=extra_body,
         provider_name=str(getattr(config, "provider", "") or ""),
         force_disable_thinking=True,
+        # 复用主模型的 api_key/base_url（同网关），协议必须跟随主模型
+        protocol=str(getattr(config, "protocol", "openai") or "openai"),
     )
 
 

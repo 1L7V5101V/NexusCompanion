@@ -26,6 +26,7 @@ def build_providers(
         stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
         provider_name=config.provider,
         payload_snapshot_enabled=payload_snapshot_enabled,
+        protocol=getattr(config, "protocol", "openai"),
     )
 
     light_provider: LLMProvider | None = None
@@ -49,6 +50,7 @@ def build_providers(
             stream_idle_timeout_s=_LIGHT_STREAM_IDLE_TIMEOUT_S,
             force_disable_thinking=True,
             payload_snapshot_enabled=payload_snapshot_enabled,
+            protocol=getattr(config, "light_protocol", "openai"),
         )
 
     agent_provider: LLMProvider | None = None
@@ -63,6 +65,7 @@ def build_providers(
             request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
             stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
             payload_snapshot_enabled=payload_snapshot_enabled,
+            protocol=getattr(config, "agent_protocol", "openai"),
         )
 
     return provider, light_provider, agent_provider
@@ -82,6 +85,7 @@ def build_vl_provider(config: Config) -> LLMProvider | None:
             request_timeout_s=_MAIN_PROVIDER_TIMEOUT_S,
             stream_idle_timeout_s=_MAIN_STREAM_IDLE_TIMEOUT_S,
             payload_snapshot_enabled=payload_snapshot_enabled,
+            protocol=getattr(config, "vl_protocol", "openai"),
         )
     return None
 
