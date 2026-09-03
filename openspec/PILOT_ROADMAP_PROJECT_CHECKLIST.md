@@ -14,9 +14,9 @@
 
 ## 当前进度（来自 PILOT_ROADMAP §6）
 
-- **当前阶段**：P-1 编码前决策冻结；现有 PostgreSQL + pgvector 存储基础、迁移和可观测性已有 verified 证据，但 Pilot 目标能力尚未实现。
-- **current focus**：把 canonical identity、durable ingress/outbox/delivery、Auth/provisioning/browser security、WebSocket、bounded admission、persistence/backup ownership、ToolExecutionContext、RuntimeSnapshot/hooks/secrets、Persona、schedule、attachment、observability/privacy 和 DB initial rollout/schema evolution 固化为 ADR/design/spec。
-- **current blocker**：在 5.9 对应设计门禁完成前，不开始 WebChat、认证/provisioning、Telegram binding、durable delivery、tenant tool/runtime snapshot、schedule/attachment 或相关 migration 的实现。
+- **当前阶段**：P-1 编码前决策冻结；现有 PostgreSQL + pgvector 存储基础、迁移和可观测性已有 verified 证据，P0.5 WebChat dev 模式闭环已实现（commit `4e40e510`，仅本地 dev 单用户，不含 durable control plane），其余 Pilot 目标能力尚未实现。
+- **current focus**：把 canonical identity、durable ingress/outbox/delivery、Auth/provisioning/browser security、WebSocket 契约冻结、bounded admission、persistence/backup ownership、ToolExecutionContext、RuntimeSnapshot/hooks/secrets、Persona、schedule、attachment、observability/privacy 和 DB initial rollout/schema evolution 固化为 ADR/design/spec。
+- **current blocker**：在 5.9 对应设计门禁完成前，不开始认证/provisioning、Telegram binding、durable delivery、tenant tool/runtime snapshot、schedule/attachment 或相关 migration 的实现；WebChat dev 闭环（P0.5）已按 roadmap 阶段落地，但其面向受邀用户的公网开放仍被这些门禁阻塞。
 - **next decision**：按 [`PILOT_ROADMAP.md` §5.9.10](./PILOT_ROADMAP.md) 拆分首批 OpenSpec changes，并先完成 canonical identity/control-plane change。
 - 详见 [`PILOT_ROADMAP.md` §5.9](./PILOT_ROADMAP.md)。
 
@@ -89,13 +89,13 @@
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
-- [ ] **P0.5 WebChat 最小可用闭环** — 仅 local/dev identity，完成 channel、Gateway、协议和前端；`planned`
-  - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
-  - [ ] **WebSocket hello/send/delta/completed/error/replay 协议** → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
-  - [ ] **client_message_id 幂等、重连补拉和慢消费者测试** → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
+- [ ] **P0.5 WebChat 最小可用闭环** — dev 模式闭环已完成（commit `4e40e510`，2026-09-03）；`planned` → dev 闭环 `verified`，公网项仍 `planned`
+  - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；面向 P1 的协议 fixture 契约冻结仍待 OpenSpec change）
+  - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py` 17 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
+  - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)（当前仍为 `chat:local` session_key 存储，未迁移 canonical 模型）
   - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
-  - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
-  - [ ] **dev-only 暴露门禁**（P1 前不得公网 tenant-facing） → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
+  - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)（`turn.failed` 帧已可用，但 delivery ack 状态机未实现）
+  - [x] **dev-only 暴露门禁**（`[channels.chat] enabled=false` 默认关闭、绑定 127.0.0.1；P1 前不得公网 tenant-facing）
 - [ ] **P1 一次 Token 登录** — 一次性邀请 Token 兑换可撤销 HttpOnly 登录 Cookie；`planned`
   - [ ] **test_accounts / access_tokens / auth_sessions 数据模型与 digest 约束** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **账号 provisioning → ready → active 后才签发 Token** → outcome 见 [PILOT_ROADMAP §5.9.13](PILOT_ROADMAP.md)

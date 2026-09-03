@@ -4,9 +4,9 @@
 >
 > 本文件承载目标、范围、技术决策、阶段出口和升级触发条件；不承载具体实现 task、逐 commit 记录或行为规范的完整 source of truth。认证行为的最终契约应在后续 OpenSpec change/spec 中落地，当前代码行为仍以代码和测试为准。
 >
-> 上次审阅：2026-08-31。
+> 上次审阅：2026-09-03。
 >
-> **当前实现状态（截至 2026-08-31）**：WebChat 尚不可用。仓库中已有 `bootstrap/chat_api.py` 路由骨架和 `bootstrap/app.py` 的配置/装配入口，但缺少 `infra/channels/web_chat_channel.py` adapter 和 WebChat 前端 bundle；现有骨架也没有 Pilot 所需的认证、tenant-bound principal、CSRF/Origin、上传限额与媒体 ownership 契约。因此 WebChat、邀请 Token 登录、WebSocket 会话、跨端消息同步和 WebChat 前端仍全部属于目标能力，不能视为当前可用功能。当前可用的对话入口仍是 Telegram Bot 通道。记忆运行时已经具备按配置加载多个 engine 的基础，代码中已有 `default` 和 `rachael` 两个 memory engine 实现；但 WebChat 尚未提供租户级的 memory engine 目录、持久化选择和前端切换入口。
+> **当前实现状态（截至 2026-09-03）**：WebChat 已具备 P0.5 dev 模式最小闭环（commit `4e40e510`）。`bootstrap/chat_api.py` 与 `infra/channels/web_chat_channel.py` 提供本地 WebSocket 通道：hello 握手、`client_message_id` 幂等、进程内重放 buffer、慢消费者有界队列降级、`turn.completed`/`turn.failed` 终态帧；前端为 `frontend/chat/`（assistant-ui + 独立 connection/store 分层，构建到 `static/chat`），经 `[channels.chat]`（默认 disabled、127.0.0.1:6322）启用。协议契约与共享 fixture 见 `infra/channels/web_chat_protocol.py` 与 `tests/fixtures/chat_protocol_frames.json`。**尚未具备** Pilot 面向受邀用户的能力：认证/邀请 Token/tenant-bound principal、CSRF/Origin、durable ingress/outbox/delivery 状态机（5.9.11）、PG canonical control plane、跨端 Telegram 同步与 memory engine selector 均未实现；当前 WebChat 仅限本地 dev 单用户（`chat:local`，DEFAULT_TENANT），不得暴露公网。当前可用的另一对话入口仍是 Telegram Bot 通道。记忆运行时已支持按配置加载多个 engine（`default` 与 `rachael`）；但 `engine = "default,rachael"` 多引擎并存会因 `recall_memory` 重复注册在启动时崩溃（已知缺陷，需修复 `agent/tools/meta/register.py` 的注册逻辑），当前只能配置单引擎。
 
 ## 1. North Star
 
@@ -218,7 +218,7 @@ Shared Runtime Controls
 
 | 域 | 当前实现事实 | 对 Pilot 的缺口 | 阶段计划前必须冻结 | 目标阶段 |
 | --- | --- | --- | --- | --- |
-| WebChat 宿主 | `bootstrap/chat_api.py` 已有 sessions/messages/uploads/media/`/ws` 的 FastAPI 骨架，`bootstrap/app.py` 尝试装配 `WebChatChannel`；但 adapter 文件和前端 bundle 不存在 | 骨架不是可用客户端；路由没有完整 auth、tenant principal、CSRF/Origin、请求体上限和媒体 ownership | adapter 边界、HTTP/WS frame、认证依赖、错误码、dev-only 暴露门禁 | P0.5/P1 |
+| WebChat 宿主 | `bootstrap/chat_api.py` 提供 sessions/messages/uploads/media/`/ws` 路由；`infra/channels/web_chat_channel.py` 已实现 dev 适配器（hello 握手、client_message_id 幂等、重放 buffer、有界队列降级、终态帧），`frontend/chat/`（assistant-ui）构建到 `static/chat`，经 `[channels.chat]`（默认 disabled、127.0.0.1:6322）启用 | dev 闭环可用，但没有 auth、tenant principal、CSRF/Origin、请求体上限、媒体 ownership 与 durable control plane | 协议 fixture 的 P1 契约冻结（错误码、schema version、close code）、认证依赖、dev-only 暴露门禁维持 | P0.5（dev）/P1（公网） |
 | Ingress identity 与去重 | `InboundMessage` 只有 channel/sender/chat/content/media/metadata/tenant；默认 `session_key = channel:chat_id`，没有 canonical `message_id`、delivery id 或稳定 inbox id | Telegram 重试、WebChat 客户端重发和跨端同步无法依赖统一幂等键 | source/client message key、acceptance transaction、canonical message identity | P0.5 |
 | MessageBus 与 Passive lane | inbound/outbound queue 和 per-session Passive lane 都是无界进程内 `asyncio.Queue`；Passive lane key 是 `session_key`，MessageBus `ChatLane` key 是 `(channel, chat_id)`，都不是 canonical tenant key | 重启丢 backlog；慢 tenant 可耗尽内存；当前 `complete_inbound()` 只表示 worker 已处理并发布到内存 outbound，不表示 channel 已送达 | tenant admission key、容量、overload、durable inbox/work 重建规则 | P0/P0.5 |
 | Outbound delivery | `OutboundMessage` 没有 tenant/canonical message/delivery/idempotency identity；dispatcher 调 channel callback，2 秒后重试一次，再尝试一次 fallback；全部失败后日志明确表示消息丢失；没有 delivery record、ack 或 durable outbox | “模型生成完成”和“用户已收到”被混在一起，无法可靠重试或审计 | final message、outbox intent、delivery attempt/ack 的事务边界和幂等键 | P0.5/P3 |
