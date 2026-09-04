@@ -7,7 +7,9 @@
 - **所属阶段**：主要里程碑 = P0.5；P-1 产出 design/ADR，P0 落 PG schema 基础，P0.5 收尾 canonical stream + sequence
 - **§5.9 引用**：§5.9.1（identity/session 硬冲突）、§5.9.2（canonical identity + Telegram binding 语义）、§5.9.9（数据模型/约束/首次启用）、§10 DECIDED（旧单体数据边界、DB rollout/rollback）
 - **§6 出口条件引用**：P-1 出口（设计冻结，不标 verified）；P0.5 出口「canonical conversation/message stream 与 0-based per-conversation sequence」「统一收敛到 account→tenant→canonical conversation」
-- **状态**：planned
+- **状态**：in_progress
+  - 2026-09-05：开工，OpenSpec change `openspec/changes/2026-09-05-c1-canonical-identity/`（proposal/design/specs/tasks，15/15 任务完成）。设计冻结（ADR-1..7）、Alembic migration `e2b4d6f8a0c2`、identity resolver + sequence repository、契约 fixture、30 项测试全部通过，证据齐 `openspec/evidence/c1-canonical-identity/`（含 migration/并发 sequence/负向/grep 无 SQLite fallback/rollback drill）。
+  - 按 §8：merge commit 后方可置 `verified`；本条由证据驱动更新。
 
 ## 目标
 

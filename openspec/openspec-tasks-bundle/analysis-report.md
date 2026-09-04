@@ -20,14 +20,14 @@ Pilot 的定位是**小范围、长期、可控的试点**：10–30 个受邀�
 
 ## 3. 范围与运行边界（§2 + §3）
 
-| 维度 | 冻结结论 |
-| --- | --- |
-| 目标用户 | 10–30 受邀账号 / 5–15 WebChat 会话 / 单机 VPS |
-| 明确不做 | Kafka/NATS/Redis Streams、Nginx 必需、多 Gateway/Worker/K8s、独立向量库、5000 用户压测、自助注册/复杂 RBAC/独立管理后台/长期 JWT |
-| 技术栈 | FastAPI/Uvicorn、进程内 `asyncio.Queue`、PostgreSQL + pgvector、Cloudflare Tunnel、阿里云 text-embedding-v3、jieba + ParadeDB pg_search、hotness + RRF |
+| 维度    | 冻结结论                                                                                                                                                                            |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 目标用户  | 10–30 受邀账号 / 5–15 WebChat 会话 / 单机 VPS                                                                                                                                           |
+| 明确不做  | Kafka/NATS/Redis Streams、Nginx 必需、多 Gateway/Worker/K8s、独立向量库、5000 用户压测、自助注册/复杂 RBAC/独立管理后台/长期 JWT                                                                               |
+| 技术栈   | FastAPI/Uvicorn、进程内 `asyncio.Queue`、PostgreSQL + pgvector、Cloudflare Tunnel、阿里云 text-embedding-v3、jieba + ParadeDB pg_search、hotness + RRF                                      |
 | 运行时模型 | Pipeline / Stage-Module / Executor / Scheduler-Loop / In-process Worker / Horizontal Worker / Maintenance 分层（§3.1）；memory retrieval 与 tool call 属 stage/executor，**不统称 Worker** |
-| 并发边界 | 租户内串行、租户间异步；一个 tenant 恰一个 canonical conversation；无全局 maintenance lock |
-| 组件职责 | Gateway（FastAPI/Uvicorn）→ 入站接受 → tenant lane → Pipeline/Stage/Executor → durable 落库 → outbound delivery（§3 组件职责） |
+| 并发边界  | 租户内串行、租户间异步；一个 tenant 恰一个 canonical conversation；无全局 maintenance lock                                                                                                           |
+| 组件职责  | Gateway（FastAPI/Uvicorn）→ 入站接受 → tenant lane → Pipeline/Stage/Executor → durable 落库 → outbound delivery（§3 组件职责）                                                                |
 
 ## 4. 当前实现地图与阶段接缝（§3.3 + §3.4）
 
