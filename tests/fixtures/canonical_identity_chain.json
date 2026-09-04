@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "description": "canonical identity 派生链契约 fixture（C1 产出）。C2/C4/C5/C9/C10/C14 的测试必须复用本文件的正/负用例与 message_stream 语义，不得各自另写一套期望值。语义门禁：PILOT_ROADMAP §5.9.2 / §5.9.9 / §10 DECIDED。",
+  "derivation_chain": "trusted principal (server-verified) -> test_accounts -> tenant_id -> canonical_conversations (1:1:1)",
+  "seeded_identity": {
+    "account_id": "00000000-0000-0000-0000-000000000001",
+    "tenant_id": "dev",
+    "conversation_id": "00000000-0000-0000-0000-000000000002",
+    "account_status": "active",
+    "note": "migration seed 的显式 dev 单用户规范身份；不是 DEFAULT_TENANT，生产账号一律由 provisioning 创建"
+  },
+  "positive_cases": [
+    {
+      "name": "resolve_by_tenant_seeded_dev",
+      "input": { "kind": "tenant", "value": "dev" },
+      "expected": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "tenant_id": "dev",
+        "conversation_id": "00000000-0000-0000-0000-000000000002"
+      }
+    },
+    {
+      "name": "resolve_by_account_id_seeded_dev",
+      "input": { "kind": "account_id", "value": "00000000-0000-0000-0000-000000000001" },
+      "expected": {
+        "account_id": "00000000-0000-0000-0000-000000000001",
+        "tenant_id": "dev",
+        "conversation_id": "00000000-0000-0000-0000-000000000002"
+      }
+    }
+  ],
+  "negative_cases": [
+    {
+      "name": "unknown_account_id_rejected",
+      "input": { "kind": "account_id", "value": "ffffffff-ffff-ffff-ffff-ffffffffffff" },
+      "expected_error": "identity_resolution_error"
+    },
+    {
+      "name": "unknown_tenant_rejected",
+      "input": { "kind": "tenant", "value": "ghost-tenant" },
+      "expected_error": "identity_resolution_error"
+    },
+    {
+      "name": "blank_tenant_rejected",
+      "input": { "kind": "tenant", "value": "" },
+      "expected_error": "identity_resolution_error"
+    },
+    {
+      "name": "blank_account_id_rejected",
+      "input": { "kind": "account_id", "value": "   " },
+      "expected_error": "identity_resolution_error"
+    },
+    {
+      "name": "default_tenant_is_not_canonical_identity",
+      "input": { "kind": "tenant", "value": "default" },
+      "expected_error": "identity_resolution_error",
+      "note": "无 binding 的请求必须拒绝，不允许隐式落到 DEFAULT_TENANT（§5.9.2）"
+    }
+  ],
+  "message_stream": {
+    "sequence_start": 0,
+    "sequence_type": "bigint",
+    "per_conversation_independent": true,
+    "uniqueness": ["conversation_id", "sequence"],
+    "allocation": "single_transaction_atomic",
+    "forbidden": ["application-side read-then-increment committed separately"],
+    "cursor_semantics": "after_sequence",
+    "cursor_meaning": "客户端最后确认看到的持久化消息序号；补拉返回 after_sequence 之后的升序消息"
+  },
+  "identity_constraints": {
+    "account_tenant_uniqueness": "test_accounts.tenant_id UNIQUE",
+    "conversation_tenant_uniqueness": "canonical_conversations.tenant_id UNIQUE",
+    "message_sequence_uniqueness": "canonical_messages.(conversation_id, sequence) UNIQUE",
+    "history_cascade": "ON DELETE RESTRICT（历史消息不级联物理删除）"
+  }
+}

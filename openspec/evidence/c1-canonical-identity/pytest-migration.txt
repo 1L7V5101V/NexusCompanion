@@ -1,0 +1,3 @@
+...                                                                      [100%]
+3 passed in 2.23s
+=== pytest tests/canonical_identity/test_migration.py（空 PG upgrade head + 约束/seed/downgrade 循环）

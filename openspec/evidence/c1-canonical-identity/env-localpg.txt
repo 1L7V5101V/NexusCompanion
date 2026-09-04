@@ -1,0 +1,8 @@
+# 本地测试 PostgreSQL 环境（task 1.1 证据）
+# 采集时间: 2026-09-05T00:45:06.522289
+# host: LAPTOP-2U4IKUUM  python: 3.12.13
+url: postgresql://nexus:nexus_dev@localhost:5433/nexus
+version: PostgreSQL 17.5 on x86_64-windows, compiled by msvc-19.43.34808, 64-bit
+extensions: ['plpgsql', 'vector', 'pg_trgm']
+server_encoding: UTF8
+result: OK
