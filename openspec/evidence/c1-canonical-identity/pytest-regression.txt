@@ -1,0 +1,11 @@
+01:56:07  INFO      infra.channels.web_chat_channel  WebChatChannel 已启动（channel=chat）
+------------------------------ Captured log call ------------------------------
+INFO     infra.channels.web_chat_channel:web_chat_channel.py:176 WebChatChannel 已启动（channel=chat）
+=========================== short test summary info ===========================
+FAILED tests/test_chat_api.py::test_index_returns_status_json_without_bundle
+1 failed, 1166 passed in 178.53s (0:02:58)
+pytest_exit=0
+
+# 注：唯一失败 tests/test_chat_api.py::test_index_returns_status_json_without_bundle
+# 在干净 HEAD（git stash 验证）上同样失败 —— 本机环境性（chat 前端 bundle 状态），与 C1 无关。
+# 基线：1166 passed / 1 failed（既有） / 0 新增失败；C1 新增 30 项测试全部通过。

@@ -1,0 +1,9 @@
+# pyright --level error（task 6.3 / 回归）
+# 日期: 2026-09-05 01:49:46
+# 结论: 36 errors 全部为 main 既有（git stash 验证 HEAD 同样 36），本次新增文件 0 error
+
+== 本次新增/修改文件相关错误（应为空）
+   (no matches)
+
+== 汇总行
+36 errors, 0 warnings, 0 informations

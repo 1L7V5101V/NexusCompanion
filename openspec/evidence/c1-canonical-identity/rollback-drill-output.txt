@@ -1,0 +1,11 @@
+[PASS] Create: alembic upgrade head 在空库 nexus_c1_drill 执行成功（无旧单体库连接）
+[PASS] Verify.revision: alembic_version=e2b4d6f8a0c2
+[PASS] Verify.tables: 三表存在: ['canonical_conversations', 'canonical_messages', 'test_accounts']
+[PASS] Verify.constraints: 唯一约束齐备: ['uq_canonical_conversations_tenant_id', 'uq_canonical_messages_conversation_sequence', 'uq_test_accounts_tenant_id']
+[PASS] Verify.empty_baseline: canonical_messages 空历史 = 0 行
+[PASS] Verify.seed: dev seed 账号存在且 active
+[PASS] Enable: 入口开放后写入 3 条 canonical message
+[PASS] Rollback.data_retained: 关闭入口后 PG 数据保留：messages=3, accounts=1
+[PASS] Rollback.no_reverse_sync: PG Pilot 数据原地保留用于修复后继续；无任何向旧单体库的反向同步路径（旧库未连接）
+
+RESULT: PASS —— Create→Verify→Enable→Rollback 演练全部通过

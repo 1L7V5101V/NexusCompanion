@@ -1,0 +1,26 @@
+# PR diff 范围检查（task 6.2 / 验收 7）
+# 日期: 2026-09-05 01:49:05
+# 声明：本 change 未触碰 inbox/outbox/turn/tool/work/delivery 表（C2 边界）、
+# admission lane/queue（C3 边界）、auth 端点（C5）、Telegram binding 表（C10）、
+# Persona/Relationship 表（C9）、attachment（C6）。
+
+== git status --short（改动文件清单）
+ M alembic/env.py
+ M openspec/openspec-tasks-bundle/README.md
+ M openspec/openspec-tasks-bundle/analysis-report.md
+ M openspec/openspec-tasks-bundle/milestones.md
+ M scripts/migrate/alembic_util.py
+?? alembic/versions/e2b4d6f8a0c2_c1_canonical_identity.py
+?? bootstrap/db/models/canonical.py
+?? bootstrap/db/repository/canonical_repo.py
+?? bootstrap/identity.py
+?? openspec/changes/2026-09-05-c1-canonical-identity/
+?? openspec/evidence/c1-canonical-identity/
+?? tests/canonical_identity/
+?? tests/fixtures/canonical_identity_chain.json
+?? tests/test_canonical_identity_contract.py
+
+== 新增/修改的代码与迁移文件 diff --stat
+ alembic/env.py                  |  5 +++++
+ scripts/migrate/alembic_util.py | 23 +++++++++++++++++++----
+ 2 files changed, 24 insertions(+), 4 deletions(-)
