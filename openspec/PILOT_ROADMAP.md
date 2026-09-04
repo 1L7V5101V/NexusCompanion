@@ -1001,6 +1001,7 @@ Admin recovery runbook 冻结为：
 2. **怀疑 token 或 admin session 泄露**：先运行 `python main.py pilot-admin revoke-sessions --all`，随后运行 `python main.py pilot-admin rotate-recovery-token --force-local`；若仍有异常，执行 `disable` 并关闭公网 Dashboard/Tunnel，按 IP 摘要、时间和 action 复查审计，确认后再本地 `enable`。
 3. **数据库恢复**：PostgreSQL 与 pepper/secret 必须恢复到可对应的备份代次；恢复后先撤销备份中复活的 admin sessions。若 recovery digest 无法验证，执行本地强制轮换；最后验证 admin exchange、CSRF、session timeout 和 audit continuity。
 - Cookie 认证的 mutation API（会修改数据的 `POST`/`PUT`/`PATCH`/`DELETE` 请求）必须同时检查 `Origin`/`Referer` 和 session-bound CSRF token。服务端先确认请求来自允许的前端站点，再由 `GET /api/auth/csrf` 或 admin 等价端点签发一段与当前登录 session 绑定的随机值；前端只把它放在页面内存，并通过 `X-CSRF-Token` 回传，不写 LocalStorage。这样可阻止恶意网站借用浏览器自动携带的 Cookie 替用户执行操作。`Origin allowlist` 是明确允许访问服务的前端来源清单，来源由协议、域名和可选端口组成，例如 `https://chat.example.com` 或 `https://admin.example.com`。WebSocket handshake 同样使用 Cookie + Origin allowlist；CORS 默认也只允许部署的 WebChat/Dashboard origin。
+- Pilot 的 admin HTTP/API 入口默认只允许部署主机本机访问，不通过公网 Tunnel 暴露；如果确需远程管理，必须另开 change，增加受控 VPN/跳板机入口和独立 allowlist，不能仅依赖前端隐藏入口。普通 WebChat 仍可通过公网 Tunnel 暴露，但不得因此放宽 admin route 的网络边界。
 - 401 表示没有有效 principal 或 session 已过期；403 表示 principal 有效但账号被封禁、capability 不足或资源不属于当前 tenant。错误响应不得泄露账号、Token 或 binding 是否存在。
 - `logout` 默认只撤销当前 session；“撤销账号全部 session”是独立管理操作。账号封禁保留 session/token 记录并写 `revoked_at`，不物理删除审计链。
 - Token 兑换在单个数据库事务中锁定并消费 Token、创建 session。若服务器已经创建 session，但网络在浏览器收到 Cookie 前中断，浏览器无法确认是否成功；服务端也不保存一份可供再次取回的原始 session token。此时不尝试“恢复同一份 session 明文”，而是由管理员重新签发新的邀请 Token，旧的未知 session 可撤销或等待过期。
@@ -1090,6 +1091,8 @@ persona_templates, tenant_persona_profiles, tenant_relationship_states
 - schedule execution 在 `(job_id, scheduled_for)` 唯一；provisioning job 对同一 tenant/operation revision 幂等；attachment metadata 必须绑定 tenant owner 和 immutable storage key。
 - account 状态使用 `provisioning`、`active`、`suspended`、`revoked`；只有 provisioning readiness 完成后才能进入 `active` 并签发邀请 Token。`suspended` 可解除但旧凭据不复活，`revoked` 是终态。binding、token/session 使用状态字段 + 时间戳软撤销；历史 message、turn、tool/audit 不级联物理删除。
 - repository 的所有 tenant-facing 查询必须从 tenant-bound view 或可信 context 获取 tenant；客户端传入的 `tenant_id` 只能作为管理员筛选条件，不能作为普通用户授权条件。
+- PostgreSQL 应增加防御纵深：普通 runtime 使用受限数据库角色，关键 tenant 表优先采用 Row-Level Security 或等价 tenant-bound view；admin 聚合、迁移和 reconciliation 使用独立权限。所有 raw SQL、向量检索、BM25 检索、聚合、导出、backup manifest 和后台 job 都必须有跨 tenant negative test。
+- 所有缓存和派生存储必须明确 tenant scope。prompt/retrieval/embedding/tool-result cache、临时文件、attachment download、浏览器缓存和前端持久化状态都必须包含可信 tenant/account 维度，或明确禁止缓存。
 - 初始 Pilot schema 不承担旧 `sessions.key`、`messages.session_key/seq` 或 legacy `channel:chat_id` 的数据导入；相关测试只验证新 PostgreSQL 模型的唯一约束、并发 sequence、跨租户隔离和新账号空历史。
 
 Pilot **首次启用**流程冻结为 **Create → Verify → Enable**：
@@ -1165,6 +1168,8 @@ Pilot 冻结以下事务与状态边界：
 - **执行完成事务**必须原子写入 final assistant message、turn terminal state 和 outbound delivery intent/outbox。流式 delta 可以只存在于在线连接，不进入恢复承诺。
 - **模型生成完成不等于 channel 已送达**。delivery worker 单独记录 `pending/attempting/sent/failed/dead_letter` 等状态、attempt、provider receipt/error 和时间戳；`sent` 只能由 channel/provider ack 或明确成功结果推进。
 - Delivery 采用 at-least-once，outbox item 必须有稳定 idempotency key；重启后只重试未确认送达的 intent，不重新生成 assistant final message。
+- Delivery dispatcher 使用数据库 lease 认领 outbox：Pilot 初始 `lease_ttl=60s`、每 `20s` heartbeat，超过租约才允许其他扫描器接管；单次 delivery attempt 默认最多 5 次，退避建议为 `1m/5m/30m/2h/6h`，最终进入 `dead_letter`。这些是可配置的 Pilot 初始值，不是业务成功保证。
+- stale lease、dead letter、`unknown` 和 `compensation_required` 必须有管理员可见的查询和人工处置入口；人工操作必须保留原 work、attempt、provider receipt 和处理原因，不能直接删除或重置状态。
 - `complete_inbound` 或等价状态表示 durable acceptance/terminal processing 已收束，不表示 Telegram/WebChat 已成功展示；用户可见 delivery failure 必须能从 canonical final message 补拉或由管理员重投。
 
 #### 5.9.12 Persistence ownership 与 backup manifest
@@ -1174,7 +1179,8 @@ Pilot canonical store 冻结如下：
 - PostgreSQL 负责 account/binding/conversation/message、inbox/dedupe、turn/tool/work、outbox/delivery、tenant memory/persona/relationship metadata、显式用户 schedule、attachment metadata 和 provisioning readiness。
 - SQLite、JSON 和 Markdown 只作为 dev/single-user compatibility、独立 legacy single-user store 或可重建派生物；现有单体 SQLite 不作为 Pilot 迁移输入、fallback 或双写目标。任何仍保留为 Pilot canonical state 的例外必须在对应 design 中逐项声明，不能默认沿用。
 - Attachment bytes 可以继续使用文件系统或后续对象存储，但路径必须 tenant-namespaced，业务 API 只暴露 immutable `attachment_id`，ownership/size/MIME/checksum/retention/reference 落 PostgreSQL。
-- backup manifest 必须显式列出 PostgreSQL、tenant workspace/blob root、必要配置和 secret 恢复方式，并给出一致性点、加密、校验与恢复顺序；旧单体 SQLite/workspace 作为独立 legacy backup 项记录路径、checksum 和保留策略，只恢复到 legacy 模式，不恢复进 Pilot PostgreSQL；`/tmp` 不属于 durable backup 范围。
+- backup manifest 必须显式列出 PostgreSQL、tenant workspace/blob root、必要配置和 secret 恢复方式，并给出一致性点、加密、校验与恢复顺序；这里的“数据库恢复”特指从 PostgreSQL base backup 或 PITR 恢复到隔离的恢复实例/目标数据库，不是从 SQLite 或内存队列重建 Pilot。恢复后必须先暂停公网入口、outbox 和 scheduler，完成 schema、ownership、credential、recovery action 和撤销状态 reconciliation，再重新开放服务。旧单体 SQLite/workspace 作为独立 legacy backup 项记录路径、checksum 和保留策略，只恢复到 legacy 模式，不恢复进 Pilot PostgreSQL；`/tmp` 不属于 durable backup 范围。
+- PostgreSQL 恢复可能带回恢复点之后已经撤销的 session、invitation token、binding、schedule 或 outbox 状态。恢复流程必须提升全局 `auth_epoch`/`recovery_epoch`，默认撤销或重新核验恢复点中的活跃凭据，并在 reconciliation 完成前禁止发送外部副作用。
 - config/secrets 不与普通业务备份混成明文归档；需要分别说明密钥来源、轮换与灾难恢复权限。
 
 #### 5.9.13 Account provisioning 与 readiness
@@ -1192,12 +1198,13 @@ Pilot canonical store 冻结如下：
 - 每次计划执行使用 `(job_id, scheduled_for)` 作为幂等键，持久化 execution attempt、terminal outcome、delivery intent 和触发时使用的时区/计划版本。
 - Pilot 默认：one-shot misfire grace 为 5 分钟；超过 grace 标记 `missed` 并可由管理员查看，不静默删除。Recurring job 不回放全部错过次数，只计算下一未来 occurrence；每次 skip/miss 都有记录。该默认值可在 P0/P2 压测或产品验证后调整。
 - 账号 `suspended` 时暂停新执行，恢复后从下一未来 occurrence 继续；`revoked` 时禁用 schedule。时区使用 IANA 名称，DST 跳时和重复时刻必须有 contract test。
+- 每个 tenant 可配置 proactive/Drift 开关、channel preference、quiet hours 和每日推送上限；用户关闭后不得由 runtime tick 或 plugin job 绕过。达到推送预算、无法确认 delivery target 或账号状态不明确时必须 fail-closed，并记录 skip reason。
 
 #### 5.9.15 Attachment/media lifecycle
 
 - 上传成功后只返回 immutable `attachment_id`；HTTP、WebSocket、tool 和 channel envelope 不传播可由客户端控制的本地绝对路径。
 - Blob 路径使用 tenant namespace，PostgreSQL metadata 记录 owner、size、detected MIME、checksum、storage key、状态、引用 message 和 retention deadline；上传、读取、转发、删除都重新校验 principal 与 ownership。
-- Pilot 初始 allowlist 建议为常见图片、纯文本和 PDF，默认单文件上限建议 20 MiB，均必须配置化并在 P-1 spec 中列出精确 MIME/扩展名；可执行内容默认拒绝。
+- Pilot 初始 allowlist 只包含图片和纯文本，默认单文件上限建议 20 MiB，均必须配置化并在 P-1 spec 中列出精确 MIME/扩展名；PDF、压缩包和可执行内容默认拒绝。图片必须限制像素数、解码耗时和内存占用，文本必须限制字符数和编码；不执行上传内容。
 - 服务端执行 MIME sniffing、扩展名规范化和 filename/path 隔离，不执行上传内容。未引用或失败的临时上传默认 24 小时后清理；已引用 attachment 跟随 message/account retention policy。
 - Blob root 必须进入 backup manifest；落库成功但 blob 缺失、blob 存在但 metadata 未提交都要有 reconciliation/cleanup 流程。
 
@@ -1228,12 +1235,13 @@ Tenant provisioning 与运行时解析规则固定为：
 6. 每次 binding/config 修改提升 `tenant_policy_revision`；下一个 work 使用 `base RuntimeSnapshot + required contributions + tenant bindings/config overrides` 解析新的不可变 `TenantRuntimePlan`，进行中的 work 保持原 plan。
 
 - **Plugin invocation seam**：`PluginContext` 保持 generation/process-scoped，不放 `current_tenant`；每次 hook/tool/job 调用都创建 `PluginInvocationContext`，显式携带不可变 `WorkContext`、tenant-bound session/memory/KV/secret/policy/effect services。插件实例不得保存跨 await 的当前 tenant/session/turn 状态；`ContextVar` 只做观测和兼容，不做授权边界。
-- **Pilot 热更新边界**：管理员上传/安装代表其已经信任插件，Pilot 不建设插件签名、恶意代码扫描、sandbox、来源证明和复杂依赖审计。单纯安装只登记 package/manifest，不执行插件代码；首次激活或更新 active generation 时才执行最小正确性 gate：发现/manifest、稳定 `contribution_id` 与 Hook 类型、candidate import/initialize、snapshot compile；成功后原子发布，失败保留旧 snapshot 并返回错误。插件代码/manifest 变化走新 generation + 旧 lease drain；tenant contribution 的启停、顺序和配置变化只提升 tenant policy/config revision，从下一个 work 生效，无需重启服务或重载插件代码。进行中 work 保持原 `TenantRuntimePlan`。新增 Hook、改变未声明 Hook 映射或修改 handler 实现才走代码 generation 热更新。Pilot 不实现滚动重启和对特殊插件类型的提前分类；候选无法热发布时保持旧版本，由管理员在维护窗口手动重启当前单实例。
+- **Pilot 热更新边界**：管理员上传/安装代表其已经信任插件，Pilot 不建设插件签名、恶意代码扫描、sandbox、来源证明和复杂依赖审计。这里必须明确声明：插件以 in-process trusted code 运行，`TenantRuntimePlan` 只隔离插件暴露的能力和调用上下文，不能阻止有 bug 或恶意的插件直接访问进程内存、共享对象、数据库连接或其他 tenant 资源。普通 tenant 不得安装或激活插件；用户添加的 MCP/第三方代码在后续 capability 中必须使用独立 sandbox/container/runtime，不能沿用该信任模型。单纯安装只登记 package/manifest，不执行插件代码；首次激活或更新 active generation 时才执行最小正确性 gate：发现/manifest、稳定 `contribution_id` 与 Hook 类型、candidate import/initialize、snapshot compile；成功后原子发布，失败保留旧 snapshot 并返回错误。插件代码/manifest 变化走新 generation + 旧 lease drain；tenant contribution 的启停、顺序和配置变化只提升 tenant policy/config revision，从下一个 work 生效，无需重启服务或重载插件代码。进行中 work 保持原 `TenantRuntimePlan`。新增 Hook、改变未声明 Hook 映射或修改 handler 实现才走代码 generation 热更新。Pilot 不实现滚动重启和对特殊插件类型的提前分类；候选无法热发布时保持旧版本，由管理员在维护窗口手动重启当前单实例。
 - Passive、Proactive、Drift、consolidation、optimizer、recovery work 和 plugin job 在 work start 时各取得一次 snapshot lease；P0 必须审计所有入口并用测试证明 lease coverage。进行中 work 不切 snapshot。
 - 旧 snapshot 不得绕过账号 suspension/revocation、secret rotation 或资源 ownership；在外部副作用、schedule trigger 和 outbound delivery 前再次读取当前 account/policy 状态。
 - snapshot compile/publish 失败时继续使用上一份 committed snapshot，并记录 generation/error；不能发布半成品，也不能清空当前可用 snapshot。
 - Tenant secret 必须静态加密，不能进入 tool schema、模型可见参数、普通日志、metrics label 或错误字符串。密钥轮换/撤销的生效边界必须有测试。
-- Hook policy 分层：gate/interceptor 在超时、异常或上下文缺失时 fail closed；best-effort fanout/telemetry 使用有界 timeout 并记录失败，但不得反向改写已经提交的业务终态。
+- Hook policy 分层：gate/interceptor 在超时、异常或上下文缺失时 fail closed；best-effort fanout/telemetry 使用有界 timeout 并记录失败，但不得反向改写已经提交的业务终态。`require_ready()`、tenant ownership、账号状态、资源授权和副作用确认任一无法判定时也必须 fail-closed，不能用 `DEFAULT_TENANT`、旧 session 或“暂时允许”作为降级路径。
+- LLM、embedding 和外部 MCP 的 data handling 必须在 provider contract 中冻结：允许发送的字段、脱敏规则、provider retention/region、是否用于训练、request log retention、凭据 owner 和撤销方式。供应商策略未知、凭据状态未知或数据分类无法确认时，不得把原始 tenant 内容发送出去。
 
 #### 5.9.17 Observability 与 privacy 默认值
 
@@ -1250,11 +1258,12 @@ Tenant provisioning 与运行时解析规则固定为：
 **目标**：先把 5.9 中会影响协议、表结构、授权和恢复的决策转成 ADR/design/spec，不写对应的应用功能代码。
 
 - 完成 5.9 的全部设计门禁：canonical identity、Auth/browser security、WebSocket、admission/overload、durable ingress/outbox/delivery、persistence/backup、provisioning、ToolExecutionContext、Persona、schedule、attachment、RuntimeSnapshot/hooks/secrets、observability/privacy 和 DB initial rollout/schema evolution；
+- 为新增安全边界建立一张可执行的 negative-test matrix：PostgreSQL role/RLS 或 tenant-bound view、raw SQL/vector/BM25/聚合/导出/后台 job、cache/temp/attachment、旧 `security_epoch` work、outbox lease、插件 context、provider data handling 和 fail-closed 路径都必须有明确 owner、测试入口与失败证据；
 - 按 5.9.10 为 identity/control-plane、WebChat、auth/provisioning、attachment、tool/snapshot、Persona、Telegram、schedule、observability 和 retrieval 建立独立 change 边界、依赖图和验收命令；
 - 固定协议 fixture、状态机、表约束、错误码和回滚路径；
 - 对尚未确定的纯运行参数给出配置项、默认值和压测后调整方式，避免把参数常量散落在实现中。
 
-**出口条件**：5.9 表中不存在会阻塞首个 change 的“由实现决定”事项；每个 change 都能明确说明输入、输出、状态、失败语义、DB rollout/schema evolution 和测试证据。P-1 完成只代表设计冻结，不标记任何目标能力为 `verified`。
+**出口条件**：5.9 表中不存在会阻塞首个 change 的“由实现决定”事项；每个 change 都能明确说明输入、输出、状态、失败语义、DB rollout/schema evolution 和测试证据。新增的 DB 防御纵深、`security_epoch`、outbox lease/dead-letter、附件解析上限、Proactive 用户政策、provider data handling 和插件信任边界均已标注为 `implemented`、`deferred` 或 `not_applicable`，不能只写在讨论文字中。P-1 完成只代表设计冻结，不标记任何目标能力为 `verified`。
 
 ### P0：Pilot 基础运行基线
 
@@ -1271,6 +1280,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 建立工具调用的 tenant scope/effect 基线：普通 tenant 不开放宿主机 shell、全局 MCP、Peer Agent 和插件管理；文件、记忆、消息、推送、scheduler 与后台任务必须绑定服务端派生的 tenant context；
 - 收束人设 prompt 的来源边界：以当前单体的 `identity`、`personality_rules`、`self_model` 语义为默认基线，拆出 RuntimeInvariant、PersonaProfile、RelationshipState、ChannelPolicy 四类 prompt 来源；不新增复杂人格参数模型；
 - 完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation；
+- 在 P0 建立跨 tenant negative-test harness 和受限数据库连接配置，为后续 PostgreSQL RLS/tenant-bound view、cache isolation 与 stale-work fencing 提供可复现的验证入口；
 - 建立 tenant plugin policy/catalog 的最小执行接缝：共享 `PluginManager`/base snapshot + `TenantRuntimePlan` + `PluginInvocationContext`；区分 `installed`、`active generation`、`tenant binding`，允许插件安装后保持 dormant；为插件 contributions 固化稳定 ID、固定 hook/tool/job 类型、`binding_policy=required|default_on|opt_in` 和 `tenant_configurable` 元数据，tenant 只能热启停/排序策略允许修改的 contribution，变更从下一 work 生效；tenant provisioning 自动物化全部 `required`/`default_on` binding、默认配置和 tenant-scoped namespace，运行时按 `base snapshot + required contributions + tenant overrides` 解析 plan；将 required memory engine slot、`default`/`rachael` 两个已安装实现、default-on automatic ingest/context retrieval/memory tools 与 admin-only inspector 分开；覆盖 lifecycle hooks、EventBus、proactive、maintenance 和 plugin job，不允许插件实例保存当前 tenant 状态；
 - HyDE-style hypothesis、query rewrite 与 reranker 都保留开关和离线评测入口，但 Pilot 默认关闭，后续通过消融实验决定是否启用。
 
@@ -1285,7 +1295,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 实现 WebChat Gateway 的 HTTP/WebSocket 路由、连接生命周期管理、心跳、断线清理、重连所需的稳定 `message_id`/`sequence` 协议；
 - 明确定义 WebChat 消息协议和错误协议，至少覆盖连接建立、发送消息、回复增量、回复完成、工具调用状态、服务端错误和重连补拉；
 - 新增 WebChat 前端页面或独立前端 bundle，提供消息列表、文本输入、发送状态、流式回复展示、连接状态、重连和错误提示；
-- 接通 durable ingress/inbox、canonical conversation/message stream 和 outbox/delivery record：入站接受、执行完成、channel 送达分别按 5.9.11 收束；按 per-conversation sequence 原子落库，持久化 final message 与 turn/tool 终态，流式 delta 只作为在线优化；
+- 接通 durable ingress/inbox、canonical conversation/message stream 和 outbox/delivery record：入站接受、执行完成、channel 送达分别按 5.9.11 收束；按 per-conversation sequence 原子落库，持久化 final message 与 turn/tool 终态，流式 delta 只作为在线优化；P0.5 只在本机或显式 dev mode 下运行，不能通过公网 Tunnel 暴露 admin HTTP/API；
 - 为 WebChat channel、Gateway、Cookie/Origin handshake、WebSocket 重连、client_message_id 幂等、消息顺序、慢消费者和前端基本交互增加 contract test；
 - 完成 ToolExecutionContext、TenantToolCatalog 和统一 ToolPolicy 的最小接缝；在没有 P1 认证、资源 scope 和负向测试前，不得向公网暴露任何 tenant-facing 工具；
 - 将 WebChat auth session、Telegram 私聊 identity binding 和其他入口统一收敛到服务端 `account_id → tenant_id → canonical_conversation_id` 映射；客户端 tenant/chat/session 字段不参与授权；
@@ -1297,20 +1307,20 @@ Tenant provisioning 与运行时解析规则固定为：
 
 **目标**：实现受邀用户的低摩擦登录和服务端身份派生。
 
-- 创建 `test_accounts`、`access_tokens`、`auth_sessions` 和 provisioning readiness 数据模型；账号先 provisioning，ready 后才签发 invitation token；普通用户/admin 分离 session，按 5.9.3 落地 Cookie、CSRF、Origin、timeout 和 401/403 契约；
+- 创建 `test_accounts`、`access_tokens`、`auth_sessions` 和 provisioning readiness 数据模型；账号先 provisioning，ready 后才签发 invitation token；普通用户/admin 分离 session，按 5.9.3 落地 Cookie、CSRF、Origin、timeout 和 401/403 契约；admin HTTP/API 默认只绑定部署主机本机，公网 WebChat 不得成为 admin route 的旁路；
 - 实现邀请 Token 的生成、hash 存储、过期、一次性兑换和撤销；
 - 实现 `POST /api/auth/exchange` 与 HttpOnly Cookie；
-- HTTP API、上传、媒体读取和 WebSocket 统一接入认证依赖；attachment/media 按 5.9.15 使用 tenant ownership、immutable attachment id、MIME/size limit 和清理策略；
+- HTTP API、上传、媒体读取和 WebSocket 统一接入认证依赖；attachment/media 按 5.9.15 使用 tenant ownership、immutable attachment id、MIME/size limit 和清理策略；首版只接受图片和纯文本，图片像素/解码资源、文本字符数/编码均有硬上限，PDF、压缩包和可执行内容 fail-closed 拒绝；
 - 登录会话过期、退出登录和失效后的 401/403 行为；
 - WebChat 提供 memory engine selector：读取当前 tenant 被允许的 engine、展示能力/状态、提交 `default` 或 `rachael` 的选择；服务端校验 tenant binding 和 engine readiness，选择结果持久化到 PostgreSQL，切换只对下一次 work 生效；
 - `tenant_id` 由认证账号服务端派生，并贯穿 Passive、Proactive、Drift、ToolExecutor、memory retrieval、consolidation 和 optimizer；memory engine 则由同一 tenant 的 active binding 派生，不能信任客户端直接提交的 engine 作为授权依据；
-- 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，并为每个 tenant 持久化 active memory engine（首版为 `default` 或 `rachael`）；不复制 `PluginManager`/`RuntimeSnapshot`。WebChat 只展示服务端返回的允许目录并提交选择，普通配置从下一 work 生效，hard revocation 在副作用前即时生效；
+- 将 tenant plugin settings/catalog/KV 接入 PostgreSQL canonical control-plane：不同 tenant 可以启用不同 trusted plugin 集合，并为每个 tenant 持久化 active memory engine（首版为 `default` 或 `rachael`）；不复制 `PluginManager`/`RuntimeSnapshot`。WebChat 只展示服务端返回的允许目录并提交选择，普通配置从下一 work 生效，hard revocation 在副作用前即时生效；同时在文档和 admin UI 明确插件是管理员信任的 in-process code，普通 tenant 不能安装或激活插件，用户 MCP/第三方代码不复用该信任边界；
 - `tenant_id` 同时绑定该用户的 PersonaProfile 与 RelationshipState，确保主对话、Proactive 和 Drift 不读取其他 tenant 的人设或关系上下文；
 - 用户首次登录时进入一次性人设设置流程：可以选择管理员提供的可选 Persona，也可以编辑并提交完整自由文本；提交后保存 tenant 独立快照并锁定用户侧编辑入口；
 - WebChat 登录账号与 Telegram Bot 用户私聊身份绑定的可信关联；按 `account → tenant → canonical conversation` 映射两种入口，并对 channel 重试和客户端重发做幂等去重；
-- 落地 `persona_templates`、tenant PersonaProfile 与 RelationshipState 的 PostgreSQL 当前值存储；PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 串行 lane / maintenance lock 保护并原地更新，沿用当前单体语义。
+- 落地 `persona_templates`、tenant PersonaProfile 与 RelationshipState 的 PostgreSQL 当前值存储；PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 串行 lane / maintenance lock 保护并原地更新，沿用当前单体语义；runtime role 使用受限数据库权限，并为 RLS/tenant-bound view、raw SQL/向量/BM25/聚合/导出/后台 job 和 cache isolation 增加跨 tenant negative test；provider data handling contract 未确认时不得发送原始 tenant 内容。
 
-**出口条件**：用户只输入一次 Token；首次进入时可以完成一次性人设设置流程，提交后的 tenant PersonaProfile / RelationshipState 可从 PostgreSQL 正确恢复且用户侧不能再次修改；刷新页面、重新打开浏览器后仍能登录（在会话有效期内）；越权请求全部被拒绝；重复兑换同一 Token 不会产生多个账号。
+**出口条件**：用户只输入一次 Token；首次进入时可以完成一次性人设设置流程，提交后的 tenant PersonaProfile / RelationshipState 可从 PostgreSQL 正确恢复且用户侧不能再次修改；刷新页面、重新打开浏览器后仍能登录（在会话有效期内）；越权请求全部被拒绝；重复兑换同一 Token 不会产生多个账号；admin route 在公网 WebChat 暴露时仍不可达；图片/纯文本超限、ownership 不明、数据库 tenant context 缺失或 provider policy 未知时均 fail-closed；raw SQL、向量检索、缓存和后台任务的跨 tenant negative tests 通过。
 
 ### P2：账号控制与长期试用
 
@@ -1323,16 +1333,16 @@ Tenant provisioning 与运行时解析规则固定为：
 - 用户侧 PersonaProfile 只在首次登录的一次性人设设置流程中设置一次，提交后不再提供修改入口；RuntimeInvariant 和 channel 硬限制始终不向用户开放；
 - 新 tenant 从当前单体语义对应的 self seed 初始化 RelationshipState；已有 tenant 的关系状态不因默认人设或模板修改而静默覆盖；
 - CLI 保留 `issue`、`list`、`revoke`、`expire`，作为应急恢复与自动化入口；
-- 账号级撤销、Token 级撤销和原因记录；
+- 账号级撤销、Token 级撤销和原因记录；账号封禁、binding 撤销、secret rotation 和关键 tenant policy 变更提升 `security_epoch`，旧 work/tool/outbox 在状态写入和副作用前重新校验，失败后进入 `cancelled`/`stale` terminal state；
 - 封禁后主动断开现有 WebSocket；
 - 基础限流、单账号并发上限、消息大小限制和有界队列 overload 策略；interactive 满载明确拒绝，maintenance 可合并/延后；
-- 分别观测 interactive backlog、maintenance backlog、proactive/drift skip、tool timeout、按 `engine_id` 区分的 retrieval latency/命中率/失败降级、consolidation failure、optimizer 状态和账号封禁后的截断结果；
+- 分别观测 interactive backlog、maintenance backlog、proactive/drift skip、tool timeout、按 `engine_id` 区分的 retrieval latency/命中率/失败降级、consolidation failure、optimizer 状态和账号封禁后的截断结果；Proactive/Drift 遵守 tenant 开关、channel preference、quiet hours、每日推送上限和用户关闭状态，无法确认 target 或账号状态时记录 skip reason 并 fail-closed；
 - 记录 `last_seen_at`、登录失败次数、最近 IP 摘要和撤销原因；
 - Dashboard 管理操作和跨用户切换使用独立 admin credential，并写入审计记录；
 - 显式用户 schedule 迁移为 tenant/account/conversation owned durable work，delivery target 由服务端 binding 解析；账号 suspension/revocation、misfire 和执行幂等按 5.9.14 处理；
-- 用户 MCP 只有在 tenant namespace、secret ownership、runtime 隔离、ToolExecutionContext 和 5.8.8 负向测试全部通过后才开放，不作为 P1 Token 登录的发布依赖。
+- 用户 MCP 只有在 tenant namespace、secret ownership、runtime 隔离、ToolExecutionContext 和 5.8.8 负向测试全部通过后才开放，不作为 P1 Token 登录的发布依赖；外部 LLM、embedding、MCP provider 的字段 allowlist、脱敏、region、retention、训练用途、日志保留、凭据 owner 和撤销方式必须可审计。
 
-**出口条件**：管理员可以在现有 Dashboard 中新增或停用可选 Persona 模板，并切换到指定测试用户，于 1 分钟内定位和封禁异常账号；模板变更不影响已有 tenant 快照，切换后所有页面保持 tenant 隔离；Dashboard 故障时可通过 CLI 完成同一关键操作；封禁后新旧连接均无法继续使用；误封可解除 `suspended` 状态并重新发放新 Token 恢复，而不需要删除历史数据；`revoked` 账号不原地恢复。
+**出口条件**：管理员可以在现有 Dashboard 中新增或停用可选 Persona 模板，并切换到指定测试用户，于 1 分钟内定位和封禁异常账号；模板变更不影响已有 tenant 快照，切换后所有页面保持 tenant 隔离；Dashboard 故障时可通过 CLI 完成同一关键操作；封禁后新旧连接均无法继续使用，旧 epoch work 不得继续写入 message/memory/outbox；Proactive/Drift 的 quiet hours、用户关闭和推送上限均有测试；误封可解除 `suspended` 状态并重新发放新 Token 恢复，而不需要删除历史数据；`revoked` 账号不原地恢复。
 
 ### P3：稳定性与备份
 
@@ -1341,14 +1351,14 @@ Tenant provisioning 与运行时解析规则固定为：
 - PostgreSQL 自动备份与恢复演练；
 - 以 PostgreSQL durable control plane 为基线补齐进程重启后的 inbox、turn/tool、outbox/delivery、显式用户 schedule、provisioning、background consolidation 和 optimizer 恢复契约；明确 delta 不重放、幂等 work 可重算、副作用 tool 先 outcome query/compensation；
 - PersonaProfile/RelationshipState 不建设产品级 revision 链；验证 tenant 当前值备份、PostgreSQL PITR 恢复和 optimizer 单写者约束，避免引入与当前单体行为不同的版本浏览/回滚系统；
-- 按 5.9.12 执行 PostgreSQL、workspace/blob、配置和 secret 的 backup manifest 与恢复顺序；旧单体 SQLite/workspace 独立备份和恢复到 legacy 模式，不导入 Pilot PostgreSQL；对 attachment orphan/missing blob 执行 reconciliation 和 24 小时临时文件清理；
+- 按 5.9.12 执行 PostgreSQL、workspace/blob、配置和 secret 的 backup manifest 与恢复顺序；“数据库恢复”特指 PostgreSQL base backup/PITR 恢复到隔离恢复实例或目标数据库；恢复期间暂停公网入口、outbox 和 scheduler，完成 ownership、credential、撤销状态与外部副作用 reconciliation，并提升 `auth_epoch`/`recovery_epoch`，避免旧备份复活已撤销 session/token；旧单体 SQLite/workspace 独立备份和恢复到 legacy 模式，不导入 Pilot PostgreSQL；对 attachment orphan/missing blob 执行 reconciliation 和 24 小时临时文件清理；
 - 进程崩溃自动重启；
 - 建设 Dashboard 全局总控制台，聚合所有 tenant 的缓存命中率、`input_tokens`、`output_tokens`、`cache_hit_tokens`、请求量、错误率、P50/P95 延迟、WebSocket 在线数与队列 backlog；
 - 支持按时间、账号、tenant、channel 和 model 筛选、聚合与下钻；
 - 明确维护窗口和升级回滚步骤；
-- 定期清理过期 auth session、已撤销 Token 的敏感字段和过期 debug content；演练 delivery dead-letter 重投、schedule misfire、provisioning retry 与 attachment 恢复。
+- 定期清理过期 auth session、已撤销 Token 的敏感字段和过期 debug content；演练 delivery dead-letter 重投、schedule misfire、provisioning retry 与 attachment 恢复；outbox 使用数据库 lease（Pilot 初始 `lease_ttl=60s`、heartbeat `20s`），处理 stale lease，最多 5 次 delivery attempt，按 `1m/5m/30m/2h/6h` 退避，最终进入 `dead_letter` 并支持人工 re-drive/ignore；
 
-**出口条件**：完成一次从备份恢复的演练；总控制台可以查看所有测试用户的聚合运行状态、缓存命中率和 Token 消耗，并下钻到单个 tenant；能够区分“应用故障、数据库故障、上游模型故障、账号滥用”；长期运行期间没有未解释的数据丢失。
+**出口条件**：完成一次从备份恢复的演练；演练验证恢复到隔离 PostgreSQL 实例、旧撤销凭据不会直接复活、恢复期间不会产生新的公网请求或外部 delivery；stale outbox lease 不会造成无幂等保护的重复发送，dead-letter 可以由管理员审计并安全 re-drive；总控制台可以查看所有测试用户的聚合运行状态、缓存命中率和 Token 消耗，并下钻到单个 tenant；能够区分“应用故障、数据库故障、上游模型故障、账号滥用”；长期运行期间没有未解释的数据丢失。
 
 ### 6.1 运行时可靠性细化
 
@@ -1363,6 +1373,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 同一 tenant 内保持串行：同一时刻最多一个 active turn/tool/maintenance execution；当前 interactive turn 优先，maintenance 在 lane 空闲时执行，新 interactive 到来时可 defer maintenance；
 - 不使用跨 tenant 的 global maintenance lock；一个 tenant 的 lane backlog、取消或失败不得持有其他 tenant 的 lane；
 - 每次入队、开始、结束、取消和异常都记录 `work_id`、`tenant_id`、`session_key`、`work_kind`、`flow`、`stage` 和时间戳，用于验证是否真的满足租户内串行、租户间异步；
+- 账号封禁、binding 撤销、secret rotation 和关键 tenant policy 变更都必须提升 `security_epoch`。Work、ToolExecutionContext、outbox intent 和后台 work 记录捕获创建时的 epoch；所有 memory、Persona、message、delivery、schedule 和 audit 的状态写入都要校验当前 epoch/status。旧 work 校验失败时进入明确的 `cancelled`/`stale` terminal state，不得继续提交。
 - lane owner 必须在成功、失败、取消、超时和异常路径统一释放；进程关闭时禁止产生新的 work item，并将未完成项交给恢复扫描。
 
 **落地顺序**：P0 先给当前 admission 和 Passive lane 加观测，并建立 tenant admission key、有界 queue 与 overload；P0.5 将 accepted work 与 durable inbox/control-plane 接通；P1 通过 auth principal 拒绝越权并完成公网门禁；P2 接入账号封禁取消；P3 演练 lane backlog 重建。验收重点是：同一 tenant 无重叠状态写入，不同 tenant 不因共享 lane 互相等待。
@@ -1589,6 +1600,10 @@ result=success
 | 浏览器安全 | 普通/admin 分离 `__Host-` Cookie；CSRF + Origin allowlist；401/403 契约固定 | LocalStorage 长期 Token、共用 admin/user credential |
 | Queue overload | tenant 内单 active work、全局 LLM 默认 30；有界队列，interactive 明确拒绝，maintenance 合并/延后 | 无界队列、静默丢消息、maintenance 挤占 interactive |
 | Durable control plane | 公网 P1 前 account/binding/message/inbox/turn/tool/work/outbox/delivery/schedule/provisioning/attachment metadata 统一 PostgreSQL；SQLite/JSON/Markdown 只保留明确的 compatibility 或派生用途 | 同一 Pilot tenant 长期依赖多个未声明的规范源 |
+| Tenant isolation defense in depth | runtime 使用受限 PostgreSQL role；关键 tenant 表采用 RLS 或等价 tenant-bound view；raw SQL、vector/BM25、聚合、导出、backup manifest、后台 job 和 cache 都必须带可信 tenant scope | 只依赖应用层 `WHERE tenant_id = ...`，或把客户端 tenant 参数当授权依据 |
+| Revocation fencing | 账号封禁、binding 撤销、secret rotation 和关键 policy 变更提升 `security_epoch`；旧 work 在状态写入和副作用前重新校验，失败进入 `cancelled`/`stale` | 只取消当前 asyncio task，或允许旧 work 在封禁后继续提交状态 |
+| Admin network boundary | admin HTTP/API 默认仅部署主机本机可达；普通 WebChat 可走公网 Tunnel，但不能旁路放开 admin route | 把 admin route 藏在前端、依赖未认证的公网路径或与 WebChat 共用网络边界 |
+| Provider data handling | LLM、embedding、外部 MCP 发送字段、脱敏、region、retention、训练用途、日志保留、凭据 owner 和撤销方式必须有 contract；未知时 fail-closed | 供应商隐私策略未知时默认发送完整 tenant prompt/attachment |
 | Ingress acceptance | inbox/dedupe、canonical user message、queued work 在一个事务中接受；Telegram source id 与 WebChat client id 强制去重 | 消息先进入内存 queue，再尝试补写业务记录 |
 | Outbound delivery | final assistant message、turn terminal、outbox intent 原子提交；channel delivery 独立 ack，采用 at-least-once + idempotency | 把模型生成完成当作已送达，或重试时重新生成回复 |
 | Provisioning readiness | account 先 `provisioning`，tenant ready 后进入 `active` 并签发 Token；pending/failed 可恢复和重试 | 在用户第一轮 turn 临时建 partition |
@@ -1620,10 +1635,10 @@ result=success
 | DECIDED | 旧单体数据边界 | 现有 SQLite session/message/memory 不导入 Pilot PostgreSQL；Pilot 账号和 canonical conversation 从空历史开始；旧库独立保留 | identity/storage design 禁止 SQLite fallback、双写和反向同步；备份分别覆盖 Pilot PostgreSQL 与 legacy SQLite/workspace |
 | DECIDED | DB rollout/rollback | Pilot 首次启用使用 Create → Verify → Enable，不导入 SQLite；后续 PostgreSQL schema evolution 才使用 Expand → 500-row idempotent backfill → verify → cutover → compatibility → contract | 每个 capability spec 区分 initial create 与 future schema evolution；回滚关闭 Pilot 入口或使用 PostgreSQL forward-fix/PITR，不反向同步 SQLite |
 | DECIDED | Admin bootstrap | 单一 admin principal；`pilot-admin bootstrap/status/rotate-recovery-token/revoke-sessions/disable/enable`；本地强制恢复只允许 trusted-host TTY；token 轮换默认不撤销有效 browser sessions | auth design 按 5.9.3 将 token 轮换与 session 撤销实现为独立操作，并覆盖 lost-token、suspected-leak、database-restore runbook 与应急测试；明文不写进程参数、仓库、配置或数据库 |
-| DECIDED | Ingress/outbox/delivery | 采用 5.9.11 的 acceptance transaction、execution completion transaction 和独立 delivery ack | 固化表字段、状态机、幂等键、provider receipt 与 dead-letter/retry API |
+| DECIDED | Ingress/outbox/delivery | 采用 5.9.11 的 acceptance transaction、execution completion transaction 和独立 delivery ack；outbox 使用 lease/heartbeat/stale-lease/dead-letter 语义 | 固化表字段、状态机、幂等键、provider receipt、lease owner 和人工 re-drive/ignore API |
 | DECIDED | Persistence ownership | 采用 5.9.12 的 PostgreSQL canonical ownership 和显式 backup manifest | 每个 change 标明 canonical/compatibility/derived store；设计恢复一致性点和 secret 处理 |
 | DECIDED | Provisioning lifecycle | account 从 `provisioning` 到 `active`；ready 后才签发 Token；pending/failed 可恢复、可审计 retry | 固化 job/status schema、启动扫描、admin retry 与幂等测试 |
-| DECIDED | Tenant admission | 一个 tenant 只有一个 canonical conversation；tenant 内所有 flow/tool 串行，不同 tenant 异步 | 实现 tenant-scoped lane、取消/封禁传播和全局资源上限；不引入跨 tenant maintenance lock |
+| DECIDED | Tenant admission | 一个 tenant 只有一个 canonical conversation；tenant 内所有 flow/tool 串行，不同 tenant 异步；账号和关键 policy 变化使用 `security_epoch` fence 旧 work | 实现 tenant-scoped lane、取消/封禁传播和全局资源上限；不引入跨 tenant maintenance lock |
 | DECIDED | Consolidation 阈值与失败语义 | 保持当前默认 `memory_window=40`、`keep_count=20`、guard threshold=30；失败立即阻断当前 turn | 若要改变语义，另开 change；当前 change 只做 tenant/recovery 接缝 |
 | DECIDED | Persona/Relationship 存储语义 | 沿用当前单体的 current-state 模型：PersonaProfile 在一次性人设设置流程提交后固定，RelationshipState 由 tenant 单写者原地更新；不建 revision 链，因此没有 revision 保留周期 | P1/P3 验证当前值备份/PITR、Persona 审计记录和 tenant 并发写入约束 |
 | DECIDED | Explicit schedule 语义 | tenant-owned durable business work；`(job_id, scheduled_for)` 幂等；suspend 暂停、revoke 禁用；recurring 不回放全部 missed occurrence | 固化 schedule/execution/delivery schema、IANA timezone 与 DST contract test |
@@ -1631,7 +1646,7 @@ result=success
 | DECIDED | 工具取消 | 断线不取消当前服务器端 turn/tool；账号封禁截断 tenant work；协作式取消为主、工具 timeout 兜底 | 每次 tool call 保留 owner、取消请求、timer 来源和 terminal/unknown 状态 |
 | DECIDED | 副作用工具契约 | 已产生副作用时先 outcome query，再执行声明的 compensation；审计保留原调用 + 补偿 | 建 capability inventory；无补偿或结果未知时标记 `compensation_required`/`unknown`，不盲重试 |
 | DECIDED | Queue 容量初始值 | global interactive 128、per-tenant pending 16、maintenance 64、per-kind maintenance 1、WS outbound 256/soft 192/1 MiB hard；LLM/embedding/MCP/process 默认 30/4/8/2 | 作为可配置 Pilot 初始值实现；P0/P0.5 压测记录拒绝率、backlog、429/退避和内存后，后续 change 才可调整 |
-| PROPOSED DEFAULT | Attachment policy | 常见图片、纯文本、PDF；20 MiB/文件；未引用临时上传 24 小时清理；可执行内容拒绝 | P-1 接受或修改精确 MIME、扩展名、大小、TTL，并固化 sniffing/reconciliation 测试 |
+| PROPOSED DEFAULT | Attachment policy | 图片、纯文本；20 MiB/文件；图片像素/解码资源和文本字符数/编码受限；未引用临时上传 24 小时清理；PDF、压缩包和可执行内容拒绝 | P-1 接受或修改精确 MIME、扩展名、大小、像素/字符/资源上限、TTL，并固化 sniffing/reconciliation 测试 |
 | PROPOSED DEFAULT | Schedule misfire | one-shot grace 5 分钟，超过后标记 `missed`；recurring 前进到下一未来 occurrence | 产品确认是否保留 5 分钟；无论数值如何都必须持久化 miss/attempt/outcome |
 | PROPOSED DEFAULT | 日志与审计保留 | operational metadata 30 天，audit metadata 180 天；内容型 debug 更短且默认关闭 | P-1 接受或调整 retention、访问审批和删除 job；指标 label 规则不可放宽为内容采集 |
 | OPEN FOR P-1 SPEC | Exact schema/DDL | 实体、首次启用和后续 schema evolution/rollback 语义已冻结；精确表名、列、index、constraint 名及 capability-specific SQL 尚未冻结 | 各 capability design/spec 给出可执行 DDL/SQL 和并发/唯一性测试，并明确哪些步骤适用或为 `not_applicable` |
