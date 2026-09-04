@@ -89,3 +89,5 @@ stdout*.log
 /locks/worker.receive.lock
 /locks/
 /start.sh
+run_stdout.log
+run_stderr.log
