@@ -10,26 +10,26 @@
 
 ## 2. 文件导航
 
-| 文件 | 定位 | 对应 §5.9.10 第 N 项 |
-| --- | --- | --- |
-| `README.md` | 本导航文件 | — |
-| `task-01-canonical-identity.md` | C1 canonical identity + PG conversation/message 基础 | 1 |
-| `task-02-durable-control-plane.md` | C2 durable ingress/inbox + turn/work + outbox/delivery | 2 |
-| `task-03-admission-queue-recovery.md` | C3 tenant admission + bounded queue + restart recovery | 3 |
-| `task-04-webchat-protocol-dev-loop.md` | C4 WebChat protocol + dev-only channel/Gateway/frontend | 4 |
-| `task-05-auth-provisioning-admin.md` | C5 invitation auth + provisioning/readiness + admin/browser security | 5 |
-| `task-06-attachment-media.md` | C6 authenticated attachment/media lifecycle | 6 |
-| `task-07-tool-context-isolation.md` | C7 tenant tool context/resource/effect isolation | 7 |
-| `task-08-runtimesnapshot-secrets.md` | C8 RuntimeSnapshot lease + hook failure + tenant secret/revocation | 8 |
-| `task-09-persona-relationship.md` | C9 Persona/Relationship tenant storage + optimizer concurrency | 9 |
-| `task-10-telegram-binding-sync.md` | C10 Telegram binding + cross-channel synchronization | 10 |
-| `task-11-explicit-schedules.md` | C11 tenant-owned explicit schedules + recovery | 11 |
-| `task-12-observability-backup.md` | C12 observability/privacy/redaction + backup manifest | 12 |
-| `task-13-memory-retrieval-bm25.md` | C13 memory retrieval BM25/hotness/RRF + 离线评测 | 13 |
-| `task-14-memory-engine-catalog.md` | C14 memory engine plugin catalog/binding + WebChat selector | 14 |
-| `dag.md` | DAG 依赖图（Mermaid + 边表 + 拓扑批次） | — |
-| `milestones.md` | 里程碑定义（P-1..P4 + §6 出口条件引用） | — |
-| `analysis-report.md` | 分析报告（§8 大纲展开） | — |
+| 文件                                     | 定位                                                                   | 对应 §5.9.10 第 N 项 |
+| -------------------------------------- | -------------------------------------------------------------------- | ---------------- |
+| `README.md`                            | 本导航文件                                                                | —                |
+| `task-01-canonical-identity.md`        | C1 canonical identity + PG conversation/message 基础                   | 1                |
+| `task-02-durable-control-plane.md`     | C2 durable ingress/inbox + turn/work + outbox/delivery               | 2                |
+| `task-03-admission-queue-recovery.md`  | C3 tenant admission + bounded queue + restart recovery               | 3                |
+| `task-04-webchat-protocol-dev-loop.md` | C4 WebChat protocol + dev-only channel/Gateway/frontend              | 4                |
+| `task-05-auth-provisioning-admin.md`   | C5 invitation auth + provisioning/readiness + admin/browser security | 5                |
+| `task-06-attachment-media.md`          | C6 authenticated attachment/media lifecycle                          | 6                |
+| `task-07-tool-context-isolation.md`    | C7 tenant tool context/resource/effect isolation                     | 7                |
+| `task-08-runtimesnapshot-secrets.md`   | C8 RuntimeSnapshot lease + hook failure + tenant secret/revocation   | 8                |
+| `task-09-persona-relationship.md`      | C9 Persona/Relationship tenant storage + optimizer concurrency       | 9                |
+| `task-10-telegram-binding-sync.md`     | C10 Telegram binding + cross-channel synchronization                 | 10               |
+| `task-11-explicit-schedules.md`        | C11 tenant-owned explicit schedules + recovery                       | 11               |
+| `task-12-observability-backup.md`      | C12 observability/privacy/redaction + backup manifest                | 12               |
+| `task-13-memory-retrieval-bm25.md`     | C13 memory retrieval BM25/hotness/RRF + 离线评测                         | 13               |
+| `task-14-memory-engine-catalog.md`     | C14 memory engine plugin catalog/binding + WebChat selector          | 14               |
+| `dag.md`                               | DAG 依赖图（Mermaid + 边表 + 拓扑批次）                                         | —                |
+| `milestones.md`                        | 里程碑定义（P-1..P4 + §6 出口条件引用）                                           | —                |
+| `analysis-report.md`                   | 分析报告（§8 大纲展开）                                                        | —                |
 
 ## 3. 编号约定
 
