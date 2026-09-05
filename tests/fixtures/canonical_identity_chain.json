@@ -1,7 +1,7 @@
 {
-  "version": 1,
-  "description": "canonical identity 派生链契约 fixture（C1 产出）。C2/C4/C5/C9/C10/C14 的测试必须复用本文件的正/负用例与 message_stream 语义，不得各自另写一套期望值。语义门禁：PILOT_ROADMAP §5.9.2 / §5.9.9 / §10 DECIDED。",
-  "derivation_chain": "trusted principal (server-verified) -> test_accounts -> tenant_id -> canonical_conversations (1:1:1)",
+  "version": 2,
+  "description": "canonical identity 派生链契约 fixture（C1 + account→N tenant 扩展产出）。C2/C4/C5/C9/C10/C14 的测试必须复用本文件的正/负用例与 message_stream 语义，不得各自另写一套期望值。语义门禁：PILOT_ROADMAP §5.9.2 / §5.9.9 / §10 DECIDED + openspec/changes/2026-09-05-c1-account-multi-tenant/（主 spec 同步前，1:1 措辞以已验证 C1 为准）。",
+  "derivation_chain": "trusted principal (server-verified) -> test_accounts (登录主体，拥有 N 个 agent) -> canonical_conversations (每行一个 agent = tenant；tenant_id 全局唯一) -> canonical_messages (tenant 域内)",
   "seeded_identity": {
     "account_id": "00000000-0000-0000-0000-000000000001",
     "tenant_id": "dev",
@@ -20,12 +20,16 @@
       }
     },
     {
-      "name": "resolve_by_account_id_seeded_dev",
+      "name": "list_agents_seeded_dev",
       "input": { "kind": "account_id", "value": "00000000-0000-0000-0000-000000000001" },
       "expected": {
         "account_id": "00000000-0000-0000-0000-000000000001",
-        "tenant_id": "dev",
-        "conversation_id": "00000000-0000-0000-0000-000000000002"
+        "agents": [
+          {
+            "tenant_id": "dev",
+            "conversation_id": "00000000-0000-0000-0000-000000000002"
+          }
+        ]
       }
     }
   ],
@@ -68,8 +72,8 @@
     "cursor_meaning": "客户端最后确认看到的持久化消息序号；补拉返回 after_sequence 之后的升序消息"
   },
   "identity_constraints": {
-    "account_tenant_uniqueness": "test_accounts.tenant_id UNIQUE",
-    "conversation_tenant_uniqueness": "canonical_conversations.tenant_id UNIQUE",
+    "account_agent_tenancy": "一个账号可拥有多个 tenant（每个 tenant = 一个 agent），行级承载为 canonical_conversations 多行；账号行不带 tenant",
+    "conversation_tenant_uniqueness": "canonical_conversations.tenant_id UNIQUE（tenant 全局唯一，跨账号不可占用；tenant 与 conversation 1:1）",
     "message_sequence_uniqueness": "canonical_messages.(conversation_id, sequence) UNIQUE",
     "history_cascade": "ON DELETE RESTRICT（历史消息不级联物理删除）"
   }

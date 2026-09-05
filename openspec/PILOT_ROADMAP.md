@@ -954,12 +954,12 @@ WebSocket、spawn job、scheduler、MCP runtime、外部工具调用和 outbound
 
 Pilot 冻结以下语义：
 
-- 一个 `test_account` 对应一个 `tenant_id`，一个 tenant 对应一个 `canonical_conversation_id`；WebChat auth session 和 Telegram Bot identity binding 都只负责把入口映射到该规范会话。
+- 一个 `test_account`（登录主体）可拥有多个 agent，每个 agent = 一个 `tenant_id` = 一个 `canonical_conversation_id`（各自独立记忆/persona 域）；账号自身不携带 tenant。WebChat auth session 和 Telegram Bot identity binding 都只负责把入口映射到该账号下的某个具体 agent（tenant → 规范会话）。
 - 本路线图中的“服务端身份映射”是一个可信查表过程，不是让客户端把 `tenant_id` 传给服务端：adapter 先验证 auth session、Telegram source identity 或其他已登记 principal，再查询 binding 得到 `account_id → tenant_id → canonical_conversation_id`，最后由服务端写入 `WorkEnvelope`。因此攻击者即使修改请求中的 tenant/chat/session 字段，也只能提供待校验输入，不能改变实际数据归属；没有 binding 的请求必须拒绝，不能通过 `DEFAULT_TENANT` 或 session 字符串猜测。
 - Telegram 入口继续使用现有 **Telegram Bot API**。首版只把“某个 Telegram 用户与 Bot 的私聊身份”绑定到测试账号；不登录 Telegram 个人账号，也不把群聊绑定为 tenant。每个测试账号最多绑定一个 Telegram 用户身份，同一 Telegram 用户身份也只能绑定一个测试账号。
 - 绑定支持管理员预绑定和一次性绑定码；绑定码 10 分钟过期、单次使用，兑换和解除绑定都写审计。解绑不删除历史消息，新绑定不得自动继承另一账号的历史。
 - **现有单体数据不迁入 Pilot PostgreSQL。** 旧 `channel:chat_id` session、消息、记忆和其他既有 SQLite 内容继续留在原 SQLite/workspace 中，不生成逐 session mapping 清单，不做 dry-run、backfill、合并或 canonical identity 改写。
-- Pilot 的 `test_account → tenant_id → canonical_conversation_id` 由 provisioning 全新创建，canonical conversation 从空历史开始；即使绑定的是以前使用过单体 Telegram Bot 的用户，也不会自动继承旧消息、旧记忆或旧 Persona/Relationship 状态。
+- Pilot 的账号与其 agent 由 provisioning 全新创建：首个 agent 即 `test_account → 首个 tenant_id → canonical_conversation_id`，后续可向同一账号添加更多 agent（各带独立 tenant 与规范会话），所有 canonical conversation 从空历史开始；即使绑定的是以前使用过单体 Telegram Bot 的用户，也不会自动继承旧消息、旧记忆或旧 Persona/Relationship 状态。
 - 旧 SQLite 是独立的 legacy single-user store，不是 Pilot 的 fallback、第二 source of truth 或双写目标。Pilot 代码不得在 PostgreSQL 查不到数据时回退读取旧 SQLite，也不得把 Pilot 新消息反向写回旧库。
 - 如果继续运行旧单体模式，它仍可独立使用自己的 SQLite；但同一个 Telegram Bot token/更新流不能同时由旧单体和 Pilot 消费。切换 Bot 接入时只切入口，不搬历史数据。
 - 旧 SQLite 文件及其 workspace 按独立 legacy backup 项保留。未来若确实需要导入历史，必须另开 change，重新定义身份确认、内容范围、去重、sequence 和隐私规则；不属于当前 Pilot 范围。
@@ -1084,7 +1084,7 @@ persona_templates, tenant_persona_profiles, tenant_relationship_states
 
 必须先冻结的数据库约束：
 
-- `test_accounts.tenant_id` 唯一；`canonical_conversations.tenant_id` 唯一；active Telegram binding 在 account 和 platform identity 两侧都唯一。
+- `canonical_conversations.tenant_id` 唯一：会话行即 agent 的资源域，一个账号可拥有多行，同一 tenant 不可被第二个账号占用；active Telegram binding 在 account 和 platform identity 两侧都唯一。
 - canonical message 在 `(conversation_id, sequence)` 唯一；channel 入站在 `(source_channel, source_identity_id, source_message_id)` 唯一；WebChat 入站在 `(account_id, client_message_id)` 唯一。
 - token/session digest 唯一；明文只在签发/交换响应中出现一次。
 - 每个 outbox intent 有稳定 idempotency key；delivery attempt 只能推进自己的 intent，不能重复创建 final assistant message。
