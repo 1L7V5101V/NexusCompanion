@@ -15,6 +15,7 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from agent.config_models import (
+    AdmissionConfig,
     AppServerConfig,
     CacheConfig,
     ChannelsConfig,
@@ -117,6 +118,8 @@ def load_config(path: str | Path = "config.toml") -> Config:
     from agent.persona import apply_persona_config
     apply_persona_config(persona)
 
+    admission_cfg = _load_admission_config(data)
+
     return Config(
         provider=provider,
         model=str(llm_main.get("model") or data["model"]),
@@ -194,6 +197,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         plugins=plugins,
         persona=persona,
         app_server=app_server,
+        admission=admission_cfg,
         logging=logging_cfg,
         router_mode=str(
             data.get("router_mode", "rule")
@@ -409,6 +413,40 @@ def resolve_app_server_endpoint(listen: str, workspace: Path) -> str:
     if p.is_absolute():
         return listen
     return str(workspace / p)
+
+
+def _load_admission_config(data: dict) -> AdmissionConfig:
+    """[agent.admission] C3 容量初始值；未配置即 §10 DECIDED 冻结默认。"""
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("admission")) or {}
+    defaults = AdmissionConfig()
+
+    def _int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError(f"agent.admission.{name} 必须为正整数，当前: {value!r}")
+        return parsed
+
+    if (
+        _int("ws_outbound_soft_limit")
+        >= _int("ws_outbound_hard_limit")
+    ):
+        raise ValueError(
+            "agent.admission.ws_outbound_soft_limit 必须小于 ws_outbound_hard_limit"
+        )
+    return AdmissionConfig(
+        global_interactive_queue=_int("global_interactive_queue"),
+        per_tenant_pending_interactive=_int("per_tenant_pending_interactive"),
+        global_maintenance_queue=_int("global_maintenance_queue"),
+        llm_concurrency=_int("llm_concurrency"),
+        embedding_concurrency=_int("embedding_concurrency"),
+        mcp_concurrency=_int("mcp_concurrency"),
+        process_concurrency=_int("process_concurrency"),
+        ws_outbound_soft_limit=_int("ws_outbound_soft_limit"),
+        ws_outbound_hard_limit=_int("ws_outbound_hard_limit"),
+        ws_outbound_max_payload_bytes=_int("ws_outbound_max_payload_bytes"),
+    )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent.config import resolve_app_server_endpoint
+from agent.admission.recovery import (
+    RecoveryRecord,
+    StartupRecoveryScanner,
+    TurnAuditRecoverySource,
+)
 from agent.control.models import TurnRequest
 from agent.control.runtime import ConversationRuntime
 from agent.control.service import ControlService
@@ -297,6 +302,12 @@ class AppRuntime:
                 restart_coordinator=self.restart_coordinator,
                 provisioning=self.provisioning_service,
             )
+            # C3 §5.9.6：启动恢复扫描——上一进程遗留的非终态 turn 收束为
+            # cancelled 并产出 RecoveryRecord（结构化日志供 C12 复用；
+            # unknown/compensation 闭环与 P3 恢复演练依赖 C2 durable 表）。
+            self.recovery_records: list[RecoveryRecord] = StartupRecoveryScanner(
+                [TurnAuditRecoverySource(self.session_manager.control_store)]
+            ).scan()
             if self.provisioning_worker is not None:
                 await self.provisioning_worker.start()
             if self.restart_coordinator is not None:
@@ -332,6 +343,7 @@ class AppRuntime:
                 self.bus,
                 self.conversation_runtime,
                 self.agent_loop,
+                per_tenant_pending=self.config.admission.per_tenant_pending_interactive,
             )
             if self.restart_coordinator is not None:
                 coordinator = self.restart_coordinator
@@ -388,6 +400,11 @@ class AppRuntime:
 
                 self.web_chat_channel = WebChatChannel(
                     channel_name=self.config.channels.chat.channel_name,
+                    ws_outbound_soft_limit=self.config.admission.ws_outbound_soft_limit,
+                    ws_outbound_hard_limit=self.config.admission.ws_outbound_hard_limit,
+                    ws_outbound_max_payload_bytes=(
+                        self.config.admission.ws_outbound_max_payload_bytes
+                    ),
                 )
                 plugin_channels.append(self.web_chat_channel)
             self.ipc, self.channel_host = await start_channels(
