@@ -62,6 +62,15 @@ from bootstrap.db.models.canonical import (  # noqa: E402, F401
     CanonicalMessageModel,
     TestAccountModel,
 )
+from bootstrap.db.models.control_plane import (  # noqa: E402, F401
+    BackgroundWorkItemModel,
+    DeliveryAttemptModel,
+    InboxRecordModel,
+    MessageDeduplicationKeyModel,
+    OutboundDeliveryIntentModel,
+    ToolCallModel,
+    TurnModel,
+)
 
 target_metadata = Base.metadata
 
