@@ -65,7 +65,7 @@
 ## Pilot 阶段
 
 - [ ] **P-1 编码前决策冻结** — 将影响协议、表结构、授权和恢复的选择固化为 ADR/design/spec；`planned`
-  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、Pilot 从空历史开始；旧单体 SQLite 原库保留且不 fallback/双写） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [ ] **Canonical identity 与 Telegram Bot 私聊绑定**（`account → tenant → canonical conversation`、Telegram 用户与 Bot 私聊身份的一对一绑定、Pilot 从空历史开始；旧单体 SQLite 原库保留且不 fallback/双写） → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)；canonical identity（C1）`verified`（commit `e124dbf8`，2026-09-05，change 归档 `changes/archive/2026-09-05-c1-canonical-identity/`，证据 [evidence/c1-canonical-identity](evidence/c1-canonical-identity/)），Telegram binding 仍 `planned`（C10）
   - [ ] **Auth/admin/browser security**（分离 Cookie、CSRF/Origin、timeout、401/403、原子兑换、`pilot-admin` bootstrap/rotate/revoke/disable/enable；recovery token 轮换默认保留有效 browser sessions，泄露时再显式 revoke） → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **WebSocket protocol contract**（hello、client_message_id、sequence、durable terminal、slow consumer） → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **Admission 与 overload policy**（tenant lane；interactive 128 / per-tenant 16 / maintenance 64 / WS 256-soft 192；LLM/embedding/MCP/process 30/4/8/2；LLM 429 退避与指标） → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)

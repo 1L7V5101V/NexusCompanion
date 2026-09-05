@@ -7,9 +7,8 @@
 - **所属阶段**：主要里程碑 = P0.5；P-1 产出 design/ADR，P0 落 PG schema 基础，P0.5 收尾 canonical stream + sequence
 - **§5.9 引用**：§5.9.1（identity/session 硬冲突）、§5.9.2（canonical identity + Telegram binding 语义）、§5.9.9（数据模型/约束/首次启用）、§10 DECIDED（旧单体数据边界、DB rollout/rollback）
 - **§6 出口条件引用**：P-1 出口（设计冻结，不标 verified）；P0.5 出口「canonical conversation/message stream 与 0-based per-conversation sequence」「统一收敛到 account→tenant→canonical conversation」
-- **状态**：in_progress
-  - 2026-09-05：开工，OpenSpec change `openspec/changes/2026-09-05-c1-canonical-identity/`（proposal/design/specs/tasks，15/15 任务完成）。设计冻结（ADR-1..7）、Alembic migration `e2b4d6f8a0c2`、identity resolver + sequence repository、契约 fixture、30 项测试全部通过，证据齐 `openspec/evidence/c1-canonical-identity/`（含 migration/并发 sequence/负向/grep 无 SQLite fallback/rollback drill）。
-  - 按 §8：merge commit 后方可置 `verified`；本条由证据驱动更新。
+- **状态**：verified
+  - 2026-09-05：完成并置 `verified`（§8：commit `e124dbf8`/`7d5e1e38` + 可复现证据 + design review 确认）。OpenSpec change `2026-09-05-c1-canonical-identity`（15/15 任务完成，已归档至 `openspec/changes/archive/`）；交付设计冻结 ADR-1..7、Alembic migration `e2b4d6f8a0c2`、identity resolver + sequence repository、契约 fixture、30 项测试；证据齐 `openspec/evidence/c1-canonical-identity/`（migration/并发 sequence/负向/grep 无 SQLite fallback/rollback drill 9 项 PASS）。
 
 ## 目标
 
@@ -32,15 +31,15 @@
 
 ## 验收标准
 
-- [ ] 设计文档覆盖 §5.9.2 全部冻结语义（含「旧单体数据不迁入」、binding 不可信输入、canonical sequence 0-based 事务原子分配） — 验证：design review + §5.9.2 逐条对照 + `openspec/records/` 存档
-- [ ] `alembic upgrade head` 在空 PG 创建全部实体且唯一约束符合 §5.9.9（`test_accounts.tenant_id` 唯一、`canonical_conversations.tenant_id` 唯一、`(conversation_id, sequence)` 唯一） — 验证：migration 测试在空 PG 上执行
-- [ ] 并发 sequence 分配测试：多并发插入下 `(conversation_id, sequence)` 唯一、连续、0-based、跨 conversation 独立（A=0,1,2；B=0,1,2） — 验证：并发测试 + 行级断言
-- [ ] 无 binding 请求被拒绝、不落 `DEFAULT_TENANT` — 验证：负向测试失败即拒绝
-- [ ] 无 SQLite fallback/双写路径 — 验证：grep Pilot tenant 路径无「PG 查询失败回退 SQLite」代码
-- [ ] Create→Verify→Enable 演练可回滚（关闭入口 + 停 provisioning，保留 PG 数据） — 验证：rollback drill 记录
-- [ ] 本 task 不触碰 inbox/outbox/turn/delivery 表（C2 边界）与 admission lane（C3 边界） — 验证：PR diff 范围检查
+- [x] 设计文档覆盖 §5.9.2 全部冻结语义（含「旧单体数据不迁入」、binding 不可信输入、canonical sequence 0-based 事务原子分配） — 验证：design review + §5.9.2 逐条对照 + `openspec/records/` 存档 → change design.md ADR-1..7（§5.9.2 逐条对照见其 §1 表），随 change 归档存档；design review 经用户确认（2026-09-05）
+- [x] `alembic upgrade head` 在空 PG 创建全部实体且唯一约束符合 §5.9.9（`test_accounts.tenant_id` 唯一、`canonical_conversations.tenant_id` 唯一、`(conversation_id, sequence)` 唯一） — 验证：migration 测试在空 PG 上执行 → `pytest-migration.txt`（migration `e2b4d6f8a0c2`）
+- [x] 并发 sequence 分配测试：多并发插入下 `(conversation_id, sequence)` 唯一、连续、0-based、跨 conversation 独立（A=0,1,2；B=0,1,2） — 验证：并发测试 + 行级断言 → `pytest-concurrency.txt`（2 会话 × 20 并发）
+- [x] 无 binding 请求被拒绝、不落 `DEFAULT_TENANT` — 验证：负向测试失败即拒绝 → `pytest-identity.txt`（未知/空 principal/`default` tenant 拒绝、失败零写入）
+- [x] 无 SQLite fallback/双写路径 — 验证：grep Pilot tenant 路径无「PG 查询失败回退 SQLite」代码 → `grep-no-sqlite-fallback.txt` + 静态契约测试（`pytest-static-contract.txt`）
+- [x] Create→Verify→Enable 演练可回滚（关闭入口 + 停 provisioning，保留 PG 数据） — 验证：rollback drill 记录 → `rollback-drill.md` + `rollback_drill.py`（9 项 PASS）
+- [x] 本 task 不触碰 inbox/outbox/turn/delivery 表（C2 边界）与 admission lane（C3 边界） — 验证：PR diff 范围检查 → `scope-check.txt`（commit `e124dbf8` diff 仅新增文件 + env.py/alembic_util 小改）
 
-> 判定「真正完成」而非「执行过」：上述每条均需产生**可复现证据**（测试报告 / grep 输出 / rollback 演练记录），且与 `openspec/evidence/` 中脚本对应。
+> 判定「真正完成」而非「执行过」：上述每条均需产生**可复现证据**（测试报告 / grep 输出 / rollback 演练记录），且与 `openspec/evidence/` 中脚本对应。→ 证据齐 `openspec/evidence/c1-canonical-identity/`；全量回归 1166 passed（1 个既有环境性失败，干净 HEAD 复现）+ pyright 零新增错误。
 
 ## 独立性边界（不与其他任务重复）
 
