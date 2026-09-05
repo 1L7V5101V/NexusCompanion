@@ -1,0 +1,88 @@
+d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:36:9 - warning: Type of "entry" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:39:20 - warning: Return type, "dict[Unknown, Unknown]", is partially unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:53:30 - warning: Type of "e" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:53:46 - warning: Type of "get" is unknown (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:63:9 - warning: Result of call expression is of type "BackupManifest" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:118:36 - warning: Type of "i" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:145:5 - warning: Type of "duplicated" is partially unknown
+    Type of "duplicated" is "list[Unknown]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:145:33 - warning: Argument type is unknown
+    Argument corresponds to parameter "x" in function "deepcopy" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:145:40 - warning: Type of "e" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:160:5 - warning: Result of call expression is of type "int" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\backup_manifest\test_manifest.py:162:9 - warning: Result of call expression is of type "BackupManifest" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:47:9 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:49:9 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:51:9 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:53:9 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:74:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:81:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:91:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:99:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:114:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_content_gate.py:121:5 - warning: Result of call expression is of type "ContentCaptureSession" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:108:5 - warning: Type of "groups" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:110:16 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "dict_keys[Unknown, Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:112:9 - warning: Type of "declared" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:114:30 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:121:5 - warning: Type of "derived" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:123:42 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "dict_keys[Unknown, Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:130:5 - warning: Type of "dims" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:132:49 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:139:5 - warning: Type of "forbidden" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:141:16 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:153:5 - warning: Type of "groups" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:155:5 - warning: Type of "identity" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:157:5 - warning: Type of "forbidden_identity" is partially unknown
+    Type of "forbidden_identity" is "set[Unknown]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:157:30 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:179:5 - warning: Type of "actions" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:181:16 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:183:5 - warning: Type of "required" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_event_schema_contract.py:186:9 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:38:16 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:48:9 - warning: Type of "group" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:50:30 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "s" in function "update"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:73:9 - warning: Result of call expression is of type "Counter" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:75:9 - warning: Result of call expression is of type "Timer" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_label_policy.py:99:9 - warning: Result of call expression is of type "Counter" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_redaction.py
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_redaction.py:82:5 - warning: Type of "data" is partially unknown
+    Type of "data" is "dict[str, Unknown]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_redaction.py:110:9 - warning: Type of "node_out" is unknown (reportUnknownVariableType)
+d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:26:5 - warning: Result of call expression is of type "int" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:35:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:36:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:37:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:38:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:39:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:75:5 - warning: Result of call expression is of type "list[SweepReport]" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:108:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:126:5 - warning: Result of call expression is of type "Path" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\tests\observability_privacy\test_retention.py:127:5 - warning: Result of call expression is of type "list[SweepReport]" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+0 errors, 57 warnings, 0 informations
