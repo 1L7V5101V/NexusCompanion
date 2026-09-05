@@ -135,13 +135,11 @@ def test_boundary_high_reinforcement_not_boosted(tmp_path):
 
     当前行为：B 排在 A 前面（score_B=0.95 > score_A=0.90）。
 
-    优化后预期（hotness_alpha=0.18, half_life=14天）：
-      hotness_A = sigmoid(log1p(10)) * exp(-ln2/14*1) ≈ 0.855 * 0.951 ≈ 0.813
-      hotness_B = sigmoid(log1p(1))  * exp(-ln2/14*30) ≈ 0.574 * 0.228 ≈ 0.131
-      final_A = 0.82*0.90 + 0.18*0.813 ≈ 0.738 + 0.146 = 0.884
-      final_B = 0.82*0.95 + 0.18*0.131 ≈ 0.779 + 0.024 = 0.803
-      → A(0.884) > B(0.803)，A 应排前。
-      断言应改为 assert results[0]["summary"] == "条目 A（常用且新鲜）"
+    优化后预期：向量 lane 内不再预混热度（hotness_alpha=0，保持纯语义排序），
+    热度移到 Retriever 的 RRF 融合后按 (1 + β×hotness) 乘性增强，β=0.05。
+    "常用且新鲜"的 A 能否反超"一次性、陈旧"的 B，取决于融合层，
+    见 test_recall_memory_tool::test_retriever_post_rrf_hotness_boost_reorders_close_hits。
+    本文件只测 store.vector_search 默认（纯 cosine）契约。
     """
     store = MemoryStore2(tmp_path / "m.db")
 
@@ -187,8 +185,8 @@ def test_boundary_high_reinforcement_not_boosted(tmp_path):
     # 纯 cosine：B(0.95) > A(0.90)，B 排前
     assert results[0]["summary"] == "条目 B（一次性，陈旧）", (
         "CURRENT: 纯 cosine 排序，高语义分的陈旧条目 B 排在常用新鲜条目 A 前。"
-        " 优化后（hotness_alpha=0.18）：final_score_A=0.884 > final_score_B=0.803，"
-        "A 应排前，断言改为 results[0]['summary'] == '条目 A（常用且新鲜）'"
+        " 热度已移到 Retriever 的 RRF 融合后乘性增强（β=0.05），"
+        " store.vector_search 默认纯 cosine 契约不变。"
     )
     assert results[1]["summary"] == "条目 A（常用且新鲜）"
 
@@ -202,12 +200,9 @@ def test_boundary_recent_update_not_boosted(tmp_path):
 
     当前行为：B 排前（纯 cosine 0.92 > 0.88）。
 
-    优化后预期（hotness_alpha=0.18, half_life=14天）：
-      hotness_A = sigmoid(log1p(3)) * exp(-ln2/14*2) ≈ 0.757 * 0.906 ≈ 0.686
-      hotness_B = sigmoid(log1p(1)) * exp(-ln2/14*60) ≈ 0.574 * 0.054 ≈ 0.031
-      final_A = 0.82*0.88 + 0.18*0.686 ≈ 0.722 + 0.123 = 0.845
-      final_B = 0.82*0.92 + 0.18*0.031 ≈ 0.754 + 0.006 = 0.760
-      → A 排前，断言应改为 results[0]['summary'] == '条目 A（近期使用）'
+    优化后预期：向量 lane 内不再预混热度（hotness_alpha=0），
+    热度移到 Retriever 的 RRF 融合后按 (1 + β×hotness) 乘性增强，β=0.05。
+    本文件只测 store.vector_search 默认（纯 cosine）契约。
     """
     store = MemoryStore2(tmp_path / "m.db")
 
@@ -248,7 +243,8 @@ def test_boundary_recent_update_not_boosted(tmp_path):
     # ── CURRENT BEHAVIOR ──
     assert results[0]["summary"] == "条目 B（陈旧未用）", (
         "CURRENT: 纯 cosine，B(0.92)排前。"
-        " 优化后：final_A(0.845) > final_B(0.760)，A 应排前。"
+        " 热度已移到 Retriever 的 RRF 融合后乘性增强（β=0.05），"
+        " store.vector_search 默认纯 cosine 契约不变。"
     )
 
 

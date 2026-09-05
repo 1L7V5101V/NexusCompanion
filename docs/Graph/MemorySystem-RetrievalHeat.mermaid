@@ -34,14 +34,13 @@ graph TB
         VEC_ENGINE["Retriever.retrieve<br/>memory2/retriever.py:97<br/>主 query + aux_queries 去重"] --> EMBED["① Embed<br/>_embed_lanes（retriever.py:205）<br/>query_texts 并行 embedding<br/>embed 失败 → 该 lane 跳过"]
         EMBED -->|"query 向量"| KNN["② 向量 lane<br/>vector_search_batch / vector_search<br/>store.py:1007 区<br/>vec_items KNN 最近邻 → 语义相似度"]
         EMBED -.->|"query 原文（仅原始 query）"| KW["② 关键词 lane<br/>_retrieve_keyword_lane（retriever.py:224）<br/>FTS5 BM25（3+ token）<br/>→ 保底 OR-LIKE（keyword_search_summary）"]
-        KNN --> HOT["③ 热度分<br/>_hotness_score（store.py:190）<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age/半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)<br/>实时计算，不落库"]
-        HOT --> FUSE
+        KNN --> HOT["③ 热度分<br/>_hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age/半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)<br/>实时计算，不落库<br/>随命中携带热度三件套"]
+        HOT --> RRF
         KNN --> D1{"语义相似度<br/>低于 score_threshold?"}
         D1 -->|"是 → 丢弃"| DROP["continue: 不进入候选"]
-        D1 -->|"否"| FUSE
-        FUSE["③ 融合 final<br/>final = (1−α)×语义分 + α×热度分<br/>α = 0.20（Retriever hotness_alpha 默认）<br/>按 final 排序 → top_k 截断"] --> RRF["④ 内部 RRF<br/>_rrf_merge(vector, keyword)<br/>retriever.py:130 → top_n"]
+        D1 -->|"否"| LANE["③ 向量 lane 排序<br/>final = 语义分（lane 内 α=0，热度不再预混）<br/>按 final 排序 → top_k 截断"]
+        LANE --> RRF["④ 内部 RRF + 热度乘子<br/>_rrf_merge(vector, keyword)<br/>fused = rrf × (1 + β×hotness)<br/>β = 0.05（Retriever hotness_beta 默认）<br/>截断 top_n 前乘性增强 → top_n"]
         KW --> RRF
-        FUSE --> RRF
         RRF -->|"vector 源候选输出"| OUT
     end
     GET -->|"router 选中 vector 源"| VEC_ENGINE
@@ -66,7 +65,7 @@ graph TB
 
     %% ====== 样式应用 ======
     class PREP,GET,VEC_ENGINE,EMBED,KNN,KW step
-    class HOT,FUSE,RRF,INJB step
+    class HOT,LANE,RRF,INJB step
     class D1 gate
     class DROP async
     class OUT,MB,LLM step

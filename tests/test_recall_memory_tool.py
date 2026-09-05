@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 from unittest.mock import AsyncMock
@@ -467,6 +467,65 @@ async def test_retriever_keeps_strong_vector_order_when_keyword_hits_are_low_ran
     hits = await retriever.retrieve("支付", top_k=2, tenant=TenantContext(tenant_id="test"))
 
     assert [item["id"] for item in hits] == ["vec1", "vec2"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_post_rrf_hotness_boost_reorders_close_hits(
+    tmp_path: Path,
+) -> None:
+    """热度在 RRF 之后乘性增强（β=0.05），而不是在向量 lane 内预混合。
+
+    设计：lane 内 alpha 置零，向量 lane 按纯语义排序；RRF 融合后再乘
+    (1 + β×hotness)。这保证热度只轻微调整接近候选的相对次序，不主导召回。
+
+    场景（keyword lane 关闭，纯向量 lane）：
+      条目 A：semantic=1.00，冷（1 年前最后使用）→ 纯语义 lane 排第 1
+      条目 B：semantic=0.99，很热（reinforcement=50，刚使用）→ lane 排第 2
+    RRF: rrf_A = 1/61 ≈ 0.01639 > rrf_B = 1/62 ≈ 0.01613。
+    乘性增强后：boost_B ≈ 1+0.05×0.98 ≈ 1.049 → B 反超 A。
+    """
+    store = MemoryStore2(tmp_path / "m.db")
+
+    store.upsert_item("procedure", "规则 A（冷）", embedding=[1.0, 0.0], extra={})
+    item_a_id = store.list_by_type("procedure")[0]["id"]
+    store._db.execute(
+        "UPDATE memory_items SET reinforcement=1, updated_at=? WHERE id=?",
+        (datetime(2026, 1, 1, tzinfo=timezone.utc).isoformat(), item_a_id),
+    )
+    store._db.commit()
+
+    # cosine([1,0],[0.99,0.141]) = 0.99
+    store.upsert_item(
+        "procedure",
+        "规则 B（热）",
+        embedding=[0.99, 0.141067],
+        extra={},
+    )
+    item_b_id = [r["id"] for r in store.list_by_type("procedure") if r["id"] != item_a_id][0]
+    store._db.execute(
+        "UPDATE memory_items SET reinforcement=50, updated_at=? WHERE id=?",
+        (datetime.now(timezone.utc).isoformat(), item_b_id),
+    )
+    store._db.commit()
+
+    # lane 内 alpha=0：向量 lane 按纯语义返回 A 在前
+    vec_hits = store.vector_search(
+        [1.0, 0.0], top_k=2, score_threshold=0.0
+    )
+    assert [h["summary"] for h in vec_hits] == ["规则 A（冷）", "规则 B（热）"]
+
+    retriever = Retriever(cast(MemoryStore2, store), cast(Embedder, _StaticEmbedder()))
+    hits = await retriever.retrieve(
+        "规则",
+        top_k=2,
+        keyword_enabled=False,
+        tenant=TenantContext(tenant_id="test"),
+    )
+
+    # RRF 融合后乘热度：热的新规则 B 反超冷的 A
+    assert [h["summary"] for h in hits] == ["规则 B（热）", "规则 A（冷）"]
+    # 原始 RRF 仍记录融合前值：反超只能来自热度乘子（rrf_B < rrf_A）
+    assert hits[0]["rrf_score"] < hits[1]["rrf_score"]
 
 
 def test_store_vector_batch_reuses_time_filtered_embedding_rows(

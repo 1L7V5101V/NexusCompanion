@@ -88,7 +88,7 @@ FastAPI / Uvicorn Web Gateway（应用层）
 | memory engine plugins        | 按统一 `MemoryPlugin` / `MemoryEngine` 契约提供记忆写入、召回、管理和诊断能力；首版包含 `default` 与 `rachael` | 是；两个引擎都由平台安装和维护，具体租户通过 WebChat 选择允许的一个                           |
 | 阿里云 `text-embedding-v3`      | 生成查询与记忆条目的稠密向量                                         | 是；当前 `Embedder` 已按此模型配置                                                  |
 | jieba + ParadeDB `pg_search` | Pilot 目标中的中文分词与 BM25 稀疏检索                              | 是；当前代码尚未接入，见记忆召回链路                                                       |
-| hotness score                | 在 dense 与 BM25 两条召回 lane 内将检索分数与记忆热度融合                 | 是；当前 dense lane 已使用 `hotness_alpha=0.20`，BM25 lane 需按目标方案补齐，半衰期默认 `14` 天 |
+| hotness score                | 在 RRF 融合后对检索分数做乘性热度增强                    | 是；dense/keyword lane 内都不再预混热度（`hotness_alpha=0`），RRF 后按 `fused = rrf × (1 + β×hotness)` 增强，β 默认 `0.05`，半衰期默认 `14` 天 |
 | RRF + top-k                  | 合并 dense/keyword 候选并截断结果                               | 是；当前已实现，但使用固定 `RRF_K=60` 与 keyword 权重 `0.5`                              |
 | HyDE-style hypothesis        | 根据 query 生成假设文本，再参与记忆召回                                | 当前 `answer` intent 已有；目标改为默认关闭，后续做消融实验                                   |
 | query rewrite                | 在检索前改写 query                                           | 否；可以先实现开关，但 Pilot 默认关闭，后续做消融实验                                           |
@@ -293,10 +293,10 @@ DefaultMemoryEngine.build_injection_block()（仅 context/procedure）
 - `Retriever` 的 `actual_top_k` 来自请求的 `top_k`，未指定时使用 retrieval 配置的 `top_k_history`；最终 RRF 结果数量为 `actual_top_k`。
 - keyword lane 的查询上限为 `max(30, actual_top_k * 2)`；它只使用原始 query，不使用 `aux_queries`。
 - dense lane 对原始 query 和 `aux_queries` 分别生成 embedding，并通过 `vector_search_batch` 批量查询；同一 item 在多条向量查询中只保留最高 dense final score 的版本。
-- 当前 dense score 不是单纯 cosine similarity。`MemoryStore2` 和 PostgreSQL vector store 都先用 semantic similarity 做 `score_threshold` 过滤，再计算：`final = (1 - hotness_alpha) * semantic + hotness_alpha * hotness`。`DefaultMemoryEngine` 构造 `Retriever` 时当前传入 `hotness_alpha=0.20`，`hotness_half_life_days` 默认是 `14.0`。
+- 当前 dense lane 内不做热度混合：`hotness_alpha` 默认 `0`。`MemoryStore2` 和 PostgreSQL vector store 都先用 semantic similarity 做 `score_threshold` 过滤，纯语义分数进入 RRF；热度在 RRF 融合后乘性增强 `fused = rrf_score × (1 + hotness_beta × hotness)`，`hotness_beta` 默认 `0.05`，`hotness_half_life_days` 默认 `14.0`。keyword lane 命中同样携带热度三件套参与增强。
 - 当前 hotness 由“强化频度 × 时间衰减”得到：频度使用 reinforcement 的平滑函数，时间衰减使用半衰期；`emotional_weight` 会把有效半衰期按 `1 + 0.5 * emotional_weight / 10` 拉长。每个结果还保留 `_score_debug.semantic`、`_score_debug.hotness` 和 `_score_debug.final` 供诊断。
 - answer intent 使用 `score_threshold=0.35` 和候选 `top_k=max(request.limit, 15)`；其他语义 intent 使用 Retriever 配置的阈值（构造器默认值为 `0.45`，实际可由配置覆盖）。
-- 当前没有独立 reranker。`rrf_score` 用于 RRF 候选排序；返回 item 的 `score` 仍是 dense final score，keyword-only 条目才回填 `keyword_score`。当前注入阶段又按 `score` 排序和阈值过滤，因此可能覆盖 RRF 排序；后续应明确以 RRF 结果为默认顺序，并在启用 reranker 时以 reranker 分数为最终顺序。
+- 当前没有独立 reranker。`rrf_score` 用于 RRF 候选排序；返回 item 的 `score` 仍是 dense lane 的语义分（lane 内 α=0，final==semantic），keyword-only 条目才回填 `keyword_score`。当前注入阶段又按 `score` 排序和阈值过滤，因此可能覆盖 RRF 排序；后续应明确以 RRF 结果为默认顺序，并在启用 reranker 时以 reranker 分数为最终顺序。
 
 ### 4.2 外层 `DefaultMemoryRetrievalPipeline` 的边界
 
