@@ -166,6 +166,22 @@ class AppServerConfig:
 
 
 @dataclass
+class AdmissionConfig:
+    """C3 admission 容量初始值（§10 DECIDED 冻结数字；压测后由后续 change 调整）。"""
+
+    global_interactive_queue: int = 128
+    per_tenant_pending_interactive: int = 16
+    global_maintenance_queue: int = 64
+    llm_concurrency: int = 30
+    embedding_concurrency: int = 4
+    mcp_concurrency: int = 8
+    process_concurrency: int = 2
+    ws_outbound_soft_limit: int = 192
+    ws_outbound_hard_limit: int = 256
+    ws_outbound_max_payload_bytes: int = 1024 * 1024
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -209,6 +225,7 @@ class Config:
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
+    admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -219,6 +236,7 @@ class Config:
 
 
 __all__ = [
+    "AdmissionConfig",
     "AppServerConfig",
     "CacheConfig",
     "ChannelsConfig",

@@ -21,6 +21,10 @@ from agent.provider import LLMProvider
 
 logger = logging.getLogger(__name__)
 
+# 当前单体 memory store 尚未 tenant 化（C9 前），optimizer 默认在单租户键上串行；
+# 多租户化后由调用方显式传 tenant_id。
+DEFAULT_OPTIMIZER_TENANT = "default"
+
 
 class MemoryOptimizerBusy(RuntimeError):
     pass
@@ -213,22 +217,33 @@ class MemoryOptimizer:
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
-        self._lock = asyncio.Lock()
+        # C3 §5.9.5/§10 DECIDED：optimizer lock 按 tenant 隔离，不引入跨 tenant
+        # global maintenance lock；单 tenant 一个 Markdown store 语义不变。
+        self._locks: dict[str, asyncio.Lock] = {}
         self._default_self_md = default_self_md
         self._identity_name = identity_name
 
     # 各步骤之间的间隔（秒），避免短时间内连续请求触发 limit_burst_rate
     _STEP_DELAY_SECONDS: int = 15
 
+    def _lock_for(self, tenant_id: str) -> asyncio.Lock:
+        lock = self._locks.get(tenant_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[tenant_id] = lock
+        return lock
+
     @property
     def is_running(self) -> bool:
-        return self._lock.locked()
+        """任一 tenant 的 optimizer 在运行（Dashboard 手动优化按钮观测口径不变）。"""
+        return any(lock.locked() for lock in self._locks.values())
 
-    async def optimize(self) -> None:
-        """两步优化：合并 PENDING → MEMORY，更新 SELF。"""
-        if self._lock.locked():
+    async def optimize(self, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
+        """两步优化：合并 PENDING → MEMORY，更新 SELF（按 tenant 串行）。"""
+        lock = self._lock_for(tenant_id)
+        if lock.locked():
             raise MemoryOptimizerBusy("memory optimizer 正在运行")
-        async with self._lock:
+        async with lock:
             await self._optimize()
 
     async def _optimize(self) -> None:
