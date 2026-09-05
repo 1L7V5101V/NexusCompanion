@@ -101,9 +101,11 @@ def _queued(conn: _Connection) -> list[dict[str, Any]]:
     """取出 outbound 队列中的帧（直连 handler 的测试没有 sender task）。"""
     items: list[dict[str, Any]] = []
     while not conn.outbound.empty():
-        item = conn.outbound.get_nowait()
-        if item is not None:
-            items.append(item)
+        entry = conn.outbound.get_nowait()
+        if entry is not None:
+            # C3：队列存 (frame, payload_bytes) 便于 1 MiB payload 会计。
+            frame, _size = entry
+            items.append(frame)
     return items
 
 
