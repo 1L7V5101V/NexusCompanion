@@ -1,0 +1,45 @@
+{
+  "policy_version": 1,
+  "source": "PILOT_ROADMAP §5.9.17 / §7.1",
+  "notes": "metrics label 白名单契约。高基数身份字段与内容字段禁止进入 metrics label（只能进入有访问控制的 trace/audit storage）。tenant_id 在 Pilot 10–30 受邀账号规模内基数有界且为 §7.1 必需聚合维度，故在白名单内；规模越过 P4 闸门须复评。本文件与 core/telemetry/label_policy.ALLOWED_METRIC_LABELS 交叉校验，修改必须两处同步。",
+  "allowed_labels": [
+    "work_kind",
+    "flow",
+    "stage",
+    "trigger",
+    "channel",
+    "tool_name",
+    "model",
+    "provider",
+    "backend",
+    "snapshot_id",
+    "attempt",
+    "status",
+    "result",
+    "error_type",
+    "retryable",
+    "side_effect",
+    "outcome_status",
+    "compensation_status",
+    "recovery_action",
+    "tenant_id"
+  ],
+  "forbidden_labels": {
+    "high_cardinality_identity": [
+      "account_id",
+      "message_id",
+      "tool_call_id",
+      "turn_id",
+      "work_id",
+      "session_key"
+    ],
+    "content": [
+      "tool_args",
+      "tool_result",
+      "prompt",
+      "message_content",
+      "attachment_content",
+      "raw_payload"
+    ]
+  }
+}
