@@ -1,0 +1,73 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-09-06T00:00:00Z",
+  "notes": "Pilot backup manifest 模板（C12 ADR-6；§5.9.12）。声明 Pilot canonical store 现状与恢复顺序起点；加密/校验/一致性点中「待冻结」项须在 P3 恢复演练前由 runbook 落定。伴随落地协议：后续 change 新增 canonical store 时在本模板登记条目并复跑校验器（tests/backup_manifest）。",
+  "entries": [
+    {
+      "id": "config",
+      "kind": "config",
+      "path": "config.toml（部署机挂载路径待部署清单登记）",
+      "encryption": "不适用（config 本身不含明文 secret；${ENV} 插值源归 secrets 条目）",
+      "checksum": "sha256",
+      "consistency_point": "每次部署/配置变更后快照",
+      "retention": "随部署版本保留（待 runbook 冻结）",
+      "restore_mode": "pilot_primary",
+      "independent": false,
+      "contains_secrets": false,
+      "notes": "Pilot 配置；与生产 config 独立（AGENTS.md：本地与服务器配置刻意不同步）"
+    },
+    {
+      "id": "secrets",
+      "kind": "secrets",
+      "path": "独立 secret 备份存储（不经普通业务备份；具体位置待 runbook 冻结）",
+      "encryption": "待冻结（必须与业务备份隔离并单独声明）",
+      "checksum": "sha256",
+      "consistency_point": "每次密钥轮换后快照",
+      "retention": "随轮换策略（待 runbook 冻结）",
+      "restore_mode": "pilot_primary",
+      "independent": true,
+      "contains_secrets": true,
+      "notes": "§5.9.12：config/secrets 不与普通业务备份混成明文归档；密钥来源/轮换/灾难恢复权限待 runbook"
+    },
+    {
+      "id": "pg-canonical",
+      "kind": "postgresql",
+      "path": "postgresql://<primary>/nexus_pilot（base backup + WAL 归档，主机路径待部署清单登记）",
+      "encryption": "待冻结（P3 恢复演练前确认静态加密方式）",
+      "checksum": "pg_verifybackup",
+      "consistency_point": "pg_backup_stop / backup_label（PITR 恢复点）",
+      "retention": "待 runbook 冻结（PITR 窗口待定）",
+      "restore_mode": "pilot_primary",
+      "independent": false,
+      "contains_secrets": false,
+      "notes": "Pilot canonical store（§5.9.12）；恢复流程须提升 auth_epoch/recovery_epoch 并在 reconciliation 完成前暂停公网入口/outbox/scheduler"
+    },
+    {
+      "id": "tenant-workspace",
+      "kind": "tenant_workspace",
+      "path": "~/.nexus/workspace",
+      "encryption": "待冻结",
+      "checksum": "逐文件 sha256（待 runbook 冻结）",
+      "consistency_point": "与 PostgreSQL 恢复点对齐（C6 blob root 细化后冻结）",
+      "retention": "跟随账号 retention（待 C6 冻结）",
+      "restore_mode": "pilot_primary",
+      "independent": false,
+      "contains_secrets": false,
+      "notes": "tenant 命名空间 workspace；C6 落地时细化 attachment blob root 子条目；/tmp 上传临时区不属本条目"
+    },
+    {
+      "id": "legacy-sqlite",
+      "kind": "legacy_sqlite",
+      "path": "~/.nexus（旧单体 SQLite + workspace，具体文件路径待清单化）",
+      "encryption": "待冻结",
+      "checksum": "sha256",
+      "consistency_point": "legacy 停写后快照（Pilot 从空历史开始，旧库不再变更）",
+      "retention": "长期独立保留",
+      "restore_mode": "legacy_only",
+      "independent": true,
+      "contains_secrets": false,
+      "notes": "§10 DECIDED：旧单体数据不导入 Pilot PostgreSQL；只恢复到 legacy 模式，不 fallback、不双写"
+    }
+  ],
+  "restore_order": ["config", "secrets", "pg-canonical", "tenant-workspace", "legacy-sqlite"]
+}
