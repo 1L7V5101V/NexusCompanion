@@ -1529,7 +1529,8 @@ class PostgresMemoryStore:
         )
         query_text = (
             "SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
-            f"reinforcement, ({score_expr}) AS kw_score "
+            "reinforcement, updated_at, emotional_weight, "
+            f"({score_expr}) AS kw_score "
             "FROM memory_items "
             f"WHERE tenant_id=%s AND status='active' AND ({or_conditions})"
             f"{type_filter}{scope_filter}{time_filter} "
@@ -1562,6 +1563,8 @@ class PostgresMemoryStore:
                     happened_at,
                     created_at,
                     _reinforcement,
+                    _updated_at,
+                    _emotional_weight,
                     kw_score,
                 ) = row
                 if has_time_filter and not _is_memory_time_in_range(
@@ -1576,6 +1579,10 @@ class PostgresMemoryStore:
                         "source_ref": str(source_ref) if source_ref else "",
                         "happened_at": _to_iso(happened_at) or _to_iso(created_at) or "",
                         "keyword_score": _coerce_float(kw_score) / len(terms),
+                        # RRF 之后做乘性热度增强时，keyword 命中也要能拿到热度三件套
+                        "_reinforcement": _coerce_int(_reinforcement, 1),
+                        "_updated_at": _to_iso(_updated_at) or "",
+                        "_emotional_weight": _coerce_emotional_weight(_emotional_weight),
                     }
                 )
                 if len(results) >= limit:

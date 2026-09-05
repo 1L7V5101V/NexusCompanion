@@ -2026,6 +2026,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
 
         sql = f"""
             SELECT m.id, m.memory_type, m.summary, m.source_ref, m.happened_at, m.created_at,
+                   m.reinforcement, m.updated_at, m.emotional_weight,
                    fts_bm25.rank
             FROM (
                 SELECT rowid, bm25(memory_items_fts) AS rank
@@ -2067,6 +2068,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 source_ref,
                 happened_at,
                 created_at,
+                reinforcement,
+                updated_at,
+                emotional_weight,
                 rank,
             ) = row
             # bm25() 返回负值（越小越匹配），取反使分数越高越匹配
@@ -2086,6 +2090,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                 "source_ref": str(source_ref) if source_ref else "",
                 "happened_at": str(happened_at or created_at or ""),
                 "keyword_score": round(keyword_score, 4),
+                # RRF 之后做乘性热度增强时，keyword 命中也要能拿到热度三件套
+                "_reinforcement": _coerce_int(reinforcement, 1),
+                "_updated_at": str(updated_at) if updated_at else "",
+                "_emotional_weight": _coerce_emotional_weight(emotional_weight),
             })
             if len(results) >= limit:
                 break
@@ -2148,7 +2156,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
         )
         sql = (
             f"SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
-            f"reinforcement, ({score_expr}) AS kw_score "
+            f"reinforcement, updated_at, emotional_weight, ({score_expr}) AS kw_score "
             f"FROM memory_items "
             f"WHERE status='active' AND ({or_conditions}){type_filter}{scope_filter}{time_filter} "
             f"ORDER BY kw_score DESC, reinforcement DESC, id ASC "
@@ -2180,6 +2188,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     happened_at,
                     created_at,
                     _reinforcement,
+                    _updated_at,
+                    _emotional_weight,
                     kw_score,
                 ) = row
                 if has_time_filter and not _is_memory_time_in_range(
@@ -2193,6 +2203,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_items USING vec0(
                     "source_ref": str(source_ref) if source_ref else "",
                     "happened_at": str(happened_at or created_at or ""),
                     "keyword_score": _coerce_float(kw_score) / len(terms),
+                    # RRF 之后做乘性热度增强时，keyword 命中也要能拿到热度三件套
+                    "_reinforcement": _coerce_int(_reinforcement, 1),
+                    "_updated_at": str(_updated_at) if _updated_at else "",
+                    "_emotional_weight": _coerce_emotional_weight(_emotional_weight),
                 })
                 if len(results) >= limit:
                     return results

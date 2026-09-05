@@ -22,7 +22,7 @@ graph LR
     %% 依据代码：memory2/store.py（_content_hash:131, upsert_item:455, upsert_consolidation_event:506,
     %%   reinforce_items_batch:739, find_similar_recent_events:1652, _hotness_score:190, 融合:1378）、
     %%   memory2/memorizer.py（save_from_consolidation:181, _should_semantic_dedup_event:224）、
-    %%   memory2/retriever.py（hotness_alpha:55）
+    %%   memory2/retriever.py（hotness_beta: RRF 后乘子默认 β=0.05）
     subgraph R["① 强化 — reinforcement 计数器 + 热度融合"]
         direction TB
 
@@ -63,12 +63,12 @@ graph LR
         %% ── 强化终点 ──
         R_COUNT["reinforcement 计数<br/>取值: 整数 ≥1（初始1，每强化+1）<br/>emotional_weight 各分支取 MAX（0-10）<br/>← 演化落库项"]
         R_COUNT -->|"→ 检索时计算热度分"| R_HOT["热度分 _hotness_score<br/>freq = sigmoid(log1p(reinforcement))<br/>recency = 指数衰减 2^(−age / 半衰期)<br/>半衰期 = 14天 × (1+0.5×情感/10)，下限 0.1"]
-        R_HOT -->|"→ Retriever 检索分数融合（Agentic RAG中的向量路）"| R_FUSE["检索融合 final<br/>final = (1−α)×语义分 + α×热度分<br/>（Retriever hotness_alpha 默认 α = 0.20）<br/>低于 score_threshold 过滤，按 final 排序<br/>详见 MemorySystem-RetrievalHeat（独立图）<br/>强化产物 reinforcement / emotional_weight<br/>→ 检索热度融合（α=0.20）<br/><br/>适用链路：passive 主链路预检索 +<br/>recall_memory 工具（passive / proactive 通用）<br/>proactive_flow / wake_proactive 的 memory.query<br/>drift 链路不调用记忆检索"]
+        R_HOT -->|"→ Retriever 检索排序（Agentic RAG中的向量路）"| R_FUSE["检索排序<br/>向量 lane 纯语义排序（lane 内 α=0）<br/>RRF 融合后乘热度：fused = rrf × (1 + β×hotness)<br/>β = 0.05（Retriever hotness_beta 默认）<br/>低于 score_threshold 先过滤（语义门槛）<br/>详见 MemorySystem-RetrievalHeat（独立图）<br/>强化产物 reinforcement / emotional_weight<br/>→ RRF 后乘性热度增强（β=0.05）<br/><br/>适用链路：passive 主链路预检索 +<br/>recall_memory 工具（passive / proactive 通用）<br/>proactive_flow / wake_proactive 的 memory.query<br/>drift 链路不调用记忆检索"]
 
     end
 
 %% 跨机制关联：强化产物 → 检索读路径（另一机制图）
-    %% READ_P["⚓ 检索读路径（热度分 + 融合 + 注入）<br/>详见 MemorySystem-RetrievalHeat（独立图）<br/>强化产物 reinforcement / emotional_weight<br/>→ 检索热度融合（α=0.20）<br/><br/>适用链路：passive 主链路预检索 +<br/>recall_memory 工具（passive / proactive 通用）<br/>proactive_flow / wake_proactive 的 memory.query<br/>drift 链路不调用记忆检索"]
+    %% READ_P["⚓ 检索读路径（热度分 + 排序 + 注入）<br/>详见 MemorySystem-RetrievalHeat（独立图）<br/>强化产物 reinforcement / emotional_weight<br/>→ RRF 后乘性热度增强（β=0.05）<br/><br/>适用链路：passive 主链路预检索 +<br/>recall_memory 工具（passive / proactive 通用）<br/>proactive_flow / wake_proactive 的 memory.query<br/>drift 链路不调用记忆检索"]
 
 %% ═══════════════ ② 退休 ═══════════════
     subgraph T["② 退休 — supersede 软删除"]

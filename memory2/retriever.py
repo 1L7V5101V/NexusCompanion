@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -14,6 +14,7 @@ from typing import Any, TypeVar, cast
 
 from infra.storage.interfaces import MemoryStorage, TenantContext
 from memory2.store import MemoryStore2
+from memory2.store import _coerce_emotional_weight, _coerce_int, _hotness_score
 from memory2.embedder import Embedder
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,10 @@ R = TypeVar("R")
 
 _RRF_K = 60
 _KEYWORD_RRF_WEIGHT = 0.5
+# RRF 之后的乘性热度系数 β：final = rrf_score × (1 + β × hotness)。
+# lane 内热度混合已置零，热度只在这个乘子里出现一次；β=0.05 是温和的形状调整，
+# 不改变纯相关性的主排序，只让接近的候选中更热的一方靠前。
+_POST_RRF_HOTNESS_BETA = 0.05
 _KEYWORD_LIMIT_FLOOR = 30
 _KEYWORD_LIMIT_MULTIPLIER = 2
 _EMBED_TIMEOUT_S = 8.0
@@ -56,8 +61,9 @@ class Retriever:
         inject_line_max: int = 180,
         procedure_guard_enabled: bool = True,
         high_inject_delta: float = 0.15,
-        hotness_alpha: float = 0.20,
+        hotness_alpha: float = 0.0,
         hotness_half_life_days: float = 14.0,
+        hotness_beta: float = _POST_RRF_HOTNESS_BETA,
         run_db: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._store_for = (
@@ -86,6 +92,7 @@ class Retriever:
         self._high_inject_delta = max(0.0, float(high_inject_delta))
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
+        self._hotness_beta = max(0.0, float(hotness_beta))
 
     # 统一检索入口：recall_memory 和被动预检索都复用这条查库路径。
     async def retrieve(
@@ -141,7 +148,15 @@ class Retriever:
             )
 
         # 3. 最终只在这里做 RRF 融合，调用方不再各自拼召回列表。
-        items = _rrf_merge(vector_items, keyword_items, top_n=actual_top_k)
+        # 热度不进 lane 内（alpha=0），而是 RRF 融合后按 (1 + β×hotness) 乘性增强，
+        # 对向量命中与 keyword 命中一视同仁。
+        items = _rrf_merge(
+            vector_items,
+            keyword_items,
+            top_n=actual_top_k,
+            hotness_beta=self._hotness_beta,
+            hotness_half_life_days=self._hotness_half_life_days,
+        )
         logger.debug(
             "memory2 retrieve: query=%r vector=%d keyword=%d fused=%d",
             query[:60],
@@ -531,6 +546,37 @@ def _hit_score(item: dict, fallback_key: str = "score") -> float:
     return float(raw) if isinstance(raw, int | float) else 0.0
 
 
+def _hit_hotness(item: dict, now: datetime, half_life_days: float) -> float:
+    """从命中里取热度三件套算 hotness；数据缺失时返回 0（乘性因子退化为 1）。
+
+    向量 lane 把 _reinforcement/_updated_at/_emotional_weight 放在 extra_json 里，
+    keyword lane 为保持命中形状简单放在顶层，这里两种都认。无法解析时视为不热。
+    """
+    extra = item.get("extra_json")
+    if isinstance(extra, dict):
+        reinforcement = extra.get("_reinforcement")
+        updated_at_raw = extra.get("_updated_at")
+        emotional_weight = extra.get("_emotional_weight")
+    else:
+        reinforcement = item.get("_reinforcement")
+        updated_at_raw = item.get("_updated_at")
+        emotional_weight = item.get("_emotional_weight")
+    if not updated_at_raw:
+        return 0.0
+    updated_at_str = str(updated_at_raw)
+    try:
+        updated_at = datetime.fromisoformat(updated_at_str)
+    except (ValueError, TypeError):
+        return 0.0
+    return _hotness_score(
+        _coerce_int(reinforcement, 1),
+        updated_at,
+        now,
+        half_life_days,
+        emotional_weight=_coerce_emotional_weight(emotional_weight),
+    )
+
+
 _CJK_STOPWORDS = {
     "用户", "助手", "我们", "他们", "这个", "那个", "什么", "如何", "是否",
     "有没", "没有", "有过", "做过", "进行", "完成", "包括", "通过", "实现",
@@ -572,7 +618,15 @@ def _rrf_merge(
     *,
     top_n: int,
     k: int = _RRF_K,
+    hotness_beta: float = 0.0,
+    hotness_half_life_days: float = 14.0,
 ) -> list[dict]:
+    """RRF 融合两条 lane。
+
+    排序分 = rrf_score × (1 + hotness_beta × hotness)。默认 beta=0 即纯 RRF；
+    传入 hotness_beta 后热度才参与排序（Retriever 生产路径传 _POST_RRF_HOTNESS_BETA）。
+    截断 top_n 之前增强，避免边界候选中"更热的那条"被提前截掉。
+    """
     vec_rank: dict[str, int] = {}
     for index, item in enumerate(sorted(vector_items, key=_hit_score, reverse=True)):
         item_id = _hit_id(item)
@@ -598,18 +652,24 @@ def _rrf_merge(
         if item_id:
             id_to_item[item_id] = item
 
-    scored: list[tuple[str, float, float]] = []
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[str, float, float, float]] = []
     for item_id in set(vec_rank) | set(keyword_rank):
         rrf_score = 0.0
         if item_id in vec_rank:
             rrf_score += 1.0 / (k + vec_rank[item_id])
         if item_id in keyword_rank:
             rrf_score += _KEYWORD_RRF_WEIGHT / (k + keyword_rank[item_id])
-        scored.append((item_id, rrf_score, _hit_score(id_to_item.get(item_id, {}))))
+        item = id_to_item.get(item_id, {})
+        boosted = rrf_score * (
+            1.0 + hotness_beta * _hit_hotness(item, now, hotness_half_life_days)
+        )
+        scored.append((item_id, boosted, _hit_score(item), rrf_score))
 
-    scored.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    # 排序用热度增强后的分数；rrf_score 字段仍记录融合前的原始 RRF 值。
+    scored.sort(key=lambda entry: (entry[1], entry[2]), reverse=True)
     result: list[dict] = []
-    for item_id, rrf_score, _score in scored[:top_n]:
+    for item_id, _boosted, _score, rrf_score in scored[:top_n]:
         item = dict(id_to_item[item_id])
         item["rrf_score"] = rrf_score
         result.append(item)

@@ -494,7 +494,8 @@ class DefaultMemoryEngine:
             inject_max_event_profile=retrieval.inject.event_profile,
             inject_line_max=retrieval.inject.line_max,
             procedure_guard_enabled=retrieval.procedure_guard_enabled,
-            hotness_alpha=0.20,
+            # 热度不再进 lane 内混合（hotness_alpha 默认 0）；Retriever 在 RRF
+            # 融合后按 (1 + β×hotness) 乘性增强，β 默认 0.05。
             run_db=run_db,
         )
         skills_loader = SkillsLoader(workspace)
