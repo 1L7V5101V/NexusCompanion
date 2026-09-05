@@ -1,0 +1,13 @@
+# C2 全量回归（task 7.3）
+
+命令：pytest -q -W error tests/（基线环境 = 主仓 .venv，与 C1 回归同口径；工作目录 = C2 worktree）
+结果：1219 passed / 0 failed / 0 error（C2 新增 50 项全部通过）
+日期：2026-09-06；PG 17.5 @ localhost:5433
+
+```
+1219 passed in 278.76s (0:04:38)
+```
+
+## 环境性差异说明（非 C2 回归）
+- worktree 新建 .venv（2026-09-06 从 requirements.txt 全新解析）下：pyright 项目配置 37 错误 vs 主仓 36（+1 位于 agent/model_runtime/transports/responses.py:95，为依赖版本漂移引入的既有文件错误，C2 文件 0 错误）；pytest 收集期 3 个 anyio DeprecationWarning→error（test_chat_api/test_dashboard_api/test_dashboard_metrics，与 memory 基线记录的 chat_api 环境性失败同类）。以上均在未改动文件上复现。
+- C2 模块 pyright（project + tests 两配置）0 错误：见 pyright.txt。

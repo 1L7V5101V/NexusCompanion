@@ -1,0 +1,5 @@
+  d:\.Projects\NexusCompanion-c2\session\store.py:1250:17 - warning: Result of call expression is of type "Cursor" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+37 errors, 4747 warnings, 0 informations
+=== tests config ===
+  d:\.Projects\NexusCompanion-c2\tests\turns\test_orchestrator.py:142:42 - warning: Type of parameter "_key" is unknown (reportUnknownLambdaType)
+31 errors, 5707 warnings, 0 informations

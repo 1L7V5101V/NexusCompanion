@@ -7,7 +7,8 @@
 - **所属阶段**：主要里程碑 = P0.5；P-1 产出事务边界 design；P1 公网 durable source of truth 收口
 - **§5.9 引用**：§5.9.6（durable state 与 restart recovery）、§5.9.9（inbox/turn/tool/work/outbox/delivery 实体）、§5.9.11（ingress/canonical message/outbox/delivery transaction）、§10 DECIDED（Ingress/outbox/delivery）
 - **§6 出口条件引用**：P0.5 出口「durable inbox/acceptance + final/outbox + delivery ack 状态机」「模型生成完成与 channel sent/failed 语义分离」；P1 出口（公网 durable source of truth）
-- **状态**：planned
+- **状态**：verified
+  - 2026-09-06：完成并置 `verified`（§8：commit `c2d40770`/`4946c9df` + 可复现证据）。OpenSpec change `2026-09-06-c2-durable-control-plane`（19/19 任务完成，已归档至 `openspec/changes/archive/`）；交付设计冻结 ADR-1..8、Alembic migration `f3c8a9d2e7b4`（七表，revises `c4d8f2a6e9b3`）、三事务边界仓储（`IngressRepository`/`TurnControlRepository`/`DeliveryRepository`）、`OutboundDeliveryWorker`（lease/heartbeat/退避/dead_letter/redrive）、幂等双键契约 fixture、50 项测试；证据齐 `openspec/evidence/c2-durable-control-plane/`（migration/事务原子性/幂等/状态机/重启重放/grep 无 SQLite fallback/rollback drill 13 项 PASS）。
 
 ## 目标
 
@@ -29,14 +30,14 @@
 
 ## 验收标准
 
-- [ ] 入站接受事务原子性：inbox + dedupe + canonical user message + queued turn/work 同提交/同回滚 — 验证：事务回滚测试断言无半写入
-- [ ] 执行完成事务原子性：final assistant message + turn terminal + outbox intent 同提交 — 验证：事务测试
-- [ ] delivery 状态机 `pending/attempting/sent/failed/dead_letter` + attempt + provider receipt — 验证：状态流转测试覆盖全路径
-- [ ] `sent` 仅由 channel/provider ack 或明确成功结果推进 — 验证：无 ack 不进 sent 的负向测试
-- [ ] 重启后只重试未确认的 intent，不重新生成 assistant final message — 验证：重启重放测试断言无重复 final
-- [ ] 重复注入测试：同 `client_message_id`（WebChat）/ 同 source identity + source message id（Telegram）不产生第二条 — 验证：幂等测试双键覆盖
-- [ ] 「模型完成 ≠ 已送达」可观测：delivery worker 独立记录与 final message 分离；用户可见 delivery failure 可从 canonical final message 补拉或管理员重投 — 验证：指标/日志分离断言 + dead-letter 重投测试
-- [ ] 本 task 不触碰 canonical identity 映射表（C1）与 admission 调度策略（C3） — 验证：PR diff 范围检查
+- [x] 入站接受事务原子性：inbox + dedupe + canonical user message + queued turn/work 同提交/同回滚 — 验证：事务回滚测试断言无半写入
+- [x] 执行完成事务原子性：final assistant message + turn terminal + outbox intent 同提交 — 验证：事务测试
+- [x] delivery 状态机 `pending/attempting/sent/failed/dead_letter` + attempt + provider receipt — 验证：状态流转测试覆盖全路径
+- [x] `sent` 仅由 channel/provider ack 或明确成功结果推进 — 验证：无 ack 不进 sent 的负向测试
+- [x] 重启后只重试未确认的 intent，不重新生成 assistant final message — 验证：重启重放测试断言无重复 final
+- [x] 重复注入测试：同 `client_message_id`（WebChat）/ 同 source identity + source message id（Telegram）不产生第二条 — 验证：幂等测试双键覆盖
+- [x] 「模型完成 ≠ 已送达」可观测：delivery worker 独立记录与 final message 分离；用户可见 delivery failure 可从 canonical final message 补拉或管理员重投 — 验证：指标/日志分离断言 + dead-letter 重投测试
+- [x] 本 task 不触碰 canonical identity 映射表（C1）与 admission 调度策略（C3） — 验证：PR diff 范围检查
 
 > 判定「真正完成」而非「执行过」：每条均需可复现测试证据（`openspec/evidence/` 脚本 + 原始输出），特别是「重启重放不重复」「无 ack 不进 sent」两条负向语义。
 
