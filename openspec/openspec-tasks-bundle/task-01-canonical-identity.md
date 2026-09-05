@@ -2,6 +2,8 @@
 
 > 编号对应 PILOT_ROADMAP §5.9.10 第 1 项。状态标记复用 §8：`planned / in_progress / verified / blocked / deferred`。
 
+> **注记（2026-09-05，account→N tenant 扩展）**：C1 模型已扩展为一个账号可拥有多个 agent（每个 agent = 一个 tenant = 一个 canonical conversation，各自独立记忆/persona 域），表结构方案甲「会话即 agent」：`test_accounts` 去掉内嵌 `tenant_id`，tenant 挂到 `canonical_conversations` 行。此扩展作为正式 openspec change `2026-09-05-c1-account-multi-tenant` 落地（本任务 follow-up，不改本任务编号），已归档至 `openspec/changes/archive/`；主 spec `openspec/specs/canonical-identity/spec.md` 与 `PILOT_ROADMAP` 相应行的 1:1 措辞已随归档同步为 account→N（新增 Requirement「规范身份链与账号多租户」）。本页下方正文仍按原 C1 的 1 test_account : 1 tenant 描述当时的落地范围，以注记 + 归档 change 为准。状态仍 `verified`。
+
 ## 元数据
 
 - **所属阶段**：主要里程碑 = P0.5；P-1 产出 design/ADR，P0 落 PG schema 基础，P0.5 收尾 canonical stream + sequence

@@ -43,7 +43,7 @@ async def test_concurrent_sequence_allocation(c1_reset, c1_factory) -> None:
     """多并发插入下 (conversation_id, sequence) 唯一、连续、0-based、跨会话独立。"""
     c1_reset()
     identities, messages = _repos(c1_factory)
-    conv_b = await identities.create_account_with_conversation(
+    conv_b = await identities.provision_account_with_agent(
         f"seq_b_{uuid.uuid4().hex[:8]}", status="active"
     )
     conv_b_id = conv_b["conversation"]["id"]

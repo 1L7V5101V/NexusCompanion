@@ -15,7 +15,6 @@ pytestmark = pytest.mark.postgres
 
 EXPECTED_CONSTRAINTS = {
     "test_accounts": {
-        "uq_test_accounts_tenant_id",
         "ck_test_accounts_status",
     },
     "canonical_conversations": {
@@ -70,13 +69,14 @@ def test_upgrade_head_creates_all_entities(c1_pg_url: str) -> None:
         # 空库基线：canonical stream 无历史（§5.9.2 从空历史开始）。
         assert conn.execute("SELECT count(*) FROM canonical_messages").fetchone()[0] == 0
 
-        # dev seed 存在且计数器为 0（下一序号即 0 → 0-based）。
+        # dev seed：账号行自身不带 tenant_id（account→N 扩展，tenant 挂在会话行上）。
         # psycopg3 会把 UUID 列解码为 uuid.UUID 对象。
         account = conn.execute(
-            "SELECT tenant_id, status, display_name FROM test_accounts WHERE id = %s",
+            "SELECT status, display_name FROM test_accounts WHERE id = %s",
             (DEV_ACCOUNT_ID,),
         ).fetchone()
-        assert account == (DEV_TENANT_ID, "active", "Pilot Dev Account")
+        assert account == ("active", "Pilot Dev Account")
+        # 会话 seed 存在且计数器为 0（下一序号即 0 → 0-based）。
         conversation = conn.execute(
             "SELECT tenant_id, account_id, status, next_sequence FROM canonical_conversations "
             "WHERE id = %s",
@@ -90,7 +90,7 @@ def test_upgrade_head_creates_all_entities(c1_pg_url: str) -> None:
 
 
 def test_unique_constraints_match_frozen_semantics(c1_pg_url: str) -> None:
-    """§5.9.9 三条 C1 唯一约束逐一对照（tenant 两侧 1:1 + (conversation, sequence) 唯一）。"""
+    """§5.9.9 唯一约束：tenant 全局唯一（会话表，账号不持 tenant）+ (conversation, sequence) 唯一。"""
     with psycopg.connect(c1_pg_url) as conn:
         uniques = conn.execute(
             "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) "
@@ -98,8 +98,8 @@ def test_unique_constraints_match_frozen_semantics(c1_pg_url: str) -> None:
             "AND conname LIKE 'uq_%'"
         ).fetchall()
         by_name = {name: (table, definition) for table, name, definition in uniques}
-        assert "uq_test_accounts_tenant_id" in by_name
-        assert "tenant_id" in by_name["uq_test_accounts_tenant_id"][1]
+        # account→N 扩展移除了账号表的 tenant_id 唯一约束；唯一性收敛到会话表。
+        assert "uq_test_accounts_tenant_id" not in by_name
         assert "uq_canonical_conversations_tenant_id" in by_name
         assert "tenant_id" in by_name["uq_canonical_conversations_tenant_id"][1]
         assert "uq_canonical_messages_conversation_sequence" in by_name
@@ -107,8 +107,13 @@ def test_unique_constraints_match_frozen_semantics(c1_pg_url: str) -> None:
         assert "conversation_id" in definition and "sequence" in definition
 
 
-def test_downgrade_then_upgrade_cycle(c1_alembic_cfg) -> None:
-    """C1 未 cutover，downgrade 删表安全（§5.9.9）；重放 upgrade 后表与 seed 恢复。"""
+def test_downgrade_then_upgrade_cycle(c1_alembic_cfg, c1_reset) -> None:
+    """C1 未 cutover，downgrade 删表安全（§5.9.9）；重放 upgrade 后表与 seed 恢复。
+
+    先 c1_reset 收敛到 dev 单账号，保证 account→N migration 的 downgrade 守卫
+    （每账号恰好一条会话才能重建 1:1 账号↔tenant）通过。
+    """
+    c1_reset()
     from scripts.migrate.alembic_util import downgrade_to, upgrade_head
 
     downgrade_to(c1_alembic_cfg, "b6e9d2c4a8f1")
@@ -128,7 +133,7 @@ def test_downgrade_then_upgrade_cycle(c1_alembic_cfg) -> None:
     with psycopg.connect(url.replace("postgresql+psycopg://", "postgresql://")) as conn:
         assert (
             conn.execute(
-                "SELECT count(*) FROM test_accounts WHERE tenant_id = 'dev'"
+                "SELECT count(*) FROM canonical_conversations WHERE tenant_id = 'dev'"
             ).fetchone()[0]
             == 1
         )

@@ -1,0 +1,13 @@
+# pyright（project + tests 两配置，回归）
+# 日期: 2026-09-05
+# 结论: project 36 errors / tests 30 errors 全部为既有基线（本次新增文件 0 error）
+# 触碰文件 = bootstrap/db/models/canonical.py、canonical_repo.py、bootstrap/identity.py、
+#            alembic e2b4d6f8a0c2 + c4d8f2a6e9b3、tests/canonical_identity/*、契约测试
+
+== pyright --level error（pyrightconfig.json，project）
+   触碰文件内 error: (no matches)
+   汇总: 36 errors, 0 warnings, 0 informations
+
+== pyright --project pyrightconfig.tests.json（tests）
+   tests/canonical_identity/* + test_canonical_identity_contract.py 内 error 级: (no matches)
+   汇总: 30 errors, 5368 warnings, 0 informations

@@ -1,13 +1,14 @@
-"""Canonical identity / message repository（C1）。
+"""Canonical identity / message repository（C1 + account→N tenant 扩展）。
 
-数据边界见 openspec/changes/2026-09-05-c1-canonical-identity/：
-`test_accounts` / `canonical_conversations` / `canonical_messages` 三表的最小
-读写 seam。sequence 分配冻结语义（PILOT_ROADMAP §5.9.2）：per-conversation
-0-based BIGINT，取号与写消息在**同一个 PostgreSQL 事务**内完成——
-`UPDATE canonical_conversations SET next_sequence = next_sequence + 1 ...
-RETURNING next_sequence - 1` 的行锁串行化同会话并发，禁止「应用内读号加一
-再单独提交」。本模块没有任何旧单体存储回退路径（§10 DECIDED：不 fallback、
-不双写、不反向同步）。
+数据边界见 openspec/changes/2026-09-05-c1-account-multi-tenant/：
+`test_accounts`（登录主体，自身不带 tenant）/ `canonical_conversations`（每一行即
+一个 agent / tenant 资源域：tenant_id 全局唯一、account_id 归属某账号，账号可
+拥有多行）/ `canonical_messages`。sequence 分配冻结语义（PILOT_ROADMAP
+§5.9.2）：per-conversation 0-based BIGINT，取号与写消息在**同一个 PostgreSQL
+事务**内完成——`UPDATE canonical_conversations SET next_sequence =
+next_sequence + 1 ... RETURNING next_sequence - 1` 的行锁串行化同会话并发，
+禁止「应用内读号加一再单独提交」。本模块没有任何旧单体存储回退路径
+（§10 DECIDED：不 fallback、不双写、不反向同步）。
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ __all__ = [
     "CanonicalConversationNotFoundError",
     "CanonicalIdentityRepository",
     "CanonicalMessageRepository",
+    "TenantAlreadyBoundError",
 ]
 
 
@@ -36,56 +38,72 @@ class CanonicalConversationNotFoundError(LookupError):
     """目标规范会话不存在或 tenant 不匹配（fail-closed：调用方必须拒绝，不落默认值）。"""
 
 
+class TenantAlreadyBoundError(LookupError):
+    """tenant 已绑定到其它账号：cross-account 占用 fail-closed，拒绝改写既有行。"""
+
+
 def _new_uuid() -> uuid.UUID:
     return uuid.uuid4()
 
 
 class CanonicalIdentityRepository:
-    """账号 / 规范会话的最小读写 seam（provisioning 与 resolver 共用）。"""
+    """账号 / 规范会话（agent）的最小读写 seam（provisioning 与 resolver 共用）。"""
 
     def __init__(self, session_factory: async_sessionmaker):
         self._sf = session_factory
 
-    async def create_account_with_conversation(
+    async def create_account(
         self,
-        tenant_id: str,
         *,
         account_id: uuid.UUID | str | None = None,
         display_name: str = "",
         status: str = "provisioning",
-        conversation_id: uuid.UUID | str | None = None,
     ) -> dict:
-        """单事务幂等创建账号 + 其唯一规范会话。
+        """幂等创建账号（按账号 id；DO NOTHING 后回查）。
 
-        tenant 已存在时不改写现有行（DO NOTHING），返回当前持久化状态，
-        因此可安全用于 provisioning retry（§5.9.13：retry 不生成第二个
-        tenant/conversation）。
+        provisioning retry 用同一外部账号 id 调用时返回现有行，不产生第二个账号。
         """
         acc_id = _coerce_uuid(account_id) or _new_uuid()
-        conv_id = _coerce_uuid(conversation_id) or _new_uuid()
         async with self._sf() as sess, sess.begin():
             await sess.execute(
                 _insert(TestAccountModel)
-                .values(
-                    id=acc_id,
-                    tenant_id=tenant_id,
-                    status=status,
-                    display_name=display_name,
-                )
+                .values(id=acc_id, status=status, display_name=display_name)
                 .on_conflict_do_nothing()
             )
-            account = (
-                await sess.execute(
-                    select(TestAccountModel).where(
-                        TestAccountModel.tenant_id == tenant_id
-                    )
+            account = await sess.get(TestAccountModel, acc_id)
+            if account is None:  # 仅当并发删除等外力场景，正常流程不可达。
+                raise CanonicalConversationNotFoundError(
+                    f"account 创建失败: account_id={acc_id!r}"
                 )
-            ).scalar_one()
-            acc_id = account.id
+            return _account_to_dict(account)
+
+    async def create_agent(
+        self,
+        account_id: uuid.UUID | str,
+        tenant_id: str,
+        *,
+        conversation_id: uuid.UUID | str | None = None,
+        status: str = "active",
+    ) -> dict:
+        """为账号建一个 agent（= 一条 canonical conversation，tenant 全局唯一）。
+
+        按 tenant 幂等：同账号 retry 返回现有会话（不产生第二个 agent）；
+        tenant 已属**另一个**账号时抛 :class:`TenantAlreadyBoundError`（跨账号
+        占用 fail-closed）。账号不存在时 FK 拒绝（IntegrityError 上抛）。
+        返回该 agent 会话 dict。
+        """
+        acc_id = _coerce_uuid(account_id)
+        if acc_id is None:
+            raise ValueError("create_agent 需要有效 account_id")
+        conv_id = _coerce_uuid(conversation_id) or _new_uuid()
+        async with self._sf() as sess, sess.begin():
             await sess.execute(
                 _insert(CanonicalConversationModel)
                 .values(
-                    id=conv_id, tenant_id=tenant_id, account_id=acc_id, status="active"
+                    id=conv_id,
+                    tenant_id=tenant_id,
+                    account_id=acc_id,
+                    status=status,
                 )
                 .on_conflict_do_nothing()
             )
@@ -95,22 +113,74 @@ class CanonicalIdentityRepository:
                         CanonicalConversationModel.tenant_id == tenant_id
                     )
                 )
-            ).scalar_one()
+            ).scalar_one_or_none()
+            if conversation is None:  # 正常流程不可达：插入或既有两者必有其一。
+                raise CanonicalConversationNotFoundError(
+                    f"canonical conversation 不存在: tenant_id={tenant_id!r}"
+                )
+            if conversation.account_id != acc_id:
+                raise TenantAlreadyBoundError(
+                    f"tenant {tenant_id!r} 已绑定到其它账号"
+                )
+            return _conversation_to_dict(conversation)
+
+    async def provision_account_with_agent(
+        self,
+        tenant_id: str,
+        *,
+        account_id: uuid.UUID | str | None = None,
+        display_name: str = "",
+        status: str = "provisioning",
+        conversation_id: uuid.UUID | str | None = None,
+    ) -> dict:
+        """单事务 = 创建账号 + 其首个 agent（会话），provisioning retry 安全。
+
+        tenant 已存在时不改写（DO NOTHING）；同 tenant 再次 provision 且属同一
+        账号时返回现有状态，属其它账号时抛 :class:`TenantAlreadyBoundError` 并整体
+        回滚（不产生孤儿账号）。返回 ``{"account": ..., "conversation": ...}``。
+        """
+        acc_id = _coerce_uuid(account_id) or _new_uuid()
+        conv_id = _coerce_uuid(conversation_id) or _new_uuid()
+        async with self._sf() as sess, sess.begin():
+            await sess.execute(
+                _insert(TestAccountModel)
+                .values(id=acc_id, status=status, display_name=display_name)
+                .on_conflict_do_nothing()
+            )
+            account = await sess.get(TestAccountModel, acc_id)
+            if account is None:  # 仅当并发删除等外力场景，正常流程不可达。
+                raise CanonicalConversationNotFoundError(
+                    f"account 创建失败: account_id={acc_id!r}"
+                )
+            await sess.execute(
+                _insert(CanonicalConversationModel)
+                .values(
+                    id=conv_id,
+                    tenant_id=tenant_id,
+                    account_id=acc_id,
+                    status="active",
+                )
+                .on_conflict_do_nothing()
+            )
+            conversation = (
+                await sess.execute(
+                    select(CanonicalConversationModel).where(
+                        CanonicalConversationModel.tenant_id == tenant_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if conversation is None:  # 正常流程不可达：插入或既有两者必有其一。
+                raise CanonicalConversationNotFoundError(
+                    f"canonical conversation 不存在: tenant_id={tenant_id!r}"
+                )
+            if conversation.account_id != acc_id:
+                raise TenantAlreadyBoundError(
+                    f"tenant {tenant_id!r} 已绑定到其它账号"
+                )
             return {
                 "account": _account_to_dict(account),
                 "conversation": _conversation_to_dict(conversation),
             }
-
-    async def get_account_by_tenant(self, tenant_id: str) -> dict | None:
-        async with self._sf() as sess:
-            row = (
-                await sess.execute(
-                    select(TestAccountModel).where(
-                        TestAccountModel.tenant_id == tenant_id
-                    )
-                )
-            ).scalar_one_or_none()
-            return _account_to_dict(row) if row else None
 
     async def get_account(self, account_id: uuid.UUID | str) -> dict | None:
         async with self._sf() as sess:
@@ -134,6 +204,29 @@ class CanonicalIdentityRepository:
                 CanonicalConversationModel, _coerce_uuid(conversation_id)
             )
             return _conversation_to_dict(row) if row else None
+
+    async def list_conversations_by_account(
+        self, account_id: uuid.UUID | str
+    ) -> list[dict]:
+        """账号拥有的 agent 会话（tenant 资源域）列表，created_at 升序（确定性枚举）。
+
+        账号可能拥有 0..N 个 agent；空列表是合法状态（账号尚无 agent），不是错误。
+        """
+        acc_id = _coerce_uuid(account_id)
+        if acc_id is None:
+            return []
+        async with self._sf() as sess:
+            rows = (
+                await sess.execute(
+                    select(CanonicalConversationModel)
+                    .where(CanonicalConversationModel.account_id == acc_id)
+                    .order_by(
+                        CanonicalConversationModel.created_at.asc(),
+                        CanonicalConversationModel.id.asc(),
+                    )
+                )
+            ).scalars().all()
+            return [_conversation_to_dict(r) for r in rows]
 
 
 class CanonicalMessageRepository:
@@ -279,7 +372,6 @@ def _coerce_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
 def _account_to_dict(row: TestAccountModel) -> dict:
     return {
         "id": str(row.id),
-        "tenant_id": row.tenant_id,
         "status": row.status,
         "display_name": row.display_name,
         "created_at": row.created_at.isoformat() if row.created_at else "",

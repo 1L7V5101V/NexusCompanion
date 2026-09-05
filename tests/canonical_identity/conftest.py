@@ -102,9 +102,9 @@ def c1_reset(c1_pg_url) -> Callable[[], None]:
             "TRUNCATE canonical_messages, canonical_conversations, test_accounts CASCADE"
         )
         conn.execute(
-            "INSERT INTO test_accounts (id, tenant_id, status, display_name) "
-            "VALUES (%s, %s, 'active', 'Pilot Dev Account')",
-            (DEV_ACCOUNT_ID, DEV_TENANT_ID),
+            "INSERT INTO test_accounts (id, status, display_name) "
+            "VALUES (%s, 'active', 'Pilot Dev Account')",
+            (DEV_ACCOUNT_ID,),
         )
         conn.execute(
             "INSERT INTO canonical_conversations (id, tenant_id, account_id, status) "

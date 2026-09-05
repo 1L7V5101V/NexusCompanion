@@ -1,9 +1,11 @@
-"""Canonical identity 模型（C1）：account → tenant → canonical conversation。
+"""Canonical identity 模型（C1 + account→N tenant 扩展）。
 
 约束命名冻结于 openspec/changes/2026-09-05-c1-canonical-identity/design.md ADR-7；
-语义门禁为 PILOT_ROADMAP §5.9.2 / §5.9.9：一个 test_account 对应一个 tenant，
-一个 tenant 对应一个 canonical_conversation，canonical message 在
-(conversation_id, sequence) 唯一且 sequence 为 per-conversation 0-based BIGINT。
+account→N tenant 语义随 openspec/changes/2026-09-05-c1-account-multi-tenant/ 落地
+（主 spec 同步前，C1 的 1:1 措辞以已验证 C1 为准）：账号（登录主体）可拥有多个
+tenant，每个 tenant 对应恰好一个 canonical_conversation（即一个 agent/资源域），
+tenant_id 在会话表上全局唯一。canonical message 在 (conversation_id, sequence)
+唯一且 sequence 为 per-conversation 0-based BIGINT。
 本模块不承担旧单体 `channel:chat_id` 数据的导入或映射（§10 DECIDED）。
 """
 
@@ -40,11 +42,15 @@ MESSAGE_ROLES = ("user", "assistant", "system", "tool")
 
 
 class TestAccountModel(Base):
-    """受邀测试账号（登录主体）。auth token/session 表归 C5，不在本表。"""
+    """受邀测试账号（登录主体）。auth token/session 表归 C5，不在本表。
+
+    账号自身不带 tenant_id：agent/资源域是账号名下的 canonical_conversations
+    行（一账号可拥有多 tenant，见本文件头注记）。重建 1:1 账号↔tenant 的
+    ``uq_test_accounts_tenant_id`` 已随 account→N 扩展移除。
+    """
 
     __tablename__ = "test_accounts"
     __table_args__ = (
-        UniqueConstraint("tenant_id", name="uq_test_accounts_tenant_id"),
         CheckConstraint(
             "status IN ('provisioning', 'active', 'suspended', 'revoked')",
             name="ck_test_accounts_status",
@@ -54,8 +60,6 @@ class TestAccountModel(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")
     )
-    # 资源边界：账号与 tenant 严格 1:1（§5.9.2）。
-    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="provisioning"
     )
@@ -72,7 +76,12 @@ class TestAccountModel(Base):
 
 
 class CanonicalConversationModel(Base):
-    """规范会话：每个 tenant 恰有一个；channel binding 只负责映射到它（C10）。"""
+    """规范会话：每一行即一个 agent（tenant 资源域），账号可拥有多行。
+
+    一个 tenant 对应恰好一个 canonical conversation（``tenant_id`` 全局唯一）；
+    一个账号可拥有多个 tenant（各自独立记忆/persona 的 agent，记忆仍 tenant 域内，
+    C9）。channel binding 只负责映射到它（C10）。
+    """
 
     __tablename__ = "canonical_conversations"
     __table_args__ = (

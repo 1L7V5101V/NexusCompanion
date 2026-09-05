@@ -1,0 +1,20 @@
+# 无 SQLite fallback / 双写路径 grep 证据（task 5.3）
+# 日期: 2026-09-05
+# 范围: canonical identity 实现模块 + C1/account→N 两条 alembic migration
+# 模式: sqlite|aiosqlite|sqlite3|default_tenant (大小写不敏感)
+
+== grep -in 'sqlite\|aiosqlite\|sqlite3\|default_tenant' bootstrap/db/models/canonical.py
+   (no matches)
+
+== grep -in 'sqlite\|aiosqlite\|sqlite3\|default_tenant' bootstrap/db/repository/canonical_repo.py
+   (no matches)
+
+== grep -in 'sqlite\|aiosqlite\|sqlite3\|default_tenant' bootstrap/identity.py
+   (no matches)
+
+== grep -in 'sqlite\|aiosqlite\|sqlite3\|default_tenant' alembic/versions/e2b4d6f8a0c2_c1_canonical_identity.py
+   (no matches)
+
+== grep -in 'sqlite\|aiosqlite\|sqlite3\|default_tenant' alembic/versions/c4d8f2a6e9b3_c1_account_n_tenants.py
+   (no matches)
+
