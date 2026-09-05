@@ -1,0 +1,68 @@
+{
+  "capability": "durable-control-plane",
+  "description": "C2 入站幂等双键契约：Telegram 侧 (source_channel, source_identity_id, source_message_id) 与 WebChat 侧 (account_id, client_message_id)。cases 按数组顺序执行（accept → duplicate → distinct 语义）；webchat 用例的 account_id 由测试以真实账号填充。供 C2 集成测试与 C4/C10 复用。",
+  "roadmap_reference": "PILOT_ROADMAP §5.9.9 / §5.9.11",
+  "inbound_idempotency_keys": {
+    "telegram": {
+      "fields": ["source_channel", "source_identity_id", "source_message_id"],
+      "cases": [
+        {
+          "name": "telegram_first_accept",
+          "key": {
+            "source_channel": "telegram",
+            "source_identity_id": "user-100",
+            "source_message_id": "tg-msg-9001"
+          },
+          "expect_duplicate": false
+        },
+        {
+          "name": "telegram_same_source_message_id_is_duplicate",
+          "key": {
+            "source_channel": "telegram",
+            "source_identity_id": "user-100",
+            "source_message_id": "tg-msg-9001"
+          },
+          "expect_duplicate": true
+        },
+        {
+          "name": "telegram_different_source_message_id_accepted",
+          "key": {
+            "source_channel": "telegram",
+            "source_identity_id": "user-100",
+            "source_message_id": "tg-msg-9002"
+          },
+          "expect_duplicate": false
+        },
+        {
+          "name": "telegram_same_message_id_different_identity_accepted",
+          "key": {
+            "source_channel": "telegram",
+            "source_identity_id": "user-200",
+            "source_message_id": "tg-msg-9001"
+          },
+          "expect_duplicate": false
+        }
+      ]
+    },
+    "webchat": {
+      "fields": ["account_id", "client_message_id"],
+      "cases": [
+        {
+          "name": "webchat_first_accept",
+          "key": { "client_message_id": "cm-7f3a" },
+          "expect_duplicate": false
+        },
+        {
+          "name": "webchat_same_client_message_id_is_duplicate",
+          "key": { "client_message_id": "cm-7f3a" },
+          "expect_duplicate": true
+        },
+        {
+          "name": "webchat_different_client_message_id_accepted",
+          "key": { "client_message_id": "cm-7f3b" },
+          "expect_duplicate": false
+        }
+      ]
+    }
+  }
+}
