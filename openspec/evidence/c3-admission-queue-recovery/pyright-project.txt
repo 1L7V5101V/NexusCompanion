@@ -1,0 +1,55 @@
+d:\1\wt-nexus-c3\agent\core\drift_turn.py
+  d:\1\wt-nexus-c3\agent\core\drift_turn.py:35:6 - error: Import "proactive_v2.context" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\drift_turn.py:36:6 - error: Import "proactive_v2.drift_state" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\drift_turn.py:37:6 - error: Import "proactive_v2.drift_tools" could not be resolved (reportMissingImports)
+d:\1\wt-nexus-c3\agent\core\proactive_turn.py
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:36:6 - error: Import "proactive_v2.context" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:39:6 - error: Import "proactive_v2.gateway" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:40:6 - error: Import "proactive_v2.modules_deliver" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:41:6 - error: Import "proactive_v2.modules_gate" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:42:6 - error: Import "proactive_v2.modules_judge" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:43:6 - error: Import "proactive_v2.modules_prompt" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:44:6 - error: Import "proactive_v2.modules_resolve" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\agent\core\proactive_turn.py:52:6 - error: Import "proactive_v2.tools" could not be resolved (reportMissingImports)
+d:\1\wt-nexus-c3\agent\mcp\registry.py
+  d:\1\wt-nexus-c3\agent\mcp\registry.py:247:21 - error: Argument of type "_McpPluginManagerAdapter" cannot be assigned to parameter "manager" of type "PluginManager" in function "__init__"
+    "_McpPluginManagerAdapter" is not assignable to "PluginManager" (reportArgumentType)
+d:\1\wt-nexus-c3\agent\model_runtime\transports\responses.py
+  d:\1\wt-nexus-c3\agent\model_runtime\transports\responses.py:178:16 - error: "ModelUsage" is not defined (reportUndefinedVariable)
+d:\1\wt-nexus-c3\agent\retrieval\default_pipeline.py
+  d:\1\wt-nexus-c3\agent\retrieval\default_pipeline.py:186:52 - error: "MemoryQuery" is not defined (reportUndefinedVariable)
+d:\1\wt-nexus-c3\agent\retrieval\sandbox.py
+  d:\1\wt-nexus-c3\agent\retrieval\sandbox.py:51:40 - error: "Awaitable" is not defined (reportUndefinedVariable)
+  d:\1\wt-nexus-c3\agent\retrieval\sandbox.py:128:60 - error: Argument of type "dict[str, list[ScoredItem] | None]" cannot be assigned to parameter "source_items" of type "dict[str, Sequence[ScoredItem]]" in function "fuse"
+    "dict[str, list[ScoredItem] | None]" is not assignable to "dict[str, Sequence[ScoredItem]]"
+      Type parameter "_VT@dict" is invariant, but "list[ScoredItem] | None" is not the same as "Sequence[ScoredItem]"
+      Consider switching from "dict" to "Mapping" which is covariant in the value type (reportArgumentType)
+d:\1\wt-nexus-c3\bootstrap\memory.py
+  d:\1\wt-nexus-c3\bootstrap\memory.py:111:24 - error: "MemoryEngine" is not defined (reportUndefinedVariable)
+  d:\1\wt-nexus-c3\bootstrap\memory.py:112:21 - error: "MemoryEngine" is not defined (reportUndefinedVariable)
+  d:\1\wt-nexus-c3\bootstrap\memory.py:167:24 - error: "MemoryEngine" is not defined (reportUndefinedVariable)
+  d:\1\wt-nexus-c3\bootstrap\memory.py:168:21 - error: "MemoryEngine" is not defined (reportUndefinedVariable)
+d:\1\wt-nexus-c3\bootstrap\setup_main.py
+  d:\1\wt-nexus-c3\bootstrap\setup_main.py:12:8 - error: Import "tomlkit" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\bootstrap\setup_main.py:47:9 - error: No parameter named "configure_vl" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\setup_main.py:48:9 - error: No parameter named "prompt_memory_window" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\setup_main.py:49:9 - error: No parameter named "reuse_codex_auth" (reportCallIssue)
+d:\1\wt-nexus-c3\bootstrap\tools.py
+  d:\1\wt-nexus-c3\bootstrap\tools.py:494:18 - error: Import "agent.tools.agent_restart" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:500:17 - error: No parameter named "preloadable" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:501:17 - error: No parameter named "requires_turn_search" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:686:23 - error: Type "TurnLogger" is not assignable to declared type "RoutingTurnLogger | None"
+    Type "TurnLogger" is not assignable to type "RoutingTurnLogger | None"
+      "TurnLogger" is not assignable to "RoutingTurnLogger"
+      "TurnLogger" is not assignable to "None" (reportAssignmentType)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:758:18 - error: Import "agent.tools.workspace_mcp" could not be resolved (reportMissingImports)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:769:17 - error: No parameter named "preloadable" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:770:17 - error: No parameter named "requires_turn_search" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:777:17 - error: No parameter named "preloadable" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:778:17 - error: No parameter named "requires_turn_search" (reportCallIssue)
+  d:\1\wt-nexus-c3\bootstrap\tools.py:847:12 - error: Type "RoutingTurnLogger" is not assignable to return type "TurnLogger"
+    "RoutingTurnLogger" is not assignable to "TurnLogger" (reportReturnType)
+d:\1\wt-nexus-c3\proactive_v2\mcp_sources.py
+  d:\1\wt-nexus-c3\proactive_v2\mcp_sources.py:48:13 - error: No parameter named "raise_errors" (reportCallIssue)
+  d:\1\wt-nexus-c3\proactive_v2\mcp_sources.py:49:13 - error: No parameter named "execution_timeout" (reportCallIssue)
+36 errors, 0 warnings, 0 informations
