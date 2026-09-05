@@ -1,0 +1,6 @@
+# 静态防回归：control plane 模块无 SQLite/默认租户回退（§10 DECIDED）
+$ grep -il 'sqlite\|DEFAULT_TENANT' bootstrap/db/models/control_plane.py bootstrap/db/repository/control_plane_repo.py bootstrap/delivery_worker.py
+no matches: 0 处命中（期望为空）
+
+# 旧单体 bus/session 导入检查
+no matches: 0 处命中（期望为空）

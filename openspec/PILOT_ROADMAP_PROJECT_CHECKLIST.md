@@ -69,7 +69,7 @@
   - [ ] **Auth/admin/browser security**（分离 Cookie、CSRF/Origin、timeout、401/403、原子兑换、`pilot-admin` bootstrap/rotate/revoke/disable/enable；recovery token 轮换默认保留有效 browser sessions，泄露时再显式 revoke） → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **WebSocket protocol contract**（hello、client_message_id、sequence、durable terminal、slow consumer） → outcome 见 [PILOT_ROADMAP §5.9.4](PILOT_ROADMAP.md)
   - [ ] **Admission 与 overload policy**（tenant lane；interactive 128 / per-tenant 16 / maintenance 64 / WS 256-soft 192；LLM/embedding/MCP/process 30/4/8/2；LLM 429 退避与指标） → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
-  - [ ] **PostgreSQL durable control plane 与 restart recovery**（turn/tool/work/outbound final、unknown/compensation） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
+  - [ ] **PostgreSQL durable control plane 与 restart recovery**（turn/tool/work/outbound final、unknown/compensation） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）；restart recovery 扫描/compensation 调度归 C3/P3 仍 `planned`
   - [ ] **ToolExecutionContext 三层注入边界与普通 tenant 首版工具白名单（精确 tool id）** → outcome 见 [PILOT_ROADMAP §5.9.7](PILOT_ROADMAP.md)
   - [ ] **Persona/Relationship 当前值语义**（Persona onboarding 后固定、RelationshipState 沿用单体原地更新、tenant 单写者、无产品级 revision/CAS、PITR 恢复与 debug 权限） → outcome 见 [PILOT_ROADMAP §5.9.8](PILOT_ROADMAP.md)
   - [ ] **数据模型、唯一约束和 DB rollout/rollback**（首次 Create → Verify → Enable，不导入 SQLite；后续 PostgreSQL schema evolution 才按 expand/backfill/cutover） → outcome 见 [PILOT_ROADMAP §5.9.9](PILOT_ROADMAP.md)
@@ -93,8 +93,8 @@
   - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；面向 P1 的协议 fixture 契约冻结仍待 OpenSpec change）
   - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py` 17 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
   - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)（当前仍为 `chat:local` session_key 存储，未迁移 canonical 模型）
-  - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)
-  - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)（`turn.failed` 帧已可用，但 delivery ack 状态机未实现）
+  - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
+  - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)（`turn.failed` 帧已可用；delivery ack 状态机已由 C2 落地：`sent` 仅由 ack 推进、独立 attempt/provider receipt/dead_letter/redrive）；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
   - [x] **dev-only 暴露门禁**（`[channels.chat] enabled=false` 默认关闭、绑定 127.0.0.1；P1 前不得公网 tenant-facing）
 - [ ] **P1 一次 Token 登录** — 一次性邀请 Token 兑换可撤销 HttpOnly 登录 Cookie；`planned`
   - [ ] **test_accounts / access_tokens / auth_sessions 数据模型与 digest 约束** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)

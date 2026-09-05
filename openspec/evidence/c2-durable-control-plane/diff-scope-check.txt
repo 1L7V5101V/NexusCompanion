@@ -1,0 +1,26 @@
+# C2 PR diff 范围检查（task 7.2）
+
+基线：main@632d3006（C1 终点）；分支 feature/c2-durable-control-plane（本记录时点 HEAD：4946c9df）
+
+```
+ alembic/env.py                                     |    9 +
+ .../f3c8a9d2e7b4_c2_durable_control_plane.py       |  223 ++++
+ bootstrap/db/models/control_plane.py               |  438 ++++++++
+ bootstrap/db/repository/control_plane_repo.py      | 1176 ++++++++++++++++++++
+ bootstrap/delivery_worker.py                       |  240 ++++
+ tests/control_plane/__init__.py                    |    0
+ tests/control_plane/conftest.py                    |  182 +++
+ tests/control_plane/test_accept_transaction.py     |  331 ++++++
+ tests/control_plane/test_completion_transaction.py |  241 ++++
+ tests/control_plane/test_delivery_state_machine.py |  361 ++++++
+ tests/control_plane/test_migration.py              |  251 +++++
+ tests/control_plane/test_restart_replay.py         |  246 ++++
+ tests/fixtures/control_plane_idempotency.json      |   68 ++
+ tests/test_control_plane_contract.py               |   84 ++
+ 14 files changed, 3850 insertions(+)
+```
+
+## 范围声明
+- 新增：bootstrap/db/models/control_plane.py、bootstrap/db/repository/control_plane_repo.py、bootstrap/delivery_worker.py、alembic/versions/f3c8a9d2e7b4_c2_durable_control_plane.py、tests/control_plane/（7 文件）、tests/test_control_plane_contract.py、tests/fixtures/control_plane_idempotency.json
+- 修改：alembic/env.py（仅追加 control_plane 七模型导入）
+- 未触碰（验收第 8 条边界）：canonical identity 表/resolver（C1）；admission/PassiveMessageWorker/MessageBus 行为（C3，bus/ 零改动）；web_chat_protocol/frontend（C4）；auth（C5）；tool audit 表（C7）；telegram binding（C10）；MessageBus.dispatch_outbound 单体行为未变

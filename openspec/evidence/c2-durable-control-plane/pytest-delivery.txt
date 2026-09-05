@@ -1,0 +1,3 @@
+FAILED tests/control_plane/test_delivery_state_machine.py::test_heartbeat_renews_and_detects_loss
+FAILED tests/control_plane/test_delivery_state_machine.py::test_lease_lost_cannot_record_sent
+7 failed, 4 passed in 15.81s

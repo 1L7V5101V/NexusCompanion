@@ -1,0 +1,1 @@
+PostgreSQL 17.5 on x86_64-windows, compiled by msvc-19.43.34808, 64-bit

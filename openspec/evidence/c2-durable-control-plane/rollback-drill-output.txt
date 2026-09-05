@@ -1,0 +1,20 @@
+== Create：空库 upgrade head ==
+  [PASS] Create：七表齐备 ['background_work_items', 'delivery_attempts', 'inbox_records', 'message_deduplication_keys', 'outbound_delivery_intents', 'tool_calls', 'turns']
+  [PASS] Create：seed=not_applicable，outbox 空
+== Verify：空基线 + 关键约束 ==
+  [PASS] Verify：部分唯一/claim 索引在位 ['ix_outbound_delivery_intents_claim', 'uq_message_dedup_keys_client', 'uq_message_dedup_keys_source', 'uq_outbound_delivery_intents_idempotency_key']
+== Enable：模拟入口开放（T1 + T2 + delivery ack 全链路） ==
+  [PASS] Enable：dedupe 键 ×1
+  [PASS] Enable：inbox ×1（accepted）
+  [PASS] Enable：turn ×1
+  [PASS] Enable：canonical message ×2（user+assistant final）
+  [PASS] Enable：outbox intent ×1
+  [PASS] Enable：attempt ×1（sent）
+  [PASS] Enable：intent 状态 = sent（ack 推进）实际 sent
+== rollback：关闭入口 + 停 worker，保留 PG 数据 ==
+  [PASS] rollback：行数与 Enable 时完全一致（数据保留）
+  [PASS] rollback：终态与凭证保留 ('sent', 1, True)
+  [PASS] rollback：test_accounts 数据保留（不反向同步任何旧库）
+
+共 13 项：13 PASS / 0 FAIL
+scratch DB nexus_c2drill 保留（数据保留语义），重跑将先 DROP 重建。
