@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "source": "PILOT_ROADMAP.md §7.1（Pilot 必须先采集的数据）",
+  "notes": "任务生命周期事件 schema 单一来源（C12 ADR-7）。后续 Cxx change 落地 work/turn/tool/delivery 记录点时按本 fixture 对齐其 §7.1 指标字段；修改必须同步契约测试 tests/observability_privacy/test_event_schema_contract.py。",
+  "lifecycle_event": {
+    "field_groups": {
+      "identity": ["work_id", "turn_id", "tool_call_id", "message_id", "tenant_id", "session_key"],
+      "classification": ["work_kind", "flow", "stage", "trigger", "tool_name", "channel"],
+      "version": ["snapshot_id", "code_version", "model"],
+      "lifecycle_time": ["enqueued_at", "started_at", "finished_at", "cancel_requested_at", "timeout_at"],
+      "lifecycle_result": ["status", "result", "error_type", "retryable", "attempt", "last_error"],
+      "side_effect_recovery": ["side_effect", "outcome_status", "compensation_status", "recovery_action"],
+      "resource": ["input_tokens", "output_tokens", "cache_hit_tokens", "provider", "db_latency_ms", "external_latency_ms"]
+    },
+    "enums": {
+      "work_kind": ["interactive", "maintenance"],
+      "flow": ["passive", "proactive", "drift", "consolidation", "optimizer"],
+      "status": ["completed", "interrupted", "failed", "cancelled"]
+    },
+    "derived_metrics": {
+      "queue_wait_ms": "started_at - enqueued_at",
+      "execution_ms": "finished_at - started_at",
+      "end_to_end_ms": "finished_at - enqueued_at",
+      "tool_cancel_to_terminal_ms": "tool terminal_at - cancel_requested_at",
+      "tool_timeout_to_terminal_ms": "tool terminal_at - timeout_at",
+      "ban_to_admission_reject_ms": "admission rejected_at - banned_at",
+      "ban_to_terminal_ms": "work terminal_at - banned_at",
+      "restart_to_recovered_ms": "recovered_at - restart_started_at"
+    },
+    "aggregation_dimensions": ["tenant_id", "work_kind", "flow", "stage", "channel", "tool_name", "model", "time_window"],
+    "forbidden_content_fields": [
+      "raw_provider_payload",
+      "full_prompt",
+      "message_content",
+      "tool_args",
+      "tool_result",
+      "attachment_content"
+    ],
+    "redaction_rule": "所有自由文本字段（如 last_error）入库前必须过 core/telemetry/redaction.redact_text"
+  },
+  "admin_access_audit_event": {
+    "required_fields": ["at", "principal", "action", "target_kind", "target_id", "reason"],
+    "optional_fields": ["tenant_id"],
+    "actions": ["view_content", "drill_down", "export", "enable_content_capture"],
+    "retention_category": "audit",
+    "content_policy": "事件不含被查看内容原文；reason/target_id 过 redaction 后入库"
+  }
+}
