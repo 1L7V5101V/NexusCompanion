@@ -1,0 +1,74 @@
+d:\.Projects\NexusCompanion-c12\core\backup\manifest.py
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:124:16 - warning: Type of "raw" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:124:33 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__new__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:130:9 - warning: Type of "restore_mode" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:130:24 - warning: Type of "get" is partially unknown
+    Type of "get" is "Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]" (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:133:9 - warning: Type of "independent" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:133:23 - warning: Type of "get" is partially unknown
+    Type of "get" is "Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]" (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:134:9 - warning: Type of "contains_secrets" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:134:28 - warning: Type of "get" is partially unknown
+    Type of "get" is "Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]" (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:135:9 - warning: Type of "notes" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:135:17 - warning: Type of "get" is partially unknown
+    Type of "get" is "Overload[(key: Unknown, /) -> (Unknown | None), (key: Unknown, default: Unknown, /) -> Unknown, (key: Unknown, default: _T@get, /) -> (Unknown | _T@get)]" (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:144:20 - warning: Argument type is unknown
+    Argument corresponds to parameter "id" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:145:22 - warning: Argument type is unknown
+    Argument corresponds to parameter "kind" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:146:22 - warning: Argument type is unknown
+    Argument corresponds to parameter "path" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:147:28 - warning: Argument type is unknown
+    Argument corresponds to parameter "encryption" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:148:26 - warning: Argument type is unknown
+    Argument corresponds to parameter "checksum" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:149:35 - warning: Argument type is unknown
+    Argument corresponds to parameter "consistency_point" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:150:27 - warning: Argument type is unknown
+    Argument corresponds to parameter "retention" in function "__init__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:159:35 - warning: Type of "item" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:168:23 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "restore_order" in function "__init__"
+    Argument type is "tuple[Unknown, ...]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\backup\manifest.py:168:29 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__new__"
+    Argument type is "list[Unknown]" (reportUnknownArgumentType)
+d:\.Projects\NexusCompanion-c12\core\telemetry\metrics_export.py
+  d:\.Projects\NexusCompanion-c12\core\telemetry\metrics_export.py:25:16 - warning: Return type, "dict[Unknown, Any]", is partially unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\metrics_export.py:25:38 - warning: Type of "k" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\metrics_export.py:25:41 - warning: Type of "v" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\metrics_export.py:27:35 - warning: Type of "v" is unknown (reportUnknownVariableType)
+d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:22:39 - warning: Import "Iterable" is not accessed (reportUnusedImport)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:149:5 - warning: Type of "hits" is partially unknown
+    Type of "hits" is "dict[Unknown, Unknown]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:219:9 - warning: Type of "items" is partially unknown
+    Type of "items" is "list[tuple[Unknown, Unknown]]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:219:22 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "ItemsView[Unknown, Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:221:17 - warning: Argument type is unknown
+    Argument corresponds to parameter "object" in function "__new__" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:222:17 - warning: Type of "k" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:222:20 - warning: Type of "v" is unknown (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:225:9 - warning: Type of "items" is partially unknown
+    Type of "items" is "list[Unknown]" (reportUnknownVariableType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:225:22 - warning: Argument type is partially unknown
+    Argument corresponds to parameter "iterable" in function "__init__"
+    Argument type is "list[Unknown] | tuple[Unknown, ...] | set[Unknown] | frozenset[Unknown]" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\redaction.py:228:17 - warning: Type of "v" is unknown (reportUnknownVariableType)
+d:\.Projects\NexusCompanion-c12\core\telemetry\retention.py
+  d:\.Projects\NexusCompanion-c12\core\telemetry\retention.py:78:5 - warning: Type of "errors" is partially unknown
+    Type of "errors" is "list[Unknown]" (reportUnknownVariableType)
+d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py
+  d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py:94:9 - warning: Result of call expression is of type "int" and is not used; assign to variable "_" if this is intentional (reportUnusedCallResult)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py:127:21 - warning: "_record" is protected and used outside of the class in which it is declared (reportPrivateUsage)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py:160:59 - warning: Type of "__name__" is unknown (reportUnknownMemberType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py:160:59 - warning: Argument type is unknown
+    Argument corresponds to parameter "detail" in function "finish" (reportUnknownArgumentType)
+  d:\.Projects\NexusCompanion-c12\core\telemetry\trace_store.py:160:68 - warning: Cannot access attribute "__name__" for class "object"
+    Attribute "__name__" is unknown (reportAttributeAccessIssue)
+0 errors, 40 warnings, 0 informations

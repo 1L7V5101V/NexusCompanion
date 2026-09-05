@@ -7,7 +7,7 @@
 - **所属阶段**：P-1 契约定义 → P0 基线 → P3 演练（贯穿，D5）
 - **§5.9 引用**：§5.9.17（observability 与 privacy 默认值）、§5.9.12（persistence ownership 与 backup manifest）、§7（验收指标与必采集数据）、§10 PROPOSED DEFAULT（日志与审计保留）、§10 DECIDED（Persistence ownership）
 - **§6 出口条件引用**：P0 出口「当前 persistence map、backup manifest、健康检查与基础指标」「默认日志执行 secret、PII 和本地路径脱敏」；P3 出口「从备份恢复演练」「总控制台聚合缓存命中率/Token 消耗/错误率/延迟/在线数/队列状态」
-- **状态**：planned
+- **状态**：in_progress（P-1 契约层已交付：change `c12-observability-backup`，2026-09-06，证据 `evidence/c12-observability-backup/`；§8 伴随落地条目与 P0/P3 出口项未完成，全项 `verified` 需等基线报告与恢复演练）
 
 ## 目标
 
