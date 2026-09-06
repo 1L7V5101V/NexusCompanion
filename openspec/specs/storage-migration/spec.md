@@ -115,12 +115,12 @@ S0/S1 SHALL 可回滚到 SQLite primary；S2 之后在没有 PostgreSQL → SQLi
 
 ### Requirement: turn control plane 数据归属定案
 
-进入 S2 前 SHALL 定案 turn control plane 持久化（turn 记录与查询日志）的归属：纳入 PostgreSQL 迁移，或显式保留 SQLite-only 并记录一致性、恢复与回滚策略；不得把「PostgreSQL 成为 primary」笼统解释为所有 session/turn 数据已迁移。
+turn control plane 持久化（turn 记录与查询日志，`turn_logs`）的归属已定案（ADR：`../../records/turn-audit-storage-ownership.md`）：纳入 PostgreSQL 侧，但**独立成 audit 库/schema（分库/分表）**，与 memory/session 主库隔离，不并入主库 schema；目标形态落地前允许 SQLite-only 过渡，过渡期 SHALL 记录一致性、备份/恢复与回滚策略；不得把「PostgreSQL 成为 primary」笼统解释为所有 session/turn 数据已迁移。
 
 #### Scenario: 切换记录包含归属声明
 
 - **WHEN** 系统进入 S2
-- **THEN** 切换记录明确声明 turn control plane 数据的归属与恢复策略
+- **THEN** 切换记录明确声明 turn 记录与查询日志的归属（独立 PG audit 库/schema；过渡期 SQLite-only 及其一致性/恢复策略）
 
 ### Requirement: PITR 恢复演练
 
