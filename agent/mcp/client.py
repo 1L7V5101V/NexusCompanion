@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from agent.admission.resources import ResourceKind
+from agent.admission.resources import gate as admission_gate
+
 logger = logging.getLogger(__name__)
 
 _RECV_TIMEOUT = 30.0
@@ -189,7 +192,20 @@ class McpClient:
         *,
         timeout: float | None = None,
     ) -> str:
-        """调用远端工具，返回结果字符串。"""
+        """调用远端工具，返回结果字符串。
+
+        C3 §5.9.5：全程持有 MCP 资源许可（``_call_lock`` 串行不变）。
+        """
+        async with admission_gate(ResourceKind.MCP):
+            return await self._call_admitted(tool_name, arguments, timeout=timeout)
+
+    async def _call_admitted(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout: float | None = None,
+    ) -> str:
         async with self._call_lock:
             call_id = self._new_id()
             await self._send(

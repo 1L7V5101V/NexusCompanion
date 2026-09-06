@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from agent.admission.queues import GLOBAL_MAINTENANCE_QUEUE
 from agent.llm_json import load_json_object_loose
 from agent.memory import MemoryStore
 from agent.prompting import is_context_frame
@@ -1028,6 +1029,9 @@ class MarkdownMemoryMaintenance:
         self._maintenance_queues: dict[str, deque[str]] = {}
         self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
         self._maintenance_locks: dict[str, asyncio.Lock] = {}
+        # C3 §10 DECIDED：global maintenance ready queue 初始上限 64（可注入调整）。
+        self._maintenance_global_limit = GLOBAL_MAINTENANCE_QUEUE
+        self._maintenance_deferred_count = 0
         if event_bus is not None:
             event_bus.on(TurnCommitted, self.on_turn_committed)
 
@@ -1043,6 +1047,20 @@ class MarkdownMemoryMaintenance:
     def _enqueue_maintenance(self, session_key: str) -> None:
         if self._get_session is None or self._save_session is None:
             return
+        # C3 §5.9.5：per-(tenant,kind) maintenance 意图合并（同类至多 1 个 pending，
+        # consolidation/refresh 均从 durable state 重算，重复意图无信息量）；
+        # 全局在途 maintenance 达上限时延后（不拒绝用户消息，下轮 turn 再触发）。
+        queue = self._maintenance_queues.get(session_key)
+        if queue is not None and len(queue) > 0:
+            return
+        if self._maintenance_inflight() >= self._maintenance_global_limit:
+            logger.info(
+                "global maintenance ready queue 满（%d），延后 maintenance: session=%s",
+                self._maintenance_global_limit,
+                session_key,
+            )
+            self._maintenance_deferred_count += 1
+            return
         queue = self._maintenance_queues.setdefault(session_key, deque())
         queue.append(session_key)
         if session_key in self._maintenance_tasks:
@@ -1053,6 +1071,13 @@ class MarkdownMemoryMaintenance:
         )
         self._maintenance_tasks[session_key] = task
         task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
+
+    def _maintenance_inflight(self) -> int:
+        """全局在途 maintenance：运行中任务 + 非空 pending 意图会话数。"""
+        pending_sessions = sum(
+            1 for queue in self._maintenance_queues.values() if queue
+        )
+        return len(self._maintenance_tasks) + pending_sessions
 
     async def _run_maintenance_queue(self, session_key: str) -> None:
         lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())

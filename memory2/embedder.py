@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from agent.admission.resources import ResourceKind
+from agent.admission.resources import gate as admission_gate
 from core.net.http import HttpRequester, RequestBudget, get_default_http_requester
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,14 @@ class Embedder:
         return results[0]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """分批 embed，每批 ≤ MAX_BATCH，批间 sleep 0.3s"""
+        """分批 embed，每批 ≤ MAX_BATCH，批间 sleep 0.3s。
+
+        C3 §5.9.5：全程持有 embedding 资源许可（embed() 委托本方法，单次取许可）。
+        """
+        async with admission_gate(ResourceKind.EMBEDDING):
+            return await self._embed_batch_admitted(texts)
+
+    async def _embed_batch_admitted(self, texts: list[str]) -> list[list[float]]:
         results: list[list[float]] = []
         truncated = [t[: self.MAX_TEXT_LEN] for t in texts]
 

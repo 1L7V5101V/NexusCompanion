@@ -1,0 +1,77 @@
+d:\1\wt-nexus-c3\tests\control_plane\conftest.py
+  d:\1\wt-nexus-c3\tests\control_plane\conftest.py:170:32 - error: Argument of type "str" cannot be assigned to parameter "query" of type "QueryNoTemplate" in function "execute"
+    Type "str" is not assignable to type "QueryNoTemplate"
+      "str" is not assignable to "LiteralString"
+      "str" is not assignable to "bytes"
+      "str" is not assignable to "SQL"
+      "str" is not assignable to "Composed" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_akasha_plugin.py
+  d:\1\wt-nexus-c3\tests\test_akasha_plugin.py:1134:19 - error: Argument of type "None" cannot be assigned to parameter "event_bus" of type "ScopedEventBus" in function "__init__"
+    "None" is not assignable to "ScopedEventBus" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_akasha_plugin.py:1145:19 - error: Argument of type "None" cannot be assigned to parameter "event_bus" of type "ScopedEventBus" in function "__init__"
+    "None" is not assignable to "ScopedEventBus" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_akasha_plugin.py:1220:19 - error: Argument of type "None" cannot be assigned to parameter "event_bus" of type "ScopedEventBus" in function "__init__"
+    "None" is not assignable to "ScopedEventBus" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_channel_host.py
+  d:\1\wt-nexus-c3\tests\test_channel_host.py:55:24 - error: Argument of type "(channel: Unknown) -> SimpleNamespace" cannot be assigned to parameter "ctx_factory" of type "(Channel) -> ChannelContext" in function "__init__"
+    Type "(channel: Unknown) -> SimpleNamespace" is not assignable to type "(Channel) -> ChannelContext"
+      Function return type "SimpleNamespace" is incompatible with type "ChannelContext"
+        "SimpleNamespace" is not assignable to "ChannelContext" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_channel_host.py:69:24 - error: Argument of type "(channel: Unknown) -> SimpleNamespace" cannot be assigned to parameter "ctx_factory" of type "(Channel) -> ChannelContext" in function "__init__"
+    Type "(channel: Unknown) -> SimpleNamespace" is not assignable to type "(Channel) -> ChannelContext"
+      Function return type "SimpleNamespace" is incompatible with type "ChannelContext"
+        "SimpleNamespace" is not assignable to "ChannelContext" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_provider_codex_protocol.py
+  d:\1\wt-nexus-c3\tests\test_provider_codex_protocol.py:611:24 - error: Argument of type "Cfg" cannot be assigned to parameter "config" of type "Config" in function "build_providers"
+    "Cfg" is not assignable to "Config" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_provider_codex_protocol.py:627:42 - error: Argument of type "Cfg" cannot be assigned to parameter "config" of type "Config" in function "_build_proactive_provider"
+    "Cfg" is not assignable to "Config" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_provider_codex_protocol.py:627:49 - error: Argument of type "object" cannot be assigned to parameter "provider" of type "LLMProvider" in function "_build_proactive_provider"
+    "object" is not assignable to "LLMProvider" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_recall_inspector_plugin.py
+  d:\1\wt-nexus-c3\tests\test_recall_inspector_plugin.py:24:19 - error: Argument of type "None" cannot be assigned to parameter "event_bus" of type "ScopedEventBus" in function "__init__"
+    "None" is not assignable to "ScopedEventBus" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_recall_inspector_plugin.py:90:19 - error: Argument of type "None" cannot be assigned to parameter "event_bus" of type "ScopedEventBus" in function "__init__"
+    "None" is not assignable to "ScopedEventBus" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_recall_memory_tool.py
+  d:\1\wt-nexus-c3\tests\test_recall_memory_tool.py:1:4 - error: Pyright comments used to control file-level settings must appear on their own line
+    Use "# pyright: ignore[<diagnostic rules>]" to suppress diagnostics for a single line
+d:\1\wt-nexus-c3\tests\test_remind_tool.py
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:127:16 - error: Operator "in" not supported for types "Literal['组会']" and "str | None"
+    Operator "in" not supported for types "Literal['组会']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:128:16 - error: Operator "in" not supported for types "Literal['提醒']" and "str | None"
+    Operator "in" not supported for types "Literal['提醒']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:146:16 - error: Operator "in" not supported for types "Literal['4211']" and "str | None"
+    Operator "in" not supported for types "Literal['4211']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:147:16 - error: Operator "in" not supported for types "Literal['座谈会']" and "str | None"
+    Operator "in" not supported for types "Literal['座谈会']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:185:16 - error: Operator "in" not supported for types "Literal['出门提醒']" and "str | None"
+    Operator "in" not supported for types "Literal['出门提醒']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:187:20 - error: Operator "in" not supported for types "Literal['该出发了']" and "str | None"
+    Operator "in" not supported for types "Literal['该出发了']" and "None" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_remind_tool.py:189:20 - error: Operator "in" not supported for types "Literal['分钟出发']" and "str | None"
+    Operator "in" not supported for types "Literal['分钟出发']" and "None" (reportOperatorIssue)
+d:\1\wt-nexus-c3\tests\test_storage_factory.py
+  d:\1\wt-nexus-c3\tests\test_storage_factory.py:90:5 - error: No overloads for "execute" match the provided arguments (reportCallIssue)
+  d:\1\wt-nexus-c3\tests\test_storage_factory.py:90:19 - error: Argument of type "str" cannot be assigned to parameter "query" of type "Template" in function "execute"
+    "str" is not assignable to "Template" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_storage_factory.py:98:9 - error: No overloads for "execute" match the provided arguments (reportCallIssue)
+  d:\1\wt-nexus-c3\tests\test_storage_factory.py:98:23 - error: Argument of type "str" cannot be assigned to parameter "query" of type "Template" in function "execute"
+    "str" is not assignable to "Template" (reportArgumentType)
+d:\1\wt-nexus-c3\tests\test_storage_interfaces.py
+  d:\1\wt-nexus-c3\tests\test_storage_interfaces.py:20:26 - error: Operator "/" not supported for types "object" and "Literal['mem.db']" (reportOperatorIssue)
+  d:\1\wt-nexus-c3\tests\test_storage_interfaces.py:28:26 - error: Operator "/" not supported for types "object" and "Literal['sessions.db']" (reportOperatorIssue)
+d:\1\wt-nexus-c3\tests\test_web_chat_channel.py
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:53:29 - error: Argument of type "Any | _SessionManagerStub" cannot be assigned to parameter "session_manager" of type "SessionManager" in function "__init__"
+    Type "Any | _SessionManagerStub" is not assignable to type "SessionManager"
+      "_SessionManagerStub" is not assignable to "SessionManager" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:95:24 - error: Argument of type "_FakeWebSocket" cannot be assigned to parameter "websocket" of type "WebSocket[State]" in function "__init__"
+    "_FakeWebSocket" is not assignable to "WebSocket[State]" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:96:5 - error: Argument of type "_FakeWebSocket" cannot be assigned to parameter "key" of type "WebSocket[State]" in function "__setitem__"
+    "_FakeWebSocket" is not assignable to "WebSocket[State]" (reportArgumentType)
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:149:31 - error: Object of type "None" cannot be used as iterable value (reportOptionalIterable)
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:329:41 - error: Function with declared return type "str" must return value on all code paths
+    "None" is not assignable to "str" (reportReturnType)
+  d:\1\wt-nexus-c3\tests\test_web_chat_channel.py:334:57 - error: Argument of type "_BlockingWebSocket" cannot be assigned to parameter "websocket" of type "WebSocket[State]" in function "handle_websocket"
+    "_BlockingWebSocket" is not assignable to "WebSocket[State]" (reportArgumentType)
+31 errors, 0 warnings, 0 informations

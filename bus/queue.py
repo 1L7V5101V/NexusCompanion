@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TypeVar
 
+from agent.admission.queues import GLOBAL_INTERACTIVE_QUEUE, AdmissionOverloadError
 from bus.events import InboundItem, OutboundMessage
 
 logger = logging.getLogger(__name__)
@@ -122,8 +123,15 @@ class ChatLane:
 class MessageBus:
     """agent 与各 channel 之间的异步消息总线"""
 
-    def __init__(self, chat_lane: ChatLane | None = None) -> None:
-        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue()
+    def __init__(
+        self,
+        chat_lane: ChatLane | None = None,
+        inbound_limit: int = GLOBAL_INTERACTIVE_QUEUE,
+    ) -> None:
+        # C3 §5.9.5：global interactive ingress ready queue 有界（默认 128），
+        # 满载在 durable acceptance 前抛 AdmissionOverloadError，不阻塞、不丢已接受项。
+        self._inbound: asyncio.Queue[InboundItem] = asyncio.Queue(inbound_limit)
+        self._inbound_limit = inbound_limit
         self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         self._subscribers: dict[
             str, list[Callable[[OutboundMessage], Awaitable[None]]]
@@ -132,9 +140,16 @@ class MessageBus:
         self._running = False
 
     async def publish_inbound(self, msg: InboundItem) -> None:
-        """channel → agent"""
+        """channel → agent；interactive 队列满时抛 :class:`AdmissionOverloadError`。"""
         await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
-        await self._inbound.put(msg)
+        try:
+            self._inbound.put_nowait(msg)
+        except asyncio.QueueFull as exc:
+            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            raise AdmissionOverloadError(
+                "global_interactive",
+                detail=f"global interactive ingress queue 已满（{self._inbound_limit}）",
+            ) from exc
 
     async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""

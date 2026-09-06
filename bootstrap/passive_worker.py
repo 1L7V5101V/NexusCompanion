@@ -4,6 +4,8 @@ import asyncio
 import logging
 from typing import Any, cast
 
+from agent.admission.queues import PER_TENANT_PENDING_INTERACTIVE
+from agent.admission.lanes import resolve_admission_tenant
 from agent.control.errors import RuntimeClosedError, ThreadBusyError
 from agent.control.models import TurnRequest, TurnStatus
 from agent.control.runtime import ConversationRuntime
@@ -15,15 +17,31 @@ logger = logging.getLogger(__name__)
 
 
 class PassiveMessageWorker:
-    """把渠道入站消息转换为 ConversationRuntime turn。"""
+    """把渠道入站消息转换为 ConversationRuntime turn。
 
-    def __init__(self, bus: MessageBus, runtime: ConversationRuntime, legacy_loop: AgentLoop) -> None:
+    C3 §5.9.5：lane key = 服务端派生 tenant admission key；per-tenant pending
+    interactive 有界（默认 16），tenant 内 active work 仍为 1，第 17 条未接受
+    消息明确拒绝，不无限堆积。
+    """
+
+    def __init__(
+        self,
+        bus: MessageBus,
+        runtime: ConversationRuntime,
+        legacy_loop: AgentLoop,
+        *,
+        per_tenant_pending: int = PER_TENANT_PENDING_INTERACTIVE,
+    ) -> None:
+        if per_tenant_pending < 1:
+            raise ValueError("per_tenant_pending 必须为正")
         self._bus = bus
         self._runtime = runtime
         self._legacy_loop = legacy_loop
+        self._per_tenant_pending = per_tenant_pending
         self._running = False
         self._lane_queues: dict[str, asyncio.Queue[InboundMessage | object]] = {}
         self._lane_tasks: dict[str, asyncio.Task[None]] = {}
+        self._rejected_inbound = 0
 
     async def run(self) -> None:
         self._running = True
@@ -46,23 +64,63 @@ class PassiveMessageWorker:
             self._lane_tasks.clear()
             self._lane_queues.clear()
 
+    @property
+    def rejected_inbound(self) -> int:
+        """per-tenant pending 满被明确拒绝的入站消息累计数（观测用）。"""
+        return self._rejected_inbound
+
     def _enqueue(self, item: object) -> None:
-        key = cast(Any, item).session_key
-        queue = self._lane_queues.setdefault(key, asyncio.Queue())
-        queue.put_nowait(item)
-        task = self._lane_tasks.get(key)
-        if task is None or task.done():
-            self._lane_tasks[key] = asyncio.create_task(
-                self._run_lane(key, queue),
-                name=f"passive-lane:{key}",
+        # C3：lane key 从 channel-specific session_key 切换为 tenant admission key。
+        tenant_key = resolve_admission_tenant(cast(InboundMessage, item))
+        queue = self._lane_queues.get(tenant_key)
+        if queue is None:
+            queue = asyncio.Queue(self._per_tenant_pending)
+            self._lane_queues[tenant_key] = queue
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            # §5.9.5：per-tenant 第 17 条未接受消息明确拒绝，不无限堆积；
+            # 未接受项不进入 lane，仅释放 bus 侧 pending 标记并回执拒绝。
+            self._rejected_inbound += 1
+            logger.warning(
+                "per-tenant pending interactive 队列满，拒绝消息 tenant=%s depth=%s",
+                tenant_key,
+                self._per_tenant_pending,
+                extra={"tenant_id": tenant_key, "overload_kind": "per_tenant_interactive"},
             )
+            self._reject_inbound(cast(InboundMessage, item))
+            return
+        task = self._lane_tasks.get(tenant_key)
+        if task is None or task.done():
+            self._lane_tasks[tenant_key] = asyncio.create_task(
+                self._run_lane(tenant_key, queue),
+                name=f"passive-lane:{tenant_key}",
+            )
+
+    def _reject_inbound(self, item: InboundMessage) -> None:
+        """对被拒绝的入站消息回执明确拒绝文案，并完成 bus 侧确认。"""
+
+        async def _notify() -> None:
+            try:
+                await self._bus.publish_outbound(
+                    OutboundMessage(
+                        channel=item.channel,
+                        chat_id=item.chat_id,
+                        content="当前会话排队已满，请稍后再发这条消息。",
+                        metadata={"nexus_overload": True},
+                    )
+                )
+            finally:
+                await self._bus.complete_inbound(item)
+
+        asyncio.create_task(_notify(), name=f"passive-lane-reject:{item.session_key}")
 
     async def _run_lane(
         self,
         key: str,
         queue: asyncio.Queue[InboundMessage | object],
     ) -> None:
-        """串行执行单 thread 队列，并隔离单条消息失败。"""
+        """串行执行单 tenant 队列，并隔离单条消息失败。"""
 
         while True:
             item = await queue.get()
@@ -74,7 +132,7 @@ class PassiveMessageWorker:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("passive lane message failed thread=%s", key)
+                logger.exception("passive lane message failed tenant=%s", key)
             if queue.empty():
                 task = asyncio.current_task()
                 if self._lane_tasks.get(key) is task:
