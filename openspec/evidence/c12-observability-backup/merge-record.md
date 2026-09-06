@@ -19,3 +19,9 @@
 ## 回滚方式
 
 - 全部为新增独立模块/fixture/测试，无 DB 变更、无既有路径修改：`git revert 632d3006..83d54bc8`（或整体 revert merge 范围）即可移除；后续 Cxx 若已基于契约实现，按 design.md §Rollback 保留模块只回滚行为变更。
+
+## 集成推送补记（2026-09-06）
+
+- 首次推送 main 被拒：远端已由 GitHub PR #1 合入 C3（`49f088dc..e2408e5b`）。按不重写已推送历史原则，以 merge commit `d6cc2619` 将 origin/main 并入本地 main（无冲突；feature/c12-observability-backup 已推送、hash 引用保持有效）。
+- 集成后全量回归（C2+C3+C12，PG 在线）：**1312 passed / 1 failed**；唯一失败 `tests/test_chat_api.py::test_index_returns_status_json_without_bundle` 为已知环境性失败（2026-09-05 基线在案）：主工作树 `static/` 根下存在历史构建产物 `index.html`/`index-*.js`（gitignore，c12 worktree 无此产物，同一代码 5/5 通过），与 C12/C3 改动无关（`pytest-regression-integrated.txt`）。
+- 推送：`git push origin main`（`49f088dc..`集成 tip）+ `git push origin feature/c12-observability-backup`（新分支）。
