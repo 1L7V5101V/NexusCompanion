@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P0；恢复演练收尾 = P3（分段验收，见下文「验收标准」中 P3 段）
 - **§5.9 引用**：§5.9.5（admission/队列容量/overload policy）、§5.9.6（restart recovery）、§6.1 A（tenant-scoped serial lane）、§6.1 B（durable recovery/replay）、§10 DECIDED（Tenant admission、Queue 容量初始值）
 - **§6 出口条件引用**：P0 出口「同一 canonical conversation 不会无序并发执行多个状态写入任务」「后台 maintenance 不会长期挤压 interactive turn」「进程内 queue/task 已知丢失窗口有明确记录」；P3 出口「启动恢复扫描…恢复契约」
-- **状态**：planned
+- **状态**：in_progress（P0 段主体已实现于 `feature/c3-admission-queue-recovery`，change `openspec/changes/c3-admission-queue-recovery/`，2026-09-06；P3 恢复演练段保持 planned 待 C2 durable 表落地）
 
 ## 目标
 

@@ -592,6 +592,26 @@ class SessionStore:
             ).fetchall()
         return [self._row_to_turn(row) for row in rows]
 
+    def list_non_terminal_turns(self) -> list[dict[str, object]]:
+        """C3 启动恢复扫描：读取全部非终态（queued/in_progress）turn 行。
+
+        返回轻量行 dict（不反序列化 items/usage），供
+        ``agent.admission.recovery.TurnAuditRecoverySource`` 处置。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, session_key, status
+                FROM turns
+                WHERE status IN ('queued', 'in_progress')
+                ORDER BY created_at ASC, id ASC
+                """
+            ).fetchall()
+        return [
+            {"id": row["id"], "session_key": row["session_key"], "status": row["status"]}
+            for row in rows
+        ]
+
     def delete_thread_turns(self, thread_id: str) -> int:
         with self._lock:
             cursor = self._conn.execute(

@@ -29,6 +29,8 @@ from uuid import uuid4
 import time
 from typing import Any, Callable, cast
 
+from agent.admission.resources import ResourceKind
+from agent.admission.resources import gate as admission_gate
 from agent.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -341,6 +343,11 @@ class ShellTool(Tool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
+        """C3 §5.9.5：process-exec 资源许可（进程执行期间持有）。"""
+        async with admission_gate(ResourceKind.PROCESS):
+            return await self._execute_admitted(**kwargs)
+
+    async def _execute_admitted(self, **kwargs: Any) -> str:
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
         timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None

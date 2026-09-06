@@ -76,7 +76,10 @@ class ConversationRuntime:
         self._executor = executor
         self._subscriber_queue_size = subscriber_queue_size
         self._provisioning = provisioning
-        self._admission = asyncio.Lock()
+        # C3 per-tenant admission（§6.1 A）：同 tenant 串行、跨 tenant 异步。
+        # key = metadata["tenantId"]，缺失回退 thread_id（单用户 dev 单 key，
+        # 执行顺序与全局串行时代一致）。
+        self._admissions: dict[str, asyncio.Lock] = {}
         self._active_by_thread: dict[str, str] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._results: dict[str, asyncio.Future[TurnResult]] = {}
@@ -145,6 +148,17 @@ class ConversationRuntime:
         self._tasks[turn_id] = task
         return TurnHandle(self, request.thread_id, turn_id)
 
+    def _admission_for(self, request: TurnRequest) -> asyncio.Lock:
+        """C3 per-tenant admission（§6.1 A）：key=tenantId，缺失回退 thread_id。"""
+        tenant_key = str(request.metadata.get("tenantId") or "").strip()
+        if not tenant_key:
+            tenant_key = request.thread_id
+        lock = self._admissions.get(tenant_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._admissions[tenant_key] = lock
+        return lock
+
     async def _run(self, request: TurnRequest, turn_id: str) -> None:
         """在全局 admission 内执行 turn，并保证只写一个终态。"""
 
@@ -176,8 +190,9 @@ class ConversationRuntime:
             return list(observed_items.values())
 
         try:
-            # 1. 当前 v1 保留全局串行，但 queued 状态真实可见。
-            async with self._admission:
+            # 1. C3 tenant-scoped admission：同 tenant 串行、跨 tenant 异步；
+            #    queued 状态真实可见。
+            async with self._admission_for(request):
                 record = self._store.transition_turn(
                     turn_id,
                     expected_status=TurnStatus.QUEUED,
