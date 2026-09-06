@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 
 from fastapi import WebSocket
 
+from agent.admission.queues import AdmissionOverloadError
 from bus.events import InboundMessage, OutboundMessage
 from bus.events_lifecycle import (
     StreamDeltaReady,
@@ -33,6 +34,7 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore, MessageDeduper
 from infra.channels.contract import ChannelContext
 from infra.channels.web_chat_protocol import (
+    CLOSE_OVERLOAD,
     DEV_SESSION_KEY,
     SOFT_LIMIT,
     error as error_frame,
@@ -56,26 +58,61 @@ _REPLAY_BUFFER_SIZE = 500
 _OUTBOUND_QUEUE_SIZE = 256
 _DEDUPER_SIZE = 500
 _SENDER_DRAIN_TIMEOUT_S = 2.0
+# §5.9.5：per-WebSocket outbound 累计 payload hard 上限（1 MiB）。
+_WS_MAX_PAYLOAD_BYTES = 1024 * 1024
+
+
+def _frame_size(frame: dict[str, Any]) -> int:
+    """outbound payload 字节近似值（与 send_json 序列化同级误差，会计用）。"""
+    try:
+        return len(json.dumps(frame, ensure_ascii=False, default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
 
 
 class _Connection:
-    """一条已 accept 的 WebSocket 连接及其有界 outbound 队列。"""
+    """一条已 accept 的 WebSocket 连接及其有界 outbound 队列。
 
-    def __init__(self, websocket: WebSocket, connection_id: str) -> None:
+    §5.9.5：hard 256 帧（队列满）或累计 payload ≥1 MiB → overload close；
+    soft 192 帧起丢弃非 durable 可丢帧并要求客户端按 ``last_sequence`` 补拉。
+    """
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        connection_id: str,
+        *,
+        soft_limit: int = SOFT_LIMIT,
+        hard_limit: int = _OUTBOUND_QUEUE_SIZE,
+        max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
+    ) -> None:
         self.websocket = websocket
         self.connection_id = connection_id
-        self.outbound: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(
-            _OUTBOUND_QUEUE_SIZE
+        self.soft_limit = soft_limit
+        self.hard_limit = hard_limit
+        self.max_payload_bytes = max_payload_bytes
+        self.outbound: asyncio.Queue[tuple[dict[str, Any], int] | None] = asyncio.Queue(
+            hard_limit
         )
+        self.bytes_enqueued = 0
+        self.replay_notice_pending = False
         self.sender_task: asyncio.Task[None] | None = None
         self.closed = False
 
     def try_enqueue(self, frame: dict[str, Any]) -> bool:
+        size = _frame_size(frame)
         try:
-            self.outbound.put_nowait(frame)
-            return True
+            self.outbound.put_nowait((frame, size))
         except asyncio.QueueFull:
             return False
+        self.bytes_enqueued += size
+        return True
+
+    def payload_over_limit(self) -> bool:
+        return self.bytes_enqueued >= self.max_payload_bytes
+
+    def depth_over_hard(self) -> bool:
+        return self.outbound.qsize() >= self.hard_limit
 
 
 @dataclass
@@ -116,8 +153,18 @@ class _ReplayBuffer:
 class WebChatChannel:
     """FastAPI WebSocket 宿主 + MessageBus/EventBus 桥接（dev 单用户）。"""
 
-    def __init__(self, channel_name: str = "chat") -> None:
+    def __init__(
+        self,
+        channel_name: str = "chat",
+        *,
+        ws_outbound_soft_limit: int = SOFT_LIMIT,
+        ws_outbound_hard_limit: int = _OUTBOUND_QUEUE_SIZE,
+        ws_outbound_max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
+    ) -> None:
         self.name = channel_name
+        self._ws_soft_limit = ws_outbound_soft_limit
+        self._ws_hard_limit = ws_outbound_hard_limit
+        self._ws_max_payload = ws_outbound_max_payload_bytes
         self._ctx: ChannelContext | None = None
         self._connections: dict[WebSocket, _Connection] = {}
         self._replay = _ReplayBuffer()
@@ -196,7 +243,13 @@ class WebChatChannel:
     async def handle_websocket(self, websocket: WebSocket) -> None:
         await websocket.accept()
         connection_id = uuid4().hex
-        conn = _Connection(websocket, connection_id)
+        conn = _Connection(
+            websocket,
+            connection_id,
+            soft_limit=self._ws_soft_limit,
+            hard_limit=self._ws_hard_limit,
+            max_payload_bytes=self._ws_max_payload,
+        )
         self._connections[websocket] = conn
 
         hello_frame = hello(
@@ -233,9 +286,11 @@ class WebChatChannel:
 
     async def _sender_loop(self, conn: _Connection) -> None:
         while True:
-            frame = await conn.outbound.get()
-            if frame is None or conn.closed:
+            entry = await conn.outbound.get()
+            if entry is None or conn.closed:
                 break
+            frame, size = entry
+            conn.bytes_enqueued = max(0, conn.bytes_enqueued - size)
             try:
                 await conn.websocket.send_json(frame)
             except Exception:
@@ -323,7 +378,18 @@ class WebChatChannel:
             metadata={"client_message_id": client_message_id, "username": "webchat"},
             tenant_id=DEFAULT_TENANT,
         )
-        await ctx.bus.publish_inbound(inbound)
+        # §5.9.5：interactive overload 发生在 durable acceptance 之前——
+        # 未盖 accepted seq、未缓存幂等，客户端收到结构化 overload 错误帧后可重发。
+        try:
+            await ctx.bus.publish_inbound(inbound)
+        except AdmissionOverloadError:
+            conn.try_enqueue(
+                error_frame(
+                    code="overload",
+                    message="服务繁忙，请稍后重发这条消息。",
+                )
+            )
+            return
 
         accepted = self._replay.stamp(
             message_accepted(
@@ -338,23 +404,60 @@ class WebChatChannel:
     # ── EventBus / outbound 桥接 ────────────────────────────────
 
     def _broadcast(self, frame: dict[str, Any]) -> None:
-        """向所有连接广播一帧；慢消费者按协议语义降级。
+        """向所有连接广播一帧；慢消费者按协议语义分级降级。
 
         dev 模式只有一个 canonical session，无需按 session 过滤；所有事件
         handler 已按 channel 过滤。terminal/ack 帧先在 channel 级盖一次
         seq（保证多连接看到同一 seq 且 buffer 不重复入帧）。
+
+        §5.9.5 分级降级：出队深度达 soft 上限时丢弃非 durable 可丢帧并发
+        ``replay_required``（客户端按 ``last_sequence`` 补拉）；达 hard 上限
+        或累计 payload 超 1 MiB 时以 ``CLOSE_OVERLOAD``(1013) 明确断开。
+        canonical final message 与 terminal state 不因队列满而删除。
         """
         frame = self._replay.stamp(frame)
         for conn in list(self._connections.values()):
             if conn.closed:
                 continue
-            if conn.outbound.qsize() >= _OUTBOUND_QUEUE_SIZE:
+            if conn.depth_over_hard() or conn.payload_over_limit():
+                self._close_overload(conn)
                 continue
-            if conn.outbound.qsize() >= SOFT_LIMIT and is_droppable(
-                str(frame.get("type") or "")
-            ):
+            if conn.outbound.qsize() < conn.soft_limit:
+                conn.replay_notice_pending = False
+            elif is_droppable(str(frame.get("type") or "")):
+                self._drop_with_replay_notice(conn)
                 continue
             _ = conn.try_enqueue(frame)
+
+    def _drop_with_replay_notice(self, conn: _Connection) -> None:
+        """丢弃一帧可丢帧；首次丢弃时发 ``replay_required`` 要求按序补拉。"""
+        if conn.replay_notice_pending:
+            return
+        notice = replay_required(after_seq=self._replay.next_seq - 1)
+        if conn.try_enqueue(notice):
+            conn.replay_notice_pending = True
+
+    def _close_overload(self, conn: _Connection) -> None:
+        """hard overload：以协议 close code 断开连接，终态帧保留在重放 buffer。"""
+        if conn.closed:
+            return
+        conn.closed = True
+        logger.warning(
+            "webchat outbound hard overload，关闭连接 conn=%s depth=%s bytes=%s",
+            conn.connection_id,
+            conn.outbound.qsize(),
+            conn.bytes_enqueued,
+        )
+        try:
+            conn.outbound.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        if conn.sender_task is not None:
+            conn.sender_task.cancel()
+        asyncio.create_task(
+            conn.websocket.close(code=CLOSE_OVERLOAD, reason="outbound overload"),
+            name=f"webchat-overload-close:{conn.connection_id}",
+        )
 
     async def _on_stream_delta(self, event: StreamDeltaReady) -> None:
         if event.channel != self.name:
