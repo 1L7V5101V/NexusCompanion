@@ -80,7 +80,7 @@
   - [ ] **显式用户 schedule owner、misfire、幂等与恢复** → outcome 见 [PILOT_ROADMAP §5.9.14](PILOT_ROADMAP.md)
   - [ ] **Attachment/media ownership、MIME/size、retention 与 backup** → outcome 见 [PILOT_ROADMAP §5.9.15](PILOT_ROADMAP.md)
   - [ ] **RuntimeSnapshot lease、hooks、tenant secrets 与 revocation** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
-  - [ ] **Observability/privacy/redaction 与 retention 默认值** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)
+  - [ ] **Observability/privacy/redaction 与 retention 默认值** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)；P-1 契约层（content-off gate + redaction、metrics label 白名单、retention 三档 30/180/7、backup manifest 模板+校验器、§7.1 事件 schema fixture、SLO DEFERRED 负向测试）`verified`（change `c12-observability-backup`，branch head `a402d32a`，2026-09-06，证据 [evidence/c12-observability-backup](evidence/c12-observability-backup/)）；总控台聚合（C2/C3 id 落地后）、config 接线与基线报告、恢复演练仍 `in_progress`（伴随落地协议，change 保持 active 不归档）
 - [ ] **P0 Pilot 基础运行基线** — 单机 FastAPI/Uvicorn、PostgreSQL + pgvector、有界进程内队列、HTTPS/WSS 入口；`planned`
   - [ ] **单机长期运行与重启恢复基线** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
   - [ ] **当前 persistence map、backup manifest、健康检查与基础指标** → outcome 见 [PILOT_ROADMAP §3.4](PILOT_ROADMAP.md) 与 [§5.9.12](PILOT_ROADMAP.md)
