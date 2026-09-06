@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from agent.admission.resources import (
+    ResourceLimits,
+    ResourceSemaphores,
+)
+from agent.admission.resources import set_default as set_resource_semaphores
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
 from agent.peer_agent.process_manager import PeerProcessManager
@@ -622,7 +627,19 @@ def build_core_runtime(
     """构造核心运行时及其插件快照依赖。"""
 
     # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
-    bus = MessageBus()
+    # C3：global interactive ingress queue 有界（§10 DECIDED 初始值，可配置）；
+    #     进程级资源 semaphore（LLM/embedding/MCP/process）在此装配。
+    bus = MessageBus(inbound_limit=config.admission.global_interactive_queue)
+    set_resource_semaphores(
+        ResourceSemaphores(
+            ResourceLimits(
+                llm=config.admission.llm_concurrency,
+                embedding=config.admission.embedding_concurrency,
+                mcp=config.admission.mcp_concurrency,
+                process=config.admission.process_concurrency,
+            )
+        )
+    )
     event_bus = EventBus()
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)

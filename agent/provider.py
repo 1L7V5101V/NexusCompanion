@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 from openai import AsyncOpenAI
 
+from agent.admission.resources import ResourceKind
+from agent.admission.resources import gate as admission_gate
 from agent.model_runtime.errors import TransportError
 from agent.model_runtime.transports.responses_converters import (
     _dump,
@@ -280,6 +282,30 @@ class LLMProvider:
         )
 
     async def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        tool_choice: str | dict = "auto",
+        extra_body: dict | None = None,
+        disable_thinking: bool = False,
+        on_content_delta: Callable[[StreamDelta], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        """C3 §5.9.5：全程持有 LLM 资源许可（含 streaming delta 消费）。"""
+        async with admission_gate(ResourceKind.LLM):
+            return await self._chat_admitted(
+                messages,
+                tools,
+                model,
+                max_tokens,
+                tool_choice=tool_choice,
+                extra_body=extra_body,
+                disable_thinking=disable_thinking,
+                on_content_delta=on_content_delta,
+            )
+
+    async def _chat_admitted(
         self,
         messages: list[dict],
         tools: list[dict],
