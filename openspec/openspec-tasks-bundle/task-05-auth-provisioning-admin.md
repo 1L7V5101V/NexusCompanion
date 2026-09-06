@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P1（公网门禁）
 - **§5.9 引用**：§5.9.3（auth/admin credential/浏览器安全）、§5.9.13（provisioning/readiness）、§5.9.9（test_accounts/access_tokens/auth_sessions 实体与约束）、§5.4 端点、§5.5 管理端、§10 DECIDED（Admin bootstrap）
 - **§6 出口条件引用**：P1 出口「用户只输入一次 Token；首次进入完成一次性人设设置；刷新/重开浏览器仍能登录；越权请求全拒；重复兑换同一 Token 不产生多个账号」
-- **状态**：planned
+- **状态**：in_progress（active change：`openspec/changes/2026-09-07-c5-auth-provisioning-admin/`，2026-09-07）
 
 ## 目标
 
