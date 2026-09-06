@@ -1,0 +1,71 @@
+........................................................................ [  5%]
+........................................................................ [ 10%]
+........................................................................ [ 16%]
+........................................................................ [ 21%]
+........................................................................ [ 27%]
+..F..................................................................... [ 32%]
+........................................................................ [ 38%]
+........................................................................ [ 43%]
+........................................................................ [ 49%]
+........................................................................ [ 54%]
+........................................................................ [ 60%]
+........................................................................ [ 65%]
+........................................................................ [ 71%]
+........................................................................ [ 76%]
+........................................................................ [ 82%]
+........................................................................ [ 87%]
+........................................................................ [ 93%]
+........................................................................ [ 98%]
+.................                                                        [100%]
+================================== FAILURES ===================================
+________________ test_index_returns_status_json_without_bundle ________________
+
+tmp_path = WindowsPath('C:/Users/HP/AppData/Local/Temp/pytest-of-HP/pytest-60/test_index_returns_status_json0')
+
+    def test_index_returns_status_json_without_bundle(tmp_path: Path) -> None:
+        client, _, _ = _build(tmp_path)
+        resp = client.get("/")
+        assert resp.status_code == 200
+>       payload = resp.json()
+                  ^^^^^^^^^^^
+
+tests\test_chat_api.py:62: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.venv\Lib\site-packages\httpx\_models.py:832: in json
+    return jsonlib.loads(self.content, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\HP\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\json\__init__.py:346: in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\HP\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\json\decoder.py:338: in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <json.decoder.JSONDecoder object at 0x000002686FA4EC00>
+s = '<!DOCTYPE html>\n<html lang="zh-CN" data-theme="dark">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" con...ylesheet" crossorigin href="/assets/index-CyY9veaI.css">\n</head>\n<body>\n  <div id="root"></div>\n</body>\n</html>\n'
+idx = 0
+
+    def raw_decode(self, s, idx=0):
+        """Decode a JSON document from ``s`` (a ``str`` beginning with
+        a JSON document) and return a 2-tuple of the Python
+        representation and the index in ``s`` where the document ended.
+    
+        This can be used to decode a JSON document from a string that may
+        have extraneous data at the end.
+    
+        """
+        try:
+            obj, end = self.scan_once(s, idx)
+        except StopIteration as err:
+>           raise JSONDecodeError("Expecting value", s, err.value) from None
+E           json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+C:\Users\HP\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\json\decoder.py:356: JSONDecodeError
+---------------------------- Captured stdout call -----------------------------
+10:53:40  INFO      infra.channels.web_chat_channel  WebChatChannel 已启动（channel=chat）
+------------------------------ Captured log call ------------------------------
+INFO     infra.channels.web_chat_channel:web_chat_channel.py:223 WebChatChannel 已启动（channel=chat）
+=========================== short test summary info ===========================
+FAILED tests/test_chat_api.py::test_index_returns_status_json_without_bundle
+1 failed, 1312 passed in 249.34s (0:04:09)
