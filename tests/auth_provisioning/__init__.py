@@ -1,0 +1,1 @@
+"""C5 auth/provisioning 测试包（PG 集成 + 非 PG 单元层）。"""
