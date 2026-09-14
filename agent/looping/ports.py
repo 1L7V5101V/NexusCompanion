@@ -9,6 +9,8 @@ if TYPE_CHECKING:
     from agent.core.passive_turn import Reasoner
     from agent.core.runner import CoreRunner
     from agent.core.runtime_support import ToolDiscoveryState
+    from agent.admission.revocation import RevocationGate
+    from agent.plugins.snapshot import RuntimeSnapshotStore
     from agent.provider import LLMProvider
     from agent.retrieval.protocol import MemoryRetrievalPipeline
     from agent.tools.registry import ToolRegistry
@@ -97,6 +99,9 @@ class AgentLoopDeps:
     reasoner: "Reasoner | None" = None
     core_runner: "CoreRunner | None" = None
     turn_logger: "RoutingTurnLogger | None" = None
+    # C8 §5.9.16：work-start snapshot lease 与副作用前 revocation recheck。
+    runtime_snapshot_store: "RuntimeSnapshotStore | None" = None
+    revocation_gate: "RevocationGate | None" = None
 
 @dataclass
 class AgentLoopConfig:
