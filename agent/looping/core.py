@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from core.memory.engine import MemoryEngine
     from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
+    from agent.plugins.snapshot import RuntimeSnapshotStore
     from agent.tool_hooks.base import ToolHook
 
 logger = logging.getLogger("agent.loop")
@@ -148,6 +149,11 @@ class AgentLoop:
         self._processing_state = deps.processing_state
         self._event_bus = deps.event_bus or EventBus()
         self._passive_runtime_lock = asyncio.Lock()
+        # C8 §5.9.16：work-start snapshot lease 与副作用前 revocation recheck。
+        # store 由 bootstrap 经 bind_runtime_snapshot_store() 在 loop 创建后接线
+        # （PluginManager 依赖 loop 周边的构造顺序，无法走构造参数）。
+        self._runtime_snapshot_store = deps.runtime_snapshot_store
+        self._revocation_gate = deps.revocation_gate
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -196,6 +202,25 @@ class AgentLoop:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):
             _ = setter(self._build_stream_event_sink)
+
+    def bind_runtime_snapshot_store(
+        self,
+        store: "RuntimeSnapshotStore",
+    ) -> None:
+        """接通 bootstrap 的 snapshot store seam（C8 §5.9.16）。
+
+        PluginManager 在 loop 创建之后才被构造，无法走构造参数；既有
+        ``bootstrap/tools.py`` 的 ``getattr(loop, ...)`` seam 因此处方法存在
+        而从静默 no-op 变为真实接线。
+        """
+        self._runtime_snapshot_store = store
+        # 后台 maintenance worker（MarkdownMemoryMaintenance）复用同一 store：
+        # work-start lease 由 maintenance 侧持有，避免控制面重复注入。
+        if self._markdown_memory is not None:
+            maintenance = getattr(self._markdown_memory, "maintenance", None)
+            binder = getattr(maintenance, "bind_runtime_snapshot_store", None)
+            if callable(binder):
+                binder(store)
 
     def _wrap_stream_sink_factory(
         self,
@@ -690,7 +715,18 @@ class AgentLoop:
         if self._passive_runtime_lock.locked():
             logger.info("[runtime_admission] 等待 passive runtime session=%s", key)
         async with self._passive_runtime_lock:
-            return await self._process(
+            from agent.plugins.snapshot import work_runtime_lease
+
+            async with work_runtime_lease(self._runtime_snapshot_store):
+                # C8 §5.9.16：副作用前 revocation recheck（当前 recheck，不读 snapshot
+                # 捕获状态）——work 未启动，旧 snapshot lease 不能绕过 revocation。
+                if self._revocation_gate is not None:
+                    tenant = str(getattr(msg, "tenant_id", "") or "").strip()
+                    await self._revocation_gate.check(
+                        tenant or DEFAULT_TENANT,
+                        action="passive_work",
+                    )
+                return await self._process(
                 msg,
                 session_key=session_key,
                 busy_session_key=busy_session_key,
@@ -836,19 +872,23 @@ class AgentLoop:
         if self._markdown_memory is None:
             raise RuntimeError("markdown memory runtime unavailable")
         maintenance = self._markdown_memory.maintenance
-        try:
-            result = await asyncio.wait_for(
-                maintenance.consolidate(
-                    ConsolidateRequest(
-                        session=session,
-                        archive_all=archive_all,
-                        force=force,
-                    )
-                ),
-                timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
-            )
-        except TimeoutError as exc:
-            raise TimeoutError("memory consolidation busy") from exc
+        from agent.plugins.snapshot import work_runtime_lease
+
+        # C8 §5.9.16：control 触发的 consolidation work 在 work start 取一次 lease。
+        async with work_runtime_lease(self._runtime_snapshot_store):
+            try:
+                result = await asyncio.wait_for(
+                    maintenance.consolidate(
+                        ConsolidateRequest(
+                            session=session,
+                            archive_all=archive_all,
+                            force=force,
+                        )
+                    ),
+                    timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,
+                )
+            except TimeoutError as exc:
+                raise TimeoutError("memory consolidation busy") from exc
         if result.trace.get("mode") == "markdown":
             await self.session_manager.save_async(session)
             return True

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from agent.admission.revocation import RevocationGate
 from agent.admission.resources import (
     ResourceLimits,
     ResourceSemaphores,
@@ -110,6 +111,7 @@ class CoreRuntime:
     workspace: Path | None = None
     turn_logger: RoutingTurnLogger | None = None
     storage_runtime: StorageRuntime | None = None
+    revocation_gate: RevocationGate | None = None
 
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
@@ -404,6 +406,7 @@ def build_registered_tools(
     agent_loop_provider: Callable[[], Any] | None = None,
     restart_coordinator: "RestartCoordinator | None" = None,
     storage_runtime: "StorageRuntime | None" = None,
+    revocation_gate: "RevocationGate | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -442,6 +445,7 @@ def build_registered_tools(
         workspace,
         push_tool,
         agent_loop_provider=agent_loop_provider,
+        revocation_gate=revocation_gate,
     )
     peer_process_manager, peer_poller = build_peer_agent_resources(
         config, bus, http_resources
@@ -540,6 +544,7 @@ def _build_loop_deps(
     event_bus: EventBus,
     memory_runtime: MemoryRuntime,
     turn_logger: RoutingTurnLogger | None = None,
+    revocation_gate: RevocationGate | None = None,
 ) -> AgentLoopDeps:
     """将已构造的 runtime 资源装配成 AgentLoop 依赖。"""
 
@@ -597,6 +602,7 @@ def _build_loop_deps(
         memory_services=memory_services,
         session_services=session_services,
         turn_logger=turn_logger,
+        revocation_gate=revocation_gate,
     )
 
 
@@ -641,6 +647,9 @@ def build_core_runtime(
         )
     )
     event_bus = EventBus()
+    # C8 §5.9.16：Pilot 未接账号库（C5），先以显式 dev-open gate 接线（provider=None 带日志），
+    # 保证副作用前 recheck 接缝真实存在；C5 落地后替换为真实账号状态源即可全域 fail-closed。
+    revocation_gate = RevocationGate(None, source="pilot")
     provider, light_provider, agent_provider = build_providers(config)
     vl_provider = build_vl_provider(config)
     # 2. agent_provider 供 AgentLoop 使用，provider 供 consolidation 事件提取使用。
@@ -674,6 +683,7 @@ def build_core_runtime(
             agent_loop_provider=lambda: loop_ref.get("loop"),
             restart_coordinator=restart_coordinator,
             storage_runtime=storage_runtime,
+            revocation_gate=revocation_gate,
         )
     )
     presence = PresenceStore(lambda ctx: storage_runtime.for_tenant(ctx).sessions)
@@ -698,6 +708,7 @@ def build_core_runtime(
         event_bus=event_bus,
         memory_runtime=memory_runtime,
         turn_logger=turn_logger,
+        revocation_gate=revocation_gate,
     )
     loop = AgentLoop(
         loop_deps,
@@ -811,6 +822,7 @@ def build_core_runtime(
         plugin_manager=plugin_manager,
         turn_logger=turn_logger,
         storage_runtime=storage_runtime,
+        revocation_gate=revocation_gate,
     )
 
 
