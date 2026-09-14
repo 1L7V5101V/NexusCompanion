@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from agent.config_models import (
     AdmissionConfig,
     AppServerConfig,
+    AuthConfig,
     CacheConfig,
     ChannelsConfig,
     ChatChannelConfig,
@@ -119,6 +120,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     apply_persona_config(persona)
 
     admission_cfg = _load_admission_config(data)
+    auth_cfg = _load_auth_config(data)
 
     return Config(
         provider=provider,
@@ -198,6 +200,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         persona=persona,
         app_server=app_server,
         admission=admission_cfg,
+        auth=auth_cfg,
         logging=logging_cfg,
         router_mode=str(
             data.get("router_mode", "rule")
@@ -447,6 +450,59 @@ def _load_admission_config(data: dict) -> AdmissionConfig:
         ws_outbound_hard_limit=_int("ws_outbound_hard_limit"),
         ws_outbound_max_payload_bytes=_int("ws_outbound_max_payload_bytes"),
     )
+
+
+def _load_auth_config(data: dict) -> AuthConfig:
+    """`[auth]` C5 配置节（design ADR-7）。默认关闭 = P0.5 行为不变。"""
+    raw = _as_dict(data.get("auth"))
+    defaults = AuthConfig()
+    return AuthConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        cookie_secure=bool(raw.get("cookie_secure", defaults.cookie_secure)),
+        origin_allowlist=_parse_str_list(
+            raw.get("origin_allowlist", defaults.origin_allowlist)
+        ),
+        admin_allow_ips=_parse_str_list(
+            raw.get("admin_allow_ips", defaults.admin_allow_ips)
+        ),
+        session_idle_hours=_parse_int_positive(
+            "auth.session_idle_hours",
+            raw.get("session_idle_hours", defaults.session_idle_hours),
+        ),
+        session_absolute_hours=_parse_int_positive(
+            "auth.session_absolute_hours",
+            raw.get("session_absolute_hours", defaults.session_absolute_hours),
+        ),
+        admin_idle_minutes=_parse_int_positive(
+            "auth.admin_idle_minutes",
+            raw.get("admin_idle_minutes", defaults.admin_idle_minutes),
+        ),
+        admin_absolute_hours=_parse_int_positive(
+            "auth.admin_absolute_hours",
+            raw.get("admin_absolute_hours", defaults.admin_absolute_hours),
+        ),
+        invitation_token_ttl_hours=_parse_int_positive(
+            "auth.invitation_token_ttl_hours",
+            raw.get("invitation_token_ttl_hours", defaults.invitation_token_ttl_hours),
+        ),
+    )
+
+
+def _parse_str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _parse_int_positive(name: str, value: object) -> int:
+    parsed = int(str(value)) if not isinstance(value, int) else value
+    if parsed < 1:
+        raise ValueError(f"{name} 必须为正整数，当前: {value!r}")
+    return parsed
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

@@ -854,6 +854,7 @@ def create_dashboard_app(
     memory_store: MemoryStore | None = None,  # markdown 旧记忆系统，与 storage.backend 无关
     config: Config | None = None,
     metric_registry: MetricRegistry | None = None,
+    auth_runtime=None,  # C5 admin 面（bootstrap.auth.runtime.AuthRuntime，仅在 auth.enabled 时提供）
 ) -> FastAPI:
     workspace.mkdir(parents=True, exist_ok=True)
     # dashboard 自建进程级 StorageRuntime（每进程一次）：会话/记忆读接口按请求的
@@ -1573,6 +1574,13 @@ def create_dashboard_app(
             raise HTTPException(status_code=404, detail="log 不存在")
         return item
 
+    if auth_runtime is not None:
+        # C5（design ADR-7）：admin 管理面 `/api/admin/*` 挂 Dashboard；
+        # auth.enabled 总开关关闭时维持 P0.5 行为（不挂路由）。
+        from bootstrap.auth import build_admin_api
+
+        app.include_router(build_admin_api(auth_runtime))
+
     return app
 
 
@@ -1586,6 +1594,7 @@ def run_dashboard_api(
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     config: Config | None = None,
+    auth_runtime=None,
 ) -> None:
     server = uvicorn.Server(
         _build_dashboard_uvicorn_config(
@@ -1597,6 +1606,7 @@ def run_dashboard_api(
             memory_admin=memory_admin,
             memory_store=memory_store,
             config=config,
+            auth_runtime=auth_runtime,
         )
     )
     server.run()
@@ -1612,6 +1622,7 @@ def _build_dashboard_uvicorn_config(
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     config: Config | None = None,
+    auth_runtime=None,
 ) -> uvicorn.Config:
     uvicorn_cfg = uvicorn.Config(
         create_dashboard_app(
@@ -1621,6 +1632,7 @@ def _build_dashboard_uvicorn_config(
             memory_admin=memory_admin,
             memory_store=memory_store,
             config=config,
+            auth_runtime=auth_runtime,
         ),
         host=host,
         port=port,
@@ -1640,6 +1652,7 @@ def build_dashboard_server(
     memory_admin: MemoryAdminApi,
     memory_store: MemoryStore | None = None,
     config: Config | None = None,
+    auth_runtime=None,
 ) -> uvicorn.Server:
     uvicorn_cfg = _build_dashboard_uvicorn_config(
         workspace=workspace,
@@ -1650,5 +1663,6 @@ def build_dashboard_server(
         memory_admin=memory_admin,
         memory_store=memory_store,
         config=config,
+        auth_runtime=auth_runtime,
     )
     return uvicorn.Server(uvicorn_cfg)
