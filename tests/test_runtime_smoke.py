@@ -272,6 +272,35 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert any(path == config_path for path in summary.created)
 
 
+def test_init_workspace_does_not_prewrite_proactive_quota(tmp_path):
+    """回归：init 不应预写 proactive_quota.json。
+
+    曾用 proactive_v2.anyaction 的占位 QuotaStore 写入 {}，运行时真实
+    QuotaStore 首次加载即因 schema 校验失败崩溃——全新部署必现。
+    正确行为：文件留待运行时首次 snapshot() 滚动窗口时生成合法内容。
+    """
+    from datetime import datetime, timezone
+
+    from plugins.default_proactive.anyaction import QuotaStore
+
+    config_path = tmp_path / "config.toml"
+    workspace = tmp_path / "workspace"
+    workspace_init.init_workspace(config_path=config_path, workspace=workspace)
+
+    quota_path = workspace / "proactive_quota.json"
+    assert not quota_path.exists()
+
+    # 运行时构造不应抛错，首次快照后落盘，且落盘内容能再次通过严格校验
+    store = QuotaStore(quota_path)
+    store.snapshot(
+        now_utc=datetime.now(timezone.utc),
+        reset_hour=4,
+        timezone_name="Asia/Shanghai",
+    )
+    assert quota_path.exists()
+    QuotaStore(quota_path)
+
+
 def test_init_workspace_respects_force_for_text_assets(tmp_path):
     config_path = tmp_path / "config.toml"
     workspace = tmp_path / "workspace"

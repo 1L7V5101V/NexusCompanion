@@ -10,6 +10,10 @@ ARG BASE_IMAGE=python:3.12-slim
 # ---- Frontend build stage ----
 FROM node:20-slim AS frontend-builder
 
+# 国内服务器直连 registry.npmjs.org 会超时，改用 npmmirror 加速
+# （与下方清华 PyPI 镜像同理，仅用于国内构建环境）
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 WORKDIR /build
 
 # 先复制依赖文件，利用 Docker 缓存层
