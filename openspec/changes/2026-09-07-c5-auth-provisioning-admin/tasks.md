@@ -43,3 +43,5 @@
 - [ ] 5.4 回归：`pyright --level error`（project + tests）、`pytest -q -W error tests/`；对齐 main 基线（36 既有 pyright 错误 + chat_api 1 环境性失败）
 - [ ] 5.5 PR diff 范围检查：未触碰 attachment(C6)/工具 allowlist(C7)/Persona(C9)/Telegram binding(C10)/schedule(C11)
 - [ ] 5.6 `openspec validate` 通过；evidence 齐全后按 §8 更新 task-05 与 checklist 状态
+- [ ] 5.7 部署态冒烟（云 canary 容器真实 HTTP 全生命周期）
+  - 证据：`openspec/evidence/c5-auth-provisioning-admin/canary-deploy-smoke.txt`（20/20 PASS）
