@@ -152,10 +152,12 @@ pepper `c66e3633897b3c4f` + 重启服务）后，旧 recovery token、旧 admin 
 - digest-only 复核（部署态库内）：`access_tokens` 64-hex 12/12、
   `auth_sessions` 64-hex 23/23、`admin_audit_events` 明文前缀
   （`nxt_`/`nad_`/`ns_`）命中 **0**。
-- 演练产生的明文（`T1`/`T2`/`T3`、三个 admin cookie、四个用户邀请 token）与
-  pepper 备份副本均只存在于服务器临时路径，演练后**已全部删除**；因此
-  canary 当前的 recovery token 明文不再留存，需要时按路径 A
-  `--force-local` 重新轮换获取。
+- 演练相关明文（3 个 recovery token `T1`/`T2`/`T3`、3 个 admin cookie
+  `ck1`/`ck2`/`ck3`、3 个邀请 token `utok_old`/`utok_hold`/`utok_new`，及早前
+  探针遗留的 1 个 token）与 pepper 备份副本（`pepper.orig`/`pepper.new`）均只
+  存在于服务器临时路径，演练后**已全部删除**（容器 `/tmp/drill/` 整个删除、
+  pepper 副本 `shred`）。因此 canary 当前的 recovery token 明文不再留存，
+  需要时按路径 A `--force-local` 重新轮换获取。
 - 未做：把本演练写成可重复的 CI 任务（现为一次性脚本，脚本已随证据归档）。
 
 ---
