@@ -32,6 +32,7 @@ from agent.plugins.snapshot import (
     work_runtime_lease,
 )
 from bus.events import InboundMessage, OutboundMessage
+from core.memory.markdown import MarkdownMemoryMaintenance
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerBusy
@@ -283,6 +284,47 @@ async def test_trigger_memory_consolidation_holds_lease(tmp_path: Path) -> None:
     assert triggered is True
     # control 触发的 consolidation work 在 work start 取到 lease
     assert observed == {"snapshot_id": "snap-maintain"}
+    assert store.current.lease_count == 0
+
+
+@pytest.mark.asyncio
+async def test_maintenance_background_worker_holds_lease() -> None:
+    """MarkdownMemoryMaintenance 后台队列 worker 逐条 maintenance 取 lease。"""
+    store = make_store("snap-bg")
+    maintenance = MarkdownMemoryMaintenance(
+        store=cast(object, object()),  # refresh 分支被 spy，store 不被触达
+        provider=MagicMock(),
+        model="m",
+        keep_count=20,
+        event_bus=None,
+        runtime_snapshot_store=store,
+    )
+    session = SimpleNamespace(key="sess-a", messages=[], last_consolidated=0)
+    maintenance.bind_lifecycle(
+        cast(
+            object,
+            SimpleNamespace(
+                get_session=lambda key: session,
+                save_session=AsyncMock(return_value=None),
+            ),
+        )
+    )
+    observed: dict[str, object] = {}
+
+    async def spy_refresh(request) -> None:
+        snap = get_current_runtime_snapshot()
+        observed["snapshot_id"] = snap.snapshot_id if snap is not None else None
+
+    maintenance.refresh_recent_turns = spy_refresh  # type: ignore[method-assign]
+
+    # 经真实入队路径启动后台 worker（空消息 → 走 refresh 分支）
+    maintenance._enqueue_maintenance("sess-a")
+    for _ in range(200):
+        if "sess-a" not in maintenance._maintenance_tasks:
+            break
+        await asyncio.sleep(0.02)
+
+    assert observed == {"snapshot_id": "snap-bg"}
     assert store.current.lease_count == 0
 
 
