@@ -635,3 +635,107 @@ def test_tomllib_parses_protocol_under_llm(tmp_path):
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     assert raw["llm"]["protocol"] == "codex"
     assert raw["llm"]["main"]["model"] == "grok-4.6"
+
+
+# ── opencode.ai /zen/go session 头注入 ───────────────────────────────────────
+
+
+def test_opencode_openai_path_injects_session_header():
+    """OpenAI chat 路径访问 opencode.ai 时必须注入 x-opencode-session 头。"""
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://opencode.ai/zen/go/v1",
+        payload_snapshot_enabled=False,
+    )
+    headers = provider._client._init_kwargs.get("default_headers") or {}
+    assert headers.get("x-opencode-session")
+    assert provider._protocol == "openai"
+    assert provider._base_url == "https://opencode.ai/zen/go/v1"
+
+
+def test_opencode_chat_alias_path_injects_session_header():
+    """protocol=chat 也走 openai 路径，同样需要 session 头。"""
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://opencode.ai/zen/go/v1",
+        protocol="chat",
+        payload_snapshot_enabled=False,
+    )
+    headers = provider._client._init_kwargs.get("default_headers") or {}
+    assert headers.get("x-opencode-session")
+    assert provider._protocol == "openai"
+
+
+def test_opencode_codex_path_sends_both_session_headers():
+    """codex 路径保留原生 session-id 指纹头，同时补 x-opencode-session。"""
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://opencode.ai/zen/go/v1",
+        protocol="codex",
+        payload_snapshot_enabled=False,
+    )
+    headers = provider._client._init_kwargs.get("default_headers") or {}
+    assert headers.get("session-id")
+    assert headers.get("x-opencode-session")
+    assert headers.get("session-id") != headers.get("x-opencode-session")
+
+
+def test_non_opencode_base_url_no_session_header():
+    """非 opencode 网关不注入额外 session 头，避免干扰其他 provider。"""
+    provider = LLMProvider(
+        api_key="k",
+        base_url="https://api.openai.com/v1",
+        payload_snapshot_enabled=False,
+    )
+    headers = provider._client._init_kwargs.get("default_headers") or {}
+    assert "x-opencode-session" not in headers
+    assert provider._client._init_kwargs.get("base_url") == "https://api.openai.com/v1"
+
+
+def test_opencode_no_base_url_skipped():
+    """base_url 为空时是普通占位 provider，不应注入 session 头。"""
+    provider = LLMProvider(api_key="k", payload_snapshot_enabled=False)
+    headers = provider._client._init_kwargs.get("default_headers") or {}
+    assert "x-opencode-session" not in headers
+
+
+# ── DeepSeek vision-exp 策略（不去图）────────────────────────────────────────
+
+
+def test_select_strategy_deepseek_vision_keeps_images():
+    from agent.provider import (
+        DeepSeekStrategy,
+        DeepSeekVisionStrategy,
+        _select_provider_strategy,
+    )
+
+    strategy = _select_provider_strategy(
+        provider_name="",
+        base_url="https://opencode.ai/zen/go/v1",
+        model="deepseek-v4-flash-vision-exp",
+    )
+    assert isinstance(strategy, DeepSeekVisionStrategy)
+
+    # 图片必须原样保留
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ],
+        }
+    ]
+    normalized = strategy.normalize_messages(messages)
+    assert any(
+        b.get("type") == "image_url" for b in normalized[0]["content"]
+    )
+
+    # 文本 deepseek 模型仍走去图版本
+    text_strategy = _select_provider_strategy(
+        provider_name="",
+        base_url="https://opencode.ai/zen/go/v1",
+        model="deepseek-v4-flash",
+    )
+    assert isinstance(text_strategy, DeepSeekStrategy)
+    assert not isinstance(text_strategy, DeepSeekVisionStrategy)
