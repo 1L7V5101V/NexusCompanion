@@ -48,7 +48,7 @@
 - [x] `pilot-admin` CLI 命令面完整且明文不进进程参数/仓库/配置/DB（local 强制恢复仅 trusted-host TTY） — 验证：CLI 测试 + grep —— 实跑：`test_cli_layer.py` 10 项通过（TTY 门禁、回显次数、命令面），static-digest-only.txt grep 证实明文仅 CLI TTY 一次
 - [ ] runbook 演练：recovery token 丢失 / 疑似泄露 / 数据库恢复三条路径 — 验证：runbook 测试记录 —— 状态：`runbook-drill.md` 已备 3 路径可执行程序，演练结论标「待回填」未实跑（不虚构证据）
 - [ ] timeout 契约：普通 idle 7d / absolute 30d；admin idle 30min / absolute 12h（数值按 §10 PROPOSED DEFAULT 于 P-1 复核） — 验证：配置 + timeout 测试 —— 状态：配置冻结值 `test_auth_config.py` 3 项已实跑；运行时 idle/absolute 校验逻辑归 PG（session 行固化，write-only 未实跑）
-- [ ] 本 task 不触碰 attachment（C6）、工具 allowlist 执行（C7） — 验证：PR diff 范围检查 —— 状态：rebase 前已核对 C5-only 范围，rebase 后需复核（见 git 工作流）
+- [x] 本 task 不触碰 attachment（C6）、工具 allowlist 执行（C7） — 验证：PR diff 范围检查 —— 实查：rebase 到 origin/main（f4639a99，C3 并入）后 `git diff origin/main..HEAD` 仅 39 个 C5 相关文件，无 C6/C7 文件
 
 > 判定「真正完成」而非「执行过」：并发兑换原子性、digest-only 存储、401/403 区分三条是安全闸门，必须有负向测试证据；runbook 演练需真实按步骤执行并记录。
 
