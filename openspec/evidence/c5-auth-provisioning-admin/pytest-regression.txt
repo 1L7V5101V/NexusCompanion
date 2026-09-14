@@ -1,0 +1,8 @@
+# C5 全量非 PG 回归（任务 5.4）——2026-09-14，工作树为 C5 特性分支
+
+命令：`python -m pytest -q -W error tests/`
+结果：`1171 passed, 186 skipped in 394.57s (0:06:34)`，退出码 0
+
+- `-W error` 开启，无 warning 提升为 error 导致的失败。
+- 186 skipped 为 PG 依赖与条件跳过项，其中 C5 的 20 项 PG 写测按
+  「暂不跑 PG 测试」决策为 write-only skip（见 pytest-pg-writeonly.txt）。
