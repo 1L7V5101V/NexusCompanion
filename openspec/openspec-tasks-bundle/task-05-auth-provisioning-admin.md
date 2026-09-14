@@ -31,23 +31,23 @@
 ## 证据索引（`openspec/evidence/c5-auth-provisioning-admin/`）
 
 - `pytest-auth-unit.txt` — 非 PG 单元实跑：crypto 7 / ws_guard 7 / cli_layer 10 / auth_config 3 = 27 passed
-- `pytest-pg-writeonly.txt` — PG 集成 20 项收集确认、按「暂不跑 PG」write-only skip
+- `pytest-pg-integration.txt` — **服务器 PG 实跑 47 passed**（20 项 PG 集成 + 27 项非 PG，SSH tunnel → 阿里云 ECS nexus-pg-c5）
 - `pytest-regression.txt` — 全量非 PG 回归（crypto/cli 变更后全 `tests/`，`-W error`）
 - `pyright.txt` — C5 触及源码与测试 0 errors；全项目基线 36 == main
-- `static-digest-only.txt` — digest-only 静态检查（repo 无 logger/print、CLI TTY 单次回显、pepper 不落日志）
+- `static-digest-only.txt` — digest-only 静态检查（repo 无 logger/print、CLI TTY 单次回显、pepper 不落日志）+ 审计负向用例实跑 PASSED
 - `runbook-drill.md` — 三条恢复路径可执行程序；演练结论「待回填」
 
 ## 验收标准
 
-- [ ] 一次性兑换原子性：并发兑换同 Token 仅一个成功（§5.9.13「retry 不生成第二个 tenant/conversation/seed」） — 验证：并发兑换测试 —— 状态：`test_exchange_atomic.py` 已写（PG write-only，暂不跑 PG，未实跑）
-- [ ] 明文 Token/session 不落库/不落日志/不落前端持久（digest-only） — 验证：grep digest-only + 日志审计 —— 状态：静态 grep 证据已确认（static-digest-only.txt）；非 PG 日志负向 `test_pepper_not_written_to_logs` 已实跑；`test_admin_audit_never_records_plaintext` 已写（PG write-only，未实跑）
-- [ ] 401（无 principal/session 过期）vs 403（封禁/capability 不足/资源非本 tenant）契约；错误响应不泄露存在性 — 验证：错误码负向测试 —— 状态：`test_http_contract.py` 负向用例已写（PG write-only，未实跑）
-- [ ] mutation API 同时检查 Origin/Referer + session-bound CSRF token；WS handshake 校验 Cookie + Origin — 验证：CSRF/Origin 测试矩阵 —— 状态：`test_http_contract.py::test_logout_csrf_matrix` 已写（PG write-only，未实跑）
-- [ ] provisioning pending/failed 幂等 retry，ready 前不发 Token；pending 在进程启动时从 PG 恢复 — 验证：provisioning 状态机 + 重启恢复测试 —— 状态：`test_provisioning_lifecycle.py` 8 项已写（PG write-only，未实跑）
-- [ ] 普通/admin 凭据分离（`__Host-nexus_session` vs `__Host-nexus_admin`） — 验证：Cookie 隔离测试 —— 状态：`test_http_contract.py` Cookie 隔离用例已写（PG write-only，未实跑）
+- [x] 一次性兑换原子性：并发兑换同 Token 仅一个成功（§5.9.13「retry 不生成第二个 tenant/conversation/seed」） — 验证：并发兑换测试 —— 实跑：`test_exchange_atomic.py` 服务器 PG 上 PASSED（并发恰好 1 成功 + 重复兑换 401）
+- [x] 明文 Token/session 不落库/不落日志/不落前端持久（digest-only） — 验证：grep digest-only + 日志审计 —— 实跑：静态 grep（static-digest-only.txt）、`test_pepper_not_written_to_logs`、`test_admin_audit_never_records_plaintext`（PG）均 PASSED
+- [x] 401（无 principal/session 过期）vs 403（封禁/capability 不足/资源非本 tenant）契约；错误响应不泄露存在性 — 验证：错误码负向测试 —— 实跑：`test_http_contract.py` 负向用例服务器 PG 上 PASSED
+- [x] mutation API 同时检查 Origin/Referer + session-bound CSRF token；WS handshake 校验 Cookie + Origin — 验证：CSRF/Origin 测试矩阵 —— 实跑：`test_http_contract.py::test_user_mutation_requires_origin_then_csrf` + `test_ws_guard.py` 均 PASSED
+- [x] provisioning pending/failed 幂等 retry，ready 前不发 Token；pending 在进程启动时从 PG 恢复 — 验证：provisioning 状态机 + 重启恢复测试 —— 实跑：`test_provisioning_lifecycle.py` 8 项服务器 PG 上 PASSED（状态机/崩溃恢复/幂等 retry/failed 恢复/suspend/revoke/审计）
+- [x] 普通/admin 凭据分离（`__Host-nexus_session` vs `__Host-nexus_admin`） — 验证：Cookie 隔离测试 —— 实跑：`test_http_contract.py` Cookie 隔离用例 PASSED
 - [x] `pilot-admin` CLI 命令面完整且明文不进进程参数/仓库/配置/DB（local 强制恢复仅 trusted-host TTY） — 验证：CLI 测试 + grep —— 实跑：`test_cli_layer.py` 10 项通过（TTY 门禁、回显次数、命令面），static-digest-only.txt grep 证实明文仅 CLI TTY 一次
 - [ ] runbook 演练：recovery token 丢失 / 疑似泄露 / 数据库恢复三条路径 — 验证：runbook 测试记录 —— 状态：`runbook-drill.md` 已备 3 路径可执行程序，演练结论标「待回填」未实跑（不虚构证据）
-- [ ] timeout 契约：普通 idle 7d / absolute 30d；admin idle 30min / absolute 12h（数值按 §10 PROPOSED DEFAULT 于 P-1 复核） — 验证：配置 + timeout 测试 —— 状态：配置冻结值 `test_auth_config.py` 3 项已实跑；运行时 idle/absolute 校验逻辑归 PG（session 行固化，write-only 未实跑）
+- [ ] timeout 契约：普通 idle 7d / absolute 30d；admin idle 30min / absolute 12h（数值按 §10 PROPOSED DEFAULT 于 P-1 复核） — 验证：配置 + timeout 测试 —— 实跑：配置冻结值 `test_auth_config.py` 3 项 PASSED；创建时固化到 session 行并经 exchange 流程真实验证（PG），但 idle/absolute 过期边界未做等待式负向断言
 - [x] 本 task 不触碰 attachment（C6）、工具 allowlist 执行（C7） — 验证：PR diff 范围检查 —— 实查：rebase 到 origin/main（f4639a99，C3 并入）后 `git diff origin/main..HEAD` 仅 39 个 C5 相关文件，无 C6/C7 文件
 
 > 判定「真正完成」而非「执行过」：并发兑换原子性、digest-only 存储、401/403 区分三条是安全闸门，必须有负向测试证据；runbook 演练需真实按步骤执行并记录。

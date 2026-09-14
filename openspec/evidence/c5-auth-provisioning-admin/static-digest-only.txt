@@ -33,13 +33,15 @@ grep `bootstrap/auth/` 中 `logger\.|print\(|\braw\b`：
   校验），无任何输出落库或落日志。Set-Cookie 里出现的 `raw_session`/明文 token
   仅一次（HTTP 响应面）。
 
-## 4. 日志审计负向用例（PG 写不跑）
+## 4. 日志审计负向用例（PG 实跑）
 
 `tests/auth_provisioning/test_provisioning_lifecycle.py::test_admin_audit_never_records_plaintext`
 ：bootstrap + 轮换 + 兑换 + suspend 后全量读取 `admin_audit_events`，断言
-detail/字段不出现在何明文 token / session / recovery 值。
+detail/字段不出现在何明文 token / session / recovery 值。**服务器 PG 上实跑
+PASSED**（见 `pytest-pg-integration.txt`，47 passed）。
 
 ## 5. 器检原始输出（本文件所在目录）
 
 - `pytest-auth-unit.txt`：crypto/ws_guard/cli_layer 24 项实跑通过。
-- `pytest-pg-writeonly.txt`：PG 集成 20 项收集可用、当前 skip（暂不跑 PG）。
+- `pytest-pg-integration.txt`：auth/provisioning PG 集成 20 项 + 非 PG 单元
+  27 项，服务器 PG（SSH tunnel）实跑 47 passed；含上述审计负向用例。

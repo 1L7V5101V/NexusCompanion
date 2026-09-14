@@ -1,0 +1,70 @@
+# C5 auth/provisioning PG 集成测试 —— 服务器 PG 实跑（47 passed）
+
+含 migration 4 / exchange_atomic 2 / http_contract 6 / provisioning_lifecycle 8
+共 20 项 PG 集成，外加非 PG 单元 27 项（crypto/ws_guard/cli_layer/auth_config）。
+
+- 命令: `NEXUS_TEST_PG_URL=... python -m pytest tests/auth_provisioning -v`
+- 目标库: 阿里云 ECS（114.55.243.189）docker 内 `nexus-pg-c5`，经本地
+  SSH tunnel `127.0.0.1:15433 -> nexus-pg-c5:5432`；fixture 会 DROP/CREATE
+  独立 scratch 库 `nexus_c5test`，在空库上 `alembic upgrade head`。
+- 运行时间: 2026-09-14；本地 pytest 9.1.1 / psycopg 3.3.4
+- 决策状态: ✅ 已从「暂不跑 PG / write-only」转为真实执行。此前同名位置的
+  记录是 20 项全 skip（本地无 PG）；现已在服务器 PG 上完整跑通。
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- D:\.Projects\NexusCompanion\.venv\Scripts\python.exe
+rootdir: D:\.Projects\NexusCompanion-c5
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
+collecting ... collected 47 items
+
+tests/auth_provisioning/test_auth_config.py::test_timeout_defaults_match_roadmap_freeze PASSED [  2%]
+tests/auth_provisioning/test_auth_config.py::test_timeout_seconds_properties PASSED [  4%]
+tests/auth_provisioning/test_auth_config.py::test_cookie_and_admin_boundary_defaults PASSED [  6%]
+tests/auth_provisioning/test_cli_layer.py::test_unknown_command_usage PASSED [  8%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_reads_tty_and_rotates PASSED [ 10%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_non_tty_rejected PASSED [ 12%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_interactive_requires_current_token PASSED [ 14%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_extra_flag_rejected PASSED [ 17%]
+tests/auth_provisioning/test_cli_layer.py::test_bootstrap_requires_tty_and_echoes_once PASSED [ 19%]
+tests/auth_provisioning/test_cli_layer.py::test_bootstrap_non_tty_rejected PASSED [ 21%]
+tests/auth_provisioning/test_cli_layer.py::test_status_prints_non_secret_summary PASSED [ 23%]
+tests/auth_provisioning/test_cli_layer.py::test_revoke_sessions_requires_all PASSED [ 25%]
+tests/auth_provisioning/test_cli_layer.py::test_disable_enable PASSED    [ 27%]
+tests/auth_provisioning/test_crypto.py::test_new_token_has_prefix_and_high_entropy PASSED [ 29%]
+tests/auth_provisioning/test_crypto.py::test_digest_value_sha256_hex_and_deterministic PASSED [ 31%]
+tests/auth_provisioning/test_crypto.py::test_csrf_for_session_bound_and_recomputable PASSED [ 34%]
+tests/auth_provisioning/test_crypto.py::test_pepper_env_priority_over_file PASSED [ 36%]
+tests/auth_provisioning/test_crypto.py::test_pepper_generates_and_persists_file PASSED [ 38%]
+tests/auth_provisioning/test_crypto.py::test_pepper_hex_or_utf8_and_length_rejection PASSED [ 40%]
+tests/auth_provisioning/test_crypto.py::test_pepper_not_written_to_logs PASSED [ 42%]
+tests/auth_provisioning/test_exchange_atomic.py::test_concurrent_exchange_single_success PASSED [ 44%]
+tests/auth_provisioning/test_exchange_atomic.py::test_digest_not_persisted_anywhere PASSED [ 46%]
+tests/auth_provisioning/test_http_contract.py::test_user_exchange_cookie_attributes PASSED [ 48%]
+tests/auth_provisioning/test_http_contract.py::test_user_exchange_invalid_and_consumed_token_401 PASSED [ 51%]
+tests/auth_provisioning/test_http_contract.py::test_user_me_requires_session_401_on_suspend PASSED [ 53%]
+tests/auth_provisioning/test_http_contract.py::test_user_mutation_requires_origin_then_csrf PASSED [ 55%]
+tests/auth_provisioning/test_http_contract.py::test_admin_loopback_rejects_non_allowlisted_source PASSED [ 57%]
+tests/auth_provisioning/test_http_contract.py::test_admin_loopback_ok_and_create_account_flow PASSED [ 59%]
+tests/auth_provisioning/test_migration.py::test_upgrade_head_creates_all_five_tables PASSED [ 61%]
+tests/auth_provisioning/test_migration.py::test_admin_single_row_check PASSED [ 63%]
+tests/auth_provisioning/test_migration.py::test_digest_check_requires_64_hex PASSED [ 65%]
+tests/auth_provisioning/test_migration.py::test_downgrade_then_upgrade_cycle PASSED [ 68%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_provisioning_state_machine PASSED [ 70%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_idempotent_retry_no_second_agent PASSED [ 72%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_executor_failure_marks_failed_and_retry_recovers PASSED [ 74%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_crash_recovery_resets_stale_running PASSED [ 76%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_suspend_revokes_credentials_unsuspend_not_resurrect PASSED [ 78%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_suspended_forbidden_branch PASSED [ 80%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_revoke_terminal_no_credential_no_delete PASSED [ 82%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_admin_audit_never_records_plaintext PASSED [ 85%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_without_cookie_rejected PASSED [ 87%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_invalid_session_rejected PASSED [ 89%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_origin_not_allowlisted_rejected PASSED [ 91%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_ok_returns_session PASSED [ 93%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_admin_uses_admin_cookie PASSED [ 95%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_accepts_referer_origin_fallback PASSED [ 97%]
+tests/auth_provisioning/test_ws_guard.py::test_origin_helpers PASSED     [100%]
+
+======================= 47 passed in 108.31s (0:01:48) ========================
