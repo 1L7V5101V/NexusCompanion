@@ -81,7 +81,7 @@ def upgrade() -> None:
     )
     op.execute("""
         CREATE TABLE admin_credentials (
-            id              SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+            id              SMALLINT PRIMARY KEY DEFAULT 1,
             enabled         BOOLEAN     NOT NULL DEFAULT TRUE,
             recovery_digest VARCHAR(64) NULL,
             digest_version  SMALLINT    NOT NULL DEFAULT 1,

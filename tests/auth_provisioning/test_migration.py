@@ -32,7 +32,10 @@ EXPECTED_CONSTRAINTS = {
         "ck_auth_sessions_principal",
         "fk_auth_sessions_account_id",
     },
-    "admin_credentials": {"ck_admin_credentials_id", "ck_admin_credentials_digest"},
+    "admin_credentials": {
+        "ck_admin_credentials_singleton",
+        "ck_admin_credentials_digest_sha256",
+    },
     "tenant_provisioning_jobs": {
         "uq_tenant_provisioning_jobs_tenant",
         "ck_tenant_provisioning_jobs_status",
@@ -48,7 +51,9 @@ EXPECTED_INDEXES = {
 }
 
 
-def test_upgrade_head_creates_all_five_tables(c5_pg_url: str) -> None:
+def test_upgrade_head_creates_all_five_tables(c5_pg_url: str, c5_reset) -> None:
+    # 本会话 scratch DB 被全量运行前面文件共享：先复位到空库基线。
+    c5_reset()
     with psycopg.connect(c5_pg_url) as conn:
         tables = {
             row[0]
@@ -84,8 +89,9 @@ def test_upgrade_head_creates_all_five_tables(c5_pg_url: str) -> None:
         assert conn.execute("SELECT count(*) FROM admin_credentials").fetchone()[0] == 0
 
 
-def test_admin_single_row_check(c5_pg_url: str) -> None:
+def test_admin_single_row_check(c5_pg_url: str, c5_reset) -> None:
     """CHECK (id = 1) 强制单行：插入第二行被拒。"""
+    c5_reset()
     with psycopg.connect(c5_pg_url, autocommit=True) as conn:
         conn.execute(
             "INSERT INTO admin_credentials (id, recovery_digest) "
@@ -105,8 +111,9 @@ def test_admin_single_row_check(c5_pg_url: str) -> None:
         assert conn.execute("SELECT count(*) FROM admin_credentials").fetchone()[0] == 1
 
 
-def test_digest_check_requires_64_hex(c5_pg_url: str) -> None:
+def test_digest_check_requires_64_hex(c5_pg_url: str, c5_reset) -> None:
     """access_tokens / admin_credentials 只接受 64 字符（SHA-256 hex digest，ADR-1）。"""
+    c5_reset()
     with psycopg.connect(c5_pg_url, autocommit=True) as conn:
         conn.execute(
             "INSERT INTO test_accounts (id, status) VALUES "

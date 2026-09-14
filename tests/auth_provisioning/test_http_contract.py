@@ -35,8 +35,10 @@ FOREIGN_ORIGIN = "https://evil.example.com"
 
 def make_runtime(c5_pg_url: str, workspace: Path, *, origin_allowlist=None, admin_allow_ips=None):
     """独立 AuthRuntime（同一 scratch PG）。config 参数化用于 ADR-5 回环门禁。"""
-    full = Config(provider="", model="", api_key="")
-    full.storage.postgres_url = c5_pg_url
+    full = Config(provider="", model="", api_key="", system_prompt="")
+    full.storage.postgres_url = c5_pg_url.replace(
+        "postgresql://", "postgresql+asyncpg://"
+    )
     full.auth = AuthConfig(
         cookie_secure=False,
         origin_allowlist=origin_allowlist if origin_allowlist is not None else [DEV_ORIGIN],
@@ -53,7 +55,9 @@ def build_app(runtime) -> FastAPI:
 
 
 def make_client(runtime) -> TestClient:
-    return TestClient(build_app(runtime))
+    # TestClient 默认 request.client.host = "testclient"，会触发 _loopback
+    # （admin_allow_ips）403；显式指定本机来源使回环判定与实际部署一致。
+    return TestClient(build_app(runtime), client=("127.0.0.1", 54321))
 
 
 def parse_cookies(set_cookie: list[str]) -> dict[str, str]:
@@ -114,7 +118,7 @@ async def test_user_exchange_invalid_and_consumed_token_401(c5_pg_url, tmp_path)
     runtime = make_runtime(c5_pg_url, tmp_path / "ws-401")
     client = make_client(runtime)
     try:
-        forged = client.post("/api/auth/exchange", json={"token": "nxt_inv_forged"})
+        forged = client.post("/api/auth/exchange", json={"token": "nxt_forged"})
         assert forged.status_code == 401
         assert forged.json() == {"detail": "invalid credentials"}
 
@@ -192,8 +196,13 @@ async def test_admin_loopback_rejects_non_allowlisted_source(c5_pg_url, tmp_path
         await runtime.aclose()
 
 
-async def test_admin_loopback_ok_and_create_account_flow(c5_pg_url, tmp_path):
-    """本机来源（127.0.0.1 ∈ 默认 admin_allow_ips）通过回环门禁并走完整创建流程。"""
+async def test_admin_loopback_ok_and_create_account_flow(c5_pg_url, c5_reset, tmp_path):
+    """本机来源（127.0.0.1 ∈ 默认 admin_allow_ips）通过回环门禁并走完整创建流程。
+
+    `c5_reset` 保证空基线：admin 单行 bootstrap 幂等（共享 scratch DB 中前置
+    测试可能已 bootstrap，重复 bootstrap 抛 AdminBootstrapError）。
+    """
+    c5_reset()
     runtime = make_runtime(c5_pg_url, tmp_path / "ws-adm")
     client = make_client(runtime)
     try:

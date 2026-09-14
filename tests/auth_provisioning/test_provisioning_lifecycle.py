@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-import uuid
-
 import pytest
 from sqlalchemy import func, select, update
 
@@ -48,13 +46,23 @@ class _FailExecutor:
         raise RuntimeError(self._message)
 
 
-async def _force_job_status(c5_runtime, job_id: str, status: str) -> None:
-    """测试 seam：只改动 job 状态，不触碰账号（模拟崩溃残留/历史失败入口）。"""
+async def _force_job_status(c5_runtime, job_id, status: str) -> None:
+    """测试 seam：只改动 job 状态，不触碰账号（模拟崩溃残留/历史失败入口）。
+
+    - ``job_id`` 直接交给 SQLAlchemy 绑定（asyncpg pgproto.UUID 不需要 Python 侧
+      转换，避免 ``uuid.UUID(pgproto.UUID)`` 抛 AttributeError）。
+    - 置 ``running`` 时必须同时给出 tenant（真实路径 ``mark_running`` 首步原子
+      分配）；否则违背 ``ck_tenant_provisioning_jobs_tenant_present``（CHECK
+      status IN ('pending','failed') OR tenant_id IS NOT NULL）。
+    """
+    values: dict = {"status": status}
+    if status == "running":
+        values["tenant_id"] = f"pilot-{'-'.join(str(job_id).split('-')[0:4])}"
     async with c5_runtime.session_factory() as sess, sess.begin():
         await sess.execute(
             update(TenantProvisioningJobModel)
-            .where(TenantProvisioningJobModel.id == uuid.UUID(job_id))
-            .values(status=status)
+            .where(TenantProvisioningJobModel.id == job_id)
+            .values(**values)
         )
 
 
@@ -91,7 +99,7 @@ async def test_account_provisioning_state_machine(c5_runtime, c5_reset):
 
     # active 后才能签发。
     _, raw = await c5_runtime.auth.issue_invitation(account_id, issued_by="test")
-    assert raw.startswith("nxt_inv_")
+    assert raw.startswith("nxt_")  # design §112 冻结前缀
 
 
 async def test_idempotent_retry_no_second_agent(c5_runtime, c5_reset):
@@ -183,7 +191,7 @@ async def test_suspend_revokes_credentials_unsuspend_not_resurrect(c5_runtime, c
         await c5_runtime.auth.validate_user_session(raw_session)
     # unsuspend 后新签发可用。
     _, new_raw = await c5_runtime.auth.issue_invitation(account["id"], issued_by="test")
-    assert new_raw.startswith("nxt_inv_")
+    assert new_raw.startswith("nxt_")  # design §112 冻结前缀
 
 
 async def test_account_suspended_forbidden_branch(c5_runtime, c5_active_account):
@@ -218,9 +226,20 @@ async def test_revoke_terminal_no_credential_no_delete(c5_runtime, c5_active_acc
     assert account_row["status"] == "revoked"
 
 
-async def test_admin_audit_never_records_plaintext(c5_runtime, c5_active_account):
-    """admin_audit_events 审计明细不含明文凭据（token/session/recovery，ADR-1）。"""
-    account, raw = await c5_active_account()
+async def test_admin_audit_never_records_plaintext(c5_runtime, c5_active_account, c5_reset):
+    """admin_audit_events 审计明细不含明文凭据（token/session/recovery，ADR-1）。
+
+    `c5_reset` 提供空基线但必须**先于**凭据建立：bootstrap/rotate 依赖 admin
+    单行从空库开始（共享 scratch DB 中前置测试可能已 bootstrap，重复 bootstrap
+    抛 AdminBootstrapError）；账号/邀请/会话也须在 reset 之后重建，否则残影行
+    被截断后 id 悬空。
+    """
+    c5_reset()
+    created = await c5_runtime.provisioning.create_account(display_name="Audit")
+    await c5_runtime.provisioning.run_pending(max_jobs=4)
+    account = await c5_runtime.provisioning.get_account(created["account"]["id"])
+    assert account["status"] == "active"
+    _, raw = await c5_runtime.auth.issue_invitation(account["id"], issued_by="test")
     _, raw_session = await c5_runtime.auth.exchange_invitation(raw, user_agent="t")
     recovery_raw = await c5_runtime.admin.bootstrap()
     await c5_runtime.admin.rotate_recovery_token(None, force_local=True)
