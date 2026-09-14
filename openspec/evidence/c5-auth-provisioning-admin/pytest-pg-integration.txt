@@ -1,70 +1,93 @@
-# C5 auth/provisioning PG 集成测试 —— 服务器 PG 实跑（47 passed）
+# C5 auth/provisioning PG 集成测试 —— 服务器 PG 实跑（53 passed）
 
 含 migration 4 / exchange_atomic 2 / http_contract 6 / provisioning_lifecycle 8
-共 20 项 PG 集成，外加非 PG 单元 27 项（crypto/ws_guard/cli_layer/auth_config）。
+/ session_timeout 6 共 26 项 PG 集成，外加非 PG 单元 27 项
+（crypto/ws_guard/cli_layer/auth_config）。
+
+session_timeout 6 项为本次补齐的 timeout 过期边界负向断言（task-05 验收项
+「timeout 契约」此前标注「idle/absolute 过期边界未做等待式负向断言」）：
+
+- idle 边界两侧：`last_seen_at` 回拨到 idle 边界内侧 60s 通过、外侧 60s 拒绝
+  （同一 digest 的对照，排除「任意回拨都失败」的伪通过）；
+- absolute 优先于 idle：`last_seen_at` 刚更新过，`expires_at` 过期照样拒绝，
+  且把 `expires_at` 挪回内侧即恢复通过（证明失败原因确为 absolute 过期）；
+- admin 会话同语义（admin idle 30min 配置源）；
+- 等待式真实时钟：`idle_timeout_s=1` 的行固化超时后真实 sleep，同一判定失效；
+- HTTP 层：过期会话在 `/api/auth/me`（用户面）与 `/api/admin/test-accounts`
+  （管理面，回环来源已通过）上均为 401 `authentication required`，非 403/500。
+
+回拨时间戳由 Python 侧 `datetime.now(UTC)` 计算后作为参数写入，不使用 SQL
+`now()`：应用进程与断言时钟同源，不依赖测试机与 PG 主机的时钟同步。
 
 - 命令: `NEXUS_TEST_PG_URL=... python -m pytest tests/auth_provisioning -v`
 - 目标库: 阿里云 ECS（114.55.243.189）docker 内 `nexus-pg-c5`，经本地
   SSH tunnel `127.0.0.1:15433 -> nexus-pg-c5:5432`；fixture 会 DROP/CREATE
   独立 scratch 库 `nexus_c5test`，在空库上 `alembic upgrade head`。
 - 运行时间: 2026-09-14；本地 pytest 9.1.1 / psycopg 3.3.4
-- 决策状态: ✅ 已从「暂不跑 PG / write-only」转为真实执行。此前同名位置的
+- 决策状态: 已从「暂不跑 PG / write-only」转为真实执行。此前同名位置的
   记录是 20 项全 skip（本地无 PG）；现已在服务器 PG 上完整跑通。
 
 ============================= test session starts =============================
-platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- D:\.Projects\NexusCompanion\.venv\Scripts\python.exe
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- D:\.Projects\NexusCompanion-c5\.venv\Scripts\python.exe
+cachedir: .pytest_cache
 rootdir: D:\.Projects\NexusCompanion-c5
 configfile: pytest.ini
 plugins: anyio-4.13.0, asyncio-1.4.0, timeout-2.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
-collecting ... collected 47 items
+collecting ... collected 53 items
 
-tests/auth_provisioning/test_auth_config.py::test_timeout_defaults_match_roadmap_freeze PASSED [  2%]
-tests/auth_provisioning/test_auth_config.py::test_timeout_seconds_properties PASSED [  4%]
-tests/auth_provisioning/test_auth_config.py::test_cookie_and_admin_boundary_defaults PASSED [  6%]
-tests/auth_provisioning/test_cli_layer.py::test_unknown_command_usage PASSED [  8%]
-tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_reads_tty_and_rotates PASSED [ 10%]
-tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_non_tty_rejected PASSED [ 12%]
-tests/auth_provisioning/test_cli_layer.py::test_rotate_interactive_requires_current_token PASSED [ 14%]
-tests/auth_provisioning/test_cli_layer.py::test_rotate_extra_flag_rejected PASSED [ 17%]
-tests/auth_provisioning/test_cli_layer.py::test_bootstrap_requires_tty_and_echoes_once PASSED [ 19%]
-tests/auth_provisioning/test_cli_layer.py::test_bootstrap_non_tty_rejected PASSED [ 21%]
-tests/auth_provisioning/test_cli_layer.py::test_status_prints_non_secret_summary PASSED [ 23%]
-tests/auth_provisioning/test_cli_layer.py::test_revoke_sessions_requires_all PASSED [ 25%]
-tests/auth_provisioning/test_cli_layer.py::test_disable_enable PASSED    [ 27%]
-tests/auth_provisioning/test_crypto.py::test_new_token_has_prefix_and_high_entropy PASSED [ 29%]
-tests/auth_provisioning/test_crypto.py::test_digest_value_sha256_hex_and_deterministic PASSED [ 31%]
-tests/auth_provisioning/test_crypto.py::test_csrf_for_session_bound_and_recomputable PASSED [ 34%]
-tests/auth_provisioning/test_crypto.py::test_pepper_env_priority_over_file PASSED [ 36%]
-tests/auth_provisioning/test_crypto.py::test_pepper_generates_and_persists_file PASSED [ 38%]
-tests/auth_provisioning/test_crypto.py::test_pepper_hex_or_utf8_and_length_rejection PASSED [ 40%]
-tests/auth_provisioning/test_crypto.py::test_pepper_not_written_to_logs PASSED [ 42%]
-tests/auth_provisioning/test_exchange_atomic.py::test_concurrent_exchange_single_success PASSED [ 44%]
-tests/auth_provisioning/test_exchange_atomic.py::test_digest_not_persisted_anywhere PASSED [ 46%]
-tests/auth_provisioning/test_http_contract.py::test_user_exchange_cookie_attributes PASSED [ 48%]
-tests/auth_provisioning/test_http_contract.py::test_user_exchange_invalid_and_consumed_token_401 PASSED [ 51%]
-tests/auth_provisioning/test_http_contract.py::test_user_me_requires_session_401_on_suspend PASSED [ 53%]
-tests/auth_provisioning/test_http_contract.py::test_user_mutation_requires_origin_then_csrf PASSED [ 55%]
-tests/auth_provisioning/test_http_contract.py::test_admin_loopback_rejects_non_allowlisted_source PASSED [ 57%]
-tests/auth_provisioning/test_http_contract.py::test_admin_loopback_ok_and_create_account_flow PASSED [ 59%]
-tests/auth_provisioning/test_migration.py::test_upgrade_head_creates_all_five_tables PASSED [ 61%]
-tests/auth_provisioning/test_migration.py::test_admin_single_row_check PASSED [ 63%]
-tests/auth_provisioning/test_migration.py::test_digest_check_requires_64_hex PASSED [ 65%]
-tests/auth_provisioning/test_migration.py::test_downgrade_then_upgrade_cycle PASSED [ 68%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_provisioning_state_machine PASSED [ 70%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_idempotent_retry_no_second_agent PASSED [ 72%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_executor_failure_marks_failed_and_retry_recovers PASSED [ 74%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_crash_recovery_resets_stale_running PASSED [ 76%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_suspend_revokes_credentials_unsuspend_not_resurrect PASSED [ 78%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_suspended_forbidden_branch PASSED [ 80%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_revoke_terminal_no_credential_no_delete PASSED [ 82%]
-tests/auth_provisioning/test_provisioning_lifecycle.py::test_admin_audit_never_records_plaintext PASSED [ 85%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_without_cookie_rejected PASSED [ 87%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_invalid_session_rejected PASSED [ 89%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_origin_not_allowlisted_rejected PASSED [ 91%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_ok_returns_session PASSED [ 93%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_admin_uses_admin_cookie PASSED [ 95%]
-tests/auth_provisioning/test_ws_guard.py::test_handshake_accepts_referer_origin_fallback PASSED [ 97%]
+tests/auth_provisioning/test_auth_config.py::test_timeout_defaults_match_roadmap_freeze PASSED [  1%]
+tests/auth_provisioning/test_auth_config.py::test_timeout_seconds_properties PASSED [  3%]
+tests/auth_provisioning/test_auth_config.py::test_cookie_and_admin_boundary_defaults PASSED [  5%]
+tests/auth_provisioning/test_cli_layer.py::test_unknown_command_usage PASSED [  7%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_reads_tty_and_rotates PASSED [  9%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_force_local_non_tty_rejected PASSED [ 11%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_interactive_requires_current_token PASSED [ 13%]
+tests/auth_provisioning/test_cli_layer.py::test_rotate_extra_flag_rejected PASSED [ 15%]
+tests/auth_provisioning/test_cli_layer.py::test_bootstrap_requires_tty_and_echoes_once PASSED [ 16%]
+tests/auth_provisioning/test_cli_layer.py::test_bootstrap_non_tty_rejected PASSED [ 18%]
+tests/auth_provisioning/test_cli_layer.py::test_status_prints_non_secret_summary PASSED [ 20%]
+tests/auth_provisioning/test_cli_layer.py::test_revoke_sessions_requires_all PASSED [ 22%]
+tests/auth_provisioning/test_cli_layer.py::test_disable_enable PASSED    [ 24%]
+tests/auth_provisioning/test_crypto.py::test_new_token_has_prefix_and_high_entropy PASSED [ 26%]
+tests/auth_provisioning/test_crypto.py::test_digest_value_sha256_hex_and_deterministic PASSED [ 28%]
+tests/auth_provisioning/test_crypto.py::test_csrf_for_session_bound_and_recomputable PASSED [ 30%]
+tests/auth_provisioning/test_crypto.py::test_pepper_env_priority_over_file PASSED [ 32%]
+tests/auth_provisioning/test_crypto.py::test_pepper_generates_and_persists_file PASSED [ 33%]
+tests/auth_provisioning/test_crypto.py::test_pepper_hex_or_utf8_and_length_rejection PASSED [ 35%]
+tests/auth_provisioning/test_crypto.py::test_pepper_not_written_to_logs PASSED [ 37%]
+tests/auth_provisioning/test_exchange_atomic.py::test_concurrent_exchange_single_success PASSED [ 39%]
+tests/auth_provisioning/test_exchange_atomic.py::test_digest_not_persisted_anywhere PASSED [ 41%]
+tests/auth_provisioning/test_http_contract.py::test_user_exchange_cookie_attributes PASSED [ 43%]
+tests/auth_provisioning/test_http_contract.py::test_user_exchange_invalid_and_consumed_token_401 PASSED [ 45%]
+tests/auth_provisioning/test_http_contract.py::test_user_me_requires_session_401_on_suspend PASSED [ 47%]
+tests/auth_provisioning/test_http_contract.py::test_user_mutation_requires_origin_then_csrf PASSED [ 49%]
+tests/auth_provisioning/test_http_contract.py::test_admin_loopback_rejects_non_allowlisted_source PASSED [ 50%]
+tests/auth_provisioning/test_http_contract.py::test_admin_loopback_ok_and_create_account_flow PASSED [ 52%]
+tests/auth_provisioning/test_migration.py::test_upgrade_head_creates_all_five_tables PASSED [ 54%]
+tests/auth_provisioning/test_migration.py::test_admin_single_row_check PASSED [ 56%]
+tests/auth_provisioning/test_migration.py::test_digest_check_requires_64_hex PASSED [ 58%]
+tests/auth_provisioning/test_migration.py::test_downgrade_then_upgrade_cycle PASSED [ 60%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_provisioning_state_machine PASSED [ 62%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_idempotent_retry_no_second_agent PASSED [ 64%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_executor_failure_marks_failed_and_retry_recovers PASSED [ 66%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_crash_recovery_resets_stale_running PASSED [ 67%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_suspend_revokes_credentials_unsuspend_not_resurrect PASSED [ 69%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_account_suspended_forbidden_branch PASSED [ 71%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_revoke_terminal_no_credential_no_delete PASSED [ 73%]
+tests/auth_provisioning/test_provisioning_lifecycle.py::test_admin_audit_never_records_plaintext PASSED [ 75%]
+tests/auth_provisioning/test_session_timeout.py::test_idle_boundary_inside_passes_outside_rejected PASSED [ 77%]
+tests/auth_provisioning/test_session_timeout.py::test_absolute_expiry_rejects_even_with_recent_activity PASSED [ 79%]
+tests/auth_provisioning/test_session_timeout.py::test_admin_session_idle_and_absolute_boundaries PASSED [ 81%]
+tests/auth_provisioning/test_session_timeout.py::test_real_clock_idle_expiry_after_short_timeout PASSED [ 83%]
+tests/auth_provisioning/test_session_timeout.py::test_expired_session_is_401_at_http_layer PASSED [ 84%]
+tests/auth_provisioning/test_session_timeout.py::test_expired_admin_session_is_401_at_http_layer PASSED [ 86%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_without_cookie_rejected PASSED [ 88%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_invalid_session_rejected PASSED [ 90%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_origin_not_allowlisted_rejected PASSED [ 92%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_ok_returns_session PASSED [ 94%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_admin_uses_admin_cookie PASSED [ 96%]
+tests/auth_provisioning/test_ws_guard.py::test_handshake_accepts_referer_origin_fallback PASSED [ 98%]
 tests/auth_provisioning/test_ws_guard.py::test_origin_helpers PASSED     [100%]
 
-======================= 47 passed in 108.31s (0:01:48) ========================
+======================= 53 passed in 141.39s (0:02:21) ========================
