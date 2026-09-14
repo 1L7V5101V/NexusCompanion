@@ -5,14 +5,14 @@
 
 ## 1. P0 段 — lease coverage + revocation recheck
 
-- [ ] 1.1 `agent/plugins/snapshot.py`: 新增 `work_runtime_lease(store)` 统一 work-start lease 入口（acquire → bind → yield → reset + release，异常/取消路径统一释放）。验证：`tests/c8/test_lease_coverage.py`
-- [ ] 1.2 `agent/looping/ports.py` + `agent/looping/core.py`: `AgentLoopDeps` 增加 `runtime_snapshot_store`/`revocation_gate`；`AgentLoop.bind_runtime_snapshot_store()` 接通 bootstrap 既有 getattr seam；`_process_with_runtime_admission` work start 取 lease + gate recheck；`trigger_memory_consolidation` 取 lease。验证：`tests/c8/test_lease_coverage.py`、`tests/c8/test_revocation_gate.py`
-- [ ] 1.3 `bootstrap/tools.py` + `bootstrap/proactive.py`: AgentLoop store/gate 接线；`build_proactive_runtime` 显式传 `runtime_snapshot_store`；ProactiveLoop tick start gate recheck（`proactive_v2/loop.py`）。验证：`tests/c8/test_lease_coverage.py`（proactive 用例）
-- [ ] 1.4 maintenance/optimizer：`core/memory/markdown.py`（MarkdownMemoryMaintenance 后台 worker task work-start lease）+ `proactive_v2/memory_optimizer.py`（`optimize`/`MemoryOptimizerLoop.run` lease）。验证：`tests/c8/test_lease_coverage.py`
-- [ ] 1.5 scheduler/plugin job recheck：`agent/scheduler.py::_execute`（instant 直推前）+ `agent/plugins/jobs.py::_run_one`（执行前）接 `RevocationGate`。验证：`tests/c8/test_revocation_gate.py`
-- [ ] 1.6 `agent/admission/revocation.py`: `RevocationGate` + `TenantStatusProvider`（fail-closed：REVOKED/SUSPENDED/UNKNOWN/provider 异常拒绝；provider=None 显式 dev-open 带日志）。验证：`tests/c8/test_revocation_gate.py`（含 `test_old_snapshot_cannot_bypass_revocation`）
-- [ ] 1.7 热更新不切 snapshot 测试 + drift lease 归属证明（drift 在 proactive tick lease 内执行）。验证：`tests/c8/test_lease_coverage.py`
-- [ ] 1.8 P0 lease coverage audit 报告（全入口逐条：入口/接线点/测试入口/结论）。验证：`openspec/evidence/c8-runtimesnapshot-secrets/lease-coverage-audit.md` + 复现命令
+- [x] 1.1 `agent/plugins/snapshot.py`: 新增 `work_runtime_lease(store)` 统一 work-start lease 入口（acquire → bind → yield → reset + release，异常/取消路径统一释放）。验证：`tests/c8/test_lease_coverage.py`
+- [x] 1.2 `agent/looping/ports.py` + `agent/looping/core.py`: `AgentLoopDeps` 增加 `runtime_snapshot_store`/`revocation_gate`；`AgentLoop.bind_runtime_snapshot_store()` 接通 bootstrap 既有 getattr seam；`_process_with_runtime_admission` work start 取 lease + gate recheck；`trigger_memory_consolidation` 取 lease。验证：`tests/c8/test_lease_coverage.py`、`tests/c8/test_revocation_gate.py`
+- [x] 1.3 `bootstrap/tools.py` + `bootstrap/proactive.py`: AgentLoop store/gate 接线；`build_proactive_runtime` 显式传 `runtime_snapshot_store`；ProactiveLoop tick start gate recheck（`proactive_v2/loop.py`）。验证：`tests/c8/test_lease_coverage.py`（proactive 用例）
+- [x] 1.4 maintenance/optimizer：`core/memory/markdown.py`（MarkdownMemoryMaintenance 后台 worker task work-start lease）+ `proactive_v2/memory_optimizer.py`（`optimize`/`MemoryOptimizerLoop.run` lease）。验证：`tests/c8/test_lease_coverage.py`
+- [x] 1.5 scheduler/plugin job recheck：`agent/scheduler.py::_execute`（instant 直推前）+ `agent/plugins/jobs.py`（执行前）接 `RevocationGate`。验证：`tests/c8/test_revocation_gate.py`
+- [x] 1.6 `agent/admission/revocation.py`: `RevocationGate` + `TenantStatusProvider`（fail-closed：REVOKED/SUSPENDED/UNKNOWN/provider 异常拒绝；provider=None 显式 dev-open 带日志）。验证：`tests/c8/test_revocation_gate.py`（含 `test_old_snapshot_cannot_bypass_revocation`）
+- [x] 1.7 热更新不切 snapshot 测试 + drift lease 归属证明（drift 在 proactive tick lease 内执行）。验证：`tests/c8/test_lease_coverage.py`
+- [x] 1.8 P0 lease coverage audit 报告（全入口逐条：入口/接线点/测试入口/结论）。验证：`openspec/evidence/c8-runtimesnapshot-secrets/lease-coverage-audit.md` + 复现命令
 
 ## 2. P2 段 — per-task context + hook failure + secrets
 
