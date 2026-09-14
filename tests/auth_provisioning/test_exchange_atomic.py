@@ -18,32 +18,23 @@ from bootstrap.db.repository.auth_repo import CredentialExchangeError
 pytestmark = pytest.mark.postgres
 
 
-@pytest.fixture
-def c5_active_account(c5_runtime, c5_reset, tmp_path):
-    """基线：active 账号 + 一个未消费邀请 Token（raw）。"""
-    c5_reset()
-
-    async def _make() -> tuple[dict, str]:
-        account = await c5_runtime.provisioning.create_account(display_name="Exchange")
-        await c5_runtime.provisioning.run_pending(max_jobs=4)
-        account = await c5_runtime.provisioning.get_account(account["account"]["id"])
-        assert account["status"] == "active"
-        _, raw = await c5_runtime.auth.issue_invitation(account["id"], issued_by="test")
-        return account, raw
-
-    return _make
-
-
 def _new_peer(c5_pg_url: str, tmp_path):
     """独立 AuthRuntime（单独连接池 + 单独 pepper 目录），模拟独立消费者。"""
     from agent.config_models import Config
 
-    cfg = Config(provider="", model="", api_key="")
-    cfg.storage.postgres_url = c5_pg_url
+    cfg = Config(provider="", model="", api_key="", system_prompt="")
+    cfg.storage.postgres_url = c5_pg_url.replace(
+        "postgresql://", "postgresql+asyncpg://"
+    )
     return create_auth_runtime(config=cfg, workspace=tmp_path / f"ws-{id(tmp_path)}")
 
 
-async def test_concurrent_exchange_single_success(c5_pg_url, c5_active_account, tmp_path):
+async def test_concurrent_exchange_single_success(
+    c5_pg_url, c5_active_account, tmp_path, monkeypatch
+):
+    # 独立消费者共享同一服务端 pepper（生产经 NEXUS_AUTH_PEPPER env 注入，
+    # design.md：pepper 与 DB 备份须对应同一代次）；分离的是连接池与 workspace。
+    monkeypatch.setenv("NEXUS_AUTH_PEPPER", "w" * 32)
     account, raw = await c5_active_account()
     peer_a = _new_peer(c5_pg_url, tmp_path)
     peer_b = _new_peer(c5_pg_url, tmp_path)
@@ -61,7 +52,7 @@ async def test_concurrent_exchange_single_success(c5_pg_url, c5_active_account, 
 
         # 成功方返回正确的账号归属。
         winner = ok[0]["session"]
-        assert str(winner["account_id"]) == account["id"]
+        assert str(winner["account_id"]) == str(account["id"])
         assert winner["principal_type"] == "user"
 
         # 再次兑换（原始字符串）同样失败：token 已消费。

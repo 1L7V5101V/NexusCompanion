@@ -88,7 +88,10 @@ class ProvisioningRepository:
                 id=acc_id, status="provisioning", display_name=display_name
             )
             job = TenantProvisioningJobModel(account_id=acc_id, status="pending")
+            # 无 relationship 时 UoW 不保证 INSERT 顺序：先 flush account 再插 job，
+            # 否则 job 先落库触发 FK 违约（PG 实测）。
             sess.add(account)
+            await sess.flush()
             sess.add(job)
             await sess.flush()
             return {"account": _account_to_dict(account), "job": _job_to_dict(job)}
@@ -154,10 +157,17 @@ class ProvisioningRepository:
             row.finished_at = None
             row.last_error = None
             await sess.flush()
+            # flush 后内存行上被 UPDATE 触及的列已过期；改在 flush 前取快照，
+            # 避免提交/读取时在同步上下文触发 lazy load（MissingGreenlet）。
             return _job_to_dict(row)
 
     async def mark_ready(self, job_id: uuid.UUID | str) -> dict:
-        """单事务：job `ready` + 账号 `active`（§5.9.13：ready 才可签发 Token）。"""
+        """单事务：job `ready` + 账号 `active`（§5.9.13：ready 才可签发 Token）。
+
+        首次执行要求账号 `provisioning`；幂等 retry 允许账号已是 `active`
+        （§5.9.13 同 tenant 不产生第二个 agent，重跑直接收尾）。task 状态机
+        禁止项（suspended/revoked/failed 终态）仍抛 :class:`ProvisioningStateError`。
+        """
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
                 TenantProvisioningJobModel, _coerce(job_id), with_for_update=True
@@ -169,7 +179,7 @@ class ProvisioningRepository:
             account = await sess.get(
                 TestAccountModel, row.account_id, with_for_update=True
             )
-            if account is None or account.status != "provisioning":
+            if account is None or account.status not in ("provisioning", "active"):
                 raise ProvisioningStateError(
                     f"账号 {row.account_id!r} 状态非法，不能进入 active"
                 )
@@ -177,6 +187,7 @@ class ProvisioningRepository:
             row.finished_at = _UTC_NOW()
             account.status = "active"
             await sess.flush()
+            # flush 后属性可能过期：在 flush 前取快照再返回。
             return _job_to_dict(row)
 
     async def mark_failed(self, job_id: uuid.UUID | str, error: str) -> dict:
@@ -245,9 +256,11 @@ class ProvisioningRepository:
                     f"账号 {account_id!r} 状态 {row.status if row else 'missing'} "
                     f"不允许推进到 {status}"
                 )
+            # 快照先于 flush：mutate 后列会过期，异常路径不能做同步 lazy load。
             row.status = status
+            snapshot = _account_to_dict(row)
             await sess.flush()
-            return _account_to_dict(row)
+            return snapshot
 
     async def suspend_account(
         self, account_id: uuid.UUID | str, *, reason: str = "suspended"
@@ -266,6 +279,9 @@ class ProvisioningRepository:
                     f"账号 {account_id!r} 状态 {row.status if row else 'missing'} "
                     "不允许 suspend"
                 )
+            # 快照先于 bulk UPDATE：UPDATE 会把内存行上被触及的列标记过期，
+            # 提交后再读属性会在同步上下文触发 lazy load（MissingGreenlet）。
+            snapshot = _account_to_dict(row)
             row.status = "suspended"
             await sess.execute(
                 update(AccessTokenModel)
@@ -284,7 +300,7 @@ class ProvisioningRepository:
                 .values(revoked_at=now, revoked_reason=reason)
             )
             await sess.flush()
-            return _account_to_dict(row)
+            return snapshot
 
     async def revoke_account(
         self, account_id: uuid.UUID | str, *, reason: str = "revoked"
@@ -304,6 +320,8 @@ class ProvisioningRepository:
                     f"账号 {account_id!r} 状态 {row.status if row else 'missing'} "
                     "不允许 revoke"
                 )
+            # 快照先于 bulk UPDATE（理由同 suspend_account）。
+            snapshot = _account_to_dict(row)
             row.status = "revoked"
             await sess.execute(
                 update(AccessTokenModel)
@@ -322,7 +340,7 @@ class ProvisioningRepository:
                 .values(revoked_at=now, revoked_reason=reason)
             )
             await sess.flush()
-            return _account_to_dict(row)
+            return snapshot
 
     async def count_jobs(self, *, status: str | None = None) -> int:
         async with self._sf() as sess:
@@ -336,7 +354,9 @@ class ProvisioningRepository:
 def _coerce(value: uuid.UUID | str) -> uuid.UUID:
     if isinstance(value, uuid.UUID):
         return value
-    return uuid.UUID(str(value))
+    # asyncpg 返回 pgproto.UUID（非 uuid.UUID 子类，也无 .replace）：统一按
+    # canonical hex 再构造，避免 uuid.UUID() 直接吃它时抛 AttributeError。
+    return uuid.UUID(hex=str(value))
 
 
 def _new_tenant_id() -> str:

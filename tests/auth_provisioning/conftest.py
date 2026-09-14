@@ -124,8 +124,11 @@ def c5_runtime(c5_pg_url, c5_workspace):
 
     from bootstrap.auth.runtime import create_auth_runtime
 
-    cfg = Config(provider="", model="", api_key="")
-    cfg.storage.postgres_url = c5_pg_url
+    cfg = Config(provider="", model="", api_key="", system_prompt="")
+    # create_auth_runtime 用 async engine：驱动必须是 asyncpg（sync 串只给迁移/psycopg）。
+    cfg.storage.postgres_url = c5_pg_url.replace(
+        "postgresql://", "postgresql+asyncpg://"
+    )
     runtime = create_auth_runtime(config=cfg, workspace=c5_workspace)
     yield runtime
     # NullPool engine 无跨 loop 残留；测试尾无需保留运行 loop。
@@ -153,3 +156,24 @@ def c5_seed_account(c5_runtime, c5_reset):
         return _state["account"]
 
     return _seed
+
+
+@pytest.fixture
+def c5_active_account(c5_runtime, c5_reset, tmp_path):
+    """共享基线：active 账号 + 一个未消费邀请 Token（raw）。
+
+    定义在 conftest 使 `test_exchange_atomic.py` 与 `test_provisioning_lifecycle.py`
+    共用（pytest fixture 不跨文件作用域，放任一测试文件都会导致只收集该文件
+    时 ``fixture not found``）。
+    """
+    c5_reset()
+
+    async def _make(display_name: str = "Exchange") -> tuple[dict, str]:
+        created = await c5_runtime.provisioning.create_account(display_name=display_name)
+        await c5_runtime.provisioning.run_pending(max_jobs=4)
+        account = await c5_runtime.provisioning.get_account(created["account"]["id"])
+        assert account["status"] == "active"
+        _, raw = await c5_runtime.auth.issue_invitation(account["id"], issued_by="test")
+        return account, raw
+
+    return _make
