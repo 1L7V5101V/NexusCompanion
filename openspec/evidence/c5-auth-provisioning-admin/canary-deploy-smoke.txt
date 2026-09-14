@@ -1,0 +1,99 @@
+# C5 部署实况冒烟（云端 canary）——2026-09-14
+
+在阿里云 ECS 上把 C5 代码同步进 canary 容器后，对**真实运行中的 HTTP 服务**做的
+端到端冒烟。此前 47 项 PG 集成测试是本地 pytest 经 SSH tunnel 打服务器 PG
+（pytest-pg-integration.txt）；本文件记录的是**部署态**验证：真实进程 + 真实
+控制面库 + 真实 Cookie/CSRF/Origin 门禁。
+
+## 环境
+
+- 主机：阿里云 ECS `114.55.243.189`（hostname `iZbp1dawqduma3fhil0gr2Z`）
+- 容器：`nexus-c5-canary`（`python main.py`，监听 `0.0.0.0:2236`），
+  `/app` = 宿主 `/opt/nexus-c5-test` bind mount
+- 控制面库：`nexus-pg-c5` 内 `nexus` 库，`alembic_version = b7e2f9a4c1d8`（C5 head）
+- 生产容器 `NexusCompanion` 与此隔离（不同 docker 网络 `nexuscompanion_default`，
+  无 `nexus-pg-c5` DNS，config 无 `[storage]`/`[auth]` 段）——冒烟全程未触碰生产。
+
+## 同步内容（canary 原落后一个修复提交 405d4dc3）
+
+比对 18 个 C5 核心文件的 md5：16 个与 feature HEAD 一致，2 个不同 —— 正是修复
+提交改动的两个文件。经 `git archive HEAD`（28 文件，340 KB）打包 scp 解包：
+
+- `alembic/versions/b7e2f9a4c1d8_c5_auth_provisioning.py`：`admin_credentials.id`
+  的列内 CHECK 改为命名表约束 `ck_admin_credentials_singleton`。
+- `bootstrap/db/repository/provisioning_repo.py`：bulk UPDATE 前取快照再返回
+  （修 suspend/revoke 的 MissingGreenlet）、`_coerce` 用 `uuid.UUID(hex=str(v))`
+  吃 asyncpg `pgproto.UUID`、`mark_ready` 幂等 retry、account 先 flush 再插 job。
+- `tests/auth_provisioning/*` 同步。
+
+解包后两文件 md5 = 本地期望值（`ed494428` / `729bd284`）；服务器专属文件
+（`config.toml` 等）未在 tar 内、md5 未变。随后 `docker restart nexus-c5-canary`
+健康（Uvicorn running on 0.0.0.0:2236）。
+
+## 冒烟脚本与做法
+
+1. 管理凭据未落任何明文到对话/仓库：用 C5 自身的**丢失凭据恢复**路径
+   `pilot-admin rotate-recovery-token --force-local`，经 `script` 分配 pty 满足
+   TTY 门禁；输出重定向到服务器文件，仅提取 token 到容器内 `/tmp/rtk`，
+   跑完即删（服务器与容器内均 `rm`）。
+2. 冒烟在 canary 容器内对 `http://127.0.0.1:2236` 发真实 HTTP。
+
+## 结果：20/20 PASS
+
+```
+== A. admin 兑换（loopback + Origin，cookie_secure=false → nexus_admin）==
+  [PASS] exchange 200                      status=200
+  [PASS] cookie 名 = nexus_admin（非__Host）  name=nexus_admin
+  [PASS] HttpOnly 属性
+  [PASS] SameSite=Lax
+  [PASS] Secure 未置（dev HTTP）
+== B. 反例矩阵 ==
+  [PASS] 错 token 401                       status=401
+  [PASS] 无 cookie 401                      status=401
+  [PASS] 错 Origin 403                      status=403
+  [PASS] 缺 CSRF 403                        status=403
+== C. 建账号 + provisioning ==
+  [PASS] 建账号 200                          status=200
+  [PASS] 邀请 token nxt_ 前缀                prefix=nxt_
+  [PASS] 账号 active（provisioning 完成）     status=active
+  [PASS] 列表含该账号
+== D. suspend（运行时修复面）==
+  [PASS] suspend 200 未 500/崩溃             status=200 body={"status":"suspended"}
+  [PASS] 列表显示 suspended
+== E. unsuspend 再 revoke（终态）==
+  [PASS] unsuspend 200                      status=200
+  [PASS] revoke 200 未 500/崩溃              status=200 body={"status":"revoked"}
+  [PASS] 列表显示 revoked
+RESULT: ALL-PASS
+```
+
+要点：
+
+- **suspend / revoke 在部署态不再 500**（`{"status":"suspended"}` /
+  `{"status":"revoked"}` 正常返回），即 405d4dc3 的 MissingGreenlet 修复在真实
+  进程中生效。
+- **Cookie 名符合设计退化规则**：`cookie_secure=false`（dev HTTP）时
+  `cookie_name()` 返回 `nexus_admin` 而非 `__Host-nexus_admin`；HttpOnly、
+  SameSite=Lax 均在，Secure 按配置未置。
+- **401/403 契约**：无凭据 401、错 Origin / 缺 CSRF 403，与 §5.9.3 冻结一致。
+- **admin 审计全量落库**（`admin_audit_events` 最近记录）：
+  `account.revoked / account.unsuspended / account.suspended /
+  provisioning.job_ready / provisioning.account_created / admin.rotate_recovery`。
+
+## digest-only 门禁（部署态库内复核，仅查格式不打印值）
+
+```
+access_tokens      | 3 行 | 3 行 64-hex digest
+auth_sessions      | 5 行 | 5 行 64-hex digest
+admin_credentials  | 1 行 | 1 行 digest 合法（64-hex 或 NULL）
+admin_audit_events | 明文前缀（nxt_ / nad_ / ns_）命中 = 0
+```
+
+## 未覆盖 / 边界
+
+- canary 未启用 chat 通道（config 无 `[channels]`，`channels.chat.enabled` 默认
+  False），故用户面 `/api/auth/*`（exchange/me/logout）与 WS handshake 未在此
+  部署态冒烟；这两面的验证证据在 `pytest-pg-integration.txt`
+  （test_http_contract 6 项 + test_ws_guard 7 项，服务器 PG 实跑）。
+- 冒烟在 canary `nexus` 库留下若干测试账号（含终态 revoked 的），
+  §5.9.13 语义下 revoke 不删数据，属预期。
