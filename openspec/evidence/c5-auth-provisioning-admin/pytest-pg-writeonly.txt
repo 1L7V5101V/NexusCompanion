@@ -1,0 +1,23 @@
+# C5 auth PG 集成测试（写但不跑）——暂不跑 PG 决策；收集与跳过行为实跑确认
+# 命令: pytest -q -W error tests/auth_provisioning（PG 不可用 → 全部 SKIP）
+# 含 migration 4 / exchange_atomic 2 / provisioning_lifecycle 8 / http_contract 6 = 20 项
+# 运行时间: 2026-09-14
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\.Projects\NexusCompanion-c5
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
+collected 47 items
+
+tests\auth_provisioning\test_auth_config.py ...                            [  6%]
+tests\auth_provisioning\test_cli_layer.py ..........                       [ 27%]
+tests\auth_provisioning\test_crypto.py .......                             [ 42%]
+tests\auth_provisioning\test_exchange_atomic.py ss                         [ 46%]
+tests\auth_provisioning\test_http_contract.py ssssss                       [ 59%]
+tests\auth_provisioning\test_migration.py ssss                             [ 68%]
+tests\auth_provisioning\test_provisioning_lifecycle.py ssssssss            [ 85%]
+tests\auth_provisioning\test_ws_guard.py .......                           [100%]
+
+======================= 27 passed, 20 skipped in 4.95s ========================
