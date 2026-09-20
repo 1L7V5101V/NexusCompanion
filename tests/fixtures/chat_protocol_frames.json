@@ -1,12 +1,15 @@
 {
   "protocol_version": 0,
-  "note": "WebChat dev v0 shared contract fixture (roadmap 5.9.4). Backend tests and the frontend protocol.ts must both conform to these shapes. seq is stamped by the server at send time; null here means the server assigns it.",
+  "note": "WebChat dev v0 shared contract fixture (roadmap 5.9.4). Backend tests and the frontend protocol.ts must both conform to these shapes. seq is stamped by the server at send time; null here means the server assigns it. hello 的 account_id/tenant_id/conversation_id 由服务端派生，客户端字段不参与授权。",
   "server_to_client": {
     "hello": {
       "type": "hello",
       "seq": null,
       "connection_id": "0f8b7a1c2d3e4f5a6b7c8d9e0f1a2b3c",
       "protocol_version": 0,
+      "account_id": "dev:local",
+      "tenant_id": "default",
+      "conversation_id": "chat:local",
       "session_key": "chat:local",
       "latest_seq": 42
     },
@@ -86,32 +89,81 @@
   },
   "error_cases": {
     "send_missing_client_message_id": {
-      "type": "send",
-      "content": "用户输入"
+      "frame": {
+        "type": "send",
+        "content": "用户输入"
+      },
+      "expect": {
+        "type": "error",
+        "code": "bad_client_message_id"
+      }
     },
     "send_bad_client_message_id": {
-      "type": "send",
-      "client_message_id": "not-a-uuid",
-      "content": "用户输入"
+      "frame": {
+        "type": "send",
+        "client_message_id": "not-a-uuid",
+        "content": "用户输入"
+      },
+      "expect": {
+        "type": "error",
+        "code": "bad_client_message_id"
+      }
     },
     "send_empty_content": {
-      "type": "send",
-      "client_message_id": "3f2a9c1e-8b4d-4c3a-9e2f-1a2b3c4d5e6f",
-      "content": ""
+      "frame": {
+        "type": "send",
+        "client_message_id": "3f2a9c1e-8b4d-4c3a-9e2f-1a2b3c4d5e6f",
+        "content": ""
+      },
+      "expect": {
+        "type": "error",
+        "code": "bad_request"
+      }
     },
     "unknown_type": {
-      "type": "mystery"
+      "frame": {
+        "type": "mystery"
+      },
+      "expect": {
+        "type": "error",
+        "code": "unknown_type"
+      }
+    },
+    "bad_replay_cursor": {
+      "frame": {
+        "type": "replay",
+        "after_seq": -1
+      },
+      "expect": {
+        "type": "error",
+        "code": "bad_replay"
+      }
     }
   },
+  "identity": {
+    "dev_account_id": "dev:local",
+    "dev_tenant_id": "default",
+    "dev_conversation_id": "chat:local",
+    "session_key": "chat:local"
+  },
   "replay_semantics": {
+    "replayable_types": ["message.accepted", "turn.completed", "turn.failed"],
     "droppable_types": ["message.delta", "tool.started", "tool.completed"],
-    "replayable_types": [
-      "hello",
-      "message.accepted",
-      "turn.completed",
-      "turn.failed",
-      "replay_required"
-    ],
-    "overload_close_code": 1013
-  }
+    "never_replayed_types": ["hello", "message.delta", "tool.started", "tool.completed", "error", "pong", "replay_required"],
+    "soft_limit": 192,
+    "hard_limit": 256,
+    "max_payload_bytes": 1048576,
+    "overload_close_code": 1013,
+    "idle_close_code": 1001,
+    "dev_only_close_code": 1008
+  },
+  "error_codes": [
+    "bad_frame",
+    "unknown_type",
+    "bad_client_message_id",
+    "bad_request",
+    "bad_replay",
+    "overload",
+    "dev_only"
+  ]
 }

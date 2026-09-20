@@ -22,6 +22,15 @@ from typing import Any
 
 PROTOCOL_VERSION = 0
 
+# ── dev-only 单用户身份（P0.5）────────────────────────────────────
+# 无 C5 认证前的显式回退路径：身份由服务端在 accept 后立即决定，客户端提交的
+# tenant/account/session 字段一律不参与。P1 由 C5 principal + C1
+# CanonicalIdentityResolver 产出（account → tenant → canonical conversation）。
+DEV_ACCOUNT_ID = "dev:local"
+DEV_TENANT_ID = "default"
+"""显式 dev 单用户 tenant。与 ``infra.storage.tenancy.DEFAULT_TENANT`` 同值，
+由 ``tests/test_web_chat_protocol_contract.py`` 断言以防两处漂移。"""
+
 # Server → client
 HELLO = "hello"
 MESSAGE_ACCEPTED = "message.accepted"
@@ -42,21 +51,47 @@ PING = "ping"
 # WebSocket close code：outbound 队列持续过载时服务端主动断开。
 CLOSE_OVERLOAD = 1013
 
+# WebSocket close code：连接空闲超时（静默连接回收，§5.9.4 连接生命周期）。
+CLOSE_IDLE_TIMEOUT = 1001
+
+# WebSocket close code：dev-only 门禁拒绝（非 dev 模式或非回环客户端）。
+CLOSE_DEV_ONLY = 1008
+
+# error 帧 code 词表（前后端共用 fixture 的 error 用例）。
+ERR_BAD_FRAME = "bad_frame"
+ERR_UNKNOWN_TYPE = "unknown_type"
+ERR_BAD_CLIENT_MESSAGE_ID = "bad_client_message_id"
+ERR_BAD_REQUEST = "bad_request"
+ERR_BAD_REPLAY = "bad_replay"
+ERR_OVERLOAD = "overload"
+ERR_DEV_ONLY = "dev_only"
+ERROR_CODES = frozenset(
+    {
+        ERR_BAD_FRAME,
+        ERR_UNKNOWN_TYPE,
+        ERR_BAD_CLIENT_MESSAGE_ID,
+        ERR_BAD_REQUEST,
+        ERR_BAD_REPLAY,
+        ERR_OVERLOAD,
+        ERR_DEV_ONLY,
+    }
+)
+
 # 慢消费者降级阈值：outbound 队列达到该深度时开始丢弃可丢帧。
 SOFT_LIMIT = 192
 
-# 发送时由服务端盖 seq 戳的帧；其中终端帧/ack 帧同时进入重放 buffer。
-_SEQ_STAMPED = frozenset(
-    {MESSAGE_ACCEPTED, MESSAGE_DELTA, TOOL_STARTED, TOOL_COMPLETED, TURN_COMPLETED, TURN_FAILED}
-)
+# 可重放边界：只有 ack/终态帧分配单调 seq 并进入重放 buffer；delta/tool 帧是在线
+# 优化，始终 seq=null，也不承诺重放（§5.9.4）。
 _REPLAYABLE = frozenset({MESSAGE_ACCEPTED, TURN_COMPLETED, TURN_FAILED})
+# 携带服务端分配 seq 的帧类型，与可重放边界一致。
+_SEQ_STAMPED = _REPLAYABLE
 _DROPPABLE = frozenset({MESSAGE_DELTA, TOOL_STARTED, TOOL_COMPLETED})
 
 DEV_SESSION_KEY = "chat:local"
 
 
 def is_seq_stamped(frame_type: str) -> bool:
-    """该帧类型发送时分配 seq。"""
+    """该帧类型携带服务端分配的 seq（= 可重放边界）。"""
     return frame_type in _SEQ_STAMPED
 
 
@@ -70,12 +105,28 @@ def is_droppable(frame_type: str) -> bool:
     return frame_type in _DROPPABLE
 
 
-def hello(*, connection_id: str, session_key: str, latest_seq: int) -> dict[str, Any]:
+def hello(
+    *,
+    connection_id: str,
+    latest_seq: int,
+    account_id: str = DEV_ACCOUNT_ID,
+    tenant_id: str = DEV_TENANT_ID,
+    conversation_id: str = DEV_SESSION_KEY,
+    session_key: str = DEV_SESSION_KEY,
+) -> dict[str, Any]:
+    """握手帧：回服务端派生的身份三元组与最新游标。
+
+    ``account_id`` / ``tenant_id`` / ``conversation_id`` 全部由服务端决定，
+    返回给客户端仅供展示/调试，不构成授权来源（§5.9.1 硬冲突）。
+    """
     return {
         "type": HELLO,
         "seq": None,
         "connection_id": connection_id,
         "protocol_version": PROTOCOL_VERSION,
+        "account_id": account_id,
+        "tenant_id": tenant_id,
+        "conversation_id": conversation_id,
         "session_key": session_key or DEV_SESSION_KEY,
         "latest_seq": latest_seq,
     }
