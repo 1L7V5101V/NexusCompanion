@@ -125,6 +125,43 @@ async def test_lane_owner_released_on_exception_and_cancel() -> None:
     assert await asyncio.wait_for(router.run_interactive("t1", "w3", work), 1.0) == "ok"
 
 
+async def test_cancelled_while_waiting_for_lane_lock_releases_pending() -> None:
+    """取消发生在「等待 lane.lock」期间时，interactive_pending 必须归还。"""
+    router = TenantLaneRouter()
+    release = asyncio.Event()
+
+    async def held() -> str:
+        await release.wait()
+        return "held"
+
+    holder = asyncio.create_task(router.run_interactive("t1", "w1", held))
+    await asyncio.sleep(0.01)
+
+    async def queued() -> str:
+        return "queued"
+
+    waiter = asyncio.create_task(router.run_interactive("t1", "w2", queued))
+    await asyncio.sleep(0.01)
+    assert router.interactive_pending("t1") == 1
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    # pending 泄漏会让 wait_interactive_idle 永久 busy，同 tenant maintenance 永远延后
+    assert router.interactive_pending("t1") == 0
+    release.set()
+    assert await holder == "held"
+
+    async def maintenance() -> str:
+        return "m"
+
+    assert (
+        await router.run_maintenance("t1", "m1", maintenance, acquire_timeout=0.2)
+        == "m"
+    )
+
+
 async def test_close_rejects_new_work_but_drains_active() -> None:
     router = TenantLaneRouter()
     release = asyncio.Event()

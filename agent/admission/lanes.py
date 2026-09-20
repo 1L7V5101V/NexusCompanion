@@ -119,6 +119,7 @@ class TenantLaneRouter:
         lane.interactive_pending += 1
         lane._idle.clear()
         started = time.monotonic()
+        claimed = False
         try:
             async with lane.lock:
                 if self._closed:
@@ -126,6 +127,7 @@ class TenantLaneRouter:
                         f"lane 已关闭，放弃 interactive work: {work_id}"
                     )
                 lane.interactive_pending -= 1
+                claimed = True
                 if lane.interactive_pending == 0 and not lane.interactive_active:
                     lane._idle.set()
                 lane.interactive_active = True
@@ -149,6 +151,14 @@ class TenantLaneRouter:
         except BaseException:
             self._log(tenant_id, work_id, WorkKind.INTERACTIVE, "failed", started)
             raise
+        finally:
+            if not claimed:
+                # 等待 lane.lock 期间被取消、或拿到锁后因 close 放弃：此时
+                # interactive_pending 尚未归还（成功路径在锁内递减）。不补齐会
+                # 让 wait_interactive_idle 永久 busy，同 tenant maintenance 永远延后。
+                lane.interactive_pending -= 1
+                if lane.interactive_pending == 0 and not lane.interactive_active:
+                    lane._idle.set()
 
     async def run_maintenance(
         self,

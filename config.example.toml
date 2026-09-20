@@ -94,6 +94,20 @@ search_enabled = true
 # memory_optimizer_enabled = true
 # memory_optimizer_interval_seconds = 64800
 
+# 可选：C3 tenant admission / 有界队列 / 分类资源并发上限。
+# 默认值为 Pilot §10 DECIDED 冻结初始值；压测记录前不建议调整。
+# [agent.admission]
+# global_interactive_queue = 128
+# per_tenant_pending_interactive = 16
+# global_maintenance_queue = 64
+# llm_concurrency = 30
+# embedding_concurrency = 4
+# mcp_concurrency = 8
+# process_concurrency = 2
+# ws_outbound_soft_limit = 192
+# ws_outbound_hard_limit = 256
+# ws_outbound_max_payload_bytes = 1048576
+
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
 # toolsets = ["meta_common", "spawn", "schedule", "mcp"]
