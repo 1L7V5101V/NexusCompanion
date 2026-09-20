@@ -395,11 +395,22 @@ class AppRuntime:
                     self.plugin_service_host.swap_plugin_services
                 )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
-            if self.config.channels.chat.enabled:
-                from infra.channels.web_chat_channel import WebChatChannel
+            chat_config = self.config.channels.chat
+            if chat_config.enabled and not self.config.dev_mode:
+                raise RuntimeError(
+                    "[channels.chat].enabled=true 要求 agent.dev_mode=true："
+                    "WebChat 是 dev-only 通道，P1 认证与 tenant 隔离落地前不得启用。"
+                )
+            if chat_config.enabled:
+                from infra.channels.web_chat_channel import (
+                    WebChatChannel,
+                    WebChatIdentity,
+                )
 
                 self.web_chat_channel = WebChatChannel(
-                    channel_name=self.config.channels.chat.channel_name,
+                    channel_name=chat_config.channel_name,
+                    identity=WebChatIdentity(),
+                    ws_idle_timeout_s=chat_config.idle_timeout_s,
                     ws_outbound_soft_limit=self.config.admission.ws_outbound_soft_limit,
                     ws_outbound_hard_limit=self.config.admission.ws_outbound_hard_limit,
                     ws_outbound_max_payload_bytes=(
@@ -474,8 +485,10 @@ class AppRuntime:
                 self.chat_server = build_chat_server(
                     workspace=self.workspace,
                     channel=self.web_chat_channel,
+                    dev_mode=self.config.dev_mode,
                     host=self.config.channels.chat.host,
                     port=self.config.channels.chat.port,
+                    allow_public_bind=self.config.channels.chat.allow_public_bind,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
