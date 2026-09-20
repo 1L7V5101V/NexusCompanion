@@ -1011,6 +1011,7 @@ class MarkdownMemoryMaintenance:
         event_bus: "EventBus | None" = None,
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
+        global_maintenance_limit: int = GLOBAL_MAINTENANCE_QUEUE,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
@@ -1029,8 +1030,11 @@ class MarkdownMemoryMaintenance:
         self._maintenance_queues: dict[str, deque[str]] = {}
         self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
         self._maintenance_locks: dict[str, asyncio.Lock] = {}
-        # C3 §10 DECIDED：global maintenance ready queue 初始上限 64（可注入调整）。
-        self._maintenance_global_limit = GLOBAL_MAINTENANCE_QUEUE
+        # C3 §10 DECIDED：global maintenance ready queue 初始上限 64，
+        # 由 [agent.admission].global_maintenance_queue 覆盖（见 bootstrap/memory.py）。
+        if global_maintenance_limit < 1:
+            raise ValueError("global_maintenance_limit 必须为正")
+        self._maintenance_global_limit = global_maintenance_limit
         self._maintenance_deferred_count = 0
         if event_bus is not None:
             event_bus.on(TurnCommitted, self.on_turn_committed)
@@ -1047,8 +1051,8 @@ class MarkdownMemoryMaintenance:
     def _enqueue_maintenance(self, session_key: str) -> None:
         if self._get_session is None or self._save_session is None:
             return
-        # C3 §5.9.5：per-(tenant,kind) maintenance 意图合并（同类至多 1 个 pending，
-        # consolidation/refresh 均从 durable state 重算，重复意图无信息量）；
+        # C3 §5.9.5：per-session maintenance 意图合并（单槽至多 1 个 pending；
+        # consolidation/refresh 由执行时状态决定，重复意图无信息量）；
         # 全局在途 maintenance 达上限时延后（不拒绝用户消息，下轮 turn 再触发）。
         queue = self._maintenance_queues.get(session_key)
         if queue is not None and len(queue) > 0:
@@ -1248,6 +1252,7 @@ def build_markdown_memory_runtime(
     event_bus: "EventBus | None" = None,
     recent_context_provider: "LLMProvider | None" = None,
     recent_context_model: str | None = None,
+    global_maintenance_limit: int = GLOBAL_MAINTENANCE_QUEUE,
 ) -> MarkdownMemoryRuntime:
     store = MarkdownMemoryStore(workspace)
     maintenance = MarkdownMemoryMaintenance(
@@ -1258,5 +1263,6 @@ def build_markdown_memory_runtime(
         event_bus=event_bus,
         recent_context_provider=recent_context_provider,
         recent_context_model=recent_context_model,
+        global_maintenance_limit=global_maintenance_limit,
     )
     return MarkdownMemoryRuntime(store=store, maintenance=maintenance)
