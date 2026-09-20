@@ -73,8 +73,12 @@ def cmd_wait(_args: list[str]) -> int:
 
 
 def cmd_admin_exchange(args: list[str]) -> int:
+    # exchange 是 mutation：ADR-4 要求 Origin/Referer 命中 allowlist，必须带头。
     status, _, headers = _req(
-        "POST", "/api/admin/auth/exchange", body={"token": _read(args[0])}
+        "POST",
+        "/api/admin/auth/exchange",
+        body={"token": _read(args[0])},
+        headers={"origin": ORIGIN},
     )
     print(f"admin-exchange status={status}")
     if status == 200 and len(args) > 1:
@@ -86,7 +90,13 @@ def cmd_admin_exchange(args: list[str]) -> int:
 
 
 def cmd_user_exchange(args: list[str]) -> int:
-    status, _, _ = _req("POST", "/api/auth/exchange", body={"token": _read(args[0])})
+    # 同上：exchange 需带 Origin（ADR-4），否则 403。
+    status, _, _ = _req(
+        "POST",
+        "/api/auth/exchange",
+        body={"token": _read(args[0])},
+        headers={"origin": ORIGIN},
+    )
     print(f"user-exchange status={status}")
     return 0
 

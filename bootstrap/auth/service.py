@@ -41,6 +41,7 @@ from bootstrap.db.repository.auth_repo import (
     SessionForbiddenError,
     SessionInvalidError,
 )
+from bootstrap.db.repository._ids import to_uuid
 from bootstrap.db.repository.provisioning_repo import (
     ProvisioningRepository,
     ProvisioningStateError,
@@ -136,7 +137,7 @@ class AuthService:
         )
 
     def csrf_token(self, session_id: UUID | str) -> str:
-        return csrf_for_session(_coerce_uuid(session_id).bytes, self._pepper.get())
+        return csrf_for_session(to_uuid(session_id).bytes, self._pepper.get())
 
     async def revoke_token(self, token_id: UUID | str, *, reason: str) -> dict | None:
         return await self._repo.revoke_token(token_id, reason=reason)
@@ -316,7 +317,7 @@ class ProvisioningService:
     async def retry(self, job_id: UUID | str) -> dict:
         """failed → pending 并立即执行一次（幂等，同 tenant）。"""
         await self._repo.retry_failed(job_id)
-        return await self._execute_job(_coerce_uuid(job_id))
+        return await self._execute_job(to_uuid(job_id))
 
     async def _execute_job(self, job_id: UUID) -> dict:
         running = await self._repo.mark_running(job_id)
@@ -367,6 +368,15 @@ class ProvisioningService:
     async def get_account(self, account_id: UUID | str) -> dict | None:
         return await self._repo.get_account(account_id)
 
+    async def get_job(self, job_id: UUID | str) -> dict | None:
+        """按 id 读 provisioning job。
+
+        管理面失败可见性依赖它（§5.9.13 / design ADR-6「失败 → ``failed`` +
+        ``last_error`` 对管理员可见」）：``bootstrap.auth.api`` 在建号未收敛时
+        返回 job 状态与失败原因。
+        """
+        return await self._repo.get_job(job_id)
+
     async def _audit(
         self,
         action: str,
@@ -379,7 +389,3 @@ class ProvisioningService:
         await self._admin_audit.audit(
             actor="provisioning", action=action, target_type="account", target_id=target, detail=detail
         )
-
-
-def _coerce_uuid(value: UUID | str) -> UUID:
-    return value if isinstance(value, UUID) else UUID(str(value))

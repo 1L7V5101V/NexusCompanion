@@ -107,7 +107,7 @@ def upgrade() -> None:
         )
         """)
     op.execute(
-        "CREATE INDEX ix_admin_audit_created ON admin_audit_events (created_at)"
+        "CREATE INDEX ix_admin_audit_created ON admin_audit_events (created_at DESC)"
     )
     op.execute("""
         CREATE TABLE tenant_provisioning_jobs (

@@ -25,6 +25,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    desc,
     func,
     text,
 )
@@ -194,7 +195,7 @@ class AdminAuditEventModel(Base):
     """
 
     __tablename__ = "admin_audit_events"
-    __table_args__ = (Index("ix_admin_audit_created", "created_at"),)
+    __table_args__ = (Index("ix_admin_audit_created", desc("created_at")),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")
