@@ -44,9 +44,13 @@
 
 **备选**：满载阻塞等待。不选：§5.9.5 明确「不得无限阻塞 channel update handler」。
 
-### ADR-5 maintenance 合并语义 = per-(tenant,kind) 单 pending 意图 + 全局 64 在途上限
+### ADR-5 maintenance 合并语义 = per-session 单 pending 意图 + 全局 64 在途上限
 
 **结论**：`MarkdownMemoryMaintenance._enqueue_maintenance()` 的 per-session deque 改为单意图槽（已有 pending 时不再追加——consolidation/refresh 本来就从 durable state 重算，重复意图无信息量）；worker 启动前检查全局在途 maintenance 任务数 ≥64 则延后（意图保留，下轮 turn 提交再触发）。interactive lane 永不与 maintenance 共用容量。
+
+意图槽不携带 kind：执行 consolidation 还是 refresh 由 `_run_maintenance_queue` 在出队时按 `_should_consolidate_session(session)` 判定，因此合并粒度是 per-session（Pilot 下一 tenant 一规范会话，与 per-tenant 等价），不是 per-(tenant,kind)。全局上限由 `[agent.admission].global_maintenance_queue` 覆盖（缺省 64）。
+
+> 与 §10 DECIDED「per-kind maintenance 1」的关系：本 change 以 per-session 单槽实现——意图不携带 kind，出队时按当时状态重新判定，重复意图无信息量，因此不丢失任何所需维护。如需严格 per-kind 计数（例如同时保留 consolidation 与 refresh 两个独立意图），应在 C8/C9 重写维护调度时一并调整；本 change 不改变该粒度。
 
 **备选**：把 maintenance work 全部迁入 `TenantLaneRouter`。不选：P0 段按 §6.1A 落地顺序只要求「admission key + 有界 queue + overload + 观测」；全量迁移留待 C8/C9 接 TenantRuntimePlan 时一并做，本 change 不重写 consolidation 调度。
 

@@ -41,12 +41,12 @@ global interactive ingress 队列 SHALL 有界（默认 128）；每个 tenant �
 
 ### Requirement: maintenance 有界、可合并、可延后
 
-global maintenance ready 队列 SHALL 有界（默认 64）；每种 maintenance kind 在一个 tenant 内 SHALL 最多保留一个 pending 意图，重复意图 SHALL 被合并。maintenance 队列满时 SHALL 延后而不是拒绝用户消息；maintenance work SHALL 可从持久状态重算。interactive work SHALL 优先于同 tenant 的 maintenance work，新 interactive 到达时 SHALL NOT 被已排队的 maintenance 阻塞在队尾。
+global maintenance ready 队列 SHALL 有界（默认 64，可由 `[agent.admission].global_maintenance_queue` 配置）；每个会话内 SHALL 最多保留一个 pending maintenance 意图，重复意图 SHALL 被合并（维护意图不区分 kind，具体执行 consolidation 还是 refresh 由执行时按最新持久状态判定）。maintenance 队列满时 SHALL 延后而不是拒绝用户消息；maintenance work SHALL 可从持久状态重算。interactive work SHALL 优先于同 tenant 的 maintenance work，新 interactive 到达时 SHALL NOT 被已排队的 maintenance 阻塞在队尾。
 
 #### Scenario: 重复 maintenance 意图被合并
 
-- **WHEN** 同一 tenant 的同一 maintenance kind 已有 pending 意图时再次提交同类意图
-- **THEN** 系统不新增队列项，既有意图执行时按最新持久状态计算一次
+- **WHEN** 同一会话已有 pending maintenance 意图时再次提交维护意图
+- **THEN** 系统不新增队列项，既有意图执行时按最新持久状态计算一次（consolidation 或 refresh 由当时状态决定）
 
 #### Scenario: maintenance 满不拒绝用户消息
 

@@ -32,3 +32,13 @@
 - [x] 5.1 `pyright --level error`（project + tests 两配置）无新增错误（36/30 与 main 基线一致）。验证：`openspec/evidence/c3-admission-queue-recovery/pyright-project.txt` + `pyright-tests.txt`
 - [ ] 5.2 `pytest -q -W error tests/` 全量回归无新增失败。验证：`openspec/evidence/c3-admission-queue-recovery/pytest-regression.txt`
 - [x] 5.3 task-03 状态更新（P0 段完成 → P3 段保持 planned 待 C2）；evidence 落 `openspec/evidence/c3-admission-queue-recovery/`
+
+## 6. 已知缺口与未接线项（P0 段，2026-09-06 复核）
+
+> 本节记录 P0 段**有意未接线**与**已修复缺陷**，供 C8/C9、C12 与后续 reviewer 参考；不代表 P0 验收条件。
+
+- **`TenantLaneRouter` 未接线到生产调度**：生产路径分别使用 `ConversationRuntime._admissions`（per-tenant lock，task 1.3）、`PassiveMessageWorker._lane_queues`（per-tenant 有界队列，task 2.1）、`MarkdownMemoryMaintenance._maintenance_queues`（per-session 单槽，task 2.2）与 `MemoryOptimizer`（per-tenant lock，task 2.3）；router 的 `run_interactive`/`run_maintenance`/`close()` 目前仅由 `tests/admission/test_lanes.py` 覆盖。统一迁入 router 留待 C8/C9 接 `TenantRuntimePlan`（见 design ADR-5 与 proposal Non-Goals）。
+- **`BoundedAdmissionQueue` / `AdmissionLimits` 属契约层交付物**：生产有界由 `asyncio.Queue(maxsize=...)` 直接实现（`bus/queue.py::MessageBus._inbound`、`bootstrap/passive_worker.py`），二者作为 C4/C12 接缝的稳定类型导出，当前由 `tests/admission/test_overload.py` 覆盖。
+- **已修复**：`TenantLaneRouter.run_interactive` 在「等待 `lane.lock` 期间被取消」时未归还 `interactive_pending`（会让 `wait_interactive_idle` 永久 busy，同 tenant maintenance 永远延后）；改为在 `finally` 中补齐并补测试 `tests/admission/test_lanes.py::test_cancelled_while_waiting_for_lane_lock_releases_pending`。
+- **已修复**：`[agent.admission].global_maintenance_queue` 此前被 `agent/config.py` 读取并校验但未被消费（`MarkdownMemoryMaintenance` 用模块常量），现已由 `bootstrap/memory.py` 注入；补测试 `tests/admission/test_priority.py::test_global_maintenance_limit_is_injectable`。
+- **P3 段恢复演练**保持 planned（依赖 C2 durable 表）；`unknown` / `compensation_required` 由 recovery 框架冻结语义，P0 来源不产出（design ADR-7）。
