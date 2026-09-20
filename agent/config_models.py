@@ -46,6 +46,10 @@ class ChatChannelConfig:
     channel_name: str = "chat"
     host: str = "127.0.0.1"
     port: int = 6322
+    # §5.9.4 连接生命周期：客户端空闲读超时（秒），超时回收连接。
+    idle_timeout_s: float = 90.0
+    # dev-only 门禁：默认拒绝非回环绑定；P1 认证前不得公网暴露。
+    allow_public_bind: bool = False
 
 
 @dataclass

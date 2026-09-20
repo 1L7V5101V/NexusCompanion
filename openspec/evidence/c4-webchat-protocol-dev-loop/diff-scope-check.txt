@@ -1,0 +1,54 @@
+# C4 PR diff 范围检查（task-04 验收第 9 条）
+
+基线：`main`@`f06854c`（C1 `e124dbf8` + C2 `7ed6897d` + C3 `7c405e8` 均已合入）
+
+```
+ agent/config.py                                    |   2 +
+ agent/config_models.py                             |   4 +
+ bootstrap/app.py                                   |  19 +-
+ bootstrap/chat_api.py                              |  84 +++++
+ config.example.toml                                |   5 +
+ frontend/chat/scripts/protocol-contract.test.mjs   | 113 +++++++
+ frontend/chat/src/connection.ts                    |  20 ++
+ frontend/chat/src/protocol.ts                      |  26 ++
+ infra/channels/web_chat_channel.py                 |  92 ++++-
+ infra/channels/web_chat_protocol.py                |  63 +++-
+ openspec/changes/2026-09-20-c4-webchat-protocol-dev-loop/*  | 277 ++++++++++++
+ package.json                                       |   1 +
+ tests/admission/test_ws_outbound.py                |   4 +-
+ tests/fixtures/chat_protocol_frames.json           |  90 +++--
+ tests/test_chat_api.py                             |  10 +-
+ tests/test_web_chat_dev_gate.py                    | 284 ++++++++++++++++
+ tests/test_web_chat_e2e_dev.py                     | 372 +++++++++++++++++++++
+ tests/test_web_chat_protocol_contract.py           | 251 +++++++++++++++++++++
+ 22 files changed, 1674 insertions(+), 43 deletions(-)
+```
+
+> 说明：`openspec/evidence/c4-webchat-protocol-dev-loop/` 仅含本次运行的日志与说明，
+> 不计入上表。另：worktree 内 654 个跟踪 `.py` 文件被重写为明文以绕过本机透明加密
+> （见 evidence/README.md §1），其内容与 `git` blob **逐字节一致**，故不出现在 diff 中。
+
+## 范围声明
+
+- **新增**：`frontend/chat/scripts/protocol-contract.test.mjs`（前端契约脚本）、
+  `tests/test_web_chat_protocol_contract.py`、`tests/test_web_chat_dev_gate.py`、
+  `tests/test_web_chat_e2e_dev.py`、`openspec/changes/2026-09-20-c4-webchat-protocol-dev-loop/`、
+  `openspec/evidence/c4-webchat-protocol-dev-loop/`。
+- **修改（仅 C4 拥有面）**：`infra/channels/web_chat_protocol.py`、
+  `infra/channels/web_chat_channel.py`（身份三元组 / 空闲回收 / 错误码常量 / 可注入 replay buffer 大小）、
+  `bootstrap/chat_api.py` + `bootstrap/app.py`（三层 dev-only 门禁接线）、
+  `agent/config_models.py` + `agent/config.py` + `config.example.toml`（`idle_timeout_s` / `allow_public_bind` 配置）、
+  前端 `frontend/chat/src/{protocol,connection}.ts` + `package.json`（hello 字段 / keepalive / 契约测试脚本）、
+  `tests/fixtures/chat_protocol_frames.json`（共享契约 fixture）、
+  `tests/admission/test_ws_outbound.py`（仅 `**kwargs: int` → `Any` 的类型注解修正）、
+  `tests/test_chat_api.py`（第三方 anyio 弃用告警的 import 点局部抑制）。
+- **未触碰（验收第 9 条边界）**：auth 端点 / session / provisioning（C5）；
+  Telegram binding 与跨通道同步（C10）；`bus/`、`agent/admission/` 行为（C3，仅消费）；
+  durable 表 schema（C2，仅消费）；canonical identity 表与 resolver（C1，仅消费）；
+  `infra/storage/tenancy.py`（未改 tenant 派生语义）。
+
+## 边界核验命令
+
+```
+git diff --cached --name-only | grep -i "auth\|telegram\|provision"   # → 无输出
+```
