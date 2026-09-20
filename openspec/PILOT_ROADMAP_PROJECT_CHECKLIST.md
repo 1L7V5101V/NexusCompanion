@@ -89,13 +89,13 @@
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
-- [ ] **P0.5 WebChat 最小可用闭环** — dev 模式闭环已完成（commit `4e40e510`，2026-09-03）；`planned` → dev 闭环 `verified`，公网项仍 `planned`
-  - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；面向 P1 的协议 fixture 契约冻结仍待 OpenSpec change）
-  - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py` 17 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
+- [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（待 C5）
+  - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；精确字段/版本/错误码/close code 已由 C4 change 冻结并前后端双向执行：后端 49 项 + 前端 31 项）
+  - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py`；C4 补真实入口 e2e：收发/流式/重连无重复/`replay_required`→REST 重建/断线不取消 turn/空闲回收，共 6 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
   - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)（当前仍为 `chat:local` session_key 存储，未迁移 canonical 模型）
   - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
   - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)（`turn.failed` 帧已可用；delivery ack 状态机已由 C2 落地：`sent` 仅由 ack 推进、独立 attempt/provider receipt/dead_letter/redrive）；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
-  - [x] **dev-only 暴露门禁**（`[channels.chat] enabled=false` 默认关闭、绑定 127.0.0.1；P1 前不得公网 tenant-facing）
+  - [x] **dev-only 暴露门禁**（C4 三层：`[channels.chat] enabled=false` 默认关闭 ∧ 非 dev 启用即 fail-fast / 非回环 host 需显式 `allow_public_bind` ∧ 运行期回环中间件 HTTP 403 / WS 1008；P1 前不得公网 tenant-facing）
 - [ ] **P1 一次 Token 登录** — 一次性邀请 Token 兑换可撤销 HttpOnly 登录 Cookie；`planned`
   - [ ] **test_accounts / access_tokens / auth_sessions 数据模型与 digest 约束** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
   - [ ] **账号 provisioning → ready → active 后才签发 Token** → outcome 见 [PILOT_ROADMAP §5.9.13](PILOT_ROADMAP.md)

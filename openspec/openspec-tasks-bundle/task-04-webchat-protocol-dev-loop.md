@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P0.5（dev-only WebChat 最小可用闭环）
 - **§5.9 引用**：§5.9.4（WebSocket 协议/游标/慢消费者）、§5.9.1（WS replay 硬冲突）、§5.9.5（per-connection outbound）、§5.6（双入口同步验收）、§10 OPEN FOR P-1 SPEC（WebSocket frame/error schema）
 - **§6 出口条件引用**：P0.5 出口「本地/dev 下打开 WebChat 收发消息、收到流式更新；刷新/断线重连不重复；消息顺序稳定；异常连接清理；协议测试通过」「dev-only 暴露门禁，P1 前不得公网」
-- **状态**：planned
+- **状态**：verified（P0.5 dev-only 闭环，2026-09-20；change `openspec/changes/2026-09-20-c4-webchat-protocol-dev-loop/`，证据 `openspec/evidence/c4-webchat-protocol-dev-loop/`；公网项仍 planned，待 C5）
 
 ## 目标
 
@@ -29,15 +29,15 @@
 
 ## 验收标准
 
-- [ ] 本地/dev 打开 WebChat 发送消息并收到 AgentLoop 回复 + 流式更新 — 验证：端到端 dev 测试（真实入口，dev mode）
-- [ ] 重连补拉无重复、顺序稳定（按 `last_sequence` 游标，final 从 canonical message 补拉） — 验证：重连补拉测试（断线→重连→断言无重复、无乱序）
-- [ ] 协议 contract fixture 前后端共用（同组 JSON 帧/预期响应/错误案例双向执行） — 验证：fixture 双向测试（前端脚本 + 后端测试等同一向量文件）
-- [ ] 慢消费者：192 event → 丢弃 delta + `replay_required`；256 event 或 1MiB → 明确 overload close code（§5.9.5） — 验证：慢消费者测试矩阵
-- [ ] `hello` 携带 connection_id / 账号 / 规范会话 / 最新序号 / 协议版本；客户端 payload 不得声明可信 tenant_id（§5.9.1 / §5.9.4） — 验证：协议断言
-- [ ] 非 dev 模式不可暴露公网（feature flag 门禁；无 P1 认证与 tenant 隔离前不得公网） — 验证：非 dev 启动 + 对外暴露阻断测试
-- [ ] 断线只影响显示，不取消服务器端 turn/tool（§10 DECIDED 工具取消） — 验证：断线执行继续测试
-- [ ] 异常连接能够清理（心跳超时/静默连接回收） — 验证：连接生命周期测试
-- [ ] 本 task 不触碰 auth 端点（C5）与 Telegram binding（C10） — 验证：PR diff 范围检查
+- [x] 本地/dev 打开 WebChat 发送消息并收到 AgentLoop 回复 + 流式更新 — 验证：端到端 dev 测试（真实入口，dev mode）→ `evidence/pytest-e2e-dev.txt`
+- [x] 重连补拉无重复、顺序稳定（按 `last_sequence` 游标，final 从 canonical message 补拉） — 验证：重连补拉测试（断线→重连→断言无重复、无乱序）→ `evidence/pytest-e2e-dev.txt`（`replay_required` + REST 重建通路）
+- [x] 协议 contract fixture 前后端共用（同组 JSON 帧/预期响应/错误案例双向执行） — 验证：fixture 双向测试（前端脚本 + 后端测试等同一向量文件）→ `evidence/pytest-protocol-and-gate.txt` + `evidence/frontend-protocol-contract.txt`
+- [x] 慢消费者：192 event → 丢弃 delta + `replay_required`；256 event 或 1MiB → 明确 overload close code（§5.9.5） — 验证：慢消费者测试矩阵 → `evidence/pytest-ws-outbound.txt`
+- [x] `hello` 携带 connection_id / 账号 / 规范会话 / 最新序号 / 协议版本；客户端 payload 不得声明可信 tenant_id（§5.9.1 / §5.9.4） — 验证：协议断言 → `evidence/pytest-protocol-and-gate.txt`
+- [x] 非 dev 模式不可暴露公网（feature flag 门禁；无 P1 认证与 tenant 隔离前不得公网） — 验证：非 dev 启动 + 对外暴露阻断测试 → `evidence/pytest-protocol-and-gate.txt`
+- [x] 断线只影响显示，不取消服务器端 turn/tool（§10 DECIDED 工具取消） — 验证：断线执行继续测试 → `evidence/pytest-e2e-dev.txt`
+- [x] 异常连接能够清理（心跳超时/静默连接回收） — 验证：连接生命周期测试 → `evidence/pytest-e2e-dev.txt`
+- [x] 本 task 不触碰 auth 端点（C5）与 Telegram binding（C10） — 验证：PR diff 范围检查 → `evidence/diff-scope-check.txt`
 
 > 判定「真正完成」而非「执行过」：协议 fixture 双向测试 + 端到端 dev 测试必须真实运行通过；「断线不取消 turn」「不暴露公网」两条负向语义必须断言而非仅靠文档。
 
