@@ -1,0 +1,45 @@
+=== PROJECT: worktree=37 main(no-cipher)=103 new=0 fixed=66
+  FIXED  agent\provider.py:10:1 - error: "y" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:10:2 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:12:1 - error: "td" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:12:4 - error: "p" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:12:5 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:14:1 - error: "j" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:14:2 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:19:2 - error: expected expression
+  FIXED  agent\provider.py:1:1 - error: expected expression
+  FIXED  agent\provider.py:214:1 - error: "p" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:214:2 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:215:1 - error: "lea" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:215:4 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:218:2 - error: expected expression
+  FIXED  agent\provider.py:219:1 - error: expected function or class declaration after decorator
+  FIXED  agent\provider.py:222:1 - error: "rs" is not defined (reportundefinedvariable)
+  FIXED  agent\provider.py:222:3 - error: statements must be separated by newlines or semicolons
+  FIXED  agent\provider.py:224:1 - error: expected expression
+  FIXED  agent\provider.py:226:3 - error: expected expression
+  FIXED  agent\provider.py:228:1 - error: "sz" is not defined (reportundefinedvariable)
+=== TESTS: worktree=34 main(no-cipher)=145 new=3 fixed=114
+  NEW    tests\test_provider_codex_protocol.py:611:24 - error: argument of type "cfg" cannot be assigned to parameter "config" of type "config" in function "build_providers"
+  NEW    tests\test_provider_codex_protocol.py:627:42 - error: argument of type "cfg" cannot be assigned to parameter "config" of type "config" in function "_build_proactive_provider"
+  NEW    tests\test_provider_codex_protocol.py:627:49 - error: argument of type "object" cannot be assigned to parameter "provider" of type "llmprovider" in function "_build_proactive_provider"
+  FIXED  tests\conftest.py:10:1 - error: expected expression
+  FIXED  tests\conftest.py:13:2 - error: expected expression
+  FIXED  tests\conftest.py:14:1 - error: "{" was not closed
+  FIXED  tests\conftest.py:14:1 - error: expected function or class declaration after decorator
+  FIXED  tests\conftest.py:14:2 - error: "{" was not closed
+  FIXED  tests\conftest.py:14:2 - error: set entry must be hashable
+  FIXED  tests\conftest.py:14:3 - error: expected expression
+  FIXED  tests\conftest.py:1:1 - error: expected expression
+  FIXED  tests\conftest.py:2:1 - error: "ڑ" is not defined (reportundefinedvariable)
+  FIXED  tests\conftest.py:2:2 - error: statements must be separated by newlines or semicolons
+  FIXED  tests\conftest.py:3:1 - error: "j" is not defined (reportundefinedvariable)
+  FIXED  tests\conftest.py:3:2 - error: expressions surrounded by backticks are not supported in python 3.x; use repr instead
+  FIXED  tests\conftest.py:3:2 - error: statements must be separated by newlines or semicolons
+  FIXED  tests\conftest.py:3:4 - error: statements must be separated by newlines or semicolons
+  FIXED  tests\conftest.py:67:135 - error: statements must be separated by newlines or semicolons
+  FIXED  tests\conftest.py:6:1 - error: "t" is not defined (reportundefinedvariable)
+  FIXED  tests\conftest.py:8:2 - error: expected expression
+  FIXED  tests\conftest.py:9:2 - error: expected expression
+  FIXED  tests\pilot_loadtest_bench.py:10:1 - error: "ɿ" is not defined (reportundefinedvariable)
+  FIXED  tests\pilot_loadtest_bench.py:10:2 - error: expected expression

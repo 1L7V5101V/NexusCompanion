@@ -1,5 +1,6 @@
 import {
   CLOSE_OVERLOAD,
+  KEEPALIVE_INTERVAL_MS,
   PROTOCOL_VERSION,
   parseServerFrame,
   type ClientFrame,
@@ -38,6 +39,7 @@ export class ChatConnection {
   private lastSeq = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   /** 已发送、尚未收到 message.accepted 的 client_message_id 集合。 */
   private readonly pendingIds = new Set<string>();
@@ -64,6 +66,7 @@ export class ChatConnection {
     };
     ws.onclose = (event) => {
       this.ws = null;
+      this.stopKeepalive();
       if (event.code === CLOSE_OVERLOAD) {
         // 服务端过载断开：立即重连（客户端视角与普通断线相同）。
       }
@@ -76,12 +79,28 @@ export class ChatConnection {
 
   dispose(): void {
     this.disposed = true;
+    this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.ws?.close();
     this.ws = null;
+  }
+
+  /** keepalive：服务端空闲超时 90s，客户端周期发 ping（服务端回 pong）。 */
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      this.sendFrame({ type: "ping" });
+    }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer !== null) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
 
   send(content: string, media: string[] = []): string {
@@ -121,6 +140,7 @@ export class ChatConnection {
         }
         this.reconnectAttempt = 0;
         this.setStatus("online");
+        this.startKeepalive();
         // 重连时先尝试 WS 补拉，gap 超出服务端 buffer 时由 replay_required
         // 触发 REST 重建；首次连接（lastSeq=0）直接拉历史。
         if (this.lastSeq > 0) {

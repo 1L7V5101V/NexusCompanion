@@ -1,0 +1,5 @@
+
+> test:chat-protocol
+> node frontend/chat/scripts/protocol-contract.test.mjs
+
+protocol-contract(frontend): 31/31 checks passed
