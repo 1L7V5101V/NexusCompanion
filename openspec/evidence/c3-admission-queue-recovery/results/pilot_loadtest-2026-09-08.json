@@ -1,0 +1,222 @@
+{
+  "bench": "pilot_loadtest",
+  "run_at": "2026-09-08T15:25:17.606435+00:00",
+  "git_rev": "b05692b6",
+  "params": {
+    "only": "s1,s2,s3,s4",
+    "flood": 5000,
+    "burst": 200,
+    "deltas": 400,
+    "terminals": 300,
+    "tenants": 8,
+    "turns": 25,
+    "recovery_turns": 2000,
+    "out": "results\\pilot_loadtest.json",
+    "timeout": 60.0
+  },
+  "interpretation": "mock LLM/turn（可控延时 stub），数据为单进程 dev 环境下自系统容量边界与 overload/isolation/recovery 契约行为，不代表生产 LLM 端到端延迟。",
+  "scenarios": [
+    {
+      "ok": true,
+      "metrics": {
+        "queue_capacity": 128,
+        "flood_total": 5000,
+        "accepted": 128,
+        "rejected": 4872,
+        "rejection_starts_at_attempt": 129,
+        "first_reject_retry_after_s": 5.0,
+        "flood_wall_s": 0.188,
+        "max_queue_depth_observed": 128,
+        "peak_mem_growth_bytes": 7837992,
+        "fifo_preserved": true,
+        "silent_loss": false
+      },
+      "checks": [
+        {
+          "check": "第 129 条发布即抛 AdmissionOverloadError(global_interactive)",
+          "passed": true
+        },
+        {
+          "check": "拒绝携带 Retry-After",
+          "passed": true
+        },
+        {
+          "check": "已接受条数 == 容量 128",
+          "passed": true
+        },
+        {
+          "check": "已接受项 FIFO 保序、无重复无缺失",
+          "passed": true
+        },
+        {
+          "check": "队列深度不超过容量",
+          "passed": true
+        }
+      ],
+      "elapsed_s": 0.281,
+      "name": "s1-global-overflow"
+    },
+    {
+      "ok": true,
+      "metrics": {
+        "per_tenant_pending_capacity": 16,
+        "burst_total": 200,
+        "bus_overload_rejected": 0,
+        "accepted": 18,
+        "rejected_by_per_tenant_overload": 182,
+        "rejection_ratio": 0.91,
+        "max_lane_depth_observed": 16,
+        "overload_reply_count": 182,
+        "settle_wall_s": 0.078,
+        "no_silent_loss": true,
+        "no_dup_or_reorder": true,
+        "sustained_ok_turn_rate_s": 230.8
+      },
+      "checks": [
+        {
+          "check": "per-tenant lane 队列深度不超过 16",
+          "passed": true
+        },
+        {
+          "check": "突发超额部分被明确拒绝（rejected>0）",
+          "passed": true
+        },
+        {
+          "check": "拒绝产生 nexus_overload 回执",
+          "passed": true
+        },
+        {
+          "check": "无静默丢失：每条消息恰好收到 ok 或 overload 回执之一",
+          "passed": true
+        }
+      ],
+      "elapsed_s": 0.281,
+      "name": "s1b-per-tenant-rejection"
+    },
+    {
+      "ok": true,
+      "metrics": {
+        "soft_limit": 192,
+        "hard_limit": 256,
+        "delta_broadcast": 400,
+        "delta_dropped_at_soft": 208,
+        "replay_required_notices": 1,
+        "soft_queue_depth": 193,
+        "terminal_broadcast": 300,
+        "terminal_enqueued_before_close": 256,
+        "terminal_dropped_at_hard": 44,
+        "close_code": 1013,
+        "stamped_terminal_in_replay_buffer": 300,
+        "replay_full_coverage": 300,
+        "replay_tail_after_last_received": 44,
+        "replay_no_dup": true,
+        "replay_ascending_seq": true
+      },
+      "checks": [
+        {
+          "check": "soft 上限起丢 delta",
+          "passed": true
+        },
+        {
+          "check": "首次丢弃只发一次 replay_required",
+          "passed": true
+        },
+        {
+          "check": "hard 上限封顶后以 close code 1013 断开",
+          "passed": true
+        },
+        {
+          "check": "terminal 帧在 hard 段也不静默丢（进重放 buffer）",
+          "passed": true
+        },
+        {
+          "check": "重连补拉 100% 覆盖、无重复、seq 递增",
+          "passed": true
+        }
+      ],
+      "elapsed_s": 0.032,
+      "name": "s2"
+    },
+    {
+      "ok": true,
+      "metrics": {
+        "tenants": 8,
+        "turns_per_tenant": 25,
+        "alone_wall_ms": 125.0,
+        "k_tenants_wall_ms": 125.0,
+        "same_tenant_serial_chain_ms": 125.0,
+        "wall_ratio_k_vs_alone": 1.0,
+        "same_tenant_overlap_violations": 0,
+        "maintenance_deferred_same_tenant": 1,
+        "cross_tenant_maintenance_wait_ms_p50": 0.0,
+        "llm_semaphore_limit": 30,
+        "llm_concurrent_tasks": 60,
+        "llm_active_max_observed": 30,
+        "llm_waited_tasks": 30,
+        "llm_wait_ms_p50": 31.0,
+        "llm_wait_ms_p95": 31.0
+      },
+      "checks": [
+        {
+          "check": "同租户串行：K×M 轮零重叠执行",
+          "passed": true
+        },
+        {
+          "check": "跨租户并发：总墙钟 ≈ 单租户基线",
+          "passed": true
+        },
+        {
+          "check": "interactive 活跃期同租户 maintenance 被延后",
+          "passed": true
+        },
+        {
+          "check": "跨租户 maintenance 不被其他租户 interactive 阻塞",
+          "passed": true
+        },
+        {
+          "check": "LLM 全局 semaphore=30 生效，第 31 个并发开始等待",
+          "passed": true
+        }
+      ],
+      "elapsed_s": 0.422,
+      "name": "s3"
+    },
+    {
+      "ok": true,
+      "metrics": {
+        "seeded_nonterminal_turns": 2000,
+        "seed_s": 12.547,
+        "scan_elapsed_s": 9.719,
+        "scan_elapsed_ms_total": 9719.0,
+        "per_record_ms": 4.8595,
+        "records": 2000,
+        "by_action": {
+          "cancelled": 2000
+        },
+        "apply_errors": 0,
+        "residual_nonterminal_after_scan": 0
+      },
+      "checks": [
+        {
+          "check": "每条非终态 turn 都有 RecoveryRecord",
+          "passed": true
+        },
+        {
+          "check": "动作全部可解释为 cancelled",
+          "passed": true
+        },
+        {
+          "check": "无 apply 异常",
+          "passed": true
+        },
+        {
+          "check": "扫描后残留 0",
+          "passed": true
+        }
+      ],
+      "elapsed_s": 22.328,
+      "name": "s4"
+    }
+  ],
+  "all_ok": true
+}
