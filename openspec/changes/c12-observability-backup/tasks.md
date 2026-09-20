@@ -42,9 +42,12 @@
 
 ## 8. 伴随落地协议（后续 Cxx change 内执行，本 change 不勾选）
 
-- [ ] 8.1 C2/C3 落地 work/turn/tool/delivery 表时，按 fixture 实现其 §7.1 指标字段与事件记录点（E10）
-- [ ] 8.2 C5 落地 admin 端点时，内容查看/下钻/导出接入 `AdminAccessAuditEvent` emit
-- [ ] 8.3 C6 落地 attachment blob root 时，细化 manifest `tenant_workspace` 条目并复跑校验器
-- [ ] 8.4 P0：retention 接线 config.toml 与进程内定时执行；总控台聚合 API（消费各 Cxx 指标）
-- [ ] 8.5 P0 后期：基线报告（backlog/latency/failure rate/cancellation/compensation/recovery window）→ 之后才可由后续 change 以配置引入 SLO 阈值
-- [ ] 8.6 P3：恢复演练报告（manifest 恢复 + PITR + attachment orphan/missing reconciliation）
+> **本段不计入本 change 完成条件**（贯穿型 change：契约层已 `verified`，落地归各 owner change）。
+> 2026-09-20 清点：C2 已归档、C3/C4 已合入 `main`，但 **C2/C3/C4 的 checklist 均未带本 change「伴随落地协议」要求的「§7.1 指标字段 + redaction + backup manifest 条目」**（三者 `tasks.md` 对 `§7.1|指标|redaction|manifest|AdminAccess` 均 0 命中）→ 8.1 成为**无 owner 的滞留项**。以下逐条登记 owner 与解除条件以消除歧义；**登记 ≠ 完成**，仍保持不勾选。
+
+- [ ] 8.1 C2/C3 落地 work/turn/tool/delivery 表时，按 fixture 实现其 §7.1 指标字段与事件记录点（E10） — **owner 待指定**（C2 已归档、C3 待归档，无承接 change）；**未阻塞**（四张表已就位）；解除：指定承接 change（建议并入 durable work queue 消费层 change），以其实现与 `tests/fixtures/observability_event_schema.json` 的 diff 作评审输入
+- [ ] 8.2 C5 落地 admin 端点时，内容查看/下钻/导出接入 `AdminAccessAuditEvent` emit — **owner C5**；阻塞：C5 未合入 `main`（分支 `feature/c5-auth-provisioning-admin` @ `f0215f2`）
+- [ ] 8.3 C6 落地 attachment blob root 时，细化 manifest `tenant_workspace` 条目并复跑校验器 — **owner C6**；阻塞：C6 未开工
+- [ ] 8.4 P0：retention 接线 config.toml 与进程内定时执行；总控台聚合 API（消费各 Cxx 指标） — **owner P0（retention 接线）/ 待指定 change（聚合 API）**；阻塞：聚合 API 依赖 8.1 的指标记录点
+- [ ] 8.5 P0 后期：基线报告（backlog/latency/failure rate/cancellation/compensation/recovery window）→ 之后才可由后续 change 以配置引入 SLO 阈值 — **owner P0 后期**；阻塞：首批稳定运行后采集
+- [ ] 8.6 P3：恢复演练报告（manifest 恢复 + PITR + attachment orphan/missing reconciliation） — **owner P3**；阻塞：P3 演练
