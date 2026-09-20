@@ -26,11 +26,11 @@ class _StubWebSocket:
         self.closed_with = (code, reason)
 
 
-def _make_channel(**kwargs: int) -> WebChatChannel:
+def _make_channel(**kwargs: Any) -> WebChatChannel:
     return WebChatChannel(channel_name="chat", **kwargs)
 
 
-def _make_conn(websocket: _StubWebSocket, **kwargs: int) -> _Connection:
+def _make_conn(websocket: _StubWebSocket, **kwargs: Any) -> _Connection:
     return _Connection(cast(Any, websocket), "c1", **kwargs)
 
 

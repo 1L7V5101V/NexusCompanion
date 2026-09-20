@@ -53,6 +53,7 @@ C3 是批次 0 并行根（与 C1 并行，E9 弱耦合）；C1 canonical identi
 - **不做用户 schedule 恢复**：`missed` 语义仅为枚举预留，`(job_id, scheduled_for)` 幂等恢复归 C11。
 - **不做 P3 恢复演练**：每任务一行 replay/recompute/compensate/... 断言报告属 P3 段，等 C2 durable 表。
 - **不改变 consolidation 业务语义**：`memory_window=40`/`keep_count=20`/threshold=30/失败阻断 turn 全部保持（§10 DECIDED）。
+- **不把 `TenantLaneRouter` 接线到生产调度**：本 change 交付 lane router 框架与语义契约（lane key / owner 统一释放 / `close()` / interactive 优先），生产路径按 P0 出口条件分别落 per-tenant 锁（`ConversationRuntime`）、per-tenant 有界队列（`PassiveMessageWorker`）、per-session 维护单槽（`MarkdownMemoryMaintenance`）与 per-tenant optimizer 锁；把 interactive/maintenance 统一迁入 router 留待 C8/C9 接 `TenantRuntimePlan`（design ADR-5）。本 change 结束时 router 由 `tests/admission/test_lanes.py` 覆盖，不是生产机制。
 
 ## Impact
 

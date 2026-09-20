@@ -275,6 +275,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             channel_name=str(chat_data.get("channel_name", "chat")),
             host=str(chat_data.get("host", "127.0.0.1")),
             port=int(chat_data.get("port", 6322)),
+            idle_timeout_s=float(chat_data.get("idle_timeout_s", 90.0)),
+            allow_public_bind=bool(chat_data.get("allow_public_bind", False)),
         ),
     )
     channels.socket = _normalize_cli_socket_endpoint(channels.socket)
