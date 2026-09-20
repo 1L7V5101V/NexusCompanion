@@ -232,6 +232,8 @@ Shared Runtime Controls
 | Dashboard/admin edge | 当前 Dashboard API 没有可作为公网 Pilot 边界的统一认证中间件，部分页面/API 仍依赖 owner/single-user 假设或 tenant filter 参数 | Dashboard 一旦公网暴露会把“筛选参数”误当授权 | admin principal、session、CSRF/Origin、tenant 下钻审计、内容访问权限 | P1/P2 |
 | Observability/privacy | 已有结构化指标与 turn trace 基础，但 provider payload、prompt、tool args、secret/PII/path 的默认采集与脱敏边界尚未统一 | 可能为了排障把跨 tenant 内容或密钥写入日志/指标 | 默认采集字段、redaction、content access audit、retention；SLO 数值后置 | P-1/P3 |
 
+> **决策注（2026-09-06 已定案）**：turn 记录与查询日志（turn audit，现 `RoutingTurnLogger` → `{workspace}/logs/{passive,proactive,drift}.db`）归属定为**独立 PG audit 库/schema**（分库/分表，与 memory/session 主库隔离，不并入主库 schema），过渡期 SQLite-only 须显式声明一致性/备份/恢复策略；完整 ADR 见 [records/turn-audit-storage-ownership.md](records/turn-audit-storage-ownership.md)，同步于 [storage-migration spec](specs/storage-migration/spec.md)「turn control plane 数据归属定案」。
+
 ## 4. 记忆召回链路
 
 本节区分“当前代码基线”和“Pilot 计划目标”。Pilot 首版支持两个由平台管理的 memory engine 插件：`default` 和 `rachael`。`default` 仍是新租户的默认引擎和主要质量基线，`rachael` 作为可选替代引擎通过 WebChat 选择。每个 work 只使用一个已经解析好的 active memory engine，不把外层 `AgenticRAGPipeline` 自动当作默认召回层，也不能把后续计划中的 `jieba + ParadeDB pg_search + reranker` 描述成已经存在的实现。
