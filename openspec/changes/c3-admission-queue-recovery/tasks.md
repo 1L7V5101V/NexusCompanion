@@ -30,7 +30,7 @@
 ## 5. 回归与状态
 
 - [x] 5.1 `pyright --level error`（project + tests 两配置）无新增错误（36/30 与 main 基线一致）。验证：`openspec/evidence/c3-admission-queue-recovery/pyright-project.txt` + `pyright-tests.txt`
-- [ ] 5.2 `pytest -q -W error tests/` 全量回归无新增失败。验证：`openspec/evidence/c3-admission-queue-recovery/pytest-regression.txt`
+- [x] 5.2 `pytest -q -W error tests/` 全量回归无新增失败。验证：`openspec/evidence/c3-admission-queue-recovery/pytest-regression.txt` + `pytest-regression-env.md`（2026-09-20 于 main @ `5e959e1` 复跑：1193 passed / 166 skipped / 1 failed；唯一失败 `test_plugin_doctor` 为 symlink 权限环境性、非 C3 归因；166 跳过全为 PG 不可用。判读见环境说明）
 - [x] 5.3 task-03 状态更新（P0 段完成 → P3 段保持 planned 待 C2）；evidence 落 `openspec/evidence/c3-admission-queue-recovery/`
 
 ## 6. 已知缺口与未接线项（P0 段，2026-09-06 复核）
@@ -42,3 +42,4 @@
 - **已修复**：`TenantLaneRouter.run_interactive` 在「等待 `lane.lock` 期间被取消」时未归还 `interactive_pending`（会让 `wait_interactive_idle` 永久 busy，同 tenant maintenance 永远延后）；改为在 `finally` 中补齐并补测试 `tests/admission/test_lanes.py::test_cancelled_while_waiting_for_lane_lock_releases_pending`。
 - **已修复**：`[agent.admission].global_maintenance_queue` 此前被 `agent/config.py` 读取并校验但未被消费（`MarkdownMemoryMaintenance` 用模块常量），现已由 `bootstrap/memory.py` 注入；补测试 `tests/admission/test_priority.py::test_global_maintenance_limit_is_injectable`。
 - **P3 段恢复演练**保持 planned（依赖 C2 durable 表）；`unknown` / `compensation_required` 由 recovery 框架冻结语义，P0 来源不产出（design ADR-7）。
+- **基线环境依赖未清（2026-09-20 复核）**：main @ `5e959e1` 全量回归 1193 passed / 166 skipped / 1 failed。166 跳过全部为本地 PG 不可用（117 项 `postgres` marker + 测试内 PG 守卫 + `test_fast_rebuild_parity` rachael host 依赖），导致 C1/C2 identity/control-plane 集成断言未被本次运行覆盖；唯一失败 `tests/test_plugin_doctor.py::test_plugin_doctor_reports_healthy_skill_plugin` 为 symlink 权限环境性（`WinError 1314`），该测试缺 symlink 可用性守卫。两项均非 C3 归因，但「全量绿」需先清此两项（补守卫 / 在带 pgvector PG 的环境复跑）。详见 [pytest-regression-env.md](../../evidence/c3-admission-queue-recovery/pytest-regression-env.md)。
