@@ -29,6 +29,7 @@ from bootstrap.db.models.auth import (
     TenantProvisioningJobModel,
 )
 from bootstrap.db.models.canonical import TestAccountModel
+from bootstrap.db.repository._ids import to_uuid
 
 __all__ = [
     "ProvisioningRepository",
@@ -82,7 +83,7 @@ class ProvisioningRepository:
 
         返回 ``{"account": ..., "job": ...}``。
         """
-        acc_id = _coerce(account_id) if account_id is not None else uuid.uuid4()
+        acc_id = to_uuid(account_id) if account_id is not None else uuid.uuid4()
         async with self._sf() as sess, sess.begin():
             account = TestAccountModel(
                 id=acc_id, status="provisioning", display_name=display_name
@@ -98,7 +99,7 @@ class ProvisioningRepository:
 
     async def get_job(self, job_id: uuid.UUID | str) -> dict | None:
         async with self._sf() as sess:
-            row = await sess.get(TenantProvisioningJobModel, _coerce(job_id))
+            row = await sess.get(TenantProvisioningJobModel, to_uuid(job_id))
             return _job_to_dict(row) if row else None
 
     async def list_jobs(self, *, status: str | None = None) -> list[dict]:
@@ -143,7 +144,7 @@ class ProvisioningRepository:
         """
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TenantProvisioningJobModel, _coerce(job_id), with_for_update=True
+                TenantProvisioningJobModel, to_uuid(job_id), with_for_update=True
             )
             if row is None or row.status not in ("pending", "failed"):
                 raise ProvisioningStateError(
@@ -170,7 +171,7 @@ class ProvisioningRepository:
         """
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TenantProvisioningJobModel, _coerce(job_id), with_for_update=True
+                TenantProvisioningJobModel, to_uuid(job_id), with_for_update=True
             )
             if row is None or row.status != "running":
                 raise ProvisioningStateError(
@@ -193,7 +194,7 @@ class ProvisioningRepository:
     async def mark_failed(self, job_id: uuid.UUID | str, error: str) -> dict:
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TenantProvisioningJobModel, _coerce(job_id), with_for_update=True
+                TenantProvisioningJobModel, to_uuid(job_id), with_for_update=True
             )
             if row is None or row.status != "running":
                 raise ProvisioningStateError(
@@ -210,7 +211,7 @@ class ProvisioningRepository:
         tenant/conversation/seed，§5.9.13）。"""
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TenantProvisioningJobModel, _coerce(job_id), with_for_update=True
+                TenantProvisioningJobModel, to_uuid(job_id), with_for_update=True
             )
             if row is None or row.status != "failed":
                 raise ProvisioningStateError(
@@ -225,7 +226,7 @@ class ProvisioningRepository:
 
     async def get_account(self, account_id: uuid.UUID | str) -> dict | None:
         async with self._sf() as sess:
-            row = await sess.get(TestAccountModel, _coerce(account_id))
+            row = await sess.get(TestAccountModel, to_uuid(account_id))
             return _account_to_dict(row) if row else None
 
     async def list_accounts(self) -> list[dict]:
@@ -249,7 +250,7 @@ class ProvisioningRepository:
         """受控状态推进（供 unsuspend/revoke 等；suspend 走级联方法）。"""
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TestAccountModel, _coerce(account_id), with_for_update=True
+                TestAccountModel, to_uuid(account_id), with_for_update=True
             )
             if row is None or row.status not in allowed_from:
                 raise ProvisioningStateError(
@@ -272,7 +273,7 @@ class ProvisioningRepository:
         now = _UTC_NOW()
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TestAccountModel, _coerce(account_id), with_for_update=True
+                TestAccountModel, to_uuid(account_id), with_for_update=True
             )
             if row is None or row.status != "active":
                 raise ProvisioningStateError(
@@ -313,7 +314,7 @@ class ProvisioningRepository:
         now = _UTC_NOW()
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
-                TestAccountModel, _coerce(account_id), with_for_update=True
+                TestAccountModel, to_uuid(account_id), with_for_update=True
             )
             if row is None or row.status == "revoked":
                 raise ProvisioningStateError(
@@ -349,14 +350,6 @@ class ProvisioningRepository:
                 stmt = stmt.where(TenantProvisioningJobModel.status == status)
             value = await sess.scalar(stmt)
             return int(value or 0)
-
-
-def _coerce(value: uuid.UUID | str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    # asyncpg 返回 pgproto.UUID（非 uuid.UUID 子类，也无 .replace）：统一按
-    # canonical hex 再构造，避免 uuid.UUID() 直接吃它时抛 AttributeError。
-    return uuid.UUID(hex=str(value))
 
 
 def _new_tenant_id() -> str:

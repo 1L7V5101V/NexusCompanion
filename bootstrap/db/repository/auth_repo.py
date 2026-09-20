@@ -32,6 +32,7 @@ from bootstrap.db.models.auth import (
     AuthSessionModel,
 )
 from bootstrap.db.models.canonical import TestAccountModel
+from bootstrap.db.repository._ids import to_uuid
 
 __all__ = [
     "AdminBootstrapError",
@@ -122,7 +123,7 @@ class CredentialRepository:
         账号非 `active`（provisioning/suspended/revoked）时拒绝签发
         （§5.9.13：ready 前不发 Token；revoked 拒绝新凭据）。
         """
-        acc_id = _coerce(account_id)
+        acc_id = to_uuid(account_id)
         async with self._sf() as sess, sess.begin():
             account = await sess.get(TestAccountModel, acc_id, with_for_update=True)
             if account is None or account.status != "active":
@@ -140,7 +141,7 @@ class CredentialRepository:
 
     async def get_token(self, token_id: uuid.UUID | str) -> dict | None:
         async with self._sf() as sess:
-            row = await sess.get(AccessTokenModel, _coerce(token_id))
+            row = await sess.get(AccessTokenModel, to_uuid(token_id))
             return _token_to_dict(row) if row else None
 
     async def list_tokens_for_account(
@@ -150,7 +151,7 @@ class CredentialRepository:
             rows = (
                 await sess.execute(
                     select(AccessTokenModel)
-                    .where(AccessTokenModel.account_id == _coerce(account_id))
+                    .where(AccessTokenModel.account_id == to_uuid(account_id))
                     .order_by(AccessTokenModel.created_at.desc())
                 )
             ).scalars().all()
@@ -161,7 +162,7 @@ class CredentialRepository:
     ) -> dict | None:
         """撤销单个邀请 Token（软撤销，保留审计行）。不存在/已撤销返回 None。"""
         async with self._sf() as sess, sess.begin():
-            row = await sess.get(AccessTokenModel, _coerce(token_id), with_for_update=True)
+            row = await sess.get(AccessTokenModel, to_uuid(token_id), with_for_update=True)
             if row is None or row.revoked_at is not None:
                 return None
             row.revoked_at = _UTC_NOW()
@@ -228,10 +229,15 @@ class CredentialRepository:
     ) -> dict:
         """按 digest 校验会话并 touch（成功路径）。
 
-        - 未知/已撤销/absolute 过期/idle 超时 → :class:`SessionInvalidError`（401）；
-        - 账号 suspended/revoked → :class:`SessionForbiddenError`（403）；
-        - principal_type 与 Cookie 语义不符（`__Host-nexus_session` vs
-          `__Host-nexus_admin`）→ :class:`SessionInvalidError`（Cookie 隔离）。
+        判定次序（spec「浏览器安全边界」：403 = principal 有效但被禁止）：
+
+        1. 未知会话、或 principal_type 与 Cookie 语义不符（`__Host-nexus_session`
+           vs `__Host-nexus_admin`，Cookie 隔离）→ 401；
+        2. 账号 `suspended`/`revoked` → 403。**优先于会话撤销判定**：封禁级联会把
+           名下 session 写 `revoked_at` 作为审计痕迹（design §5.3），但不能因此把
+           「主体被禁」降级为「无有效会话」——spec 场景要求「封禁账号请求返回
+           403 而非 401」；
+        3. 已撤销 / absolute 过期 / idle 超时 → 401。
 
         idle 判定使用 `now - last_seen_at <= idle_timeout_s`；touch 与校验同一
         事务（行锁 UPDATE），并发同会话请求不会重复续期出交错窗口。
@@ -247,14 +253,16 @@ class CredentialRepository:
             ).scalar_one_or_none()
             if row is None or row.principal_type != expected_principal:
                 raise SessionInvalidError("authentication required")
-            if row.revoked_at is not None or row.expires_at <= now:
-                raise SessionInvalidError("authentication required")
-            if (now - row.last_seen_at) > timedelta(seconds=row.idle_timeout_s):
-                raise SessionInvalidError("authentication required")
+            # 账号级封禁先于会话级撤销判定：suspend/revoke 会把名下 session 一并
+            # 写 revoked_at（审计痕迹），但响应语义必须是 403（主体被禁）而非 401。
             if row.account_id is not None:
                 account = await sess.get(TestAccountModel, row.account_id)
                 if account is None or account.status in ("suspended", "revoked"):
                     raise SessionForbiddenError("forbidden")
+            if row.revoked_at is not None or row.expires_at <= now:
+                raise SessionInvalidError("authentication required")
+            if (now - row.last_seen_at) > timedelta(seconds=row.idle_timeout_s):
+                raise SessionInvalidError("authentication required")
             row.last_seen_at = now
             await sess.flush()
             return _session_to_dict(row)
@@ -308,7 +316,7 @@ class CredentialRepository:
             rows = (
                 await sess.execute(
                     select(AuthSessionModel)
-                    .where(AuthSessionModel.account_id == _coerce(account_id))
+                    .where(AuthSessionModel.account_id == to_uuid(account_id))
                     .order_by(AuthSessionModel.created_at.desc())
                 )
             ).scalars().all()
@@ -491,9 +499,3 @@ class AdminRepository:
             "disabled_at": row.disabled_at,
             "created_at": row.created_at,
         }
-
-
-def _coerce(value: uuid.UUID | str) -> uuid.UUID:
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))

@@ -10,8 +10,9 @@
   required"}``（session），不区分「不存在 vs 已过期 vs 已撤销」（ADR-3）。
 - 403 = principal 有效但被禁止：账号 suspended/revoked、CSRF/Origin 失败、
   admin route 非回环来源。
-- mutation 依序校验 Origin/Referer → session-bound ``X-CSRF-Token``（ADR-4）；
-  GET/HEAD/OPTIONS 只需有效 session。
+- mutation 依序校验 Origin/Referer → session-bound ``X-CSRF-Token``（ADR-4）。
+  ``exchange`` 建立会话**之前**没有 session，故无 CSRF 可绑定，但仍校验 Origin
+  （否则登录端点可被跨站发起）；GET/HEAD/OPTIONS 只需有效 session。
 - admin HTTP/API 默认只允许部署主机本机来源（``request.client.host`` ∈
   ``admin_allow_ips``），反代/Tunnel 必须不转发 ``/api/admin/*``（ADR-5）。
 - Cookie 属性（§5.9.3 冻结）：``HttpOnly``/``Secure``(非 dev)/``Path=/``/无 Domain
@@ -93,6 +94,7 @@ def build_auth_api(runtime: AuthRuntime) -> APIRouter:
 
     @router.post("/api/auth/exchange")
     async def exchange(body: ExchangeRequest, request: Request) -> JSONResponse:
+        _require_origin(runtime, request)
         try:
             session, raw_cookie = await runtime.auth.exchange_invitation(
                 body.token,
@@ -176,6 +178,7 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
 
     @router.post("/api/admin/auth/exchange")
     async def exchange(body: ExchangeRequest, request: Request, _: None = Depends(_loopback)) -> JSONResponse:
+        _require_origin(runtime, request)
         try:
             session, raw_cookie = await runtime.admin.exchange_recovery(
                 body.token,
@@ -258,13 +261,22 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
     return router
 
 
+def _require_origin(runtime: AuthRuntime, request: Request) -> None:
+    """校验 Origin/Referer 命中 allowlist（ADR-4 第 1 步）。
+
+    对**全部** mutation 生效，包括尚未建立 session 的 ``exchange``：那时没有
+    session-bound CSRF 可校验（CSRF 由 session id 派生），但 Origin 仍适用，
+    否则登录端点可被跨站发起（login CSRF）。
+    """
+    if _request_origin(request) not in runtime.config.origin_allowlist:
+        raise HTTPException(403, detail=_HTTP_403)
+
+
 async def _require_csrf(
     runtime: AuthRuntime, request: Request, session_id: uuid.UUID | str
 ) -> None:
     """mutation 依序校验 Origin/Referer → session-bound CSRF（ADR-4）。"""
-    origin = _request_origin(request)
-    if origin not in runtime.config.origin_allowlist:
-        raise HTTPException(403, detail=_HTTP_403)
+    _require_origin(runtime, request)
     sent = request.headers.get("x-csrf-token", "")
     expected = runtime.auth.csrf_token(session_id)
     if not hmac.compare_digest(sent, expected):

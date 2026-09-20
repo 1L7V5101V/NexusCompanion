@@ -174,9 +174,9 @@ async def test_suspend_revokes_credentials_unsuspend_not_resurrect(c5_runtime, c
 
     await c5_runtime.provisioning.suspend_account(account["id"], reason="trial abuse")
 
-    # 旧 session 立即失效（suspend 级联撤销 → SessionInvalidError 401 语义，
-    # §5.3：账号 suspended + 名下全部 token/session 写 revoked_at）。
-    with pytest.raises(SessionInvalidError):
+    # 旧 session 失效：封禁级联已写 revoked_at（§5.3 审计痕迹），但响应语义是 403
+    # —— 账号级封禁优先于会话级撤销判定（spec「封禁账号请求返回 403 而非 401」）。
+    with pytest.raises(SessionForbiddenError):
         await c5_runtime.auth.validate_user_session(raw_session)
     # suspended 账号拒绝签发与兑换新凭据（错误体不区分原因，ADR-3）。
     with pytest.raises(CredentialExchangeError):
@@ -195,17 +195,31 @@ async def test_suspend_revokes_credentials_unsuspend_not_resurrect(c5_runtime, c
 
 
 async def test_account_suspended_forbidden_branch(c5_runtime, c5_active_account):
-    """账号 suspended 且既有 session 未被级联撤销时 → SessionForbiddenError（403 语义）。
-    该分支只在非级联路径可达（默认 suspend 会同步撤销凭据）；ADR-3 明确 403=有主体验证。"""
+    """账号 suspended → SessionForbiddenError（403）；级联与非级联路径一致。
+
+    spec「Scenario: 封禁账号请求返回 403 而非 401」：账号被 suspend/revoke 后，
+    其仍有 Cookie 的会话必须 403（principal 有效但被禁），同时会话行保留
+    revoked_at 审计痕迹。此前实现先判 revoked_at，导致该场景实际落成 401、
+    403 分支只在手工构造的非级联状态下可达。
+    """
     account, raw = await c5_active_account()
     _, raw_session = await c5_runtime.auth.exchange_invitation(raw, user_agent="t")
 
+    # 非级联路径：只改账号状态、不撤销凭据 → 403。
     from bootstrap.db.repository.provisioning_repo import ProvisioningRepository
 
     repo = ProvisioningRepository(c5_runtime.session_factory)
     await repo.set_account_status(account["id"], "suspended", allowed_from=("active",))
     with pytest.raises(SessionForbiddenError):
         await c5_runtime.auth.validate_user_session(raw_session)
+
+    # 级联路径（正常 suspend：token/session 一并写 revoked_at）同样 → 403，
+    # 不因 session 已撤销而降级成 401。
+    account2, raw2 = await c5_active_account()
+    _, raw_session2 = await c5_runtime.auth.exchange_invitation(raw2, user_agent="t")
+    await c5_runtime.provisioning.suspend_account(account2["id"], reason="trial abuse")
+    with pytest.raises(SessionForbiddenError):
+        await c5_runtime.auth.validate_user_session(raw_session2)
 
 
 async def test_revoke_terminal_no_credential_no_delete(c5_runtime, c5_active_account):
