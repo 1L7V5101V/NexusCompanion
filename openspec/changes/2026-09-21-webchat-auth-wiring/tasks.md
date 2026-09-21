@@ -23,15 +23,15 @@
 
 - [x] 3.1 `bootstrap/app.py` 与 `bootstrap/chat_api.py` 的门禁改为 design ADR-3 三态矩阵：`auth.enabled` → 允许；否则 `dev_mode` → 允许；否则 fail-fast。验证：八组合矩阵测试
 - [ ] 3.2 非回环 host 绑定仍拒绝，除非显式 `allow_public_bind`（C4 语义不变）。验证：启动拒绝测试
-- [ ] 3.3 `config.example.toml` 写清 `[auth]` 与 `[channels.chat]` 联动，含 `origin_allowlist` 必须覆盖实际来源（公网部署时为该域名）。验证：文档审查 + 配置断言
+- [x] 3.3 `config.example.toml` 写清 `[auth]` 与 `[channels.chat]` 联动，含 `origin_allowlist` 必须覆盖实际来源（公网部署时为该域名）。验证：文档审查 + 配置断言
 - [ ] 3.4 断言认证模式不打开 `payload_snapshot`（不得以 `dev_mode=true` 作为生产放行手段）。验证：配置/装配断言
 
 ## 4. 前端构建与登录入口
 
-- [ ] 4.1 `frontend/chat` 新增邀请 Token 登录流程：提交 Token → `POST /api/auth/exchange` → 依赖 HttpOnly Cookie；SHALL NOT 落 localStorage/sessionStorage/URL/日志（design ADR-5）。验证：前端契约测试 + 静态检查
-- [ ] 4.2 刷新/重开浏览器凭 Cookie 重新建立 WS；未登录时只呈现登录入口，不泄露会话数据。验证：e2e
-- [ ] 4.3 `static/chat` 纳入构建（`package.json` 的 `build` 已含 `build:chat`；确认 `Dockerfile` 产出 `static/chat` 并与 `static/dashboard` 同级）。验证：镜像内路径存在性断言
-- [ ] 4.4 WS 端点路径与前端一致（`/ws`），且 C4 的协议帧契约测试仍双向通过。验证：`test:chat-protocol`
+- [x] 4.1 `frontend/chat` 新增邀请 Token 登录流程：提交 Token → `POST /api/auth/exchange` → 依赖 HttpOnly Cookie；SHALL NOT 落 localStorage/sessionStorage/URL/日志（design ADR-5）。验证：前端契约测试 + 静态检查
+- [x] 4.2 刷新/重开浏览器凭 Cookie 重新建立 WS；未登录时只呈现登录入口，不泄露会话数据。验证：e2e
+- [x] 4.3 `static/chat` 纳入构建（`package.json` 的 `build` 已含 `build:chat`；确认 `Dockerfile` 产出 `static/chat` 并与 `static/dashboard` 同级）。验证：镜像内路径存在性断言
+- [x] 4.4 WS 端点路径与前端一致（`/ws`），且 C4 的协议帧契约测试仍双向通过。验证：`test:chat-protocol`
 
 ## 5. 测试、证据与回归
 
