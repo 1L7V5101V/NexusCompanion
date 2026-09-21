@@ -1,0 +1,16 @@
+# C5 pyright 回归（任务 5.4）——2026-09-14，pyright 1.1.411 --level error
+
+## 全项目基线（与 main 一致：36 个既有错误，C5 无新增）
+
+命令：`python -m pyright --level error`
+结果：`36 errors, 0 warnings, 0 informations`
+
+## C5 触及源码
+
+命令：`python -m pyright --level error bootstrap/auth bootstrap/chat_api.py bootstrap/dashboard_api.py bootstrap/app.py bootstrap/db/repository/auth_repo.py bootstrap/db/repository/provisioning_repo.py bootstrap/db/repository/canonical_repo.py bootstrap/db/models/auth.py agent/config.py agent/config_models.py main.py`
+结果：`0 errors, 0 warnings, 0 informations`
+
+## C5 测试
+
+命令：`python -m pyright --level error tests/auth_provisioning`
+结果：`0 errors, 0 warnings, 0 informations`

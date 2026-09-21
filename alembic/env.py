@@ -71,6 +71,13 @@ from bootstrap.db.models.control_plane import (  # noqa: E402, F401
     ToolCallModel,
     TurnModel,
 )
+from bootstrap.db.models.auth import (  # noqa: E402, F401
+    AccessTokenModel,
+    AdminAuditEventModel,
+    AdminCredentialModel,
+    AuthSessionModel,
+    TenantProvisioningJobModel,
+)
 
 target_metadata = Base.metadata
 
