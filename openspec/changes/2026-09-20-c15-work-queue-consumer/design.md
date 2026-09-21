@@ -235,6 +235,21 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 
 **停止语义与 ADR-3 的呼应**：`stop()` 只保证「不再产生新 work item」（§5.9.5 lane `close()` 的同义要求）。未收束的在途项**不**主动复位，交给下次启动的清扫（ADR-3）——这与 C3 `TenantLaneRouter.close()` 与 §5.9.6 的语义一致，也避免停机时双写。
 
+**实现期细化（2026-09-21）：轮询级异常不得逃逸 `run()`**
+
+接线前核实 `bootstrap/app.py::_run_primary_tasks` 后确认：`AppRuntime.tasks`
+（`passive_worker.run()` / `bus.dispatch_outbound()` / `scheduler.run()`）是**一损俱损**
+——任一 task 抛异常，**其余会被全部 `cancel()` 并把异常抛给 `run()`，进程退出**。
+
+因此把 worker 放进 `self.tasks` 等于让它的异常具备「拖垮整个进程」的能力。要求：
+
+- handler 级异常：由 `process_once()` 的 `gather(return_exceptions=True)` 吞掉并记日志；
+- **轮询级异常（`claim_batch` 的 DB 抖动 / 迁移中 / 连接池耗尽）：必须记日志 + 线性退避
+  重试（`error_backoff_seconds` 起、`max_error_backoff_seconds` 封顶），不得逃出 `run()`**；
+- 只有 `asyncio.CancelledError` 向上传播（尊重取消语义）。
+
+这是「worker 不得让 DB 抖动变成进程退出」的落地，也是本 ADR 接线的前置条件。
+
 **不做**：本 change 不接线 `OutboundDeliveryWorker`，但**同一 engine 接线方式**应在其单独 change 中复用，避免两次发明。
 
 ---

@@ -31,7 +31,7 @@
 ## 3. `WorkQueueWorker`（ADR-4 / ADR-5）
 
 - [x] 3.1 `bootstrap/work_queue_worker.py`：`WorkQueueWorkerConfig`（lease 60s / heartbeat 20s / max attempts 5 / backoff 1m,5m,30m,2h,6h / poll 1s / batch 10 / maintenance acquire 5s / release delay 60s）、`WorkItemEnvelope`、`WorkHandler` **两段式**注入协议（ADR-6 细化）、`flow → handler` 映射。验证：`tests/test_work_queue_worker.py`（config 冻结默认值 + 不变量）
-- [x] 3.2 `run()` / `process_once()` / `_process()` / `_run_handler()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的四处放弃路径；lane 协程**惰性创建**（提前建会在延后/关闭时留下未 await 的协程，`-W error` 下直接失败）。验证：失租禁写（成功/失败两向）+ execute 失败计入业务失败 + persist 失败计入业务失败
+- [x] 3.2 `run()` / `process_once()` / `_process()` / `_run_handler()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的四处放弃路径；lane 协程**惰性创建**（提前建会在延后/关闭时留下未 await 的协程，`-W error` 下直接失败）；**轮询级异常隔离**（`claim_batch` 抛错只记日志 + 线性退避重试，绝不逃出 `run()`——`_run_primary_tasks` 把 runtime task 异常当致命，会取消同级任务并退出进程）。验证：失租禁写（成功/失败两向）+ execute/persist 失败计入业务失败 + 轮询异常不逃逸且恢复后继续消费
 - [x] 3.3 tenant lane 接线：`work_kind == interactive` → `TenantLaneRouter.run_interactive`，其余 → `run_maintenance`（ADR-5，**复用** C3 router，未新造 lane）；同租户串行、跨租户并发。验证：`tests/test_work_queue_worker.py` 时间线断言（同租户 `max_active==1` + 跨租户阻塞时另一租户先完成）
 - [x] 3.4 维护类延后：`MaintenanceDeferred` 不视为失败——`release_for_retry` 释放租约、不动 `attempt_count`、留 `released` 审计行、排程重试（ADR-5）。验证：延后用例（interactive 占优时维护类被释放，`failed` 为空）
 - [x] 3.5 有界背压：单轮认领 ≤ `batch_size`（透传仓储）；每租户在途 ≤ 1 由认领 SQL 保证（ADR-4）。验证：`batch_size` 透传断言（owner/lease_ttl 一并校验）
