@@ -151,17 +151,26 @@ def create_chat_app(
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:
+        identity = None
         if auth_runtime is not None:
-            # C5（design ADR-4）：auth.enabled 时 WS handshake 校验 Cookie + Origin；
-            # C4 通道层持久/tenant 派生接线由 C4 消费（本层只做 app 入口门禁）。
+            # C5（design ADR-4）：auth.enabled 时 WS handshake 校验 Cookie + Origin。
             from bootstrap.auth import WSHandshakeRejected, check_ws_handshake
 
             try:
-                await check_ws_handshake(auth_runtime, websocket.headers)
+                session = await check_ws_handshake(auth_runtime, websocket.headers)
             except WSHandshakeRejected:
                 await websocket.close(code=4401, reason="authentication required")
                 return
-        await channel.handle_websocket(websocket)
+            # 凭据有效 → 按该 session 派生服务端身份三元组（§5.9.1）。派生失败
+            # fail-closed：拒绝连接而不是回落到 dev 默认租户（design ADR-6）。
+            from bootstrap.auth import WebChatIdentityError, resolve_webchat_identity
+
+            try:
+                identity = await resolve_webchat_identity(auth_runtime, session)
+            except WebChatIdentityError:
+                await websocket.close(code=4403, reason="no canonical identity")
+                return
+        await channel.handle_websocket(websocket, identity=identity)
 
     @app.post("/api/chat/uploads")
     async def upload_file(
@@ -196,11 +205,15 @@ def build_chat_server(
     auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
 ) -> uvicorn.Server:
-    """构造 dev-only WebChat 服务器；非 dev 或非回环绑定直接拒绝（ADR-3）。"""
-    if not dev_mode:
+    """构造 WebChat 服务器（design ADR-3 三态门禁）。
+
+    放行条件：已装配 ``auth_runtime``（auth.enabled）**或** ``dev_mode``。
+    两者皆无则 fail-fast——未启用认证时只能走 dev 回退，不得静默放行。
+    """
+    if auth_runtime is None and not dev_mode:
         raise RuntimeError(
-            "WebChat 通道仅限 agent.dev_mode=true（P0.5 dev-only）；"
-            "P1 认证与 tenant 隔离落地前不得公网暴露。"
+            "WebChat 通道未启用 [auth] 时要求 agent.dev_mode=true（P0.5 dev-only 回退）；"
+            "启用认证后由 session 派生身份，不再要求 dev_mode。"
         )
     if not allow_public_bind and not is_loopback_host(host):
         raise RuntimeError(

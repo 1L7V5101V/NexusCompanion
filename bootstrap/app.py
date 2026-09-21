@@ -397,10 +397,16 @@ class AppRuntime:
                 )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
             chat_config = self.config.channels.chat
-            if chat_config.enabled and not self.config.dev_mode:
+            # design ADR-3：放行条件 = auth.enabled 或 dev_mode；两者皆无则 fail-fast。
+            if (
+                chat_config.enabled
+                and not self.config.auth.enabled
+                and not self.config.dev_mode
+            ):
                 raise RuntimeError(
-                    "[channels.chat].enabled=true 要求 agent.dev_mode=true："
-                    "WebChat 是 dev-only 通道，P1 认证与 tenant 隔离落地前不得启用。"
+                    "[channels.chat].enabled=true 要求 [auth].enabled=true 或"
+                    " agent.dev_mode=true：WebChat 未启用认证时只能走 dev 回退，"
+                    "不得静默放行。"
                 )
             if chat_config.enabled:
                 from infra.channels.web_chat_channel import (

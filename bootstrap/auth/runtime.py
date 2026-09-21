@@ -72,6 +72,9 @@ class AuthRuntime:
             executor=CanonicalAgentExecutor(canonical_repo, partition_step),
             admin_audit=admin_repo,
         )
+        # 供 WS 入口按 session 派生 tenant/conversation 归属（§5.9.1）。
+        # check_ws_handshake 返回 session dict 正是为此预留（其 docstring）。
+        self.canonical_repo = canonical_repo
         self._session_factory = session_factory
         self._engine = engine
 
