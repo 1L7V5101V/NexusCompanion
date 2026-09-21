@@ -8,23 +8,26 @@
 ```
 邀请 Token ──POST /api/auth/exchange──▶ HttpOnly __Host-nexus_session   （C5，已实现）
                                               │
-                                              │  ① 缺失：握手不校验
+                                              │  ① 已接线：chat_api.py 的 /ws 调 check_ws_handshake
+                                              │     （失败 close 4401）
                                               ▼
 浏览器 ──WebSocket /ws──▶ chat 通道 ──▶ InboundMessage(归属?)            （C4，dev-only）
                                               ▲
-                                              │  ② 缺失：identity 硬编码
+                                              │  ② **缺失**：identity 硬编码
                                         WebChatIdentity(DEV_ACCOUNT_ID, DEFAULT_TENANT)
 ```
 
-本 change 填 ① 与 ②，并把驱动门禁从 `dev_mode` 换成 `auth.enabled`。
+本 change 补齐 ②（本 change 的主体缺口），把 ① 固化为可验收契约，并把驱动门禁从 `dev_mode` 换成 `auth.enabled`。
 
 ## 2. ADR
 
-### ADR-1 握手校验发生在通道边界，不在 ASGI 中间件
+### ADR-1 握手校验保持在 app 入口（`/ws`），不下沉到通道内部、也不上移到 ASGI 中间件
 
-`check_ws_handshake` SHALL 在通道 `accept` **之前**调用，参数为握手 HTTP 头与查询串。
+**现状（已实现，不是缺口）**：C5 已把 `check_ws_handshake` 接在 `bootstrap/chat_api.py` 的 `/ws` 入口——`auth_runtime` 非空时执行，失败以 `close(code=4401)` 拒绝且不进入 `channel.handle_websocket`。本 change **保留该位置**，只把行为固化为可验收契约（补负向矩阵），不搬动它。
 
-理由：C4 的门禁中间件（`_DevOnlyGuardMiddleware`）只按客户端地址判回环，与凭据无关；把凭据校验塞进同一中间件会让两类拒绝（来源 / 凭据）语义混淆，且 C5 design ADR-4 已把「Cookie + Origin」定义为**通道 accept 前**的调用契约。保留两层并存：来源门禁（可选，`allow_public_bind`）与凭据门禁（强制）。
+理由：(a) 入口层位于 `accept` 之前，满足 C5 design ADR-4 的「accept 前校验」；(b) `WebChatChannel` 是 channel 抽象，被 CLI/IPC 等非 HTTP 路径复用，把 HTTP 凭据语义塞进通道会污染抽象；(c) C4 的 `_DevOnlyGuardMiddleware` 只按客户端地址判回环，与凭据无关，两者混用会让「来源拒绝」与「凭据拒绝」两类语义混淆。两层并存：来源门禁（可选，`allow_public_bind`）+ 凭据门禁（auth 启用时强制）。
+
+**本 change 真正要补的**：入口层只验凭据、不解析身份。身份派生应由 `bootstrap/app.py` 在构造通道时按 session 解析后注入（ADR-2）——这是当前唯一实质缺失的一段，也是 `chat_api.py` 注释中显式留给「C4 消费」的那一段。
 
 ### ADR-2 身份派生经由 C1 解析器，不由通道自行拼装
 

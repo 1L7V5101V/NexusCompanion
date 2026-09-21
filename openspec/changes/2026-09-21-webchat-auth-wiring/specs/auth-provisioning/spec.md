@@ -2,7 +2,9 @@
 
 ## Purpose
 
-C5 在 `bootstrap/auth/ws_guard.py` 中实现了 WebSocket 握手的校验函数（`check_ws_handshake`：Cookie + Origin），但该函数在 C5 范围内只交付到函数层——C5 change 的 `tasks.md` 5.2 明确「通道接线归 C4 消费」。由于 C4 已归档且为 dev-only，该接线实际无人承接，导致认证能力落在纸面上。本增量把该 guard 提升为**通道边界的强制契约**，使「HTTP 与 WebSocket 使用同一套凭据语义」成为可验收的要求。
+C5 在 `bootstrap/auth/ws_guard.py` 中实现了 WebSocket 握手的校验函数（`check_ws_handshake`：Cookie + Origin），并把它接在 `bootstrap/chat_api.py` 的 `/ws` 入口（`auth_runtime` 非空时执行，失败 `close(4401)`）。但该接线在 C5 范围内只到 **app 入口层**：C5 change 的 `tasks.md` 5.2 与 `chat_api.py` 注释均注明「通道层持久/tenant 派生接线归 C4 消费」，而 C4 已归档且为 dev-only，该接缝无人承接。本增量把「HTTP 与 WebSocket 使用同一套凭据语义」提升为**可验收的强制契约**（补负向矩阵与不泄露原因断言），使已实现的接线不会在后续重构中被静默移除。
+
+> 说明：本增量**不**新增一个尚未实现的校验层——保留 `check_ws_handshake` 在 app 入口的位置（详见 change design ADR-1），真正的未实现部分是通道层身份派生（归 `webchat-protocol-dev-loop` 的 MODIFIED 身份要求）。
 
 ## ADDED Requirements
 
