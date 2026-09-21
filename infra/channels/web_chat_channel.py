@@ -74,16 +74,21 @@ _DEFAULT_IDLE_TIMEOUT_S = 90.0
 
 @dataclass(frozen=True)
 class WebChatIdentity:
-    """WebChat 连接的服务端派生身份（P0.5 dev 单用户；P1 由 C5/C1 注入）。
+    """WebChat 连接的服务端派生身份（dev 单用户回退；启用认证时按 session 派生）。
 
     客户端帧里的 tenant/account/session 字段永远只是待校验输入，本对象是唯一
     授权来源（§5.9.1 WS replay 硬冲突）。
+
+    ``chat_id`` 决定 ``InboundMessage`` 的 session 路由键（``channel:chat_id``）：
+    dev 回退保持历史值 ``"local"``（C4 契约不变），认证模式取该 tenant，
+    使不同登录者不共享同一 session 路由键。
     """
 
     account_id: str = DEV_ACCOUNT_ID
     tenant_id: str = DEFAULT_TENANT
     conversation_id: str = DEV_SESSION_KEY
     session_key: str = DEV_SESSION_KEY
+    chat_id: str = "local"
 
 
 def _frame_size(frame: dict[str, Any]) -> int:
@@ -106,12 +111,17 @@ class _Connection:
         websocket: WebSocket,
         connection_id: str,
         *,
+        identity: WebChatIdentity | None = None,
         soft_limit: int = SOFT_LIMIT,
         hard_limit: int = _OUTBOUND_QUEUE_SIZE,
         max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
     ) -> None:
         self.websocket = websocket
         self.connection_id = connection_id
+        # 本连接的授权身份：认证模式下由入口按该连接的 session 派生后传入。
+        # 保持 None（而非默认 dev 身份）以免静默绕过通道级身份；消费点回退到
+        # ``self._identity``（§5.9.1 服务端派生）。
+        self.identity = identity
         self.soft_limit = soft_limit
         self.hard_limit = hard_limit
         self.max_payload_bytes = max_payload_bytes
@@ -271,19 +281,25 @@ class WebChatChannel:
 
     # ── WebSocket 连接处理 ──────────────────────────────────────
 
-    async def handle_websocket(self, websocket: WebSocket) -> None:
+    async def handle_websocket(
+        self,
+        websocket: WebSocket,
+        *,
+        identity: WebChatIdentity | None = None,
+    ) -> None:
         await websocket.accept()
         connection_id = uuid4().hex
+        # 认证模式下由入口传入按本连接 session 派生的身份；缺省为通道级 dev 回退。
+        identity = identity or self._identity
         conn = _Connection(
             websocket,
             connection_id,
+            identity=identity,
             soft_limit=self._ws_soft_limit,
             hard_limit=self._ws_hard_limit,
             max_payload_bytes=self._ws_max_payload,
         )
         self._connections[websocket] = conn
-
-        identity = self._identity
         hello_frame = hello(
             connection_id=connection_id,
             account_id=identity.account_id,
@@ -435,11 +451,11 @@ class WebChatChannel:
 
         # §5.9.1：客户端帧里的 tenant_id / account_id / session_key / channel
         # 只是待校验输入，永不参与授权——这里刻意不读取它们，只用服务端身份。
-        identity = self._identity
+        identity = conn.identity or self._identity
         inbound = InboundMessage(
             channel=self.name,
             sender="webchat",
-            chat_id="local",
+            chat_id=identity.chat_id,
             content=content,
             media=[str(m) for m in media] if isinstance(media, list) else [],
             metadata={"client_message_id": client_message_id, "username": "webchat"},

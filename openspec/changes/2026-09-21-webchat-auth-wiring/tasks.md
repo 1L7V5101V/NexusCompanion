@@ -14,14 +14,14 @@
 
 ## 2. 身份派生
 
-- [ ] 2.1 启用 auth 时，`bootstrap/app.py` 构造通道不再传常量 `WebChatIdentity()`，改为按 session 经 C1 解析得到 `account_id → tenant_id → canonical_conversation_id`。验证：集成测试
-- [ ] 2.2 `hello` 在认证模式下返回解析三元组；客户端帧中 `tenant_id` / `account_id` / `session_key` 仍被忽略。验证：负向测试
-- [ ] 2.3 跨账号越权负向：账号 A 的 session 无法读到账号 B 的 tenant/会话。验证：双账号集成测试
-- [ ] 2.4 未启用 auth 时保持显式 dev 回退身份（`DEV_ACCOUNT_ID` / `DEFAULT_TENANT`），且不因认证不可用而静默降级（design ADR-6）。验证：门禁/回退测试
+- [x] 2.1 启用 auth 时，`bootstrap/app.py` 构造通道不再传常量 `WebChatIdentity()`，改为按 session 经 C1 解析得到 `account_id → tenant_id → canonical_conversation_id`。验证：集成测试
+- [x] 2.2 `hello` 在认证模式下返回解析三元组；客户端帧中 `tenant_id` / `account_id` / `session_key` 仍被忽略。验证：负向测试
+- [x] 2.3 跨账号越权负向：账号 A 的 session 无法读到账号 B 的 tenant/会话。验证：双账号集成测试
+- [x] 2.4 未启用 auth 时保持显式 dev 回退身份（`DEV_ACCOUNT_ID` / `DEFAULT_TENANT`），且不因认证不可用而静默降级（design ADR-6）。验证：门禁/回退测试
 
 ## 3. 门禁与配置
 
-- [ ] 3.1 `bootstrap/app.py` 与 `bootstrap/chat_api.py` 的门禁改为 design ADR-3 三态矩阵：`auth.enabled` → 允许；否则 `dev_mode` → 允许；否则 fail-fast。验证：八组合矩阵测试
+- [x] 3.1 `bootstrap/app.py` 与 `bootstrap/chat_api.py` 的门禁改为 design ADR-3 三态矩阵：`auth.enabled` → 允许；否则 `dev_mode` → 允许；否则 fail-fast。验证：八组合矩阵测试
 - [ ] 3.2 非回环 host 绑定仍拒绝，除非显式 `allow_public_bind`（C4 语义不变）。验证：启动拒绝测试
 - [ ] 3.3 `config.example.toml` 写清 `[auth]` 与 `[channels.chat]` 联动，含 `origin_allowlist` 必须覆盖实际来源（公网部署时为该域名）。验证：文档审查 + 配置断言
 - [ ] 3.4 断言认证模式不打开 `payload_snapshot`（不得以 `dev_mode=true` 作为生产放行手段）。验证：配置/装配断言
