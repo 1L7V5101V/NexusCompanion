@@ -38,10 +38,10 @@
 - [x] 3.6 停止语义：`stop()` 置停止标志 + `router.close()`（拒绝新 work），在途 handler 继续收束；`process_once()` 在 router 关闭后直接返回 0、不再认领（ADR-7）。验证：`stop()` 后 `router.closed` 为真、`process_once()==0` 且无 claim 调用
 
 ## 4. 运行期接线与优雅停止（ADR-7）
-- [ ] 4.1 bootstrap 建立 control plane async engine + session factory（复用 `bootstrap/db/engine.py`），构造 `WorkItemRepository` + `WorkQueueWorker`；`storage.backend == "sqlite"` 时跳过（ADR-7）。验证：`tests/control_plane/test_work_queue_wiring.py` 双后端分支用例
-- [ ] 4.2 `AppRuntime.start()` 在 `provisioning_worker.start()` 之后启动 worker；`AppRuntime.shutdown()` 的 `_run_cleanup_steps` 加入 worker 停止与 `engine.dispose()`，位置在 `conversation_runtime.shutdown` / `core.stop` 之前。验证：`test_work_queue_wiring.py` 启停顺序断言 + 既有 `tests/test_app_*` 不回归
-- [ ] 4.3 配置：新增 `[work_queue]`（`enabled` 默认关闭、参数与 ADR 默认值一致）并接入 `agent/config.py` + `config.example.toml`。验证：配置解析用例（默认与覆盖）
-- [ ] 4.4 关闭后遗留项由下次清扫收束：集成用例模拟「在途被中断 → 重启 → 清扫复位 → 重新执行成功」。验证：`test_work_queue_recovery.py` 崩溃恢复 e2e
+- [x] 4.1 新增 `bootstrap/work_queue.py`：`build_work_queue_runtime()` 建立 control plane async engine + session factory（复用 `bootstrap/db/engine.py`）并构造 `WorkItemRepository` + `WorkQueueWorker`；连接串驱动从 `storage.postgres_url`（sync psycopg）转 `+asyncpg`；非 postgres 后端跳过；**未注册 handler 时 fail-fast**（否则全部 work item 会被判失败进死信）。验证：`tests/test_work_queue_wiring.py`（驱动转换幂等 / 默认关闭 / 非 postgres 跳过 / 未注册 handler 抛错 / engine+worker 装配与配置映射）
+- [x] 4.2 `AppRuntime.start()` 在 `provisioning_worker.start()` 之后启动 worker（**独立 task，不放入 `self.tasks`**——那会与 `_run_primary_tasks` 的一损俱损语义耦合）；`shutdown()` 的 `_run_cleanup_steps` 新增 `work_queue.drain_and_stop`，位置在 **`runtime_tasks.cancel` 之前**（否则会在 handler 执行中取消它），并在其中 `engine.dispose()`；异常经 `_work_queue_done` 回调大声记录。验证：既有测试不回归（`pytest -k 'config or app_runtime or bootstrap'` 85 passed / 2 skipped）
+- [x] 4.3 配置：新增 `[agent.work_queue]`（`enabled` 默认 false、参数与 ADR 冻结默认一致）并接入 `agent/config_models.py`（`WorkQueueConfig`）+ `agent/config.py::_load_work_queue_config` + `config.example.toml`；**加载期**校验 `lease_ttl > heartbeat`、`max_attempts ≤ 退避档数`、error backoff 关系。验证：配置默认值/覆盖/非法值用例
+- [ ] 4.4 关闭后遗留项由下次清扫收束：集成用例模拟「在途被中断 → 重启 → 清扫复位 → 重新执行成功」。验证：`test_work_queue_recovery.py` 崩溃恢复 e2e → **待 task 7.2 的 PG 环境**；等价语义已在真 PG 仓储验证中覆盖（连续 7 次崩溃仍 `queued`、`attempt_count=0`、可认领 + 清扫复位），见 [`work-queue-repo-verification.md`](../../evidence/c15-work-queue-consumer/work-queue-repo-verification.md)
 
 ## 5. 与调用方的接缝
 

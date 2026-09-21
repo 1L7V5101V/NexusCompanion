@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from agent.config_models import (
     AdmissionConfig,
+    WorkQueueConfig,
     AppServerConfig,
     AuthConfig,
     CacheConfig,
@@ -121,6 +122,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
     admission_cfg = _load_admission_config(data)
     auth_cfg = _load_auth_config(data)
+    work_queue_cfg = _load_work_queue_config(data)
 
     return Config(
         provider=provider,
@@ -201,6 +203,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         app_server=app_server,
         admission=admission_cfg,
         auth=auth_cfg,
+        work_queue=work_queue_cfg,
         logging=logging_cfg,
         router_mode=str(
             data.get("router_mode", "rule")
@@ -505,6 +508,67 @@ def _parse_int_positive(name: str, value: object) -> int:
     if parsed < 1:
         raise ValueError(f"{name} 必须为正整数，当前: {value!r}")
     return parsed
+_WORK_QUEUE_BACKOFF_STAGES = 5
+"""[agent.work_queue] `max_attempts` 上限 = 退避表档数（与 `WorkQueueWorkerConfig`
+冻结默认 1m/5m/30m/2h/6h 一致）。"""
+
+
+def _load_work_queue_config(data: dict) -> WorkQueueConfig:
+    """[agent.work_queue] C15 消费层参数；未配置即冻结默认（`enabled` 默认 False）。
+
+    与 `WorkQueueWorkerConfig.__post_init__` 的不变量同源，但**在配置加载期就报错**，
+    而不是等 worker 构造时才失败。
+    """
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("work_queue")) or {}
+    defaults = WorkQueueConfig()
+
+    def _float(name: str) -> float:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(f"agent.work_queue.{name} 必须为正，当前: {value!r}")
+        return parsed
+
+    def _int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError(f"agent.work_queue.{name} 必须为正整数，当前: {value!r}")
+        return parsed
+
+    lease_ttl = _float("lease_ttl_seconds")
+    heartbeat = _float("heartbeat_interval_seconds")
+    if lease_ttl <= heartbeat:
+        raise ValueError(
+            "agent.work_queue.lease_ttl_seconds 必须大于 heartbeat_interval_seconds"
+        )
+    max_attempts = _int("max_attempts")
+    if max_attempts > _WORK_QUEUE_BACKOFF_STAGES:
+        raise ValueError(
+            f"agent.work_queue.max_attempts 最多 {_WORK_QUEUE_BACKOFF_STAGES}"
+            "（退避表档数 1m/5m/30m/2h/6h；需要更多档位请先扩退避表）"
+        )
+    error_backoff = _float("error_backoff_seconds")
+    max_error_backoff = _float("max_error_backoff_seconds")
+    if max_error_backoff < error_backoff:
+        raise ValueError(
+            "agent.work_queue.max_error_backoff_seconds 必须 >= error_backoff_seconds"
+        )
+    return WorkQueueConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        lease_ttl_seconds=lease_ttl,
+        heartbeat_interval_seconds=heartbeat,
+        max_attempts=max_attempts,
+        poll_interval_seconds=_float("poll_interval_seconds"),
+        batch_size=_int("batch_size"),
+        maintenance_acquire_timeout_seconds=_float(
+            "maintenance_acquire_timeout_seconds"
+        ),
+        release_delay_seconds=_float("release_delay_seconds"),
+        error_backoff_seconds=error_backoff,
+        max_error_backoff_seconds=max_error_backoff,
+    )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:
