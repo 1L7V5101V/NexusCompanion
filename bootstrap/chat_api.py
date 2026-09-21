@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from infra.channels.web_chat_protocol import CLOSE_DEV_ONLY
 
 if TYPE_CHECKING:
+    from bootstrap.auth.runtime import AuthRuntime
     from infra.channels.web_chat_channel import WebChatChannel
 
 # 回环集合：dev-only 门禁在绑定层与运行期都以此判定。
@@ -81,14 +82,24 @@ def create_chat_app(
     *,
     workspace: Path,
     channel: WebChatChannel,
+    auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
     app.state.channel = channel
-    # dev-only 门禁第 3 层（design ADR-3）：默认只接受回环客户端；反向代理后
+    # C4 dev-only 门禁第 3 层（design ADR-3）：默认只接受回环客户端；反向代理后
     # 也不能用公网来源冒充本机。显式 allow_public_bind 才关闭本层。
+    # 与 C5 auth 并存（两者都 fail-closed，取交集）：dev 门禁约束来源网络，
+    # auth 约束主体/session，任一不满足都拒绝。
     app.add_middleware(_DevOnlyGuardMiddleware, allow_public_bind=allow_public_bind)
+    if auth_runtime is not None:
+        # C5: auth.enabled 时挂用户面 `/api/auth/*`（design ADR-7）；默认关闭时
+        # 行为与 P0.5 完全一致（不挂路由、WS 不校验）。
+        from bootstrap.auth import build_auth_api
+
+        app.include_router(build_auth_api(auth_runtime))
+        app.state.auth_runtime = auth_runtime
     project_root = Path(__file__).resolve().parent.parent
     static_dir = project_root / "static" / "chat"
     index_file = static_dir / "index.html"
@@ -140,6 +151,16 @@ def create_chat_app(
 
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:
+        if auth_runtime is not None:
+            # C5（design ADR-4）：auth.enabled 时 WS handshake 校验 Cookie + Origin；
+            # C4 通道层持久/tenant 派生接线由 C4 消费（本层只做 app 入口门禁）。
+            from bootstrap.auth import WSHandshakeRejected, check_ws_handshake
+
+            try:
+                await check_ws_handshake(auth_runtime, websocket.headers)
+            except WSHandshakeRejected:
+                await websocket.close(code=4401, reason="authentication required")
+                return
         await channel.handle_websocket(websocket)
 
     @app.post("/api/chat/uploads")
@@ -172,6 +193,7 @@ def build_chat_server(
     dev_mode: bool,
     host: str = "127.0.0.1",
     port: int = 6322,
+    auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
 ) -> uvicorn.Server:
     """构造 dev-only WebChat 服务器；非 dev 或非回环绑定直接拒绝（ADR-3）。"""
@@ -190,6 +212,7 @@ def build_chat_server(
         create_chat_app(
             workspace=workspace,
             channel=channel,
+            auth_runtime=auth_runtime,
             allow_public_bind=allow_public_bind,
         ),
         host=host,
