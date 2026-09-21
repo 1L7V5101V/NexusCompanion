@@ -7,8 +7,8 @@
 
 ## 1. DB 迁移与 ORM model（ADR-2）
 
-- [ ] 1.1 新增 alembic revision（`down_revision = f3c8a9d2e7b4`）：`background_work_items` 增 `attempt_count INTEGER NOT NULL DEFAULT 0`、`lease_owner VARCHAR(128) NULL`、`lease_expires_at TIMESTAMPTZ NULL`、`next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now()`、`last_error TEXT NULL`；建 `ix_background_work_items_claim (status, next_attempt_at)`。验证：`alembic upgrade head` + `downgrade -1` + `upgrade head` 在 scratch DB 上可逆，`tests/migration/` 既有断言不回归
-- [ ] 1.2 `bootstrap/db/models/control_plane.py::BackgroundWorkItemModel` 同步 5 列与索引声明；状态 CHECK **不变**（ADR-1）。验证：`test_control_plane_contract` 契约测试更新并全绿
+- [x] 1.1 新增 alembic revision（`down_revision = f3c8a9d2e7b4`）：`background_work_items` 增 `attempt_count INTEGER NOT NULL DEFAULT 0`、`lease_owner VARCHAR(128) NULL`、`lease_expires_at TIMESTAMPTZ NULL`、`next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now()`、`last_error TEXT NULL`；建 `ix_background_work_items_claim (status, next_attempt_at)`。验证：`alembic upgrade head` + `downgrade -1` + `upgrade head` 在 scratch DB 上可逆，`tests/migration/` 既有断言不回归 → **已在真 PG18 上验证 upgrade/downgrade/upgrade 双向可逆（列与索引计数先后为 5→0→5、1→0→1）**，见 [`claim-sql-smoke.md`](../../evidence/c15-work-queue-consumer/claim-sql-smoke.md)；`tests/migration/` 回归待 task 7.2（需 pgvector）
+- [x] 1.2 `bootstrap/db/models/control_plane.py::BackgroundWorkItemModel` 同步 5 列与索引声明；状态 CHECK **不变**（ADR-1）。验证：model `__table__.columns`/`indexes` 已断言（5 列 + `ix_background_work_items_claim`）且 pyright 0 errors；`test_control_plane_contract` 9 passed
 - [ ] 1.3 expand-only 兼容性验证：在**旧列**上插入的行（不指定新列）取 DEFAULT/NULL 且可读。验证：新增用例 `tests/control_plane/test_work_queue_migration.py::test_expand_only_backward_compatible`
 
 ## 2. `WorkItemRepository`（ADR-1 / ADR-3 / ADR-4）

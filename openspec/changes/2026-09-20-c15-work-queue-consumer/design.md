@@ -67,6 +67,22 @@
 
 **边界**：work item 的 handler 必须是**可重放或幂等**的（§5.9.6「纯内部、声明幂等的 work 可 recompute」）。带外部副作用的 handler 必须自带幂等键并落在 ADR-6 的同事务协议内；本 change 不为 handler 提供「禁止无确认重放」的自动判定（那是 C2 `tool_calls` 的 `unknown/compensation_required` 职责）。
 
+**待确认的开放点：尝试预算是否被崩溃消耗（2026-09-21 实现阶段发现）**
+
+`attempt_count` 由 **claim** 递增（`attempt_count + 1`，与 delivery 同形），而 claim 的 due 判据含 `attempt_count < max_attempts`。因此：
+
+- 崩溃 → 清扫复位为 `queued`（**不**递增，本 ADR 已定）→ 重新认领 → `attempt_count + 1`；
+- 即「清扫不递增」只挡住了清扫本身，**没能挡住重新认领**：反复崩溃会逐步消耗尝试预算；预算耗尽后该行停在 `queued` 且**不再可被认领**（被 due 判据排除），表现为静默停滞。
+
+这与本 ADR「崩溃不是业务失败、不该耗尽尝试」的意图冲突；但「有界执行」在崩溃风暴下是更安全的默认（避免无限重试打爆 DB）。**两个候选，需在动 task 2 前定案：**
+
+| 方案 | 语义 | 取舍 |
+| --- | --- | --- |
+| (A) 保持现状：claim 递增 + due 含 `attempt_count < max` | 尝试预算 = 执行次数（崩溃计入） | 崩溃风暴下**有界**；但必须有「`queued` 且达上限」的可观测告警 + 人工处置，否则停滞是静默的 |
+| (B) due 判据去掉 `attempt_count < max`，重试边界只由 `record_work_failed` 的终态转移给出 | 尝试预算 = 业务失败次数（崩溃不计入） | 完全符合本 ADR 意图；但崩溃风暴下该 work 会**无限重试**（对幂等 handler 可接受），且与 delivery 的语义出现差异 |
+
+未定前 task 2.1/2.4 按 (A) 形状实现（该形状已在真 PG 验证）；定案后若选 (B) 需同步本 ADR、spec 与 claim SQL。
+
 ---
 
 ## ADR-4 （关键）claim 的两个 per-tenant 条件，使租约只覆盖执行期且租户内不并发
