@@ -8,7 +8,7 @@
 
 ### Requirement: work item 数据库租约认领
 
-系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued`，或到期的 `failed`，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间，并把 `attempt_count` 加一；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条；认领 SHALL NOT 返回任何其 `tenant_id` 当前已有有效租约在途（`in_progress` 且租约未过期）的工作项。
+系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued` 且 `next_attempt_at` 已到期，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间，并把 `attempt_count` 加一；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条；认领 SHALL NOT 返回任何其 `tenant_id` 当前已有有效租约在途（`in_progress` 且租约未过期）的工作项；终态（`succeeded`/`failed`/`cancelled`）SHALL NOT 被认领——即 `failed`（死信）不再自动重试是**结构性**成立，而非依赖计数门槛。
 
 #### Scenario: 到期 queued 项被认领为 in_progress
 
@@ -20,10 +20,10 @@
 - **WHEN** 存在 `status='failed'` 但 `next_attempt_at > now()` 的工作项
 - **THEN** 该行不被本次认领，状态与租约不变
 
-#### Scenario: 达到尝试上限后不再被认领
+#### Scenario: 达到尝试上限的业务失败进入死信且不再被认领
 
-- **WHEN** 某工作项的 `attempt_count` 已达到最大尝试次数
-- **THEN** 该行不再被认领
+- **WHEN** 某工作项因业务失败达到最大尝试次数并进入 `failed` 终态
+- **THEN** 该行不再被认领，且其 `attempt_count` 与 `last_error` 保留可查
 
 #### Scenario: 同一租户单轮至多认领一条
 
@@ -216,3 +216,60 @@
 
 - **WHEN** 注册或记录工作项相关指标
 - **THEN** 使用的标签属于已登记白名单，不含工作项标识或租户标识
+
+### Requirement: 死信终态与人工重投
+
+系统 SHALL 把 `failed` 作为**死信终态**：它 SHALL 唯一来自「业务失败达到最大尝试次数」，SHALL NOT 由崩溃或清扫产生；系统 SHALL 提供人工重投（redrive），把死信工作项复位为可重新执行并保留原历史；对非死信状态的 redrive 请求 SHALL 被拒绝。
+
+#### Scenario: 崩溃不产生死信
+
+- **WHEN** 某工作项因进程崩溃被清扫复位，且此后反复经历崩溃
+- **THEN** 它始终不被判定为 `failed`，且始终可被重新认领
+
+#### Scenario: redrive 保留历史并复位
+
+- **WHEN** 管理员对一个 `failed` 工作项请求 redrive 并附原因
+- **THEN** 追加一条带原因的处置记录，原有生命周期记录不变，该工作项回到可被认领状态且尝试计数复位
+
+#### Scenario: 非死信状态拒绝 redrive
+
+- **WHEN** 对一个 `succeeded`、`queued` 或 `in_progress` 的工作项请求 redrive
+- **THEN** 请求被拒绝且不产生任何处置记录或状态变化
+
+### Requirement: 生命周期审计流
+
+系统 SHALL 以只追加的方式记录每个工作项的逐次生命周期事件，至少区分：成功、失败、延后释放、崩溃恢复复位与人工重投五类结果；每条记录 SHALL 含工作项标识、结果、错误（如有）与起止时间；该审计流 SHALL NOT 被 redrive 或任何操作删除或改写。
+
+#### Scenario: 每次失败各留一行
+
+- **WHEN** 同一工作项先后失败三次（每次错误不同）
+- **THEN** 审计流中存在三条独立记录，各自的错误与时间可分别读出
+
+#### Scenario: 崩溃恢复与延后同样留痕
+
+- **WHEN** 某工作项被清扫复位，或被判定维护类延后
+- **THEN** 审计流中分别追加对应结果的记录
+
+#### Scenario: redrive 不抹除历史
+
+- **WHEN** 对一个已有多次失败记录的死信工作项执行 redrive
+- **THEN** 先前的失败记录全部保留，并新增一条带原因的重投记录
+
+### Requirement: 工作类型词汇与分派
+
+工作项 SHALL 同时携带任务类型（`interactive` 或 `maintenance`）与业务链路（`passive`/`proactive`/`drift`/`consolidation`/`optimizer`）两个字段；任务类型 SHALL 决定调度优先级（同租户串行的 lane），业务链路 SHALL 决定执行处理器；两者 SHALL NOT 互相代替（业务链路的值不得用作任务类型）。
+
+#### Scenario: 任务类型决定 lane
+
+- **WHEN** 一个工作项的任务类型为交互类
+- **THEN** 它按交互类优先级执行；任务类型为维护类时按维护类语义执行（可被延后）
+
+#### Scenario: 业务链路决定处理器
+
+- **WHEN** 两个工作项任务类型相同但业务链路不同
+- **THEN** 它们被分派给各自链路的处理器
+
+#### Scenario: 业务链路值不得冒充任务类型
+
+- **WHEN** 校验一条工作项
+- **THEN** 其任务类型取值属于任务类型词表，`consolidation` 一类的链路值出现在任务类型字段中被视为非法

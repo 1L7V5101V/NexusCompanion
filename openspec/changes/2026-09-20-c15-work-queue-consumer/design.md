@@ -29,27 +29,35 @@
 
 ---
 
-## ADR-2 表结构扩展用 expand-only 迁移，5 列 + 1 索引
+## ADR-2 表结构扩展用 expand-only 迁移，6 列 + 1 索引 + 1 审计表
 
 **结论**：新 alembic revision（`down_revision = f3c8a9d2e7b4`，当前 head）对 `background_work_items` 执行纯 additive DDL：
 
 | 列 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
-| `attempt_count` | `INTEGER` | `NOT NULL DEFAULT 0` | 本周期尝试计数（`claim` 时 +1；供 `max_attempts` 判据） |
+| `attempt_count` | `INTEGER` | `NOT NULL DEFAULT 0` | 执行计数（`claim` 时 +1）；**(B) 定案下不再用作认领门槛**，仅供退避索引与观测 |
 | `lease_owner` | `VARCHAR(128)` | `NULL` | 认领者标识 |
 | `lease_expires_at` | `TIMESTAMPTZ` | `NULL` | 租约到期（`claim` 时 `now() + lease_ttl`） |
 | `next_attempt_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()` | 到期后可再认领的时间（退避写入） |
 | `last_error` | `TEXT` | `NULL` | 最近失败原因（入库前过 redaction） |
+| `flow` | `VARCHAR(32)` | `NULL` | 业务链路：`passive`/`proactive`/`drift`/`consolidation`/`optimizer`（§7.1）；**决定 handler** |
 
-外加 `CREATE INDEX ix_background_work_items_claim ON background_work_items (status, next_attempt_at)`（claim 扫描路径；既有 `(tenant_id, status)` 索引保留给租户过滤查询）。
+外加：
+
+- `CREATE INDEX ix_background_work_items_claim ON background_work_items (status, next_attempt_at)`（claim 扫描路径；既有 `(tenant_id, status)` 索引保留给租户过滤查询）；
+- `CREATE TABLE work_attempts`（只追加生命周期审计流，镜像 `delivery_attempts`）：`id` / `work_item_id`(FK → `background_work_items`) / `outcome` / `error` / `started_at` / `finished_at`，加 `ix_work_attempts_item (work_item_id, started_at)`；`outcome ∈ {succeeded, failed, released, recovered, redrive}` 加 CHECK（与 `delivery_attempts.outcome` 同规格）。
 
 **理由**
 
 - §5.9.9 要求 schema 演进按 expand → backfill → cutover；本变更**只做 expand**：新列全部有 DEFAULT 或可 NULL，既有行无需回填，读路径不改签名的兼容性风险为零。
 - 与 `outbound_delivery_intents` 的 lease 列命名保持一致（`lease_owner`/`lease_expires_at`/`attempt_count`/`next_attempt_at`/`last_error`），使两表的认领语义可被同一套心智模型与同一套测试模式覆盖。
-- 不新增 `work_attempts` 审计表：delivery 侧有 `delivery_attempts` 是因为要向管理员呈现 provider receipt；work item 无外部 provider，`attempt_count + last_error` 已足够，避免为对称而建空表（**若后续需要逐次审计再单列扩展**）。
+- **`flow` 是功能性必需列，不是对称装饰**：lane 由 `work_kind` 决定（ADR-5），**handler 由 `flow` 决定**——没有 `flow` 就没有 handler 选择键。取值对齐 §7.1 与 C12 的 `observability_event_schema.json`：`work_kind ∈ {interactive, maintenance}`、`flow ∈ {passive, proactive, drift, consolidation, optimizer}`。
+  **纠正一处既有错误词汇**：C2 测试里写的 `work_kind="consolidation"` 是错的（`consolidation` 是 `flow` 的值）；C15 以双字段纠正。
+- **`work_attempts` 的取舍（2026-09-21 定案，采纳选项 (ii)）**：原计划「不建审计表、只用 `attempt_count + last_error`」被否。理由是死信（`failed`）的价值在于**事后能复盘**：只留计数 + 最后一条错误 = 只有判决书没有庭审记录，且 redrive 后先前错误就丢了；而逐次事件若改放 C12 的独立 audit 库，会把「某条具体工作的失败史」拆到两个库去查。delivery 已证明这张表好用（receipt/错误/redrive 原因都有归处）。
+  命名为 `work_attempts` 是对齐 `delivery_attempts`，但**语义上是「生命周期审计流」而非狭义 attempt**：`released`（维护类延后）与 `recovered`（崩溃清扫复位）也各追加一行——它们同样需要留痕，delivery 的 `redrive` 行已是同类先例。
+  `flow` **不加** CHECK（可扩展枚举；漂移风险由 fixture + 代码校验承担，避免每次新增链路都要迁移）；`work_attempts.outcome` **加** CHECK（枚举封闭）。
 
-**回滚**：`DROP INDEX` + 5 个 `DROP COLUMN`（§5.9.9 允许纯 additive 变更直接反向）。无 backfill 数据需要撤销。
+**回滚**：`DROP TABLE work_attempts` + `DROP INDEX ix_background_work_items_claim` + 6 个 `DROP COLUMN`（§5.9.9 允许纯 additive 变更直接反向）。无 backfill 数据需要撤销。
 
 ---
 
@@ -67,21 +75,22 @@
 
 **边界**：work item 的 handler 必须是**可重放或幂等**的（§5.9.6「纯内部、声明幂等的 work 可 recompute」）。带外部副作用的 handler 必须自带幂等键并落在 ADR-6 的同事务协议内；本 change 不为 handler 提供「禁止无确认重放」的自动判定（那是 C2 `tool_calls` 的 `unknown/compensation_required` 职责）。
 
-**待确认的开放点：尝试预算是否被崩溃消耗（2026-09-21 实现阶段发现）**
+**定案（2026-09-21）：崩溃**不**消耗尝试预算；死信只来自业务失败**（采纳候选 (B)）
 
-`attempt_count` 由 **claim** 递增（`attempt_count + 1`，与 delivery 同形），而 claim 的 due 判据含 `attempt_count < max_attempts`。因此：
+原设计让 `attempt_count` 同时承担「执行计数」与「认领门槛」（due 判据含 `attempt_count < max_attempts`）。实现阶段发现它的问题：清扫复位虽不递增，但**重新认领会**递增，于是反复崩溃会逐步耗尽预算，最终让该行停在 `queued` 却认领不到——**静默停滞**。
 
-- 崩溃 → 清扫复位为 `queued`（**不**递增，本 ADR 已定）→ 重新认领 → `attempt_count + 1`；
-- 即「清扫不递增」只挡住了清扫本身，**没能挡住重新认领**：反复崩溃会逐步消耗尝试预算；预算耗尽后该行停在 `queued` 且**不再可被认领**（被 due 判据排除），表现为静默停滞。
+定案改为：**due 判据去掉 `attempt_count < max_attempts` 与 `failed` 分支**，认领只针对 `queued`（到期）与 stale `in_progress`；重试上限的唯一执行者是 `record_work_failed` 的终态转移。
 
-这与本 ADR「崩溃不是业务失败、不该耗尽尝试」的意图冲突；但「有界执行」在崩溃风暴下是更安全的默认（避免无限重试打爆 DB）。**两个候选，需在动 task 2 前定案：**
+| 崩溃（lease 过期 / 进程消失） | 业务失败（handler 抛异常） |
+| --- | --- |
+| 清扫复位 `queued`，**不计入预算** | `record_work_failed`，**计入预算** |
+| **永远可重试**（进程级崩溃本身就是可见告警） | 达上限 → `failed` 终态 = **死信** |
 
-| 方案 | 语义 | 取舍 |
-| --- | --- | --- |
-| (A) 保持现状：claim 递增 + due 含 `attempt_count < max` | 尝试预算 = 执行次数（崩溃计入） | 崩溃风暴下**有界**；但必须有「`queued` 且达上限」的可观测告警 + 人工处置，否则停滞是静默的 |
-| (B) due 判据去掉 `attempt_count < max`，重试边界只由 `record_work_failed` 的终态转移给出 | 尝试预算 = 业务失败次数（崩溃不计入） | 完全符合本 ADR 意图；但崩溃风暴下该 work 会**无限重试**（对幂等 handler 可接受），且与 delivery 的语义出现差异 |
+这样 `failed` 的语义是干净的：**它唯一来自「反复做不成」的业务失败**，即死信队列的「死刑」。也正是这一点让「死刑不再重试」在 **SQL 层结构性成立**（`failed` 根本不在 due 判据内），而不是靠一个混合语义的计数门槛——后者容易被绕过或改错。
 
-未定前 task 2.1/2.4 按 (A) 形状实现（该形状已在真 PG 验证）；定案后若选 (B) 需同步本 ADR、spec 与 claim SQL。
+**代价与取舍**：崩溃风暴下该 work 会无限重试。对声明幂等的 handler 可接受；若某类 work 不能容忍无限重试，应由其 handler 自行计数并在 `record_work_failed` 中显式判死，**而不是让队列层用一个混合语义的门槛替它决定**。
+
+**与 delivery 的差异（有意）**：delivery 的 `attempt_count` 计执行次数且 due 含上限，因为 outbox 投递失败几乎总是 provider/网络问题（不是「业务做不成」）。work item 的失败包含「业务逻辑做不成」，其重试语义必须与崩溃可区分。
 
 ---
 
@@ -215,6 +224,41 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 **理由**：C12 契约已 verified 但 §8.1 因 C2/C3 合入时未按其 checklist 落地而成为**无 owner 的滞留项**（见 `c12-observability-backup/tasks.md` §8 与 checklist 清点结论）。把该条目并入本 change 是让它归属明确的最短路径；同时也是本 change 自身「崩溃恢复可观测」的验收手段（恢复演练需要 `restart_to_recovered_ms` 才有据可查）。
 
 ---
+
+## ADR-9 为何用 PG 表而不是消息队列（含与 `asyncio.Queue` 的边界）
+
+**结论**：Pilot 阶段的消息队列就是这些 PG 表自己；不引入 Kafka/NATS/Redis Streams。同时明确两者边界：**`asyncio.Queue` 是热路径调度，PG 表是冷路径意图持久化**。
+
+**为何不用 MQ（理由不是「规模小」，而是 MQ 解决不了本 change 的核心需求）**
+
+本 change 要求「业务副作用写入与工作项终态推进在**同一事务**」。外部 MQ 与 PG **无法共享事务**，于是只剩两条路：
+
+1. **2PC/XA**：绝大多数 MQ 不支持，且是运维毒药；
+2. **transactional outbox**：先把「要投给 MQ」的意图写进 PG（与业务同事务），再由 relay 进程投递——**这就是本 change 正在建的东西，只是又多了一层**。
+
+即引入 MQ 会让 effectively-once **变难而非变易**。roadmap §P4 的升级顺序本身也承认这点：先换 Redis Streams，**再**评估 transactional outbox/DLQ/多 Worker。
+
+换到 MQ，C15 这些活一样逃不掉：
+
+| MQ 免费给你 | MQ 不给你（仍得自己写） |
+| --- | --- |
+| 投递/重试/DLQ 原语 | 与业务写入同事务（必须靠 outbox 兜） |
+| 队列深度 | **同租户在途 ≤1**（ADR-4；MQ 只保证分区有序） |
+| | lease/失租禁写（consumer 侧仍要 CAS + 幂等） |
+| | 「已有有效租约就不认领」这层背压 |
+| | 崩溃后可查询「卡在哪条」（MQ pending list 比查表难受） |
+
+**`asyncio.Queue` vs PG 表（消除 roadmap §2 的表面矛盾）**
+
+§2 写「queue = 进程内 `asyncio.Queue`」，而本 change 拿 PG 当队列，看似矛盾。实际是两层：
+
+| | `asyncio.Queue`（热路径） | PG 表（冷路径） |
+| --- | --- | --- |
+| 装什么 | **已经确认要做**的 turn 的分发排序 | **「某租户有一件后台工作要做」的意图** |
+| 进程死了 | 一起没（这正是 C3 §6 的「已知丢失窗口」） | 还在，重启后继续 |
+| 为何需要 | 低延迟分发、tenant lane 串行 | 崩溃恢复、effectively-once、可查询 |
+
+两者职责不同、不可互替；P4 闸门所说的「持久队列」指的是**把 PG 这一层换成 Redis Streams consumer group**。
 
 ## Rollout / Rollback
 
