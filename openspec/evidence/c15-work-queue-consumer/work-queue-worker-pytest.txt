@@ -5,20 +5,23 @@ rootdir: D:\Project\NexusCompanion-worktrees\wt-c15
 configfile: pytest.ini
 plugins: anyio-4.15.1, asyncio-1.4.0, cov-7.1.0, timeout-2.4.0
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
-collecting ... collected 13 items
+collecting ... collected 16 items
 
-tests/test_work_queue_worker.py::test_config_frozen_defaults PASSED      [  7%]
-tests/test_work_queue_worker.py::test_config_invariants PASSED           [ 15%]
-tests/test_work_queue_worker.py::test_same_tenant_is_serialized PASSED   [ 23%]
-tests/test_work_queue_worker.py::test_cross_tenant_runs_concurrently PASSED [ 30%]
-tests/test_work_queue_worker.py::test_maintenance_deferred_releases_without_failing PASSED [ 38%]
-tests/test_work_queue_worker.py::test_unregistered_flow_fails_loudly PASSED [ 46%]
-tests/test_work_queue_worker.py::test_handler_execute_outside_persist_inside_transaction PASSED [ 53%]
-tests/test_work_queue_worker.py::test_execute_failure_counts_as_business_failure PASSED [ 61%]
-tests/test_work_queue_worker.py::test_persist_failure_counts_as_business_failure PASSED [ 69%]
-tests/test_work_queue_worker.py::test_lease_lost_abandons_terminal_writes PASSED [ 76%]
-tests/test_work_queue_worker.py::test_lease_lost_on_failure_abandons_state PASSED [ 84%]
-tests/test_work_queue_worker.py::test_stop_closes_lane_and_stops_claiming PASSED [ 92%]
-tests/test_work_queue_worker.py::test_batch_size_is_passed_as_backpressure_bound PASSED [100%]
+tests/test_work_queue_worker.py::test_config_frozen_defaults PASSED      [  6%]
+tests/test_work_queue_worker.py::test_config_invariants PASSED           [ 12%]
+tests/test_work_queue_worker.py::test_same_tenant_is_serialized PASSED   [ 18%]
+tests/test_work_queue_worker.py::test_cross_tenant_runs_concurrently PASSED [ 25%]
+tests/test_work_queue_worker.py::test_maintenance_deferred_releases_without_failing PASSED [ 31%]
+tests/test_work_queue_worker.py::test_unregistered_flow_fails_loudly PASSED [ 37%]
+tests/test_work_queue_worker.py::test_handler_execute_outside_persist_inside_transaction PASSED [ 43%]
+tests/test_work_queue_worker.py::test_execute_failure_counts_as_business_failure PASSED [ 50%]
+tests/test_work_queue_worker.py::test_persist_failure_counts_as_business_failure PASSED [ 56%]
+tests/test_work_queue_worker.py::test_lease_lost_abandons_terminal_writes PASSED [ 62%]
+tests/test_work_queue_worker.py::test_lease_lost_on_failure_abandons_state PASSED [ 68%]
+tests/test_work_queue_worker.py::test_stop_closes_lane_and_stops_claiming PASSED [ 75%]
+tests/test_work_queue_worker.py::test_batch_size_is_passed_as_backpressure_bound PASSED [ 81%]
+tests/test_work_queue_worker.py::test_config_error_backoff_invariants PASSED [ 87%]
+tests/test_work_queue_worker.py::test_polling_error_does_not_escape_run PASSED [ 93%]
+tests/test_work_queue_worker.py::test_polling_error_recovers_and_resumes_consuming PASSED [100%]
 
-============================= 13 passed in 1.39s ==============================
+============================= 16 passed in 1.64s ==============================

@@ -45,6 +45,8 @@ class FakeWorkRepo:
     def __init__(self, batch: list[dict[str, Any]] | None = None) -> None:
         self.batch = list(batch or [])
         self.claim_calls: list[dict[str, Any]] = []
+        self.claim_attempts = 0
+        self.claim_raises = 0  # >0 时前 N 次 claim_batch 抛错（模拟 DB 抖动）
         self.heartbeats: list[str] = []
         self.succeeded: list[str] = []
         self.failed: list[tuple[str, str]] = []
@@ -55,6 +57,10 @@ class FakeWorkRepo:
     async def claim_batch(
         self, owner: str, *, batch_size: int, lease_ttl_seconds: float
     ) -> list[dict[str, Any]]:
+        self.claim_attempts += 1
+        if self.claim_raises > 0:
+            self.claim_raises -= 1
+            raise RuntimeError("db down")
         self.claim_calls.append(
             {"owner": owner, "batch_size": batch_size, "lease_ttl": lease_ttl_seconds}
         )
@@ -379,3 +385,68 @@ async def test_batch_size_is_passed_as_backpressure_bound() -> None:
     assert repo.claim_calls[0]["batch_size"] == 3
     assert repo.claim_calls[0]["owner"] == "w1"
     assert repo.claim_calls[0]["lease_ttl"] == 60.0
+
+
+# ── 轮询级异常隔离（ADR-7） ──
+
+
+def test_config_error_backoff_invariants() -> None:
+    with pytest.raises(ValueError):
+        WorkQueueWorkerConfig(error_backoff_seconds=0)
+    with pytest.raises(ValueError):
+        WorkQueueWorkerConfig(
+            error_backoff_seconds=10.0, max_error_backoff_seconds=1.0
+        )
+    cfg = WorkQueueWorkerConfig()
+    assert cfg.error_backoff_seconds == 5.0
+    assert cfg.max_error_backoff_seconds == 60.0
+
+
+async def test_polling_error_does_not_escape_run() -> None:
+    """DB 抖动（claim_batch 抛错）不得逃出 run()。
+
+    `AppRuntime._run_primary_tasks` 把 runtime task 的异常当致命：一旦有任务抛错，
+    同级任务会被全部取消并退出进程。因此轮询异常必须只记日志 + 退避重试。
+    """
+    repo = FakeWorkRepo()
+    repo.claim_raises = 5  # 一直失败：run() 也不得退出或抛错
+    worker = _worker(
+        repo,
+        {"consolidation": RecordingHandler()},
+        poll_interval_seconds=0.01,
+        error_backoff_seconds=0.01,
+        max_error_backoff_seconds=0.02,
+    )
+
+    task = asyncio.create_task(worker.run())
+    await asyncio.sleep(0.15)
+    assert not task.done(), "run() 不应因轮询异常退出"
+    assert repo.claim_attempts >= 2, "应退避后继续重试"
+
+    worker.stop()
+    await asyncio.wait_for(task, timeout=2)  # 正常收束，不抛
+    assert task.exception() is None
+
+
+async def test_polling_error_recovers_and_resumes_consuming() -> None:
+    """轮询异常恢复后继续消费（不丢已就绪的 work）。"""
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    repo.claim_raises = 2
+    worker = _worker(
+        repo,
+        {"consolidation": RecordingHandler()},
+        poll_interval_seconds=0.01,
+        error_backoff_seconds=0.01,
+        max_error_backoff_seconds=0.02,
+    )
+
+    task = asyncio.create_task(worker.run())
+    for _ in range(300):
+        if repo.succeeded:
+            break
+        await asyncio.sleep(0.01)
+    worker.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert repo.claim_attempts >= 3, "两次失败后应重试成功"
+    assert repo.succeeded == ["i1"]

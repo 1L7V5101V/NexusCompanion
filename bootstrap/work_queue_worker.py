@@ -62,6 +62,8 @@ class WorkQueueWorkerConfig:
     batch_size: int = 10
     maintenance_acquire_timeout_seconds: float = 5.0
     release_delay_seconds: float = 60.0
+    error_backoff_seconds: float = 5.0
+    max_error_backoff_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if self.lease_ttl_seconds <= self.heartbeat_interval_seconds:
@@ -74,6 +76,12 @@ class WorkQueueWorkerConfig:
             raise ValueError("batch_size 必须 >= 1")
         if self.poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds 必须为正")
+        if self.error_backoff_seconds <= 0:
+            raise ValueError("error_backoff_seconds 必须为正")
+        if self.max_error_backoff_seconds < self.error_backoff_seconds:
+            raise ValueError(
+                "max_error_backoff_seconds 必须 >= error_backoff_seconds"
+            )
 
 
 @dataclass(frozen=True)
@@ -146,13 +154,37 @@ class WorkQueueWorker:
     async def run(self) -> None:
         """持续轮询认领并执行，直到 `stop()`。
 
+        **轮询级异常绝不逃逸**（ADR-7）：`bootstrap/app.py::_run_primary_tasks` 把
+        runtime task 的异常当致命——一旦有任务抛错，同级任务（`passive_worker`、
+        `bus.dispatch_outbound`、`scheduler`）会被全部取消，进程退出。因此 DB 抖动、
+        迁移中、连接池耗尽都只能记日志 + 退避重试，不能变成进程退出。
+
         `process_once()` 内部 `gather` 了本轮全部在途 handler，因此循环退出时本轮
-        已收束；**调用方应调 `stop()` 而非 cancel**，否则在途 handler 会被取消（ADR-7）。
+        已收束；**调用方应调 `stop()` 而非 cancel**，否则在途 handler 会被取消。
         """
         self._running = True
+        failures = 0
         try:
             while self._running:
-                processed = await self.process_once()
+                try:
+                    processed = await self.process_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    failures += 1
+                    delay = min(
+                        self._cfg.error_backoff_seconds * failures,
+                        self._cfg.max_error_backoff_seconds,
+                    )
+                    logger.exception(
+                        "work queue 轮询失败（连续第 %s 次），%.1fs 后重试"
+                        "（不影响同级 runtime task）",
+                        failures,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                failures = 0
                 if processed == 0:
                     await asyncio.sleep(self._cfg.poll_interval_seconds)
         finally:
