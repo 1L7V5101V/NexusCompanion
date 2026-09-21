@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -100,6 +100,34 @@ def create_chat_app(
 
         app.include_router(build_auth_api(auth_runtime))
         app.state.auth_runtime = auth_runtime
+
+    async def _require_user_session(request: Request) -> None:
+        """用户面 HTTP 端点的凭据门禁（auth 启用时生效）。
+
+        与 WS 握手使用同一套语义（Cookie + session 有效性 + 403 主体禁用），
+        使「HTTP 与 WebSocket 统一认证」成立；未启用认证时不引入门禁（dev 回退）。
+        """
+        if auth_runtime is None:
+            return
+        from bootstrap.auth.service import cookie_name
+        from bootstrap.auth.ws_guard import ws_session_cookie
+        from bootstrap.db.repository.auth_repo import (
+            SessionForbiddenError,
+            SessionInvalidError,
+        )
+
+        raw = ws_session_cookie(
+            request.headers,
+            cookie_name(admin=False, secure=auth_runtime.config.cookie_secure),
+        )
+        if not raw:
+            raise HTTPException(401, detail="authentication required")
+        try:
+            await auth_runtime.auth.validate_user_session(raw)
+        except SessionInvalidError:
+            raise HTTPException(401, detail="authentication required") from None
+        except SessionForbiddenError:
+            raise HTTPException(403, detail="forbidden") from None
     project_root = Path(__file__).resolve().parent.parent
     static_dir = project_root / "static" / "chat"
     index_file = static_dir / "index.html"
@@ -116,7 +144,7 @@ def create_chat_app(
             return FileResponse(index_file)
         return {"status": "ok", "channel": channel.name}
 
-    @app.get("/api/chat/sessions")
+    @app.get("/api/chat/sessions", dependencies=[Depends(_require_user_session)])
     def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
         ctx = channel._require_ctx()
         items, total = ctx.session_manager._store.list_sessions_for_dashboard(
@@ -131,7 +159,7 @@ def create_chat_app(
         ]
         return {"items": visible, "total": len(visible)}
 
-    @app.get("/api/chat/sessions/{session_key:path}/messages")
+    @app.get("/api/chat/sessions/{session_key:path}/messages", dependencies=[Depends(_require_user_session)])
     def list_messages(
         session_key: str,
         page: int = Query(1),
@@ -172,7 +200,7 @@ def create_chat_app(
                 return
         await channel.handle_websocket(websocket, identity=identity)
 
-    @app.post("/api/chat/uploads")
+    @app.post("/api/chat/uploads", dependencies=[Depends(_require_user_session)])
     async def upload_file(
         request: Request,
         filename: str = Query(default="upload.bin"),
@@ -183,7 +211,7 @@ def create_chat_app(
         clean_name = Path(filename).name or "upload.bin"
         return channel.save_upload(data, clean_name)
 
-    @app.get("/api/chat/media")
+    @app.get("/api/chat/media", dependencies=[Depends(_require_user_session)])
     def read_media(path: str = Query(...)) -> FileResponse:
         requested = Path(path).expanduser().resolve()
         if not _can_read_media(channel, requested):

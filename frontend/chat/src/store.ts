@@ -2,7 +2,7 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatConnection, type ConnectionStatus, type HistoryMessage } from "./connection";
 import type {
   MessageDeltaFrame,
@@ -272,18 +272,22 @@ export class ChatStore {
   }
 }
 
-export function useChatRuntime(): {
+export function useChatRuntime(onUnauthorized?: () => void): {
   runtime: ReturnType<typeof useExternalStoreRuntime>;
   status: ConnectionStatus;
 } {
   const store = useMemo(() => new ChatStore(), []);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // 回调放 ref：避免调用方每次渲染传入新函数时重建连接（会造成 WS 重连循环）。
+  const unauthorizedRef = useRef(onUnauthorized);
+  unauthorizedRef.current = onUnauthorized;
   const connection = useMemo(
     () =>
       new ChatConnection({
         onStatus: setStatus,
         onFrame: (frame) => store.handleFrame(frame),
         onHistory: (messages) => store.handleHistory(messages),
+        onUnauthorized: () => unauthorizedRef.current?.(),
       }),
     [store],
   );

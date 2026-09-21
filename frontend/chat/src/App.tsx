@@ -1,6 +1,9 @@
 import { AssistantRuntimeProvider, ThreadPrimitive, ComposerPrimitive, MessagePrimitive } from "@assistant-ui/react";
+import { useEffect, useState } from "react";
 import { useChatRuntime } from "./store";
 import type { ConnectionStatus } from "./connection";
+import { fetchMe, logout, type AuthState, type AuthUser } from "./auth";
+import { LoginPanel } from "./LoginPanel";
 
 function ConnectionBadge({ status }: { status: ConnectionStatus }) {
   const label =
@@ -73,15 +76,28 @@ function UserMessage() {
   );
 }
 
-export default function App() {
-  const { runtime, status } = useChatRuntime();
+function ChatView({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }) {
+  // 只在已认证时挂载：未认证不会有 WS 连接（避免对 4401 反复重连）。
+  const { runtime, status } = useChatRuntime(onSignOut);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex h-full flex-col bg-bg text-fg">
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
-          <ConnectionBadge status={status} />
+          <div className="flex items-center gap-3">
+            <ConnectionBadge status={status} />
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                onSignOut();
+              }}
+              className="text-xs text-muted underline-offset-2 hover:underline"
+            >
+              退出
+            </button>
+          </div>
         </header>
 
         <ThreadPrimitive.Viewport
@@ -116,11 +132,62 @@ export default function App() {
               </ComposerPrimitive.Send>
             </ComposerPrimitive.Root>
             <p className="mt-1 text-[10px] text-subtle">
-              dev 模式：本地单用户，无认证
+              已登录 · {user.display_name || user.account_id}
             </p>
           </div>
         </footer>
       </div>
     </AssistantRuntimeProvider>
+  );
+}
+
+function Splash({ label }: { label: string }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-bg text-sm text-muted">
+      {label}
+    </div>
+  );
+}
+
+export default function App() {
+  const [auth, setAuth] = useState<AuthState>({ phase: "checking" });
+
+  // 刷新/重开浏览器：凭 HttpOnly Cookie 确认会话（不读取任何本地存储）。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const user = await fetchMe();
+        if (!cancelled) {
+          setAuth(user ? { phase: "authenticated", user } : { phase: "anonymous" });
+        }
+      } catch {
+        if (!cancelled) setAuth({ phase: "anonymous" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (auth.phase === "checking") {
+    return <Splash label="正在确认登录状态…" />;
+  }
+
+  if (auth.phase === "anonymous") {
+    return (
+      <LoginPanel
+        onAuthenticated={(user) =>
+          setAuth(user ? { phase: "authenticated", user } : { phase: "anonymous" })
+        }
+      />
+    );
+  }
+
+  return (
+    <ChatView
+      user={auth.user}
+      onSignOut={() => setAuth({ phase: "anonymous" })}
+    />
   );
 }
