@@ -48,6 +48,18 @@ TOOL_CALL_STATUSES = ("running", "succeeded", "failed", "cancelled", "unknown")
 WORK_ITEM_STATUSES = ("queued", "in_progress", "succeeded", "failed", "cancelled")
 """后台工作项状态枚举。"""
 
+WORK_ITEM_KINDS = ("interactive", "maintenance")
+"""任务类型枚举（PILOT_ROADMAP §7.1）：**决定调度优先级/lane**（C15 ADR-5）。
+
+注意：`consolidation` 一类是 `flow` 的值，不得出现在本字段（C15 spec
+「工作类型词汇与分派」）。"""
+
+WORK_FLOWS = ("passive", "proactive", "drift", "consolidation", "optimizer")
+"""业务链路枚举（PILOT_ROADMAP §7.1）：**决定 handler**（C15 ADR-2/ADR-5）。
+
+与 `tests/fixtures/observability_event_schema.json` 的 `flow` 枚举同源；
+不加 DB CHECK（可扩展），由本常量 + 代码校验承担。"""
+
 DELIVERY_INTENT_STATUSES = ("pending", "attempting", "sent", "failed", "dead_letter")
 """delivery 状态机枚举（§5.9.11）；dead_letter 仅管理员 redrive 可回到 pending。"""
 
@@ -496,6 +508,8 @@ __all__ = [
     "TOOL_CALL_STATUSES",
     "TURN_STATUSES",
     "WORK_ATTEMPT_OUTCOMES",
+    "WORK_FLOWS",
+    "WORK_ITEM_KINDS",
     "WORK_ITEM_STATUSES",
     "BackgroundWorkItemModel",
     "DeliveryAttemptModel",
