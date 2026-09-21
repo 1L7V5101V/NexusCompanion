@@ -200,6 +200,23 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 
 **接口约束**：`record_work_succeeded(tenant_id, work_item_id, owner, *, mutate: Callable[[Session], None])` —— 终态推进与 handler 的持久化写入共用同一 `Session`/事务；不提供「先写副作用、再单独推进终态」的入口，从 API 形状上排除误用。
 
+**实现期细化（2026-09-21）：handler 必须两段式 `execute` / `persist`**
+
+`mutate` 的语义是「与终态同一事务的写入」，但**不能**把整个 handler 塞进 `mutate`：handler 的长活是 LLM/网络调用（秒~分钟级），放进事务会
+
+1. 长时间占住连接池里的一个连接（Pilot 池 size=20，batch_size=10 时可占掉一半）；
+2. 长时间持有该行的 `FOR UPDATE` 行锁 → **让 heartbeat 的续租 UPDATE 被行锁堵死**，租约无法续期，「心跳」机制实际失效；
+3. 长事务阻塞 autovacuum。
+
+因此 worker 强制两段式（`WorkHandler` 协议）：
+
+| 段 | 位置 | 约束 |
+| --- | --- | --- |
+| `execute(envelope) -> result` | lane 内、**任何事务之外** | **不得写库**；长活（LLM/网络） |
+| `persist(session, envelope, result)` | 由 `record_work_succeeded(mutate=...)` 在**终态事务内**调用 | 只做写入；与终态同提交 |
+
+这与 `OutboundDeliveryWorker` 的结构同源：它也是先在事务外 `await send(...)`，再开短事务写 `sent`。两段合起来仍必须幂等/可重放（上面的边界）。
+
 ---
 
 ## ADR-7 运行期接线：首次建立 control plane async engine，并纳入优雅停止
