@@ -8,6 +8,9 @@ client_message_id)`——两类键同一行只持有一类，唯一性由**部�
 （PG 对含 NULL 的普通唯一索引不生效）。delivery 状态机
 `pending/attempting/sent/failed/dead_letter`：`sent` 只能由 provider ack 推进。
 本模块不承担旧单体 `channel:chat_id` 数据的导入或回退（§10 DECIDED）。
+
+C15 追加（openspec/changes/2026-09-20-c15-work-queue-consumer/design.md ADR-2）：
+`background_work_items` 的 lease/`flow` 列与 `work_attempts` 生命周期审计流。
 """
 
 from __future__ import annotations
@@ -50,6 +53,13 @@ DELIVERY_INTENT_STATUSES = ("pending", "attempting", "sent", "failed", "dead_let
 
 DELIVERY_ATTEMPT_OUTCOMES = ("sent", "failed", "redrive")
 """attempt 记录结果枚举：redrive 是管理员处置追加行（ADR-6），非真实投递。"""
+
+WORK_ATTEMPT_OUTCOMES = ("succeeded", "failed", "released", "recovered", "redrive")
+"""work item 生命周期审计流结果枚举（C15 ADR-2）：
+- `succeeded` / `failed`：handler 真实结果（`failed` 达到上限时即死信终态）；
+- `released`：维护类被延后释放（ADR-5，不是失败）；
+- `recovered`：崩溃后被清扫复位（ADR-3，不是失败）；
+- `redrive`：管理员人工重投处置行（非真实执行）。"""
 
 
 class MessageDeduplicationKeyModel(Base):
@@ -306,6 +316,7 @@ class BackgroundWorkItemModel(Base):
         ),
     )
     work_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    flow: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     payload_json: Mapped[str | None] = mapped_column(Text)
@@ -324,6 +335,44 @@ class BackgroundWorkItemModel(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkAttemptModel(Base):
+    """work item 生命周期审计流（只追加）：C15 ADR-2 定案 (ii)。
+
+    承载 `succeeded` / `failed` / `released` / `recovered` / `redrive` 五类留痕。
+    命名为 attempt 是对齐 `delivery_attempts`，但语义上是**生命周期审计流**：
+    `released`（维护类延后）与 `recovered`（崩溃清扫复位）并非狭义「尝试」，
+    却也必须留痕。redrive 只追加、不删不改既有行——死信（`failed`）必须可事后复盘。
+    """
+
+    __tablename__ = "work_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('succeeded', 'failed', 'released', 'recovered', 'redrive')",
+            name="ck_work_attempts_outcome",
+        ),
+        Index("ix_work_attempts_item", "work_item_id", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    work_item_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "background_work_items.id",
+            ondelete="RESTRICT",
+            name="fk_work_attempts_work_item_id",
+        ),
+        nullable=False,
+    )
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -446,6 +495,7 @@ __all__ = [
     "INBOX_STATUSES",
     "TOOL_CALL_STATUSES",
     "TURN_STATUSES",
+    "WORK_ATTEMPT_OUTCOMES",
     "WORK_ITEM_STATUSES",
     "BackgroundWorkItemModel",
     "DeliveryAttemptModel",
@@ -454,4 +504,5 @@ __all__ = [
     "OutboundDeliveryIntentModel",
     "ToolCallModel",
     "TurnModel",
+    "WorkAttemptModel",
 ]
