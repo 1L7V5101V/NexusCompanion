@@ -30,12 +30,12 @@
 
 ## 3. `WorkQueueWorker`（ADR-4 / ADR-5）
 
-- [ ] 3.1 `bootstrap/work_queue_worker.py`：`WorkQueueWorkerConfig`（lease TTL 60s / heartbeat 20s / max attempts 5 / backoff 1m,5m,30m,2h,6h / poll 1s / batch 10 / per-tenant 在途 1）、`WorkItemEnvelope`、`WorkHandler` 注入协议。验证：config 校验用例（TTL > heartbeat、backoff 覆盖 max attempts）
-- [ ] 3.2 `run()` / `process_once()` / `_process()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的三处放弃路径。验证：`test_work_queue_state_machine.py` 失租用例 + 心跳到期接管
-- [ ] 3.3 tenant lane 接线：`work_kind == interactive` → `TenantLaneRouter.run_interactive`，其余 → `run_maintenance`（ADR-5）；同租户串行、跨租户并发。验证：`tests/control_plane/test_work_queue_tenant_lane.py` 时间线断言（同租户不重叠 + 跨租户并行）
-- [ ] 3.4 维护类延后：`MaintenanceDeferred` 不视为失败——释放租约、不递增 `attempt_count`、排程重试（ADR-5 + ADR-4）。验证：延后用例断言尝试计数不变且可再认领
-- [ ] 3.5 有界背压：单轮认领 ≤ batch_size；每租户在途 ≤ 1（ADR-4）；过载时明确延后而非堆积。验证：背压用例（就绪项 > batch_size 时不被一次性认领）
-- [ ] 3.6 停止语义：`stop()` 只阻止认领新 work，等待在途 handler 收束，**不**取消在途执行（ADR-7）。验证：stop 期间在途 handler 完成、无新认领
+- [x] 3.1 `bootstrap/work_queue_worker.py`：`WorkQueueWorkerConfig`（lease 60s / heartbeat 20s / max attempts 5 / backoff 1m,5m,30m,2h,6h / poll 1s / batch 10 / maintenance acquire 5s / release delay 60s）、`WorkItemEnvelope`、`WorkHandler` **两段式**注入协议（ADR-6 细化）、`flow → handler` 映射。验证：`tests/test_work_queue_worker.py`（config 冻结默认值 + 不变量）
+- [x] 3.2 `run()` / `process_once()` / `_process()` / `_run_handler()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的四处放弃路径；lane 协程**惰性创建**（提前建会在延后/关闭时留下未 await 的协程，`-W error` 下直接失败）。验证：失租禁写（成功/失败两向）+ execute 失败计入业务失败 + persist 失败计入业务失败
+- [x] 3.3 tenant lane 接线：`work_kind == interactive` → `TenantLaneRouter.run_interactive`，其余 → `run_maintenance`（ADR-5，**复用** C3 router，未新造 lane）；同租户串行、跨租户并发。验证：`tests/test_work_queue_worker.py` 时间线断言（同租户 `max_active==1` + 跨租户阻塞时另一租户先完成）
+- [x] 3.4 维护类延后：`MaintenanceDeferred` 不视为失败——`release_for_retry` 释放租约、不动 `attempt_count`、留 `released` 审计行、排程重试（ADR-5）。验证：延后用例（interactive 占优时维护类被释放，`failed` 为空）
+- [x] 3.5 有界背压：单轮认领 ≤ `batch_size`（透传仓储）；每租户在途 ≤ 1 由认领 SQL 保证（ADR-4）。验证：`batch_size` 透传断言（owner/lease_ttl 一并校验）
+- [x] 3.6 停止语义：`stop()` 置停止标志 + `router.close()`（拒绝新 work），在途 handler 继续收束；`process_once()` 在 router 关闭后直接返回 0、不再认领（ADR-7）。验证：`stop()` 后 `router.closed` 为真、`process_once()==0` 且无 claim 调用
 
 ## 4. 运行期接线与优雅停止（ADR-7）
 - [ ] 4.1 bootstrap 建立 control plane async engine + session factory（复用 `bootstrap/db/engine.py`），构造 `WorkItemRepository` + `WorkQueueWorker`；`storage.backend == "sqlite"` 时跳过（ADR-7）。验证：`tests/control_plane/test_work_queue_wiring.py` 双后端分支用例
@@ -45,10 +45,10 @@
 
 ## 5. 与调用方的接缝
 
-- [ ] 5.1 `WorkHandler` 协议文档化：声明「handler 必须幂等，或把副作用写入放进 `mutate` 同事务」（ADR-6）；非幂等 handler 不得注册。验证：协议 docstring + 一个示范 handler 用例
+- [x] 5.1 `WorkHandler` 协议文档化：**两段式**（`execute` 长活不写库 / `persist` 与终态同事务）+ 声明「两段合起来必须幂等或可重放」（ADR-3 边界 / ADR-6 细化）。验证：协议 docstring + 两段式调用顺序用例
 - [ ] 5.2 既有 `create_work_item()` 与本消费者的衔接：入队侧 `idempotency_key` 唯一约束与认领侧 lease 叠加验证。验证：重复入队 + 单次执行的 e2e 用例
 
-- [ ] 5.3 handler 按 **`flow`** 注册（`flow → WorkHandler` 映射）；`work_kind` 只决定 lane。未注册 flow 的工作项不得执行，应记录并释放（不静默丢弃）。验证：未注册 flow 的负向用例 + spec「工作类型词汇与分派」
+- [x] 5.3 handler 按 **`flow`** 注册（`flow → WorkHandler` 映射）；`work_kind` 只决定 lane。未注册 flow 的工作项**不得执行**：按业务失败记录（`record_work_failed`，错误信息含「未注册 flow」），使其最终进死信可见并可 redrive——而非静默丢弃，也不是无限释放把审计流写爆（对任务原文「释放」的有意修正）。验证：未注册 flow 用例断言 `failed` 恰 1 条且含「未注册 flow」
 
 ## 6. 可观测（并入 C12 §8.1 / E10）（ADR-8）
 
