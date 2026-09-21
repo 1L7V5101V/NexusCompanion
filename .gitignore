@@ -42,6 +42,14 @@ data/
 plugins/**/.data/
 /data
 /memory/
+# 租户运行时状态（跑过一次就有，非源码）
+/.memory/
+# 压测/基准脚本的默认输出目录（归档走 openspec/evidence/，此处仅草稿）
+/results/
+
+# 本地崩溃转储（Electron crashpad / Git Bash），非项目产物
+/debug.log
+/bash.exe.stackdump
 
 # IDE
 .idea/
