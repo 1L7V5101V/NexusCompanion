@@ -75,7 +75,13 @@ async def test_accept_commits_all_in_one_transaction(
         source_message_id="m-1",
         content="你好",
         metadata={"origin": "test"},
-        work_items=[{"work_kind": "consolidation", "idempotency_key": "cons-1"}],
+        work_items=[
+            {
+                "work_kind": "maintenance",
+                "flow": "consolidation",
+                "idempotency_key": "cons-1",
+            }
+        ],
     )
     assert not work.duplicate
     assert work.sequence == 0
@@ -140,7 +146,8 @@ async def test_accept_rollback_no_half_writes(
     control = TurnControlRepository(c2_factory)
     await control.create_work_item(
         tenant_a["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant_a["conversation_id"],
         idempotency_key="collide-key",
     )
@@ -153,7 +160,13 @@ async def test_accept_rollback_no_half_writes(
             account_id=tenant_b["account_id"],
             client_message_id="cm-rollback",
             content="hello",
-            work_items=[{"work_kind": "consolidation", "idempotency_key": "collide-key"}],
+            work_items=[
+                {
+                    "work_kind": "maintenance",
+                    "flow": "consolidation",
+                    "idempotency_key": "collide-key",
+                }
+            ],
         )
     after = _counts(c2_pg_url)
     assert after["message_deduplication_keys"] == before["message_deduplication_keys"]

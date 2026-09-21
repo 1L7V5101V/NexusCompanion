@@ -13,15 +13,20 @@
 
 ## 2. `WorkItemRepository`（ADR-1 / ADR-3 / ADR-4）
 
-- [ ] 2.1 `claim_batch(owner, *, batch_size, lease_ttl_seconds)`：单语句原子认领（`FOR UPDATE SKIP LOCKED`，`status→in_progress`，写租约，`attempt_count + 1`）。**due 判据 = `queued` 且到期 OR stale `in_progress`**（(B) 定案：**不含 `failed`、不含 `attempt_count` 门槛** ⇒ 死信结构性不被认领、崩溃不计入预算）。含**两个 per-tenant 条件**：在途互斥 + 轮内去重（ADR-4，形状已在真 PG 验证）。验证：`tests/control_plane/test_work_queue_state_machine.py` 全路径 + 并发认领只成功一次 + `test_claim_skips_tenant_with_active_lease` + `test_failed_terminal_not_claimed`
-- [ ] 2.2 `heartbeat(tenant_id, work_item_id, owner, *, lease_ttl_seconds) -> bool`：续租，返回 False = 失租。验证：续租成功/失租两向用例；lease 到期时间与 claim 同源（DB 时钟）
-- [ ] 2.3 `record_work_succeeded(tenant_id, work_item_id, owner, *, mutate)`：租约 CAS 前置下推进 `succeeded` + `finished_at` + 清租约，并与 `mutate(session)` 的副作用写入**同事务**（ADR-6）。验证：成功同提交 + 前置不成立时整体回滚
-- [ ] 2.4 `record_work_failed(tenant_id, work_item_id, owner, *, error, max_attempts, backoff_seconds)`：**租约 CAS 前置**；未达上限 → 回 `queued` + `next_attempt_at = now() + backoff` + 清租约；达上限 → `failed` **死信终态** + `finished_at`；两种情形均追加 `work_attempts(outcome='failed')`。`last_error` 落库且经 redaction。验证：退避序列、上限判定、死信终态、审计行各一次
-- [ ] 2.5 `sweep_stale_leases(*, grace_seconds=0) -> list[RecoveryRecord]`：把过期 `in_progress` 复位 `queued` + 清租约，**不**递增 `attempt_count`（ADR-3），产出恢复记录。验证：复位正确 + 尝试计数不变 + 未过期不动 + 负向用例 `test_sweep_does_not_exhaust_attempts`
-- [ ] 2.6 租户隔离：所有按 id 的推进/查询以 `tenant_id` 过滤，跨租户返回空或失败。验证：跨租户推进/查询用例（spec 租户隔离 requirement）
-- [ ] 2.7 `work_attempts` 追加写入（只追加，不删改）：`succeeded`/`failed`/`released`/`recovered`/`redrive` 五类结果各在对应方法内追一行。验证：审计流用例（逐次失败三条独立记录 + redrive 不抹除历史）
-- [ ] 2.8 `redrive_work_item(tenant_id, work_item_id, reason, *, operator=None)`：**仅 `failed` 死信可 redrive**（否则 `RedriveNotAllowedError`），追加 `work_attempts(outcome='redrive', error=原因)`、`status='queued'`、`attempt_count=0`、清租约。验证：镜像 `redrive_dead_letter` 的正/负用例
-- [ ] 2.9 `release_for_retry(tenant_id, work_item_id, owner, *, delay_seconds)`：维护类延后（`MaintenanceDeferred`）专用——回 `queued` + 延后 `next_attempt_at` + 清租约，**不**计失败、**不**递增 `attempt_count`，追加 `work_attempts(outcome='released')`（ADR-3/ADR-5）。验证：延后不消耗预算 + 审计行 + 可再认领
+- [x] 2.1 `claim_batch(owner, *, batch_size, lease_ttl_seconds)`：单语句原子认领（`FOR UPDATE SKIP LOCKED`，`status→in_progress`，写租约，**不修改 `attempt_count`**）。**due 判据 = `queued` 且到期 OR stale `in_progress`**（(B) 定案：**不含 `failed`、不含 `attempt_count` 门槛** ⇒ 死信结构性不被认领、崩溃不计入预算）。含**两个 per-tenant 条件**：在途互斥 + 轮内去重（ADR-4，形状已在真 PG 验证）。验证：`tests/control_plane/test_work_queue_state_machine.py` 全路径 + 并发认领只成功一次 + `test_claim_skips_tenant_with_active_lease` + `test_failed_terminal_not_claimed`
+- [x] 2.2 `heartbeat(tenant_id, work_item_id, owner, *, lease_ttl_seconds) -> bool`：续租，返回 False = 失租。验证：续租成功/失租两向用例；lease 到期时间与 claim 同源（DB 时钟）
+- [x] 2.3 `record_work_succeeded(tenant_id, work_item_id, owner, *, mutate)`：租约 CAS 前置下推进 `succeeded` + `finished_at` + 清租约，并与 `mutate(session)` 的副作用写入**同事务**（ADR-6）。验证：成功同提交 + 前置不成立时整体回滚
+- [x] 2.4 `record_work_failed(tenant_id, work_item_id, owner, *, error, max_attempts, backoff_seconds, started_at=None)`：**租约 CAS 前置**；**先递增 `attempt_count`（全仓唯一递增点）**，再决定终局：未达上限 → 回 `queued` + `next_attempt_at = now() + backoff[attempt_count-1]` + 清租约；达上限 → `failed` **死信终态** + `finished_at`；两种情形均追加 `work_attempts(outcome='failed')`。`last_error` 落库且经 redaction。验证：退避序列、上限判定（恰好 max_attempts 次失败后判死）、死信终态、审计行各一次
+- [x] 2.5 `sweep_stale_leases(*, limit=100) -> list[dict]`：把过期 `in_progress` 复位 `queued` + 清租约，**不碰 `attempt_count`**（ADR-3：崩溃不消耗预算），并为每条追加 `work_attempts(outcome='recovered')`，返回可作为恢复记录的字段（含 `restart_to_recovered` 所需时间戳）。验证：复位正确 + `attempt_count` 不变 + 未过期不动 + 负向用例 `test_sweep_does_not_consume_budget`
+- [x] 2.6 租户隔离：所有按 id 的推进/查询以 `tenant_id` 过滤，跨租户返回空或失败。验证：跨租户推进/查询用例（spec 租户隔离 requirement）
+- [x] 2.7 `work_attempts` 追加写入（只追加，不删改）：`succeeded`/`failed`/`released`/`recovered`/`redrive` 五类结果各在对应方法内追一行。验证：审计流用例（逐次失败三条独立记录 + redrive 不抹除历史）
+- [x] 2.8 `redrive_work_item(tenant_id, work_item_id, reason, *, operator=None)`：**仅 `failed` 死信可 redrive**（否则 `RedriveNotAllowedError`），追加 `work_attempts(outcome='redrive', error=原因)`、`status='queued'`、`attempt_count=0`、清租约。验证：镜像 `redrive_dead_letter` 的正/负用例
+- [x] 2.9 `release_for_retry(tenant_id, work_item_id, owner, *, delay_seconds)`：维护类延后（`MaintenanceDeferred`）专用——回 `queued` + 延后 `next_attempt_at` + 清租约，**不**计失败、**不碰 `attempt_count`**，追加 `work_attempts(outcome='released')`（ADR-3/ADR-5）。验证：延后不消耗预算 + 审计行 + 可再认领
+
+> §2 证据：真 PG18 上用**真实仓储代码**跑 43 项语义验证全 PASS（含 ADR-4 条件①反例、
+> 同事务副作用回滚、**连续 7 次崩溃不消耗预算且不判死**、失租禁写、租户隔离、审计流只追加）。
+> 见 [`work-queue-repo-verification.md`](../../evidence/c15-work-queue-consumer/work-queue-repo-verification.md)
+> （+ 可复跑脚本与原始输出）；仓库内正式回归版 = `tests/control_plane/test_work_queue_state_machine.py`。
 
 ## 3. `WorkQueueWorker`（ADR-4 / ADR-5）
 

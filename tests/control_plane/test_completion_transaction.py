@@ -211,19 +211,22 @@ async def test_background_work_item_lifecycle(
     control: TurnControlRepository = repos["control"]
     first = await control.create_work_item(
         tenant["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant["conversation_id"],
         idempotency_key="work-1",
         payload={"window": 30},
     )
     second = await control.create_work_item(
         tenant["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant["conversation_id"],
         idempotency_key="work-1",
     )
     assert first["id"] == second["id"]
     assert first["status"] == "queued"
+    assert first["flow"] == "consolidation"
 
     await control.transition_work_item(
         tenant["tenant_id"], first["id"], expected_status="queued", new_status="in_progress"

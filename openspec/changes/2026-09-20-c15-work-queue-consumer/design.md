@@ -92,6 +92,17 @@
 
 **与 delivery 的差异（有意）**：delivery 的 `attempt_count` 计执行次数且 due 含上限，因为 outbox 投递失败几乎总是 provider/网络问题（不是「业务做不成」）。work item 的失败包含「业务逻辑做不成」，其重试语义必须与崩溃可区分。
 
+**实现期细化（同日）：`attempt_count` 改由 `record_work_failed` 递增，而非 `claim`**
+
+定案 (B) 去掉认领门槛后，`attempt_count` 的**唯一读者**变成 `record_work_failed`（判断是否达上限）。若仍由 `claim` 递增，则崩溃与延后虽不直接被记为失败，却会通过「claim 递增」逐步垫高计数，使**后续一次真实的业务失败提前触发死信**（例：4 次崩溃 + 1 次真失败就被判死）。两种消除办法：
+
+| | 做法 | 取舍 |
+| --- | --- | --- |
+| (i) | 清扫与延后**补偿性递减** `attempt_count` | 需在两条路径各写一次补偿，语义隐晦（「减回去」），易漏易错 |
+| (ii) | **`attempt_count` 由 `record_work_failed` 递增；`claim` 不再写它**（**选中**） | 语义直接：`attempt_count` = **业务失败次数**；崩溃/延后天然不消耗预算，**无需任何补偿** |
+
+选 (ii)。因此 `attempt_count` 与 `delivery_attempts` 的同名字段**语义不同**（delivery 计执行次数）——这是有意为之，且正是「崩溃可区分」所要求的。`claim` 仍在 RETURNING 中带上 `attempt_count` 供观测，但**不再修改**它；清扫与延后也**不碰**它。
+
 ---
 
 ## ADR-4 （关键）claim 的两个 per-tenant 条件，使租约只覆盖执行期且租户内不并发

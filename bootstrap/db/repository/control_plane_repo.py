@@ -24,16 +24,19 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import func, select, text, update
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bootstrap.db.models.canonical import (
     CanonicalConversationModel,
     CanonicalMessageModel,
 )
 from bootstrap.db.models.control_plane import (
+    WORK_FLOWS,
+    WORK_ITEM_KINDS,
     BackgroundWorkItemModel,
     DeliveryAttemptModel,
     InboxRecordModel,
@@ -41,6 +44,7 @@ from bootstrap.db.models.control_plane import (
     OutboundDeliveryIntentModel,
     ToolCallModel,
     TurnModel,
+    WorkAttemptModel,
 )
 
 __all__ = [
@@ -56,6 +60,8 @@ __all__ = [
     "TransitionError",
     "TurnControlRepository",
     "TurnNotFoundError",
+    "WorkItemNotFoundError",
+    "WorkItemRepository",
 ]
 
 # 单事务认领批量（`FOR UPDATE SKIP LOCKED`：多扫描器互不阻塞；stale lease 由
@@ -92,6 +98,88 @@ _CLAIM_SQL = text(
 
 _WORK_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
+WorkMutation = Callable[[AsyncSession], Awaitable[None]]
+"""ADR-6 接缝：handler 的业务副作用写入，与 work item 终态在**同一事务**内提交。"""
+
+# C15 work item 认领（design ADR-3 定案 (B) / ADR-4）：
+# - due 判据**不含** `failed`，也**不含** `attempt_count` 门槛 ⇒ 死信（failed）不自动
+#   重试在 SQL 层结构性成立，且崩溃/延后天然不消耗尝试预算；
+# - 两个 per-tenant 条件：① 在途互斥（该 tenant 已有有效租约 → 本轮不认领其任何项），
+#   ② 轮内去重（同 tenant 至多 1 条）。①+② 才等价于「每租户在途 ≤ 1」；
+#   只做②会被实测证伪（已持租那条退出候选集后，同租户的下一条 queued 仍会被认领）。
+# - 条件②不能用 `row_number()`/`DISTINCT ON`：PostgreSQL 的 `FOR UPDATE` 与窗口函数、
+#   DISTINCT 同层冲突（`FOR UPDATE is not allowed with window functions`）。
+_CLAIM_WORK_SQL = text(
+    """
+    WITH picked AS (
+        SELECT w.id
+        FROM background_work_items w
+        WHERE (
+                (w.status = 'queued' AND w.next_attempt_at <= now())
+                OR (w.status = 'in_progress' AND w.lease_expires_at < now())
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM background_work_items a
+                WHERE a.tenant_id = w.tenant_id
+                  AND a.status = 'in_progress'
+                  AND a.lease_expires_at >= now()
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM background_work_items p
+                WHERE p.tenant_id = w.tenant_id
+                  AND (
+                        (p.status = 'queued' AND p.next_attempt_at <= now())
+                        OR (p.status = 'in_progress' AND p.lease_expires_at < now())
+                      )
+                  AND (p.next_attempt_at, p.created_at, p.id)
+                      < (w.next_attempt_at, w.created_at, w.id)
+              )
+        ORDER BY w.next_attempt_at, w.created_at, w.id
+        LIMIT :batch_size
+        FOR UPDATE OF w SKIP LOCKED
+    )
+    UPDATE background_work_items i
+    SET status = 'in_progress',
+        lease_owner = :owner,
+        lease_expires_at = now() + make_interval(secs => :lease_ttl),
+        updated_at = now()
+    FROM picked
+    WHERE i.id = picked.id
+    RETURNING i.id, i.tenant_id, i.conversation_id, i.work_kind, i.flow,
+              i.idempotency_key, i.payload_json, i.status, i.attempt_count,
+              i.lease_owner, i.lease_expires_at, i.next_attempt_at, i.last_error,
+              i.created_at, i.updated_at, i.finished_at
+    """
+)
+
+# 崩溃恢复清扫（ADR-3）：把过期 `in_progress` 复位 `queued`，**不碰 `attempt_count`**。
+# 同时带回扫前的租约/活动信息，供 `work_attempts(outcome='recovered')` 与恢复指标使用。
+_SWEEP_WORK_SQL = text(
+    """
+    WITH stale AS (
+        SELECT id,
+               lease_owner      AS prev_lease_owner,
+               lease_expires_at AS prev_lease_expires_at,
+               updated_at       AS prev_updated_at
+        FROM background_work_items
+        WHERE status = 'in_progress' AND lease_expires_at < now()
+        ORDER BY lease_expires_at
+        LIMIT :limit
+        FOR UPDATE SKIP LOCKED
+    )
+    UPDATE background_work_items i
+    SET status = 'queued',
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        updated_at = now()
+    FROM stale
+    WHERE i.id = stale.id
+    RETURNING i.id, i.tenant_id, i.work_kind, i.flow, i.attempt_count,
+              stale.prev_lease_owner, stale.prev_lease_expires_at,
+              stale.prev_updated_at, now() AS recovered_at
+    """
+)
+
 
 class ControlPlaneError(Exception):
     """control plane 仓储错误基类。"""
@@ -107,6 +195,10 @@ class TurnNotFoundError(NotFoundError):
 
 class DeliveryIntentNotFoundError(NotFoundError):
     """目标投递意图不存在或 tenant 不匹配。"""
+
+
+class WorkItemNotFoundError(NotFoundError):
+    """目标 work item 不存在或 tenant 不匹配。"""
 
 
 class TransitionError(ControlPlaneError):
@@ -649,12 +741,18 @@ class TurnControlRepository:
         tenant_id: str,
         work_kind: str,
         *,
+        flow: str | None = None,
         conversation_id: uuid.UUID | str | None = None,
         idempotency_key: str | None = None,
         payload: dict[str, Any] | None = None,
         work_item_id: uuid.UUID | str | None = None,
     ) -> dict[str, Any]:
-        """幂等创建后台工作项（同 idempotency_key 返回既有行）。"""
+        """幂等创建后台工作项（同 idempotency_key 返回既有行）。
+
+        `work_kind` 决定 lane、`flow` 决定 handler（C15 ADR-5）；两者词汇
+        都在 `_insert_work_item` 内校验，不允许用 `consolidation` 一类 flow 值
+        冒充 `work_kind`。
+        """
         conv_id = _coerce_uuid(conversation_id)
         async with self._sf() as sess, sess.begin():
             item_id = await _insert_work_item(
@@ -663,6 +761,7 @@ class TurnControlRepository:
                 conv_id,
                 {
                     "work_kind": work_kind,
+                    "flow": flow,
                     "idempotency_key": idempotency_key,
                     "payload": payload,
                     "work_item_id": work_item_id,
@@ -988,6 +1087,343 @@ class DeliveryRepository:
             return [_attempt_to_dict(r) for r in rows]
 
 
+class WorkItemRepository:
+    """work item 消费侧仓储：lease 认领 / 续租 / 终态推进 / 崩溃清扫 / 人工重投（C15）。
+
+    design ADR-1..ADR-6。与 :class:`DeliveryRepository` 同形，但四处**有意差异**：
+
+    1. 认领含**两个** per-tenant 条件（在途互斥 + 轮内去重），使「每租户在途 ≤ 1」
+       由数据层而非 worker 记账保证（ADR-4）；
+    2. due 判据**不含** `failed` 与 `attempt_count` 门槛 ⇒ 死信结构性不再被认领、
+       崩溃与延后不消耗尝试预算（ADR-3 定案 (B)）；
+    3. `record_work_succeeded` 接受 `mutate` 回调，把 handler 副作用与 `succeeded`
+       放在**同一事务**（ADR-6）；
+    4. 每次生命周期事件追加一行 `work_attempts`（只追加审计流，ADR-2 定案 (ii)）。
+
+    `attempt_count` 语义与 delivery 的同名字段**不同**：这里只由
+    :meth:`record_work_failed` 递增（= 业务失败次数），不在认领时递增，
+    因此崩溃与延后天然不消耗预算（ADR-3 实现期细化）。
+    """
+
+    def __init__(self, session_factory: async_sessionmaker):
+        self._sf = session_factory
+
+    # ── 认领与租约 ──
+
+    async def claim_batch(
+        self,
+        owner: str,
+        *,
+        batch_size: int = 10,
+        lease_ttl_seconds: float = 60.0,
+    ) -> list[dict[str, Any]]:
+        """认领到期 work item（`queued` 到期或 stale `in_progress`）；每租户至多 1 条。
+
+        单条语句原子：认领 + 置 `in_progress` + 写租约。**不修改** `attempt_count`。
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size 必须 >= 1")
+        async with self._sf() as sess, sess.begin():
+            rows = (
+                await sess.execute(
+                    _CLAIM_WORK_SQL,
+                    {
+                        "owner": owner,
+                        "batch_size": batch_size,
+                        "lease_ttl": lease_ttl_seconds,
+                    },
+                )
+            ).mappings().all()
+            return [_work_item_row_to_dict(dict(row)) for row in rows]
+
+    async def heartbeat(
+        self,
+        tenant_id: str,
+        work_item_id: uuid.UUID | str,
+        owner: str,
+        *,
+        lease_ttl_seconds: float = 60.0,
+    ) -> bool:
+        """续租；返回 False = 租约已失（他人接管），本次尝试不得再推进终态。"""
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        # 原生 SQL：lease 到期时间必须与 claim 的比较同源（DB 时钟，ADR-4）。
+        stmt = text(
+            """
+            UPDATE background_work_items
+            SET lease_expires_at = now() + make_interval(secs => :lease_ttl),
+                updated_at = now()
+            WHERE id = :work_item_id AND tenant_id = :tenant_id
+              AND lease_owner = :owner AND status = 'in_progress'
+            """
+        )
+        async with self._sf() as sess, sess.begin():
+            result = await sess.execute(
+                stmt,
+                {
+                    "work_item_id": item_id,
+                    "tenant_id": tenant_id,
+                    "owner": owner,
+                    "lease_ttl": lease_ttl_seconds,
+                },
+            )
+            return bool(result.rowcount)
+
+    # ── 终态推进与释放 ──
+
+    async def record_work_succeeded(
+        self,
+        tenant_id: str,
+        work_item_id: uuid.UUID | str,
+        owner: str,
+        *,
+        mutate: WorkMutation | None = None,
+        started_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """仅在租约仍属 owner 时推进 `succeeded`；`mutate` 与终态**同事务**（ADR-6）。
+
+        `mutate` 是 effectively-once 的提交侧：handler 的业务副作用写入与
+        `succeeded` 要么都在、要么都不在。本方法**不提供**绕过该同事务协议的入口。
+        """
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        async with self._sf() as sess, sess.begin():
+            row = await _lock_leased_work_item(
+                sess, tenant_id, item_id, owner, action="推进 succeeded"
+            )
+            if mutate is not None:
+                await mutate(sess)  # 失败则整体回滚，终态亦不落下
+            db_now = (await sess.execute(select(func.now()))).scalar_one()
+            row.status = "succeeded"
+            row.finished_at = db_now
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.updated_at = db_now
+            _add_work_attempt(
+                sess, item_id, "succeeded", started_at=started_at, finished_at=db_now
+            )
+            await sess.flush()
+            return _work_item_to_dict(row)
+
+    async def record_work_failed(
+        self,
+        tenant_id: str,
+        work_item_id: uuid.UUID | str,
+        owner: str,
+        error: str,
+        *,
+        max_attempts: int = 5,
+        backoff_seconds: tuple[float, ...] = (60.0, 300.0, 1800.0, 7200.0, 21600.0),
+        started_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """记录一次业务失败：递增 `attempt_count`，按退避排程或进入死信终态。
+
+        `attempt_count` 是**全仓唯一递增点**（ADR-3 实现期细化），因此崩溃复位与
+        维护类延后都不消耗重试预算。`attempt_count >= max_attempts` → `failed`
+        **死信终态**（claim 的 due 判据不含 `failed`，故不再被认领，仅 redrive 可回）。
+        """
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        if max_attempts < 1:
+            raise ValueError("max_attempts 必须 >= 1")
+        async with self._sf() as sess, sess.begin():
+            row = await _lock_leased_work_item(
+                sess, tenant_id, item_id, owner, action="记录失败"
+            )
+            db_now = (await sess.execute(select(func.now()))).scalar_one()
+            row.attempt_count = int(row.attempt_count) + 1
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.last_error = error
+            row.updated_at = db_now
+            if row.attempt_count >= max_attempts:
+                row.status = "failed"
+                row.finished_at = db_now
+            else:
+                row.status = "queued"
+                idx = min(row.attempt_count - 1, len(backoff_seconds) - 1)
+                row.next_attempt_at = db_now + timedelta(seconds=backoff_seconds[idx])
+            _add_work_attempt(
+                sess,
+                item_id,
+                "failed",
+                error=error,
+                started_at=started_at,
+                finished_at=db_now,
+            )
+            await sess.flush()
+            return _work_item_to_dict(row)
+
+    async def release_for_retry(
+        self,
+        tenant_id: str,
+        work_item_id: uuid.UUID | str,
+        owner: str,
+        *,
+        delay_seconds: float = 60.0,
+        note: str | None = None,
+        started_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """维护类延后专用（ADR-5）：回 `queued` 并延后排程，**不计失败**。
+
+        `attempt_count` 与 `last_error` 均**不动**——延后不是失败（ADR-3）。
+        """
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        async with self._sf() as sess, sess.begin():
+            row = await _lock_leased_work_item(
+                sess, tenant_id, item_id, owner, action="释放延后"
+            )
+            db_now = (await sess.execute(select(func.now()))).scalar_one()
+            row.status = "queued"
+            row.next_attempt_at = db_now + timedelta(seconds=delay_seconds)
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.updated_at = db_now
+            _add_work_attempt(
+                sess,
+                item_id,
+                "released",
+                error=note,
+                started_at=started_at,
+                finished_at=db_now,
+            )
+            await sess.flush()
+            return _work_item_to_dict(row)
+
+    async def redrive_work_item(
+        self,
+        tenant_id: str,
+        work_item_id: uuid.UUID | str,
+        reason: str,
+        *,
+        operator: str | None = None,
+    ) -> dict[str, Any]:
+        """人工重投死信（镜像 `redrive_dead_letter`）：仅 `failed` 可 redrive。
+
+        追加带原因的处置记录，**不删不改**既有 `work_attempts` 历史；
+        复位 `attempt_count = 0`（否则 redrive 一次又立即超限），回到 `queued`。
+        """
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        if not reason.strip():
+            raise ValueError("redrive 需要非空原因")
+        detail = reason if operator is None else f"[{operator}] {reason}"
+        async with self._sf() as sess, sess.begin():
+            row = (
+                await sess.execute(
+                    select(BackgroundWorkItemModel)
+                    .where(
+                        BackgroundWorkItemModel.id == item_id,
+                        BackgroundWorkItemModel.tenant_id == tenant_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise WorkItemNotFoundError(f"work item 不存在: work_item_id={item_id!r}")
+            if row.status != "failed":
+                raise RedriveNotAllowedError(
+                    f"仅 failed 死信可 redrive: work_item_id={item_id!r} "
+                    f"status={row.status!r}"
+                )
+            db_now = (await sess.execute(select(func.now()))).scalar_one()
+            _add_work_attempt(
+                sess,
+                item_id,
+                "redrive",
+                error=detail,
+                started_at=db_now,
+                finished_at=db_now,
+            )
+            row.status = "queued"
+            row.attempt_count = 0
+            row.next_attempt_at = db_now
+            row.lease_owner = None
+            row.lease_expires_at = None
+            row.updated_at = db_now
+            await sess.flush()
+            return _work_item_to_dict(row)
+
+    # ── 崩溃恢复清扫（ADR-3） ──
+
+    async def sweep_stale_leases(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """把过期 `in_progress` 复位为 `queued`，**不碰 `attempt_count`**（崩溃不消耗预算）。
+
+        每条复位追加 `work_attempts(outcome='recovered')`；返回值带扫前租约/活动
+        信息与 `recovered_at`，供恢复观测（§7.1 `restart_to_recovered_ms`）。
+        """
+        if limit < 1:
+            raise ValueError("limit 必须 >= 1")
+        async with self._sf() as sess, sess.begin():
+            rows = (
+                await sess.execute(_SWEEP_WORK_SQL, {"limit": limit})
+            ).mappings().all()
+            items = [dict(r) for r in rows]
+            for item in items:
+                _add_work_attempt(
+                    sess,
+                    item["id"],
+                    "recovered",
+                    error=f"stale lease recovered (prev_owner={item['prev_lease_owner']})",
+                    started_at=item["prev_updated_at"],  # 最后一次已知活动
+                    finished_at=item["recovered_at"],
+                )
+            await sess.flush()
+            return [_work_item_sweep_row_to_dict(i) for i in items]
+
+    # ── 查询（均以 tenant_id 过滤） ──
+
+    async def get_work_item(
+        self, tenant_id: str, work_item_id: uuid.UUID | str
+    ) -> dict[str, Any] | None:
+        item_id = _coerce_uuid(work_item_id)
+        if item_id is None:
+            return None
+        async with self._sf() as sess:
+            row = await sess.get(BackgroundWorkItemModel, item_id)
+            if row is None or row.tenant_id != tenant_id:
+                return None
+            return _work_item_to_dict(row)
+
+    async def list_work_items_by_status(
+        self, tenant_id: str, status: str
+    ) -> list[dict[str, Any]]:
+        """管理员可见查询（按租户过滤；死信盘点入口）。"""
+        async with self._sf() as sess:
+            rows = (
+                await sess.execute(
+                    select(BackgroundWorkItemModel)
+                    .where(
+                        BackgroundWorkItemModel.tenant_id == tenant_id,
+                        BackgroundWorkItemModel.status == status,
+                    )
+                    .order_by(BackgroundWorkItemModel.created_at.asc())
+                )
+            ).scalars().all()
+            return [_work_item_to_dict(r) for r in rows]
+
+    async def list_work_attempts(
+        self, tenant_id: str, work_item_id: uuid.UUID | str
+    ) -> list[dict[str, Any]]:
+        """某工作项的全部生命周期记录（只追加审计流，按时间升序，租户过滤）。"""
+        item_id = _require_uuid(work_item_id, "work_item_id")
+        async with self._sf() as sess:
+            rows = (
+                await sess.execute(
+                    select(WorkAttemptModel)
+                    .where(
+                        WorkAttemptModel.work_item_id.in_(
+                            select(BackgroundWorkItemModel.id).where(
+                                BackgroundWorkItemModel.id == item_id,
+                                BackgroundWorkItemModel.tenant_id == tenant_id,
+                            )
+                        )
+                    )
+                    .order_by(
+                        WorkAttemptModel.started_at.asc(),
+                        WorkAttemptModel.id.asc(),
+                    )
+                )
+            ).scalars().all()
+            return [_work_attempt_to_dict(r) for r in rows]
+
+
 # ── helpers ─────────────────────────────────────────────────
 
 
@@ -1004,10 +1440,22 @@ async def _insert_work_item(
     conversation_id: uuid.UUID | None,
     spec: dict[str, Any],
 ) -> str:
-    """幂等插入一条 queued 工作项；idempotency_key 冲突时复用既有行。"""
+    """幂等插入一条 queued 工作项；idempotency_key 冲突时复用既有行。
+
+    `work_kind` / `flow` 词汇在此单点校验（C15 spec「工作类型词汇与分派」）：
+    flow 值（如 `consolidation`）不得当作 work_kind 传入。
+    """
     work_kind = spec.get("work_kind")
     if not isinstance(work_kind, str) or not work_kind:
         raise ValueError("work item 需要 work_kind")
+    if work_kind not in WORK_ITEM_KINDS:
+        raise ValueError(
+            f"非法 work_kind: {work_kind!r}（应为 {WORK_ITEM_KINDS} 之一；"
+            "`consolidation` 一类属于 flow，不得当作 work_kind）"
+        )
+    flow = spec.get("flow")
+    if flow is not None and flow not in WORK_FLOWS:
+        raise ValueError(f"非法 flow: {flow!r}（应为 {WORK_FLOWS} 之一）")
     item_id = _coerce_uuid(spec.get("work_item_id")) or _new_uuid()
     idempotency_key = spec.get("idempotency_key")
     stmt = _pg_insert(BackgroundWorkItemModel).values(
@@ -1015,6 +1463,7 @@ async def _insert_work_item(
         tenant_id=tenant_id,
         conversation_id=conversation_id,
         work_kind=work_kind,
+        flow=flow,
         status="queued",
         idempotency_key=idempotency_key,
         payload_json=_to_json(spec.get("payload")),
@@ -1101,12 +1550,128 @@ def _work_item_to_dict(row: BackgroundWorkItemModel) -> dict[str, Any]:
         "tenant_id": row.tenant_id,
         "conversation_id": str(row.conversation_id) if row.conversation_id else None,
         "work_kind": row.work_kind,
+        "flow": row.flow,
         "status": row.status,
         "idempotency_key": row.idempotency_key,
         "payload": _from_json(row.payload_json),
+        "attempt_count": row.attempt_count,
+        "lease_owner": row.lease_owner,
+        "lease_expires_at": _iso(row.lease_expires_at) or None,
+        "next_attempt_at": _iso(row.next_attempt_at),
+        "last_error": row.last_error,
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
         "finished_at": _iso(row.finished_at) or None,
+    }
+
+
+def _work_attempt_to_dict(row: WorkAttemptModel) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "work_item_id": str(row.work_item_id),
+        "outcome": row.outcome,
+        "error": row.error,
+        "started_at": _iso(row.started_at),
+        "finished_at": _iso(row.finished_at) or None,
+    }
+
+
+async def _lock_leased_work_item(
+    sess: AsyncSession,
+    tenant_id: str,
+    item_id: uuid.UUID,
+    owner: str,
+    *,
+    action: str,
+) -> BackgroundWorkItemModel:
+    """行锁 + 租约校验：非本 owner 持租即 `LeaseLostError`（调用方不得写状态，ADR-4）。"""
+    row = (
+        await sess.execute(
+            select(BackgroundWorkItemModel)
+            .where(
+                BackgroundWorkItemModel.id == item_id,
+                BackgroundWorkItemModel.tenant_id == tenant_id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise WorkItemNotFoundError(f"work item 不存在: work_item_id={item_id!r}")
+    if row.status != "in_progress" or row.lease_owner != owner:
+        raise LeaseLostError(
+            f"租约已失，不得{action}: work_item_id={item_id!r} "
+            f"status={row.status!r} owner={row.lease_owner!r}"
+        )
+    return row
+
+
+def _add_work_attempt(
+    sess: AsyncSession,
+    item_id: uuid.UUID,
+    outcome: str,
+    *,
+    error: str | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+) -> None:
+    """追加一行生命周期审计（只追加；redrive 不删改既有行，ADR-2）。
+
+    `started_at` 为本次事件窗口起点（尽力而为）：handler 完成类事件由 worker 传入
+    认领时刻；`recovered` 传入扫前最后活动时刻（进程已死，无法得知真实开始）。
+    """
+    sess.add(
+        WorkAttemptModel(
+            work_item_id=item_id,
+            outcome=outcome,
+            error=error,
+            started_at=started_at or datetime.now(UTC),
+            finished_at=finished_at,
+        )
+    )
+
+
+def _work_item_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """claim 原生行 → work item dict（与 ORM 映射同形）。"""
+    payload = row.get("payload_json")
+    expires_at = row.get("lease_expires_at")
+    next_attempt_at = row.get("next_attempt_at")
+    created_at = row.get("created_at")
+    updated_at = row.get("updated_at")
+    finished_at = row.get("finished_at")
+    conversation_id = row.get("conversation_id")
+    return {
+        "id": str(row["id"]),
+        "tenant_id": row["tenant_id"],
+        "conversation_id": str(conversation_id) if conversation_id else None,
+        "work_kind": row["work_kind"],
+        "flow": row.get("flow"),
+        "status": row["status"],
+        "idempotency_key": row.get("idempotency_key"),
+        "payload": _from_json(payload if isinstance(payload, str) else None),
+        "attempt_count": int(row["attempt_count"]),
+        "lease_owner": row.get("lease_owner"),
+        "lease_expires_at": _iso(expires_at) if expires_at else None,
+        "next_attempt_at": _iso(next_attempt_at) if next_attempt_at else None,
+        "last_error": row.get("last_error"),
+        "created_at": _iso(created_at) if created_at else "",
+        "updated_at": _iso(updated_at) if updated_at else "",
+        "finished_at": _iso(finished_at) if finished_at else None,
+    }
+
+
+def _work_item_sweep_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """sweep 原生行 → 恢复记录（含扫前租约属主/到期与恢复时刻，供恢复观测）。"""
+    prev_expires = row.get("prev_lease_expires_at")
+    recovered_at = row.get("recovered_at")
+    return {
+        "id": str(row["id"]),
+        "tenant_id": row["tenant_id"],
+        "work_kind": row["work_kind"],
+        "flow": row.get("flow"),
+        "attempt_count": int(row["attempt_count"]),
+        "prev_lease_owner": row.get("prev_lease_owner"),
+        "prev_lease_expires_at": _iso(prev_expires) if prev_expires else None,
+        "recovered_at": _iso(recovered_at) if recovered_at else "",
     }
 
 

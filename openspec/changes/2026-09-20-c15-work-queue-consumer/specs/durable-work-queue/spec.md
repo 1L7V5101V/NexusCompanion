@@ -8,7 +8,7 @@
 
 ### Requirement: work item 数据库租约认领
 
-系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued` 且 `next_attempt_at` 已到期，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间，并把 `attempt_count` 加一；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条；认领 SHALL NOT 返回任何其 `tenant_id` 当前已有有效租约在途（`in_progress` 且租约未过期）的工作项；终态（`succeeded`/`failed`/`cancelled`）SHALL NOT 被认领——即 `failed`（死信）不再自动重试是**结构性**成立，而非依赖计数门槛。
+系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued` 且 `next_attempt_at` 已到期，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间；认领 SHALL NOT 修改尝试计数（该计数由业务失败推进，见「崩溃恢复」requirement）；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条；认领 SHALL NOT 返回任何其 `tenant_id` 当前已有有效租约在途（`in_progress` 且租约未过期）的工作项；终态（`succeeded`/`failed`/`cancelled`）SHALL NOT 被认领——即 `failed`（死信）不再自动重试是**结构性**成立，而非依赖计数门槛。
 
 #### Scenario: 到期 queued 项被认领为 in_progress
 
@@ -56,8 +56,13 @@
 
 #### Scenario: 复位不推高尝试计数
 
-- **WHEN** 一条工作项因崩溃被清扫复位
-- **THEN** 其 `attempt_count` 不因该次复位而增加，也不会仅因反复崩溃而进入 `failed` 终态
+- **WHEN** 一条工作项因崩溃被清扫复位，随后被重新认领
+- **THEN** 其 `attempt_count` 既不被复位增加，也不被重新认领增加，也不会仅因反复崩溃而进入 `failed` 终态
+
+#### Scenario: 尝试计数只由业务失败推进
+
+- **WHEN** 一条工作项经历若干次崩溃复位与维护类延后，其间没有任何 handler 抛错
+- **THEN** 其 `attempt_count` 始终为 0，且不会因此被判定为死信
 
 #### Scenario: 租约未过期不被复位
 
