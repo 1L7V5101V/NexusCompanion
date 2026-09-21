@@ -5,11 +5,12 @@
 > 管理闭环：任务 checkbox → `openspec status` → evidence → 仅在有 evidence 时更新
 > `PILOT_ROADMAP_PROJECT_CHECKLIST` 状态。
 
-## 1. WS 握手接线
+## 1. WS 握手认证（校验已接线，本节固化契约）
 
-- [ ] 1.1 通道在 `accept` 之前调用 `bootstrap/auth/ws_guard.py::check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist），参数取自握手 HTTP 头；未启用 auth 时跳过（维持 C4 行为）。验证：单元测试 + 代码路径断言
-- [ ] 1.2 握手失败以协议级关闭表达，只区分 `auth` / `origin` 两类且不泄露具体原因；SHALL NOT 完成 `accept`、SHALL NOT 入队。验证：`tests/test_web_chat_ws_auth.py` 负向用例
+- [ ] 1.1 **确认并锁定**现有接线：`bootstrap/chat_api.py` 的 `/ws` 在 `auth_runtime` 非空时于 `channel.handle_websocket` 之前调用 `check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist）；未启用 auth 时跳过（维持 C4 行为）。验证：代码路径断言 + 回归测试
+- [ ] 1.2 握手失败以协议级关闭表达（`close(4401)`），只区分 `auth` / `origin` 两类且不泄露具体原因；SHALL NOT 进入 `handle_websocket`、SHALL NOT 入队。验证：`tests/test_web_chat_ws_auth.py` 负向用例
 - [ ] 1.3 确认握手失败不产生 `InboundMessage`（零写入断言）。验证：bus 侧 mock 断言未调用
+- [ ] 1.4 若实际实现与 ADR-1/ADR-4 不一致（例如在通道内部重复校验或泄露原因），在 change 范围内收敛到本契约。验证：diff 范围检查
 
 ## 2. 身份派生
 

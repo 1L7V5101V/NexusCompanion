@@ -5,20 +5,19 @@
 
 ## Why
 
-C5 交付了认证与授权的**后端**（邀请 Token、session、admin API、provisioning）并实现了 WS 握手的**校验函数** `bootstrap/auth/ws_guard.py::check_ws_handshake`。但这条链路从未被接上，导致「用户只输入一次 Token」这一 P1 出口条件在实现上不可达：
+C5 交付了认证与授权的**后端**（邀请 Token、session、admin API、provisioning），并把 WS 握手的**校验函数** `bootstrap/auth/ws_guard.py::check_ws_handshake` 接在了 `bootstrap/chat_api.py` 的 `/ws` 入口。但身份侧与启用侧未接上，导致「用户只输入一次 Token」这一 P1 出口条件在实现上不可达：
 
-- **guard 从未被调用**：`infra/channels/web_chat_channel.py` 对 `check_ws_handshake` 零引用（`git grep` 无命中）。C5 的 change `tasks.md` 5.2 明确写「guard 函数层，**通道接线归 C4 消费**」——而 C4 已归档且为 dev-only，未做该接线。于是该接缝**无任何 change 认领**。
-- **通道身份硬编码**：`bootstrap/app.py` 构造通道时传 `identity=WebChatIdentity()`，即 `DEV_ACCOUNT_ID` / `DEFAULT_TENANT` 常量（`infra/channels/web_chat_channel.py`）。`hello` 因此永远返回单用户 dev 三元组，与登录者无关。
+- **通道层身份接线缺失（真正缺口）**：WS 凭据校验**已经接线**（`chat_api.py` 的 `/ws` 在 `auth_runtime` 存在时调用 `check_ws_handshake`，失败 `close(4401)`）。但**通道层**的身份/tenant 派生未接线：`bootstrap/app.py` 仍以 `identity=WebChatIdentity()`（即 `DEV_ACCOUNT_ID` / `DEFAULT_TENANT` 常量）构造通道，因此连接通过校验后仍拿到单用户 dev 三元组，`hello` 与登录者无关。`chat_api.py` 源码注释亦自述「C4 通道层持久/tenant 派生接线由 C4 消费（本层只做 app 入口门禁）」——而 C4 已归档且为 dev-only，故该接缝**无任何 change 认领**。
 - **启动门禁仍为 dev-only**：`bootstrap/app.py` 与 `bootstrap/chat_api.py` 均要求 `agent.dev_mode=true` 才允许启用 `channels.chat`。而 `dev_mode=true` 会顺带打开 `bootstrap/providers.py` 的 `payload_snapshot_enabled`（LLM 请求/响应全量落盘），不能作为生产后门。
 - **前端从未构建**：`frontend/chat` 存在但 `static/chat` 在生产宿主机与容器内均不存在（容器内 `static/` 只有 `dashboard`）。C4 交付了协议与前端源码，但没有构建产物，也没有登录入口。
 - **集成路径从未跑通**：C5 的部署态演练自述「canary 未启用 chat 通道，`/api/auth/*` 未挂载」——即 chat 承载认证这条路径**从未被真实执行过**。
 
-结果：C5 的认证能力当前只能服务 `dashboard` 侧 `/api/admin/*`（回环专用），用户侧 `WebChat` 登录闭环在实现层面不成立。
+结果：`dashboard` 侧 `/api/admin/*`（回环专用）已可运行；用户侧 WebChat 因「门禁仍要求 `dev_mode` ∧ 通道层身份未派生 ∧ 前端从未构建」而不可达——即「用户只输入一次 Token」在实现上不成立（尽管 WS 入口已校验凭据）。
 
 ## What Changes
 
-- **WS 握手认证接线**：通道在 `accept` 之前调用 `check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist），失败按 guard 语义以协议级拒绝关闭（`auth` / `origin` 两类，不泄露具体原因），不做任何入队。
-- **身份从 session 派生**：启用 `[auth]` 时，`WebChatIdentity` 由已认证 session 经 C1 身份链解析得到 `account_id → tenant_id → canonical conversation`，`hello` 返回该三元组；客户端帧中的归属字段仍一律忽略。`dev_mode`（无 auth）保留显式单用户 dev 身份作为回退，语义与 C4 一致。
+- **WS 认证接线校验与补齐**：确认并固化 `bootstrap/chat_api.py` 的 `/ws` 入口在 `accept` 之前调用 `check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist），失败以协议级拒绝关闭（`auth` / `origin` 两类，不泄露具体原因）且不做任何入队；把该行为提升为可验收契约（补负向矩阵），并确认未启用 auth 时不引入门禁。
+- **身份从 session 派生（本 change 的主体缺口）**：启用 `[auth]` 时，`WebChatIdentity` SHALL 由已认证 session 经 C1 身份链解析得到 `account_id → tenant_id → canonical conversation`，`hello` 返回该三元组；客户端帧中的归属字段仍一律忽略。`dev_mode`（无 auth）保留显式单用户 dev 身份作为回退，语义与 C4 一致。**这是 `chat_api.py` 注释中显式留给「C4 消费」而实际无人承接的那一段。**
 - **门禁改为认证驱动**：`channels.chat.enabled` 在 `auth.enabled=true` 时允许启用（不再要求 `dev_mode`）；非回环 host 绑定仍拒绝，除非显式 `allow_public_bind`。`auth.enabled=false` 时维持 C4 的 dev-only 行为（要求 `dev_mode`），不得静默降级。
 - **chat 前端构建与登录入口**：构建 `static/chat` 并纳入镜像构建；前端新增邀请 Token 登录流程（提交 Token → `POST /api/auth/exchange` → HttpOnly Cookie → 建立 WS），不再依赖任何客户端持有的长期凭据。
 - **配置与文档**：`[channels.chat]` 与 `[auth]` 的联动在 `config.example.toml` 写清；`origin_allowlist` 必须包含部署实际来源（含公网域名），否则握手/变更请求被拒。
@@ -60,7 +59,7 @@ C5 交付了认证与授权的**后端**（邀请 Token、session、admin API、
 
 ## Impact
 
-- **代码**：`infra/channels/web_chat_channel.py`（握手接线 + 身份注入）、`bootstrap/chat_api.py`（握手前置校验、门禁）、`bootstrap/app.py`（身份解析 + 门禁）、`bootstrap/auth/`（如需导出解析入口）、`agent/config_models.py` / `agent/config.py`（门禁相关字段语义）。
+- **代码**：`bootstrap/app.py`（**主体**：身份解析 + 门禁）、`bootstrap/chat_api.py`（握手校验已存在；本节补契约断言与门禁）、`agent/config_models.py` / `agent/config.py`（门禁相关字段语义）、`bootstrap/auth/`（如需导出 session→身份解析入口）。
 - **前端**：`frontend/chat/`（登录流程 + 凭据处理）、`package.json`（`build:chat` 纳入构建）、`Dockerfile`（构建 `static/chat`）。
 - **测试**：新增握手/身份/门禁/端到端测试；扩展 `tests/fixtures/chat_protocol_frames.json`（如握手拒绝需要新 close code 向量）。
 - **配置**：`config.example.toml` 增补 `[auth]` 与 `[channels.chat]` 联动说明。
