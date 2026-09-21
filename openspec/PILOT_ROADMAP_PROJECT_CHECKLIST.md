@@ -90,20 +90,20 @@
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
-- [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（待 C5）
+- [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（C5 认证后端已于 `0753628` 合并；仍缺 WebChat 通道认证接线——WS 未调 `check_ws_handshake`、identity 硬编码、`dev_mode` 门禁未按 auth 放行，见下文 P1「一次 Token 登录」条目）
   - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；精确字段/版本/错误码/close code 已由 C4 change 冻结并前后端双向执行：后端 49 项 + 前端 31 项）
   - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py`；C4 补真实入口 e2e：收发/流式/重连无重复/`replay_required`→REST 重建/断线不取消 turn/空闲回收，共 6 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
   - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)（当前仍为 `chat:local` session_key 存储，未迁移 canonical 模型）
   - [ ] **durable inbox/acceptance + final/outbox + delivery ack 状态机** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
   - [ ] **模型生成完成与 channel `sent`/`failed` 语义分离** → outcome 见 [PILOT_ROADMAP §5.9.11](PILOT_ROADMAP.md)（`turn.failed` 帧已可用；delivery ack 状态机已由 C2 落地：`sent` 仅由 ack 推进、独立 attempt/provider receipt/dead_letter/redrive）；durable control plane 表/三事务边界/delivery 状态机（C2）`verified`（commit `c2d40770`，2026-09-06，change 归档 `changes/archive/2026-09-06-c2-durable-control-plane/`，证据 [evidence/c2-durable-control-plane](evidence/c2-durable-control-plane/)）
   - [x] **dev-only 暴露门禁**（C4 三层：`[channels.chat] enabled=false` 默认关闭 ∧ 非 dev 启用即 fail-fast / 非回环 host 需显式 `allow_public_bind` ∧ 运行期回环中间件 HTTP 403 / WS 1008；P1 前不得公网 tenant-facing）
-- [ ] **P1 一次 Token 登录** — 一次性邀请 Token 兑换可撤销 HttpOnly 登录 Cookie；`planned`
-  - [ ] **test_accounts / access_tokens / auth_sessions 数据模型与 digest 约束** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
-  - [ ] **账号 provisioning → ready → active 后才签发 Token** → outcome 见 [PILOT_ROADMAP §5.9.13](PILOT_ROADMAP.md)
-  - [ ] **普通/admin 分离认证、CSRF/Origin 和 Cookie timeout** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)
-  - [ ] **HTTP、上传、媒体和 WebSocket 统一认证** → outcome 见 [PILOT_ROADMAP §5](PILOT_ROADMAP.md)
+- [ ] **P1 一次 Token 登录** — 一次性邀请 Token 兑换可撤销 HttpOnly 登录 Cookie；后端 `verified`（C5 合并 `0753628`，PR #2），用户可见登录 `planned`（WebChat 通道接线缺失，见下）
+  - [x] **test_accounts / access_tokens / auth_sessions 数据模型与 digest 约束** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)；C5 落地（migration `b7e2f9a4c1d8`：`access_tokens`/`auth_sessions`/`admin_credentials`/`admin_audit_events`/`tenant_provisioning_jobs`，CHECK 约束强制 64-hex digest），证据 [evidence/c5-auth-provisioning-admin](evidence/c5-auth-provisioning-admin/)
+  - [x] **账号 provisioning → ready → active 后才签发 Token** → outcome 见 [PILOT_ROADMAP §5.9.13](PILOT_ROADMAP.md)；C5 落地（provisioning 状态机 + readiness gate，ready 前不发 Token），证据同上
+  - [x] **普通/admin 分离认证、CSRF/Origin 和 Cookie timeout** → outcome 见 [PILOT_ROADMAP §5.9.3](PILOT_ROADMAP.md)；C5 落地（`__Host-nexus_session` vs `__Host-nexus_admin`、session-bound CSRF、Origin/Referer 校验、idle 7d/absolute 30d 与 admin 30min/12h），证据同上
+  - [ ] **HTTP、上传、媒体和 WebSocket 统一认证** → outcome 见 [PILOT_ROADMAP §5](PILOT_ROADMAP.md)；**部分完成**：HTTP 面 C5 已落地（`/api/auth/*` + `/api/admin/*`）；**WebSocket 未接线** —— `bootstrap/auth/ws_guard.py`（`check_ws_handshake`）已实现但 `infra/channels/web_chat_channel.py` 从未调用（grep 无引用），通道身份仍硬编码 `DEV_ACCOUNT_ID`/`DEFAULT_TENANT`；上传/媒体归 C6
   - [ ] **immutable attachment_id + tenant ownership + MIME/size/cleanup** → outcome 见 [PILOT_ROADMAP §5.9.15](PILOT_ROADMAP.md)
-  - [ ] **服务端 principal/tenant 派生与越权测试** → outcome 见 [PILOT_ROADMAP §5.9.1](PILOT_ROADMAP.md)
+  - [ ] **服务端 principal/tenant 派生与越权测试** → outcome 见 [PILOT_ROADMAP §5.9.1](PILOT_ROADMAP.md)；**部分完成**：C1 规范身份链（account→tenant→conversation，fail-closed）已 `verified`；**WebChat 入口的 principal→tenant 派生未接线**（通道固定 `DEFAULT_TENANT`，见上条）
   - [ ] **PersonaProfile / RelationshipState PostgreSQL 当前值存储、tenant 串行更新与最小审计** → outcome 见 [PILOT_ROADMAP §5.9.8](PILOT_ROADMAP.md)
   - [ ] **Telegram Bot 用户私聊身份绑定 + cross-channel 去重/同步** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
   - [ ] **PostgreSQL inbox/turn/tool/work/outbox/delivery/schedule/provisioning durable source of truth**（公网前移除 Pilot 多规范源） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
