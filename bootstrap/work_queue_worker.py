@@ -148,6 +148,10 @@ class WorkQueueWorker:
         return self._owner
 
     @property
+    def config(self) -> WorkQueueWorkerConfig:
+        return self._cfg
+
+    @property
     def router(self) -> TenantLaneRouter:
         return self._router
 

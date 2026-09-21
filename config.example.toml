@@ -108,6 +108,24 @@ search_enabled = true
 # ws_outbound_hard_limit = 256
 # ws_outbound_max_payload_bytes = 1048576
 
+# 可选：C15 work item 消费层（`background_work_items` 的 durable 消费者）。
+# 默认 `enabled = false`：接线到位但默认不启动消费者。
+# 启用前必须至少注册一个 flow 的 handler，否则启动 **fail-fast**——否则所有 work item
+# 都会被判为「未注册 flow」并最终进死信，那比不启动更糟。
+# 仅在 storage.backend = "postgres" 时生效（SQLite 没有 control plane 表）。
+# [agent.work_queue]
+# enabled = false
+# lease_ttl_seconds = 60.0                     # 租约时长（只在崩溃后用于判定接管）
+# heartbeat_interval_seconds = 20.0           # 必须小于 lease_ttl
+# max_attempts = 5                            # 业务失败上限；达上限进死信（可 redrive）
+#                                             # 上限 = 退避表档数（1m/5m/30m/2h/6h）
+# poll_interval_seconds = 1.0
+# batch_size = 10                             # 单轮认领上限（背压第一层；每租户在途恒为 1）
+# maintenance_acquire_timeout_seconds = 5.0   # 维护类让位于交互类的等待上限
+# release_delay_seconds = 60.0                # 维护类被延后后的重排延迟
+# error_backoff_seconds = 5.0                 # 轮询级异常（DB 抖动）退避起点
+# max_error_backoff_seconds = 60.0            # 轮询级异常退避封顶
+
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
 # toolsets = ["meta_common", "spawn", "schedule", "mcp"]

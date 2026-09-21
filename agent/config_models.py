@@ -226,6 +226,30 @@ class AdmissionConfig:
 
 
 @dataclass
+class WorkQueueConfig:
+    """C15 work item 消费层运行参数（design ADR-7 冻结初始值；可配置）。
+
+    `enabled` 默认 **False**：接线到位但默认不启动消费者。这不只是保守——在还没有
+    注册任何 `flow` handler 的部署上启动消费者，会让所有 work item 以「未注册 flow」
+    计入失败并最终进死信（ADR-7 的 fail-fast 与 `<work_queue.enabled>` 共同约束）。
+
+    `max_attempts` 上限为退避表档数（5 档：1m/5m/30m/2h/6h，见
+    `bootstrap/work_queue_worker.py::WorkQueueWorkerConfig`）。
+    """
+
+    enabled: bool = False
+    lease_ttl_seconds: float = 60.0
+    heartbeat_interval_seconds: float = 20.0
+    max_attempts: int = 5
+    poll_interval_seconds: float = 1.0
+    batch_size: int = 10
+    maintenance_acquire_timeout_seconds: float = 5.0
+    release_delay_seconds: float = 60.0
+    error_backoff_seconds: float = 5.0
+    max_error_backoff_seconds: float = 60.0
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -271,6 +295,7 @@ class Config:
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    work_queue: WorkQueueConfig = field(default_factory=WorkQueueConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -299,4 +324,5 @@ __all__ = [
     "StorageConfig",
     "TelegramChannelConfig",
     "WiringConfig",
+    "WorkQueueConfig",
 ]
