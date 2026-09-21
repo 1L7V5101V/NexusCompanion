@@ -30,8 +30,14 @@ rollback：`DROP TABLE work_attempts` + `DROP INDEX` + 6 个 `DROP COLUMN`；无
 改写（保持「一个 change 一个 migration」的仓库惯例，对齐 C2 的七表单迁移），而非叠加
 第二个 migration。
 
+rebase 到 `main` 后：`main` 已有 C5 的 `b7e2f9a4c1d8`（auth/provisioning 表），且它与
+本迁移同源于 `f3c8a9d2e7b4` → 曾形成**两个 head**（`alembic upgrade head` 会直接报错）。
+因此把本迁移 re-parent 到 `b7e2f9a4c1d8` 之后，恢复单 head。两者无数据依赖
+（C5 建 `access_tokens`/`auth_sessions`/…，本迁移只动 `background_work_items` +
+新建 `work_attempts`），先后顺序不影响语义。
+
 Revision ID: a7f2c9e4b1d8
-Revises: f3c8a9d2e7b4
+Revises: b7e2f9a4c1d8
 Create Date: 2026-09-20
 """
 
@@ -40,7 +46,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "a7f2c9e4b1d8"
-down_revision: Union[str, Sequence[str], None] = "f3c8a9d2e7b4"
+down_revision: Union[str, Sequence[str], None] = "b7e2f9a4c1d8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
