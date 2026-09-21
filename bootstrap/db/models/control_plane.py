@@ -263,7 +263,14 @@ class ToolCallModel(Base):
 
 
 class BackgroundWorkItemModel(Base):
-    """后台工作项（consolidation 等以 work id 归 C12）；幂等 work 重算归 C3/C12 调度。"""
+    """后台工作项：由 durable 消费者以 lease 认领并执行（C15）。
+
+    `attempt_count` / `lease_owner` / `lease_expires_at` / `next_attempt_at` /
+    `last_error` 与 `outbound_delivery_intents` **同名同语义**（C15 design ADR-2），
+    但 lease 语义有一处关键差异：`attempt_count` **只由 claim 递增**，崩溃清扫复位
+    **不**递增（ADR-3）——否则反复崩溃会在没有任何业务失败的情况下退避耗尽成
+    `failed`。状态词汇沿用 queued/in_progress/succeeded/failed/cancelled（ADR-1）。
+    """
 
     __tablename__ = "background_work_items"
     __table_args__ = (
@@ -278,6 +285,11 @@ class BackgroundWorkItemModel(Base):
             "ix_background_work_items_tenant_status",
             "tenant_id",
             "status",
+        ),
+        Index(
+            "ix_background_work_items_claim",
+            "status",
+            "next_attempt_at",
         ),
     )
 
@@ -297,6 +309,13 @@ class BackgroundWorkItemModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     payload_json: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
