@@ -13,7 +13,7 @@
 
 ## 2. `WorkItemRepository`（ADR-1 / ADR-3 / ADR-4）
 
-- [ ] 2.1 `claim_batch(owner, *, batch_size, lease_ttl_seconds, max_attempts)`：单语句原子认领（`FOR UPDATE SKIP LOCKED`，`status→in_progress`，写租约，`attempt_count + 1`），**每轮每 tenant 至多 1 条**（ADR-4）。验证：`tests/control_plane/test_work_queue_state_machine.py` 全路径 + 并发认领只成功一次
+- [ ] 2.1 `claim_batch(owner, *, batch_size, lease_ttl_seconds, max_attempts)`：单语句原子认领（`FOR UPDATE SKIP LOCKED`，`status→in_progress`，写租约，`attempt_count + 1`），含**两个 per-tenant 条件**：在途互斥（tenant 已有有效租约 → 本轮不认领其任何项）+ 轮内去重（同 tenant 至多 1 条）（ADR-4，形状已在真 PG 验证）。验证：`tests/control_plane/test_work_queue_state_machine.py` 全路径 + 并发认领只成功一次 + `test_claim_skips_tenant_with_active_lease`（条件 1 反例回归）
 - [ ] 2.2 `heartbeat(tenant_id, work_item_id, owner, *, lease_ttl_seconds) -> bool`：续租，返回 False = 失租。验证：续租成功/失租两向用例；lease 到期时间与 claim 同源（DB 时钟）
 - [ ] 2.3 `record_work_succeeded(tenant_id, work_item_id, owner, *, mutate)`：租约 CAS 前置下推进 `succeeded` + `finished_at` + 清租约，并与 `mutate(session)` 的副作用写入**同事务**（ADR-6）。验证：成功同提交 + 前置不成立时整体回滚
 - [ ] 2.4 `record_work_failed(tenant_id, work_item_id, owner, *, error, max_attempts, backoff_seconds)`：未达上限 → 回 `queued` + `next_attempt_at = now() + backoff` + 清租约；达上限 → `failed` 终态。验证：退避序列、上限判定、`last_error` 落库且经 redaction
