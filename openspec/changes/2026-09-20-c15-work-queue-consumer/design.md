@@ -69,26 +69,66 @@
 
 ---
 
-## ADR-4 （关键）claim 每轮每租户至多 1 条，使租约只覆盖执行期
+## ADR-4 （关键）claim 的两个 per-tenant 条件，使租约只覆盖执行期且租户内不并发
 
-**结论**：`claim_batch` 的 SQL 在 `FOR UPDATE SKIP LOCKED` 之前对候选按 `tenant_id` **去重**（每个 tenant 每轮最多返回 1 条），即 `row_number() OVER (PARTITION BY tenant_id ORDER BY next_attempt_at) = 1`。tenant lane 因此是**执行串行化装置，而不是缓冲区**；每租户在途 ≤ 1，跨租户并发。
+**结论**：`claim_batch` 的单条 SQL 必须**同时**包含两个 per-tenant 条件，缺一不可：
 
-**问题（若不这样做）**：若一次 claim 出同一 tenant 的 N 条，再全部投入该 tenant 的 lane 排队，则**排队中的项持有租约但不心跳**（心跳只在执行期运行）。等待时间一旦超过 `lease_ttl`，清扫会把它们复位 → 另一轮认领 → **同一条 work 被重复执行**，且是在「第一次尚未开始」的情况下重复。这是本设计里唯一会导致静默重复执行的陷阱。
+1. **在途互斥**：该 tenant 若已有 `status='in_progress' AND lease_expires_at >= now()` 的行，则本轮**不认领它的任何工作项**；
+2. **轮内去重**：同一 tenant 本轮至多返回 1 条（用 `NOT EXISTS` 取 `(next_attempt_at, created_at, id)` 最小者），而不是一次认领它的多条。
 
-**三种候选与取舍**
+两者叠加后，`lease_ttl` **只需覆盖单次 handler 执行**，不需要覆盖任何排队时间——这是本 ADR 最重要的简化结论。tenant lane 因此是**执行串行化装置，而不是缓冲区**；每租户在途 ≤ 1，跨租户并发。
+
+**为什么必须要两个条件（2026-09-21 在真 PG 上实测发现）**
+
+只写条件 2 是**不够**的，这是本 change 实现阶段修正的一处真实设计缺陷。实测：某 tenant 有 3 条 `queued`，第一次 claim 取走 1 条（转 `in_progress`，租约有效）；**第二次 claim 仍会取走该 tenant 的下一条 `queued` 行**——因为「已持租的那条」不再满足 due 判据，于是退出候选集，该 tenant 的另一条 `queued` 行成了它自己的最小候选。
+
+后果正是本 ADR 要排除的陷阱：**同租户两条同时在途**；若投入 lane 排队，则排队那条持租不心跳 → 超 `lease_ttl` → 清扫复位 → 重复执行。因此条件 1 是「在途 ≤ 1」的**真正实现**，条件 2 只负责防止单轮取多条。
+
+**为什么在途互斥放在 SQL，而不是 worker 记账**
+
+worker 侧维护「本进程该 tenant 是否在途」也能挡住单 worker 场景，但 SQL 条件 1 额外挡住：进程重启后旧租约未过期时的重复认领、未来多 worker、以及 worker 记账 bug。把不变量放在数据层是这里唯一稳妥的位置。
+
+**已实测的 SQL 形状**
+
+```sql
+WITH picked AS (
+    SELECT w.id FROM background_work_items w
+    WHERE (<due(w)>)
+      AND NOT EXISTS (SELECT 1 FROM background_work_items a
+                      WHERE a.tenant_id = w.tenant_id
+                        AND a.status = 'in_progress'
+                        AND a.lease_expires_at >= now())              -- 条件 1
+      AND NOT EXISTS (SELECT 1 FROM background_work_items p
+                      WHERE p.tenant_id = w.tenant_id
+                        AND (<due(p)>)
+                        AND (p.next_attempt_at, p.created_at, p.id)
+                            < (w.next_attempt_at, w.created_at, w.id)) -- 条件 2
+    ORDER BY w.next_attempt_at, w.created_at, w.id
+    LIMIT :batch_size
+    FOR UPDATE OF w SKIP LOCKED
+)
+UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURNING ...
+```
+
+**实现约束：条件 2 不能用窗口函数表达。** PostgreSQL 的 `FOR UPDATE` **不允许与窗口函数同层**（`ERROR: FOR UPDATE is not allowed with window functions`），`DISTINCT ON` 同样与 `FOR UPDATE` 冲突。这是选相关子查询 `NOT EXISTS` 形式的原因（该形状已在真 PG 上验证可用）。
+
+**已排除的候选**
 
 | 方案 | 结果 | 取舍 |
 | --- | --- | --- |
-| (a) claim 每租户至多 1 条（**选中**） | 无同租户排队 → 等待≈0 → 租约只覆盖执行期，heartbeat 语义与 delivery 完全一致 | 单轮吞吐受 batch_size 限制；这是**有界背压**的正面表达，非缺陷 |
-| (b) 允许同租户多条但在途上限=1，队列深度内等待 | 需要额外保证「等待时间 < lease_ttl」，或让排队项也心跳 | 引入了「租约覆盖非执行时间」的复杂语义与新的失租窗口，收益仅为少量预取 |
-| (c) 排队项也心跳 | 租约语义被拉长为「从认领到结束」 | 心跳协程数量随队列深度增长，且失租判据不再对应「执行者是否活着」 |
+| (a) 两个 per-tenant 条件（**选中**） | 在途 ≤ 1 由数据层保证；租约只覆盖执行期 | 单轮吞吐受 batch_size 与就绪 tenant 数限制——这是**有界背压**的正面表达，非缺陷 |
+| (b) 只做轮内去重（即 `row_number()` 式写法） | **实测无效**（见上）；且窗口函数写法根本不被 PG 接受 | ❌ |
+| (c) 允许同租户多条排队、让排队项也心跳 | 租约语义被拉长为「从认领到结束」 | 心跳协程随队列深度增长；失租判据不再对应「执行者是否活着」 |
+| (d) 在途互斥只由 worker 记账保证 | 单 worker 可行 | 进程重启遗留的有效租约、未来多 worker、记账 bug 均会漏；不变量应在数据层 |
 
-**推论（必须写入实现约束）**
+**推论的实现约束**
 
-- 认领量上限 = `batch_size`，且 ≤ 就绪 tenant 数；这是**背压的第一层**。
-- 每租户在途 = 1，是**背压的第二层**（等价于 §5.9.5 的「tenant 内 active work 仍为 1」）。
-- `lease_ttl`（60s，可配）**只需覆盖单次 handler 执行**，不需要覆盖排队——这是本 ADR 最重要的简化结论。
-- handler 执行期中断（CancelledError）必须走 `record_work_failed` 或让其租约自然到期，**不得**留下永不释放的 `in_progress`（见 ADR-7 的停止语义）。
+- 认领量上限 = `batch_size`，且 ≤ 就绪 tenant 数；**背压第一层**。
+- 每租户在途 = 1 由条件 1 保证；**背压第二层**（等价于 §5.9.5 的「tenant 内 active work 仍为 1」）。
+- **已知取舍：租户内队头阻塞**。若某 tenant 的在途 handler 一直存活并续租，该 tenant 的后续工作项会等待。这是「同租户串行」的必然结果，比「同租户并发」更符合 §5.9.5；但必须可观测（队列等待耗时），否则表现为无解释的停滞。
+- handler 执行期中断（`CancelledError`）必须走 `record_work_failed` 或让其租约自然到期，**不得**留下永不释放的 `in_progress`（见 ADR-7 的停止语义）。
+
+**验证**：`openspec/evidence/c15-work-queue-consumer/claim-sql-smoke.md` 记录了 15 项在真 PG（PG18 + 最小 schema）上的实测，含本条条件 1 的反例与修正后复测全绿。
 
 ---
 

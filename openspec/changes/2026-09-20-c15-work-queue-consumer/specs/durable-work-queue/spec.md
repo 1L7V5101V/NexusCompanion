@@ -8,7 +8,7 @@
 
 ### Requirement: work item 数据库租约认领
 
-系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued`，或到期的 `failed`，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间，并把 `attempt_count` 加一；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条。
+系统 SHALL 以数据库租约认领 `background_work_items`：认领 SHALL 在单条语句内把到期项（`queued`，或到期的 `failed`，或租约已过期的 `in_progress`）推进为 `in_progress`，记录租约属主与到期时间，并把 `attempt_count` 加一；认领 SHALL 使用 `FOR UPDATE SKIP LOCKED` 使并发扫描器互不阻塞；认领 SHALL 单轮内对同一 `tenant_id` 至多返回一条；认领 SHALL NOT 返回任何其 `tenant_id` 当前已有有效租约在途（`in_progress` 且租约未过期）的工作项。
 
 #### Scenario: 到期 queued 项被认领为 in_progress
 
@@ -29,6 +29,16 @@
 
 - **WHEN** 同一 `tenant_id` 存在多条同时就绪的工作项，且调用方请求认领一批
 - **THEN** 本次该租户至多返回一条，其余保持 `queued` 并在后续轮次可被认领
+
+#### Scenario: 已有有效租约在途的租户本轮不被认领
+
+- **WHEN** 某租户已有一条 `in_progress` 且租约未过期的工作项，同时该租户还有其它就绪的 `queued` 工作项
+- **THEN** 本次认领不返回该租户的任何工作项，其就绪项保持 `queued`，直到该租户的在途项收束或租约过期
+
+#### Scenario: 在途项租约过期后该租户重新可被认领
+
+- **WHEN** 某租户在途工作项的租约已过期（持它者已崩溃）
+- **THEN** 该租户重新可被认领，且其就绪工作项也不再被互斥条件阻塞
 
 #### Scenario: 并发认领同一行只成功一次
 
