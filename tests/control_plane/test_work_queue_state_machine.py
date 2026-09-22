@@ -5,6 +5,7 @@ design ADR-1..ADR-6；用例与 spec `durable-work-queue` 的 requirement/scenar
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -12,6 +13,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from bootstrap.work_queue_worker import (
+    WorkItemEnvelope,
+    WorkQueueWorker,
+)
 from bootstrap.db.repository.control_plane_repo import (
     LeaseLostError,
     RedriveNotAllowedError,
@@ -385,3 +390,122 @@ async def test_work_kind_vocabulary_rejects_flow_value(
             flow="not-a-flow",
             conversation_id=tenant["conversation_id"],
         )
+
+
+# ── 1.3 expand-only 兼容性 / 4.4 崩溃恢复 e2e（tasks 1.3、4.4） ──
+
+
+async def test_expand_only_backward_compatible(
+    make_tenant, work_repo: WorkItemRepository, exec_sql
+) -> None:
+    """只写 C2 时代旧列的行必须取到新列 DEFAULT/NULL，且仍可被认领（ADR-2）。"""
+    tenant = await make_tenant(prefix="c15s")
+    item_id = str(uuid.uuid4())
+    exec_sql(
+        "INSERT INTO background_work_items (id, tenant_id, work_kind, status) "
+        "VALUES (%s, %s, 'maintenance', 'queued')",
+        (item_id, tenant["tenant_id"]),
+    )
+
+    row = await work_repo.get_work_item(tenant["tenant_id"], item_id)
+    assert row is not None
+    assert row["attempt_count"] == 0
+    assert row["flow"] is None
+    assert row["lease_owner"] is None
+    assert row["lease_expires_at"] is None
+    assert row["last_error"] is None
+    assert row["next_attempt_at"], "next_attempt_at 应取 DEFAULT now()"
+
+    claimed = await work_repo.claim_batch("probe-expand")
+    assert [c["id"] for c in claimed] == [item_id]
+
+
+class _RecoveryHandler:
+    """记录 execute/persist 的最小 handler（persist 写 test_accounts 作为副作用）。"""
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+
+    async def execute(self, envelope: WorkItemEnvelope) -> object:
+        self.executed.append(envelope.work_item_id)
+        return envelope.work_item_id
+
+    async def persist(self, session, envelope: WorkItemEnvelope, result: object) -> None:
+        await session.execute(
+            text(
+                "INSERT INTO test_accounts (id, tenant_id, status, display_name) "
+                "VALUES (gen_random_uuid(), :t, 'active', 'recovery-side-effect')"
+            ),
+            {"t": f"c15-rec-{envelope.work_item_id[:8]}"},
+        )
+
+
+async def test_crash_recovery_e2e(
+    make_tenant, control, work_repo: WorkItemRepository, exec_sql, c2_factory
+) -> None:
+    """崩溃 e2e：认领 → 崩溃 → worker 启动清扫复位 → 重启后重新执行成功（task 4.4）。
+
+    全程 `attempt_count` 保持 0 —— 崩溃不消耗重试预算（ADR-3 定案 (B)）。
+    """
+    tenant = await make_tenant(prefix="c15t")
+    item = await _new_work(control, tenant, idempotency_key="rec-0")
+
+    # 第一步：首次认领后模拟进程崩溃（租约过期、状态留在 in_progress）
+    await work_repo.claim_batch("w1")
+    await _expire_lease(exec_sql, item["id"])
+    crashed = await work_repo.get_work_item(tenant["tenant_id"], item["id"])
+    assert crashed is not None
+    assert crashed["status"] == "in_progress"
+    assert crashed["attempt_count"] == 0, "claim 不递增 attempt_count"
+
+    # 第二步：重启后的 worker 进场清扫
+    first = _RecoveryHandler()
+    worker = WorkQueueWorker(
+        work_repo, {"consolidation": first}, worker_id="w-restart"
+    )
+    assert await worker.recover_stale() == 1
+
+    recovered = await work_repo.get_work_item(tenant["tenant_id"], item["id"])
+    assert recovered is not None
+    assert recovered["status"] == "queued"
+    assert recovered["lease_owner"] is None
+    assert recovered["attempt_count"] == 0, "清扫复位不消耗预算"
+    assert _outcomes(exec_sql, item["id"]) == ["recovered"]
+
+    # 第三步：重启后的 worker 重新认领并成功执行
+    handler = _RecoveryHandler()
+    restarted = WorkQueueWorker(
+        work_repo, {"consolidation": handler}, worker_id="w-restarted"
+    )
+    assert await restarted.process_once() == 1
+    assert handler.executed == [item["id"]]
+
+    done = await work_repo.get_work_item(tenant["tenant_id"], item["id"])
+    assert done is not None
+    assert done["status"] == "succeeded"
+    assert done["attempt_count"] == 0, "崩溃全程未消耗预算"
+    assert _outcomes(exec_sql, item["id"]) == ["recovered", "succeeded"]
+    assert _side_effects(exec_sql) == 1, "副作用与终态同事务落库"
+
+
+# ── 5.2 入队幂等 × 认领租约 组合（task 5.2） ──
+
+
+async def test_idempotent_enqueue_composes_with_lease_claim(
+    make_tenant, control, work_repo: WorkItemRepository, exec_sql
+) -> None:
+    """同 `idempotency_key` 重复入队 → 一行；认领侧 lease 保证只执行一次。"""
+    tenant = await make_tenant(prefix="c15u")
+    first = await _new_work(control, tenant, idempotency_key="dup-0")
+    second = await _new_work(control, tenant, idempotency_key="dup-0")
+    assert first["id"] == second["id"]
+    count = exec_sql(
+        "SELECT count(*) FROM background_work_items WHERE idempotency_key = %s",
+        ("dup-0",),
+    )[0][0]
+    assert count == 1
+
+    # 认领侧：同一行只会被认领一次（认领后转 in_progress，第二个认领者拿不到）
+    first_claim = await work_repo.claim_batch("w1")
+    assert [c["id"] for c in first_claim] == [first["id"]]
+    assert await work_repo.claim_batch("w2") == []

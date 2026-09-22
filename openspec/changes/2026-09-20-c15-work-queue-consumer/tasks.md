@@ -9,7 +9,7 @@
 
 - [x] 1.1 新增 alembic revision（`down_revision = f3c8a9d2e7b4`）：`background_work_items` 增 `attempt_count INTEGER NOT NULL DEFAULT 0`、`lease_owner VARCHAR(128) NULL`、`lease_expires_at TIMESTAMPTZ NULL`、`next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now()`、`last_error TEXT NULL`、**`flow VARCHAR(32) NULL`**（业务链路，决定 handler）；建 `ix_background_work_items_claim (status, next_attempt_at)`；**建只追加审计表 `work_attempts`**（`work_item_id` FK / `outcome` CHECK ∈{succeeded,failed,released,recovered,redrive} / `error` / `started_at` / `finished_at` + `ix_work_attempts_item`）。验证：`alembic upgrade head` + `downgrade -1` + `upgrade head` 可逆（已在真 PG18 验证双向可逆，含新增列与表），见 [`claim-sql-smoke.md`](../../evidence/c15-work-queue-consumer/claim-sql-smoke.md)；`tests/migration/` 回归待 task 7.2（需 pgvector）
 - [x] 1.2 `bootstrap/db/models/control_plane.py` 同步：`BackgroundWorkItemModel` 加上述 6 列 + claim 索引；新增 `WorkAttemptModel`；状态 CHECK **不变**（ADR-1）。验证：model `__table__.columns`/`indexes` 断言 + pyright 0 errors + `test_control_plane_contract` 9 passed
-- [ ] 1.3 expand-only 兼容性验证：在**旧列**上插入的行（不指定新列）取 DEFAULT/NULL 且可读。验证：新增用例 `tests/control_plane/test_work_queue_migration.py::test_expand_only_backward_compatible`
+- [x] 1.3 expand-only 兼容性验证：只写 C2 时代**旧列**的 INSERT 必须取到新列 DEFAULT/NULL 且仍可被认领。验证：`tests/control_plane/test_work_queue_state_machine.py::test_expand_only_backward_compatible`（PG-gated）+ 真 PG 实测通过（见 evidence `work-queue-recovery-verification.md`）
 
 ## 2. `WorkItemRepository`（ADR-1 / ADR-3 / ADR-4）
 
@@ -41,12 +41,12 @@
 - [x] 4.1 新增 `bootstrap/work_queue.py`：`build_work_queue_runtime()` 建立 control plane async engine + session factory（复用 `bootstrap/db/engine.py`）并构造 `WorkItemRepository` + `WorkQueueWorker`；连接串驱动从 `storage.postgres_url`（sync psycopg）转 `+asyncpg`；非 postgres 后端跳过；**未注册 handler 时 fail-fast**（否则全部 work item 会被判失败进死信）。验证：`tests/test_work_queue_wiring.py`（驱动转换幂等 / 默认关闭 / 非 postgres 跳过 / 未注册 handler 抛错 / engine+worker 装配与配置映射）
 - [x] 4.2 `AppRuntime.start()` 在 `provisioning_worker.start()` 之后启动 worker（**独立 task，不放入 `self.tasks`**——那会与 `_run_primary_tasks` 的一损俱损语义耦合）；`shutdown()` 的 `_run_cleanup_steps` 新增 `work_queue.drain_and_stop`，位置在 **`runtime_tasks.cancel` 之前**（否则会在 handler 执行中取消它），并在其中 `engine.dispose()`；异常经 `_work_queue_done` 回调大声记录。验证：既有测试不回归（`pytest -k 'config or app_runtime or bootstrap'` 85 passed / 2 skipped）
 - [x] 4.3 配置：新增 `[agent.work_queue]`（`enabled` 默认 false、参数与 ADR 冻结默认一致）并接入 `agent/config_models.py`（`WorkQueueConfig`）+ `agent/config.py::_load_work_queue_config` + `config.example.toml`；**加载期**校验 `lease_ttl > heartbeat`、`max_attempts ≤ 退避档数`、error backoff 关系。验证：配置默认值/覆盖/非法值用例
-- [ ] 4.4 关闭后遗留项由下次清扫收束：集成用例模拟「在途被中断 → 重启 → 清扫复位 → 重新执行成功」。验证：`test_work_queue_recovery.py` 崩溃恢复 e2e → **待 task 7.2 的 PG 环境**；等价语义已在真 PG 仓储验证中覆盖（连续 7 次崩溃仍 `queued`、`attempt_count=0`、可认领 + 清扫复位），见 [`work-queue-repo-verification.md`](../../evidence/c15-work-queue-consumer/work-queue-repo-verification.md)
+- [x] 4.4 关闭后遗留项由下次清扫收束：端到端用例「认领 → 崩溃（租约过期）→ `worker.recover_stale()` 复位 → 重启后重新认领并成功」。验证：`tests/control_plane/test_work_queue_state_machine.py::test_crash_recovery_e2e`（PG-gated）；**已用真实 worker + 真实仓储在真 PG 上实测通过**（13 项断言，见 evidence `work-queue-recovery-verification.md`）。关键不变量：崩溃全程 `attempt_count` 始终为 0。
 
 ## 5. 与调用方的接缝
 
 - [x] 5.1 `WorkHandler` 协议文档化：**两段式**（`execute` 长活不写库 / `persist` 与终态同事务）+ 声明「两段合起来必须幂等或可重放」（ADR-3 边界 / ADR-6 细化）。验证：协议 docstring + 两段式调用顺序用例
-- [ ] 5.2 既有 `create_work_item()` 与本消费者的衔接：入队侧 `idempotency_key` 唯一约束与认领侧 lease 叠加验证。验证：重复入队 + 单次执行的 e2e 用例
+- [x] 5.2 既有 `create_work_item()` 与本消费者的衔接：入队侧 `idempotency_key` 唯一约束（重复入队返回既有行）+ 认领侧 lease（同一行只被认领一次）叠加 ⇒ 单次执行。验证：`tests/control_plane/test_work_queue_state_machine.py::test_idempotent_enqueue_composes_with_lease_claim`（PG-gated）+ 真 PG 端到端实测（同键只执行一次、副作用只落一次，见 `work-queue-recovery-verification.md`）
 
 - [x] 5.3 handler 按 **`flow`** 注册（`flow → WorkHandler` 映射）；`work_kind` 只决定 lane。未注册 flow 的工作项**不得执行**：按业务失败记录（`record_work_failed`，错误信息含「未注册 flow」），使其最终进死信可见并可 redrive——而非静默丢弃，也不是无限释放把审计流写爆（对任务原文「释放」的有意修正）。验证：未注册 flow 用例断言 `failed` 恰 1 条且含「未注册 flow」
 
@@ -60,7 +60,7 @@
 
 - [ ] 7.1 `pyright --level error`（project + tests 两配置）无新增错误。验证：`openspec/evidence/c15-work-queue-consumer/pyright-*.txt`
 - [ ] 7.2 带 PG 全量回归无新增失败：`python scripts/regression.py --start-pg --evidence openspec/evidence/c15-work-queue-consumer/pytest-regression.txt`（PG 前置由 `NEXUS_REQUIRE_PG` 守卫保证，不允许静默 skip）。验证：证据文件
-- [ ] 7.3 `openspec validate` 通过；tasks 勾选与 evidence 同步。验证：`openspec status c15-work-queue-consumer`
+- [x] 7.3 `openspec validate` 通过（C15 与 C12 均通过）；tasks 勾选与 evidence 同步；`openspec status` 显示 4/4 artifacts complete。证据目录 `openspec/evidence/c15-work-queue-consumer/`：claim SQL 冒烟、仓储验证（43 项）、worker/接线/遥测测试输出（48 项）、恢复 e2e（含 1.3/4.4/5.2）、环境重建与 pyright 异常判读。
 
 ## 8. 已知边界（不在本 change 内）
 
