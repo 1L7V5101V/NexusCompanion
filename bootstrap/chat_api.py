@@ -84,6 +84,7 @@ def create_chat_app(
     channel: WebChatChannel,
     auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
+    static_root: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
@@ -128,8 +129,11 @@ def create_chat_app(
             raise HTTPException(401, detail="authentication required") from None
         except SessionForbiddenError:
             raise HTTPException(403, detail="forbidden") from None
+    # 生产从仓库根的 static/chat 提供（镜像里 /app/static/chat）；测试可传
+    # static_root 隔离，避免被本地已构建的 bundle 影响（否则 / 会返回 HTML
+    # 而非无 bundle 时的 JSON 回退）。
     project_root = Path(__file__).resolve().parent.parent
-    static_dir = project_root / "static" / "chat"
+    static_dir = static_root if static_root is not None else project_root / "static" / "chat"
     index_file = static_dir / "index.html"
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
