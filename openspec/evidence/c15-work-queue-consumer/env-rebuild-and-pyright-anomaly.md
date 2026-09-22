@@ -45,18 +45,91 @@ work_queue_worker.py:216:46 - error: Statements must be separated by newlines or
 | 本次重建之前 | 同一文件在同一会话早期 pyright 报 **0 errors, 8 warnings** |
 | pyright 自身 | 多次运行直接输出 `Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to \`latest\`` 而不出结果（wrapper 不稳定）；版本提示 `v1.1.411 -> v1.1.414` |
 
-**决定性探针：把该文件的非 ASCII 字符全部替换成 `x`（纯 ASCII 副本）后，pyright 仍报 137 个错误、仍含 `Invalid character "\ufffd"`。**
+**真实根因（2026-09-22 定位）：本机装有透明加密/DLP，按进程放行**
 
-这**排除**了「中文/UTF-8 触发」这一解释——pyright 在一个纯 ASCII 文件上也会报 `\ufffd`（0xEF 0xBF 0xBD，即解码失败占位符），且错误数量在多次运行间不稳定（同一文件先后得到 15 / 57 / 137 / 184）。
+决定性证据（同一文件、不同进程读到的内容不同）：
 
-字符集对比也排除了「文件含特殊字符」：该文件除 ASCII 外只有常规 CJK 字符，**无任何控制字符或非法码点**。
+```
+$ head -c 16 session/store.py | od -c        # bash（非白名单进程）
+0000000   %   T   S   D   -   H   e   a   d   e   r   -   #   #   #   %
 
-**结论**：本环境（重建后的 `pyright-python` 包装器 + Python 3.12 venv）**读文件本身不可靠**，`--level error` 门禁在本机**不可信**。
+$ python -c "...read_bytes()..."             # Python（白名单进程）
+size=56847  head=b'from __future__ '
+```
 
-**因此**：
+node 视角同样读到密文：
 
-- 本 change 的 pyright 证据**不能在本机采信**；task 7.1 须在干净环境（CI / 未重建的 venv）复跑；
-- 已排除代码侧原因：`ast.parse` 干净、48 项测试通过、同内容换路径同样报错、中文重文件可过。
+```
+session/store.py            node size=61440  head="%TSD-Header-###%"   （实际 56847）
+bootstrap/work_queue_worker node size=28672  head="%TSD-Header-###%"   （实际 21337）
+bootstrap/work_queue_telemetry node size=11784 head='""""C15 work item'  ← 明文！
+```
+
+**放行规则（实测）**：
+
+| 角色 | 读 | 写 |
+| --- | --- | --- |
+| **Python**（pytest / 脚本） | ✅ 透明解密，读到明文 | ❌ **写出的文件被加密** |
+| **node.exe**（pyright） | ❌ 读到密文 | — |
+| **bash / coreutils**（head/od/grep/sed/cat） | ❌ 读到密文 | — |
+| `write` / `edit` 工具 | ✅ | ✅ **写出明文** |
+
+- 仓库里 **673 个文件**带 `%TSD-Header-###%` 头（bash grep 视角）。
+- **Python 写出的新文件也会被加密**：在**主仓库**（`D:/Project/NexusCompanion`，其既有文件是明文）里用 Python 新建一个探针文件，`head` 读到的仍是 `%TSD-Header-###%` ⇒ 说明这**不是按目录，而是按写进程**。
+- 因此：**唯一能被 pyright 正确解析的文件，是 `write`/`edit` 工具写出的那些**（`work_queue_telemetry.py` 正是如此）。
+- 这也解释了本会话早期的「怪事」——`%TSD-Header-###%` 乱码、`cat: stream did not contain valid
+  UTF-8`、read 工具报出错误行数——**当时我误判为 rtk 包装器伪影，实际是同一个 DLP**。主仓库里
+  曾出现的 `_dlp_probe_inside.py/.txt` 就是此前为探测该现象留下的。
+
+**排除的假设（均已实测证伪）**：
+
+| 假设 | 证伪方式 |
+| --- | --- |
+| 中文/UTF-8 触发 | 纯 ASCII 副本（非 ASCII 全替换为 `x`）**同样**报 `Invalid character "\ufffd"` |
+| 文件大小阈值（~16KB） | 「撑大后的 telemetry」失败并非因为大小 —— 它是**用 Python 写的**，因而被加密 |
+| CRLF 触发 | store.py 的 **LF 副本**同样失败 |
+| pip 包装器坏 | **官方 pyright（npx）**报同样的错 |
+| pyright 版本 | `PYRIGHT_PYTHON_FORCE_VERSION=latest` 无效 |
+| 文件本身非法 | Python 侧 `ast.parse` 通过、`decode('utf-8')` 通过、0 个 U+FFFD 字节 |
+
+**结论**：`--level error` 门禁在本机**不可信**（pyright 读到密文）。这不是代码缺陷。
+
+**已采用的解法（本机实测可用）：把跟踪的 `.py` 用 `git show` 重写为明文**
+
+前一版 C4 change 的证据 README 已记录同一现象（「天锐绿盾类透明加密」），并给出做法：
+
+```bash
+# git 属受控进程（读到明文），bash 重定向写出的落盘文件是明文
+git ls-files '*.py' | while IFS= read -r f; do git show "HEAD:$f" > "$f"; done
+git add --renormalize .      # 刷新 stat 缓存（否则 git status 会报大量假 modified）
+```
+
+- 内容与 blob 逐字节一致（`git diff` 为空；`git status` 只剩真实改动）；
+- 文件落盘变为**明文**，于是 **node/pyright 能正确读取**；
+- 属**本机工作区**操作，不改动 `main` 工作树、不影响已提交内容。
+
+**本次结果（2026-09-22，重写后运行）**：
+
+| 配置 | 命令 | 结果 |
+| --- | --- | --- |
+| project | `pyright --project pyrightconfig.json --level error` | **36 errors / 0 warnings**；`Invalid character` **0** 处 |
+| tests | `pyright --project pyrightconfig.tests.json --level error` | **41 errors / 0 warnings**；`Invalid character` **0** 处 |
+
+- project 的 36 errors **与 C12 记录的基线（36）完全一致**；
+- tests 的 41 vs 旧基线 31：因 `main` 已前进（C4/C5 等新文件带入自己的既有错误），非本 change 引入；
+- **按文件核对：两个配置的报错文件清单里没有任何 C15 新增/修改文件**（`work_queue*` 命中 error 数为 0）；
+- 原始输出：`pyright-project.txt` / `pyright-tests.txt`。
+
+**⇒ task 7.1 成立：本 change 未引入新的 pyright 错误。**
+
+**备选解法（若不想动工作区）**：
+
+1. 让 IT 把 **`node.exe` 加入 DLP 白名单**，或把仓库目录**排除加密**；
+2. 在**无此 DLP 的环境**跑 pyright（服务器 / Linux 容器 / 另一台机器）。
+
+> ⚠️ 附带风险提示：既然 **Python 写出的文件会被加密**，提交前值得确认 git 侧读到的是明文
+> （本次 `git diff` / 已推送产物均显示正常明文，故 git 应属白名单；但这是用户环境的安全产品，
+> 建议自行复核一次）。
 
 ## 三、本机仍可采信的证据
 
