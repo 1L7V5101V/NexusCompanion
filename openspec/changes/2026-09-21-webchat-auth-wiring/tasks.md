@@ -36,7 +36,7 @@
 ## 5. 测试、证据与回归
 
 - [x] 5.1 握手负向矩阵：无 Cookie / 无效 / 过期 / 已撤销 / 账号 suspended / Origin 不在白名单 → 全部拒绝且零入队
-- [ ] 5.2 端到端：真实 uvicorn + 真实 WebSocket 客户端 + 真实 Cookie：exchange → handshake → hello → 收发一轮（含流式与终态帧）——**需真实 session（PG），推迟到部署阶段在服务器上补做**
+- [x] 5.2 端到端：真实 uvicorn + 真实 WebSocket 客户端 + 真实 Cookie：exchange → handshake → hello → 收发一轮（含流式与终态帧）——部署后于服务器实跑（见 evidence `deploy-e2e.txt`）
 - [x] 5.3 回归：C4 既有 dev-only 测试全绿；`pytest -q -W error tests/`；`pyright --level error` 对齐 main 基线
 - [x] 5.4 `openspec validate 2026-09-21-webchat-auth-wiring --strict` 通过
 - [x] 5.5 运维边界写入证据与 checklist：明确「本 change 只解决认证闭环；对外部用户开放 MUST 等 C7 工具隔离 + 存储切换」
