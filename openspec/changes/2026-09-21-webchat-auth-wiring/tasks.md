@@ -7,10 +7,10 @@
 
 ## 1. WS 握手认证（校验已接线，本节固化契约）
 
-- [ ] 1.1 **确认并锁定**现有接线：`bootstrap/chat_api.py` 的 `/ws` 在 `auth_runtime` 非空时于 `channel.handle_websocket` 之前调用 `check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist）；未启用 auth 时跳过（维持 C4 行为）。验证：代码路径断言 + 回归测试
-- [ ] 1.2 握手失败以协议级关闭表达（`close(4401)`），只区分 `auth` / `origin` 两类且不泄露具体原因；SHALL NOT 进入 `handle_websocket`、SHALL NOT 入队。验证：`tests/test_web_chat_ws_auth.py` 负向用例
-- [ ] 1.3 确认握手失败不产生 `InboundMessage`（零写入断言）。验证：bus 侧 mock 断言未调用
-- [ ] 1.4 若实际实现与 ADR-1/ADR-4 不一致（例如在通道内部重复校验或泄露原因），在 change 范围内收敛到本契约。验证：diff 范围检查
+- [x] 1.1 **确认并锁定**现有接线：`bootstrap/chat_api.py` 的 `/ws` 在 `auth_runtime` 非空时于 `channel.handle_websocket` 之前调用 `check_ws_handshake`（Cookie `__Host-nexus_session` + Origin allowlist）；未启用 auth 时跳过（维持 C4 行为）。验证：代码路径断言 + 回归测试
+- [x] 1.2 握手失败以协议级关闭表达（`close(4401)`），只区分 `auth` / `origin` 两类且不泄露具体原因；SHALL NOT 进入 `handle_websocket`、SHALL NOT 入队。验证：`tests/test_web_chat_ws_auth.py` 负向用例
+- [x] 1.3 确认握手失败不产生 `InboundMessage`（零写入断言）。验证：bus 侧 mock 断言未调用
+- [x] 1.4 若实际实现与 ADR-1/ADR-4 不一致（例如在通道内部重复校验或泄露原因），在 change 范围内收敛到本契约。验证：diff 范围检查
 
 ## 2. 身份派生
 
@@ -22,9 +22,9 @@
 ## 3. 门禁与配置
 
 - [x] 3.1 `bootstrap/app.py` 与 `bootstrap/chat_api.py` 的门禁改为 design ADR-3 三态矩阵：`auth.enabled` → 允许；否则 `dev_mode` → 允许；否则 fail-fast。验证：八组合矩阵测试
-- [ ] 3.2 非回环 host 绑定仍拒绝，除非显式 `allow_public_bind`（C4 语义不变）。验证：启动拒绝测试
+- [x] 3.2 非回环 host 绑定仍拒绝，除非显式 `allow_public_bind`（C4 语义不变）。验证：启动拒绝测试
 - [x] 3.3 `config.example.toml` 写清 `[auth]` 与 `[channels.chat]` 联动，含 `origin_allowlist` 必须覆盖实际来源（公网部署时为该域名）。验证：文档审查 + 配置断言
-- [ ] 3.4 断言认证模式不打开 `payload_snapshot`（不得以 `dev_mode=true` 作为生产放行手段）。验证：配置/装配断言
+- [x] 3.4 断言认证模式不打开 `payload_snapshot`（不得以 `dev_mode=true` 作为生产放行手段）。验证：配置/装配断言
 
 ## 4. 前端构建与登录入口
 

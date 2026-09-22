@@ -58,7 +58,8 @@ def _build(tmp_path: Path) -> tuple[TestClient, WebChatChannel, MessageBus]:
             log=logging.getLogger("test"),
         )
     )
-    app = create_chat_app(workspace=tmp_path, channel=channel)
+    # static_root 指向 tmp：避免本地已构建的 static/chat 影响“无 bundle”回退断言
+    app = create_chat_app(workspace=tmp_path, channel=channel, static_root=tmp_path / "chat")
     client = TestClient(app)
     return client, channel, bus
 
