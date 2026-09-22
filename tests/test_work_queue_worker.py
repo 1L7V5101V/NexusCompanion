@@ -17,6 +17,27 @@ from bootstrap.work_queue_worker import (
     WorkQueueWorkerConfig,
 )
 
+
+class RecordingTelemetry:
+    """记录三个记录点调用的遥测桩（不落日志/指标）。"""
+
+    def __init__(self) -> None:
+        self.claims: list[dict[str, Any]] = []
+        self.finishes: list[dict[str, Any]] = []
+        self.recoveries: list[dict[str, Any]] = []
+
+    def claim(self, **kwargs: Any) -> dict[str, Any]:
+        self.claims.append(kwargs)
+        return kwargs
+
+    def finish(self, **kwargs: Any) -> dict[str, Any]:
+        self.finishes.append(kwargs)
+        return kwargs
+
+    def recovery(self, **kwargs: Any) -> dict[str, Any]:
+        self.recoveries.append(kwargs)
+        return kwargs
+
 _SENTINEL_SESSION = object()
 
 
@@ -53,6 +74,8 @@ class FakeWorkRepo:
         self.released: list[tuple[str, str | None]] = []
         self.mutate_sessions: list[object] = []
         self.lease_lost = False
+        self.swept: list[dict[str, Any]] = []  # sweep_stale_leases 的返回值（可配置）
+        self.sweep_calls = 0
 
     async def claim_batch(
         self, owner: str, *, batch_size: int, lease_ttl_seconds: float
@@ -66,6 +89,10 @@ class FakeWorkRepo:
         )
         taken, self.batch = self.batch[:batch_size], self.batch[batch_size:]
         return taken
+
+    async def sweep_stale_leases(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        self.sweep_calls += 1
+        return list(self.swept)
 
     async def heartbeat(
         self, tenant_id: str, work_item_id: str, owner: str, *, lease_ttl_seconds: float
@@ -153,12 +180,18 @@ class RecordingHandler:
         self.persisted.append((envelope.work_item_id, session))
 
 
-def _worker(repo: FakeWorkRepo, handlers: dict[str, Any], **cfg: Any) -> WorkQueueWorker:
+def _worker(
+    repo: FakeWorkRepo,
+    handlers: dict[str, Any],
+    telemetry: Any = None,
+    **cfg: Any,
+) -> WorkQueueWorker:
     return WorkQueueWorker(
         repo,  # type: ignore[arg-type]
         handlers,
         config=WorkQueueWorkerConfig(**cfg),
         worker_id="w1",
+        telemetry=telemetry,
     )
 
 
@@ -449,4 +482,143 @@ async def test_polling_error_recovers_and_resumes_consuming() -> None:
     await asyncio.wait_for(task, timeout=2)
 
     assert repo.claim_attempts >= 3, "两次失败后应重试成功"
+    assert repo.succeeded == ["i1"]
+
+
+# ── 遥测记录点（task 6） ──
+
+
+async def test_claim_and_finish_events_recorded_on_success() -> None:
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    telemetry = RecordingTelemetry()
+    worker = _worker(repo, {"consolidation": RecordingHandler()}, telemetry)
+
+    await worker.process_once()
+
+    assert len(telemetry.claims) == 1
+    assert telemetry.claims[0]["work_id"] == "i1"
+    assert telemetry.claims[0]["work_kind"] == "maintenance"
+    assert telemetry.claims[0]["flow"] == "consolidation"
+    assert len(telemetry.finishes) == 1
+    assert telemetry.finishes[0]["status"] == "succeeded"
+
+
+async def test_finish_event_records_retryable_failure() -> None:
+    """业务失败：status=queued（未达上限）→ retryable=True，并带 error_type。"""
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    telemetry = RecordingTelemetry()
+
+    class QueueingRepo(FakeWorkRepo):
+        async def record_work_failed(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            await super().record_work_failed(*a, **kw)
+            return {"id": "i1", "status": "queued", "attempt_count": 2}
+
+    repo = QueueingRepo([_item("i1", "t1")])
+    worker = _worker(
+        repo, {"consolidation": RecordingHandler(fail_in="execute")}, telemetry
+    )
+
+    await worker.process_once()
+
+    assert len(telemetry.finishes) == 1
+    finish = telemetry.finishes[0]
+    assert finish["status"] == "queued"
+    assert finish["retryable"] is True
+    assert finish["error_type"] == "RuntimeError"
+    assert finish["attempt"] == 2
+
+
+async def test_finish_event_records_dead_letter_as_not_retryable() -> None:
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    telemetry = RecordingTelemetry()
+
+    class DeadLetterRepo(FakeWorkRepo):
+        async def record_work_failed(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            await super().record_work_failed(*a, **kw)
+            return {"id": "i1", "status": "failed", "attempt_count": 5}
+
+    worker = _worker(
+        DeadLetterRepo([_item("i1", "t1")]),
+        {"consolidation": RecordingHandler(fail_in="execute")},
+        telemetry,
+    )
+
+    await worker.process_once()
+
+    assert telemetry.finishes[0]["status"] == "failed"
+    assert telemetry.finishes[0]["retryable"] is False
+
+
+async def test_maintenance_deferral_finishes_as_interrupted() -> None:
+    """维护类被延后：记录点产出 `interrupted`（不是失败）。"""
+    repo = FakeWorkRepo(
+        [
+            _item("i1", "t1", work_kind="interactive"),
+            _item("m1", "t1", work_kind="maintenance"),
+        ]
+    )
+    telemetry = RecordingTelemetry()
+    handler = RecordingHandler()
+    handler.gate = asyncio.Event()
+    worker = _worker(
+        repo,
+        {"consolidation": handler},
+        telemetry,
+        maintenance_acquire_timeout_seconds=0.05,
+    )
+
+    task = asyncio.create_task(worker.process_once())
+    await asyncio.wait_for(handler.started.wait(), timeout=2)
+    for _ in range(200):
+        if any(f["status"] == "interrupted" for f in telemetry.finishes):
+            break
+        await asyncio.sleep(0.01)
+    handler.gate.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    interrupted = [f for f in telemetry.finishes if f["status"] == "interrupted"]
+    assert len(interrupted) == 1
+    assert interrupted[0]["work_id"] == "m1"
+
+
+async def test_recover_stale_emits_recovery_events() -> None:
+    """启动清扫复位 stale → 每条产出 recovery 观测。"""
+    repo = FakeWorkRepo()
+    repo.swept = [
+        {
+            "id": "s1",
+            "tenant_id": "t1",
+            "work_kind": "maintenance",
+            "flow": "consolidation",
+            "recovered_at": "2026-09-22T12:00:00+00:00",
+        }
+    ]
+    telemetry = RecordingTelemetry()
+    worker = _worker(repo, {"consolidation": RecordingHandler()}, telemetry)
+
+    assert await worker.recover_stale() == 1
+    assert repo.sweep_calls == 1
+    assert len(telemetry.recoveries) == 1
+    assert telemetry.recoveries[0]["work_id"] == "s1"
+    assert telemetry.recoveries[0]["recovery_action"] == "recompute"
+
+
+async def test_run_sweeps_before_polling() -> None:
+    """`run()` 进场先做启动清扫（ADR-3），再进入轮询。"""
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    telemetry = RecordingTelemetry()
+    worker = _worker(
+        repo, {"consolidation": RecordingHandler()}, telemetry,
+        poll_interval_seconds=0.01,
+    )
+
+    task = asyncio.create_task(worker.run())
+    for _ in range(200):
+        if repo.succeeded:
+            break
+        await asyncio.sleep(0.01)
+    worker.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert repo.sweep_calls >= 1, "启动时应先清扫"
     assert repo.succeeded == ["i1"]

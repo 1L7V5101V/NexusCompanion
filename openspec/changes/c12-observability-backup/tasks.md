@@ -45,7 +45,7 @@
 > **本段不计入本 change 完成条件**（贯穿型 change：契约层已 `verified`，落地归各 owner change）。
 > 2026-09-20 清点：C2 已归档、C3/C4 已合入 `main`，但 **C2/C3/C4 的 checklist 均未带本 change「伴随落地协议」要求的「§7.1 指标字段 + redaction + backup manifest 条目」**（三者 `tasks.md` 对 `§7.1|指标|redaction|manifest|AdminAccess` 均 0 命中）→ 8.1 成为**无 owner 的滞留项**。以下逐条登记 owner 与解除条件以消除歧义；**登记 ≠ 完成**，仍保持不勾选。
 
-- [ ] 8.1 C2/C3 落地 work/turn/tool/delivery 表时，按 fixture 实现其 §7.1 指标字段与事件记录点（E10） — **owner 待指定**（C2 已归档、C3 待归档，无承接 change）；**未阻塞**（四张表已就位）；解除：指定承接 change（建议并入 durable work queue 消费层 change），以其实现与 `tests/fixtures/observability_event_schema.json` 的 diff 作评审输入
+- [x] 8.1 C2/C3 落地 work/turn/tool/delivery 表时，按 fixture 实现其 §7.1 指标字段与事件记录点（E10） — **已由 C15 承接并落地**（change `2026-09-20-c15-work-queue-consumer` §6，2026-09-22）：`background_work_items` 的记录点 = `bootstrap/work_queue_telemetry.py`（`claim`/`finish`/`recovery` 三个记录点 + 4 个指标族）。字段与 fixture **逐字一致**（契约测试 `tests/test_work_queue_telemetry.py::test_allowed_event_fields_equal_fixture` 做双向断言：既不能少也不能自造）；内容边界（`payload_json`/handler 输入输出/内容字段**结构上无法**进入事件）与 metric label 白名单均有负向测试。注：`turn`/`tool_call`/`delivery` 三张表的记录点仍未落地，属 C2 侧的剩余部分，不由本条目关闭。
 - [ ] 8.2 C5 落地 admin 端点时，内容查看/下钻/导出接入 `AdminAccessAuditEvent` emit — **owner C5**；阻塞：C5 未合入 `main`（分支 `feature/c5-auth-provisioning-admin` @ `f0215f2`）
 - [ ] 8.3 C6 落地 attachment blob root 时，细化 manifest `tenant_workspace` 条目并复跑校验器 — **owner C6**；阻塞：C6 未开工
 - [ ] 8.4 P0：retention 接线 config.toml 与进程内定时执行；总控台聚合 API（消费各 Cxx 指标） — **owner P0（retention 接线）/ 待指定 change（聚合 API）**；阻塞：聚合 API 依赖 8.1 的指标记录点

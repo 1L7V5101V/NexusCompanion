@@ -31,7 +31,7 @@
 ## 3. `WorkQueueWorker`（ADR-4 / ADR-5）
 
 - [x] 3.1 `bootstrap/work_queue_worker.py`：`WorkQueueWorkerConfig`（lease 60s / heartbeat 20s / max attempts 5 / backoff 1m,5m,30m,2h,6h / poll 1s / batch 10 / maintenance acquire 5s / release delay 60s）、`WorkItemEnvelope`、`WorkHandler` **两段式**注入协议（ADR-6 细化）、`flow → handler` 映射。验证：`tests/test_work_queue_worker.py`（config 冻结默认值 + 不变量）
-- [x] 3.2 `run()` / `process_once()` / `_process()` / `_run_handler()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的四处放弃路径；lane 协程**惰性创建**（提前建会在延后/关闭时留下未 await 的协程，`-W error` 下直接失败）；**轮询级异常隔离**（`claim_batch` 抛错只记日志 + 线性退避重试，绝不逃出 `run()`——`_run_primary_tasks` 把 runtime task 异常当致命，会取消同级任务并退出进程）。验证：失租禁写（成功/失败两向）+ execute/persist 失败计入业务失败 + 轮询异常不逃逸且恢复后继续消费
+- [x] 3.2 （含 `recover_stale()`：`run()` 进场先做启动清扫 —— 见 6.1 记录点）`run()` / `process_once()` / `_process()` / `_run_handler()` / `_heartbeat_loop()`：镜像 `OutboundDeliveryWorker` 的 claim→heartbeat→CAS 结构，含失租时「不写状态」的四处放弃路径；lane 协程**惰性创建**（提前建会在延后/关闭时留下未 await 的协程，`-W error` 下直接失败）；**轮询级异常隔离**（`claim_batch` 抛错只记日志 + 线性退避重试，绝不逃出 `run()`——`_run_primary_tasks` 把 runtime task 异常当致命，会取消同级任务并退出进程）。验证：失租禁写（成功/失败两向）+ execute/persist 失败计入业务失败 + 轮询异常不逃逸且恢复后继续消费
 - [x] 3.3 tenant lane 接线：`work_kind == interactive` → `TenantLaneRouter.run_interactive`，其余 → `run_maintenance`（ADR-5，**复用** C3 router，未新造 lane）；同租户串行、跨租户并发。验证：`tests/test_work_queue_worker.py` 时间线断言（同租户 `max_active==1` + 跨租户阻塞时另一租户先完成）
 - [x] 3.4 维护类延后：`MaintenanceDeferred` 不视为失败——`release_for_retry` 释放租约、不动 `attempt_count`、留 `released` 审计行、排程重试（ADR-5）。验证：延后用例（interactive 占优时维护类被释放，`failed` 为空）
 - [x] 3.5 有界背压：单轮认领 ≤ `batch_size`（透传仓储）；每租户在途 ≤ 1 由认领 SQL 保证（ADR-4）。验证：`batch_size` 透传断言（owner/lease_ttl 一并校验）
@@ -52,9 +52,9 @@
 
 ## 6. 可观测（并入 C12 §8.1 / E10）（ADR-8）
 
-- [ ] 6.1 按 `tests/fixtures/observability_event_schema.json` 落 work item 的记录点：`claim`（`queue_wait_ms`）、`finish`（`execution_ms`、`status`）、`recovery`（`restart_to_recovered_ms`、`recovery_action`）。验证：契约测试比对 fixture 字段
-- [ ] 6.2 内容边界：不记 `payload_json` 原文与 handler 输入输出原文；自由文本过 `core/telemetry/redaction.redact_text`；指标 label 只用白名单维度（不含 `work_id`/`tenant_id`）。验证：负向测试（fixture `forbidden_content_fields` 不出现 + label 白名单校验）
-- [ ] 6.3 回填 C12：在 `c12-observability-backup/tasks.md` §8.1 记录本 change 为承接者，并把 checklist observability 条目的对应子项标为已落地。验证：`openspec validate c12-observability-backup`
+- [x] 6.1 `bootstrap/work_queue_telemetry.py`：`claim`（`queue_wait_ms`）/`finish`（`execution_ms`、`status`、`error_type`、`retryable`、`attempt`）/`recovery`（`restart_to_recovered_ms`、`recovery_action`）三个记录点 + 4 个指标族（`work_items_total`/`work_item_queue_wait_seconds`/`work_item_execution_seconds`/`work_queue_recovery_total`）；`_emit` 按**白名单构造**事件。验证：契约测试**双向断言** `ALLOWED_EVENT_FIELDS == fixture(field_groups ∪ derived_metrics)`（不能少也不能自造）+ 三个记录点的派生耗时
+- [x] 6.2 内容边界：非白名单字段**丢弃并报错**（不是过滤，而是不在白名单——`payload_json`/tool args/内容字段结构上进不来）；自由文本过 `redact_text`；metric label 只用 `ALLOWED_METRIC_LABELS` 且**不含** `work_id`/`session_key` 等高基数身份字段（`tenant_id` 属 C12 显式允许项）。验证：负向测试（forbidden_content_fields 不出现 + `PolicyCheckedMetricRegistry` 拒绝 `work_id`/`tool_args` + snapshot 里所有 label 均非身份/内容字段 + secret/本地路径被脱敏）
+- [x] 6.3 回填 C12：`c12-observability-backup/tasks.md` §8.1 已记录本 change 为承接者并勾选（含「`turn`/`tool_call`/`delivery` 三表记录点仍未落地」的边界说明）。验证：`openspec validate c12-observability-backup` 通过
 
 ## 7. 回归与状态
 
