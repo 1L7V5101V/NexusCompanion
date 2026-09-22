@@ -47,10 +47,48 @@
 - 非回环 host 需显式 `allow_public_bind`（auth 模式同样不豁免）。
 - 只开 `[auth]` 时 `dev_mode` 必须保持 `False`（不得以打开 LLM payload 全量落盘为代价放行 WebChat）。
 
+## 3.5 部署态验证（2026-09-22，生产服务器 114.55.243.189）
+
+路线 B 第 2 步「存储切换 + 首次部署」完成后，在同一台服务器上实跑：
+
+| 验证 | 结果 |
+|---|---|
+| `alembic upgrade head`（PG 16.15 + pgvector 0.8.6） | 8 个迁移全跑通，head=`b7e2f9a4c1d8` |
+| 容器端口 | `127.0.0.1:2236`（dashboard）+ `127.0.0.1:6322`（webchat），均仅回环 |
+| 旧直连 `http://114.55.243.189:2236/` | HTTP 000（关闭） |
+| `WebChatChannel 已启动（channel=chat）` | 启动日志确认 |
+| `GET :6322/` | 200（返回 `Nexus Chat` 静态页） |
+| `GET :6322/api/auth/me`（无凭据） | **401** |
+| `GET :6322/api/chat/sessions`（无凭据） | **401**（本 change 新增的用户面 HTTP 凭据门禁） |
+| WS `/ws` 无 Cookie | **403**（握手被拒，未 accept） |
+| WS `/ws` Origin 不在 allowlist | **403** |
+| `pilot-admin bootstrap`（TTY） | 生成 pepper + recovery token（明文仅一次） |
+| `POST /api/admin/auth/exchange` → csrf → `POST /api/admin/test-accounts` | 全 200，账号 `active`、job `ready`、返回邀请码明文 |
+| 用户面 e2e：邀请码 → `POST /api/auth/exchange` | 200，下发 `__Host-nexus_session`（HttpOnly; Secure; SameSite=Lax; Max-Age=2592000） |
+| `GET /api/auth/me`（带 Cookie） | 200，返回 account_id/display_name/status |
+| WS `/ws`（带 Cookie + 合法 Origin） | 连接成功，`hello` 返回**派生身份**：`tenant_id=pilot-40i1hm4svrsh`（**非** `default`）、`conversation_id=d459436a-…`、`session_key=chat:pilot-40i1hm4svrsh` |
+| `GET /api/chat/sessions/chat:pilot-…/messages` | 200（`{"items":[],"total":0}`，空历史符合「Pilot 从空开始」） |
+| 重复兑换同一邀请码 | **401**（一次性原子兑换） |
+| 公网 `https://nexus.il7510n.dpdns.org/` | **200**，title `Nexus Chat`（WebChat 已上线） |
+| 公网 `https://admin.il7510n.dpdns.org/` | 无凭据 **401**（Basic realm 含联系邮箱）/ 带 Bearer **200** |
+| Caddy 未知 Host | 404 |
+
+Caddy 按 Host 分流（`/etc/caddy/Caddyfile`）：
+`admin.*` → token/basic 门禁 → `127.0.0.1:2236`（dashboard，自身无认证）；
+`nexus.*` → **不过** Caddy 认证 → `127.0.0.1:6322`（webchat，用应用自带 session 认证）。
+
+配置要点（`/opt/NexusCompanion/config.toml`）：
+- `[storage] postgres_url`（**未设** `backend`，保持 `sqlite`）——认证走 PG，会话/记忆仍 SQLite，
+  故 Telegram 陪伴数据不变，WebChat 使用新的 `chat:<tenant>` session key。
+- `[auth] enabled=true, cookie_secure=true, origin_allowlist=["https://nexus.il7510n.dpdns.org"]`
+- `[channels.chat] enabled=true, host="0.0.0.0", allow_public_bind=true`
+  （Docker DNAT 下容器内 loopback 不可达；真正的闸门是 `[auth]` + 宿主侧 Caddy）
+
+已知缺口（本次未修）：`alembic` 未列入 `requirements.txt`，迁移时在一次性容器内临时安装。
+
 ## 4. 未完成 / 明确边界
 
-- **task 5.2（真实 uvicorn + 真实 Cookie 的端到端）未做**：需要真实 session，
-  即需要 PostgreSQL；本地无 PG。计划在部署阶段（见下）于服务器上补做。
+- **task 5.2 已完成**（见 §3.5 部署态验证）。
 - **本 change 只解决认证闭环**。在 **C7（工具隔离）** 与存储切换完成之前，
   任何拿到 WebChat session 的主体即拥有本实例全部工具能力：
   生产 `config.toml` 的 `toolsets` 含 `spawn`，且 `agent/tools/shell.py` 存在。
