@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from agent.admission.recovery import RecoveryAction
 from agent.admission.lanes import (
     LaneClosedError,
     MaintenanceDeferred,
@@ -39,6 +40,8 @@ from bootstrap.db.repository.control_plane_repo import (
     WorkItemNotFoundError,
     WorkItemRepository,
 )
+
+from bootstrap.work_queue_telemetry import WorkQueueTelemetry
 
 logger = logging.getLogger(__name__)
 
@@ -135,13 +138,16 @@ class WorkQueueWorker:
         config: WorkQueueWorkerConfig | None = None,
         worker_id: str | None = None,
         router: TenantLaneRouter | None = None,
+        telemetry: WorkQueueTelemetry | None = None,
     ) -> None:
         self._repo = repository
         self._handlers = handlers
         self._cfg = config or WorkQueueWorkerConfig()
         self._owner = worker_id or f"work-queue:{uuid.uuid4().hex[:8]}"
         self._router = router or TenantLaneRouter()
+        self._telemetry = telemetry or WorkQueueTelemetry()
         self._running = False
+        self._run_started_at: datetime | None = None
 
     @property
     def owner(self) -> str:
@@ -167,8 +173,20 @@ class WorkQueueWorker:
         已收束；**调用方应调 `stop()` 而非 cancel**，否则在途 handler 会被取消。
         """
         self._running = True
+        self._run_started_at = datetime.now(UTC)
         failures = 0
         try:
+            # ADR-3 的「启动恢复」：先把上次崩溃遗留的 stale `in_progress` 复位为
+            # `queued`，再进入正常轮询（`sweep_stale_leases` 用 `FOR UPDATE
+            # SKIP LOCKED`，多副本也不会互相争抢）。清扫失败不得阻断轮询。
+            try:
+                swept = await self.recover_stale()
+                if swept:
+                    logger.info("work queue 启动清扫复位 %s 条崩溃遗留工作项", swept)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("work queue 启动清扫失败（继续进入轮询）")
             while self._running:
                 try:
                     processed = await self.process_once()
@@ -199,6 +217,25 @@ class WorkQueueWorker:
         self._running = False
         self._router.close()
 
+    async def recover_stale(self) -> int:
+        """启动清扫：把上次崩溃遗留的 stale `in_progress` 复位为 `queued`（ADR-3）。
+
+        返回复位条数；每条产出一个 `recovery` 观测（§7.1 `restart_to_recovered_ms`）。
+        复位**不**动 `attempt_count`——崩溃不是业务失败，不消耗重试预算。
+        """
+        swept = await self._repo.sweep_stale_leases()
+        for record in swept:
+            self._telemetry.recovery(
+                work_id=str(record["id"]),
+                tenant_id=str(record["tenant_id"]),
+                work_kind=str(record["work_kind"]),
+                flow=record.get("flow"),
+                recovery_action=RecoveryAction.RECOMPUTE.value,
+                restart_started_at=self._run_started_at,
+                recovered_at=record.get("recovered_at"),
+            )
+        return len(swept)
+
     async def process_once(self) -> int:
         """单轮：认领一批并执行，返回本轮认领数量（测试/调度入口）。"""
         if self._router.closed:
@@ -228,13 +265,26 @@ class WorkQueueWorker:
 
     async def _process(self, item: dict[str, Any]) -> None:
         envelope = _build_envelope(item)
+        started_at = datetime.now(UTC)
+        # §7.1 claim 记录点：queue_wait_ms = started_at - enqueued_at
+        self._telemetry.claim(
+            work_id=envelope.work_item_id,
+            tenant_id=envelope.tenant_id,
+            work_kind=envelope.work_kind,
+            flow=envelope.flow,
+            enqueued_at=item.get("created_at"),
+            started_at=started_at,
+        )
         handler = self._handlers.get(envelope.flow or "")
 
         if handler is None:
             # 未注册 flow：不得执行。按业务失败处理，使其最终进入死信可见（而非静默丢弃，
             # 也不是无限释放把审计流写爆）；修复后可由 redrive 重投。
             await self._fail(
-                envelope, f"未注册 flow: {envelope.flow!r}（handler 缺失）"
+                envelope,
+                f"未注册 flow: {envelope.flow!r}（handler 缺失）",
+                error_type="UnregisteredFlow",
+                started_at=started_at,
             )
             return
 
@@ -243,7 +293,6 @@ class WorkQueueWorker:
             self._heartbeat_loop(envelope.tenant_id, envelope.work_item_id, lease_lost),
             name=f"work-heartbeat:{envelope.work_item_id}",
         )
-        started_at = datetime.now(UTC)
         try:
             # 必须惰性创建协程：lane 可能延后（`MaintenanceDeferred`）或拒绝
             # （`LaneClosedError`）而不调用它，提前建协程会留下未 await 的警告。
@@ -295,7 +344,12 @@ class WorkQueueWorker:
                     envelope.work_item_id,
                 )
                 return
-            await self._fail(envelope, f"handler execute 失败: {type(exc).__name__}: {exc}")
+            await self._fail(
+                envelope,
+                f"handler execute 失败: {type(exc).__name__}: {exc}",
+                error_type=type(exc).__name__,
+                started_at=started_at,
+            )
             return
 
         if lease_lost.is_set():
@@ -334,7 +388,10 @@ class WorkQueueWorker:
                 )
                 return
             await self._fail(
-                envelope, f"handler persist 失败: {type(exc).__name__}: {exc}"
+                envelope,
+                f"handler persist 失败: {type(exc).__name__}: {exc}",
+                error_type=type(exc).__name__,
+                started_at=started_at,
             )
         else:
             logger.info(
@@ -342,10 +399,27 @@ class WorkQueueWorker:
                 envelope.work_item_id,
                 self._owner,
             )
+            self._telemetry.finish(
+                work_id=envelope.work_item_id,
+                tenant_id=envelope.tenant_id,
+                work_kind=envelope.work_kind,
+                flow=envelope.flow,
+                status="succeeded",
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                attempt=envelope.attempt_count,
+            )
 
-    async def _fail(self, envelope: WorkItemEnvelope, error: str) -> None:
+    async def _fail(
+        self,
+        envelope: WorkItemEnvelope,
+        error: str,
+        *,
+        error_type: str | None = None,
+        started_at: datetime | None = None,
+    ) -> None:
         try:
-            await self._repo.record_work_failed(
+            recorded = await self._repo.record_work_failed(
                 envelope.tenant_id,
                 envelope.work_item_id,
                 self._owner,
@@ -366,6 +440,22 @@ class WorkQueueWorker:
             envelope.work_item_id,
             error,
         )
+        if started_at is not None:
+            status = str(recorded.get("status") or "failed")
+            self._telemetry.finish(
+                work_id=envelope.work_item_id,
+                tenant_id=envelope.tenant_id,
+                work_kind=envelope.work_kind,
+                flow=envelope.flow,
+                status=status,
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+                attempt=_as_int(recorded.get("attempt_count")),
+                error_type=error_type,
+                # 未达上限 → 回 queued（可重试）；达上限 → failed 死信终态
+                retryable=status != "failed",
+                error=error,
+            )
 
     async def _release(self, envelope: WorkItemEnvelope, note: str) -> None:
         try:
@@ -388,6 +478,15 @@ class WorkQueueWorker:
             "work item released（延后）work_item_id=%s note=%s",
             envelope.work_item_id,
             note,
+        )
+        self._telemetry.finish(
+            work_id=envelope.work_item_id,
+            tenant_id=envelope.tenant_id,
+            work_kind=envelope.work_kind,
+            flow=envelope.flow,
+            status="interrupted",  # 延后：本次尝试未完成，但不算失败
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
         )
 
     async def _heartbeat_loop(
@@ -413,6 +512,11 @@ class WorkQueueWorker:
                     self._owner,
                 )
                 return
+
+
+def _as_int(value: Any) -> int | None:
+    """读 `attempt_count` 一类的整数字段；类型不符时返回 None（不猜）。"""
+    return value if isinstance(value, int) else None
 
 
 def _build_envelope(item: dict[str, Any]) -> WorkItemEnvelope:
