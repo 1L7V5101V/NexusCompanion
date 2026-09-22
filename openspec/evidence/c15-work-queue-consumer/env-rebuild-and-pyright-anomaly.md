@@ -45,7 +45,13 @@ work_queue_worker.py:216:46 - error: Statements must be separated by newlines or
 | 本次重建之前 | 同一文件在同一会话早期 pyright 报 **0 errors, 8 warnings** |
 | pyright 自身 | 多次运行直接输出 `Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to \`latest\`` 而不出结果（wrapper 不稳定）；版本提示 `v1.1.411 -> v1.1.414` |
 
-**结论**：本环境（重建后的 `pyright-python` 包装器 + Python 3.12 venv）对某些 UTF-8 中文文件解码异常，`--level error` 门禁在本机**不可信**。
+**决定性探针：把该文件的非 ASCII 字符全部替换成 `x`（纯 ASCII 副本）后，pyright 仍报 137 个错误、仍含 `Invalid character "\ufffd"`。**
+
+这**排除**了「中文/UTF-8 触发」这一解释——pyright 在一个纯 ASCII 文件上也会报 `\ufffd`（0xEF 0xBF 0xBD，即解码失败占位符），且错误数量在多次运行间不稳定（同一文件先后得到 15 / 57 / 137 / 184）。
+
+字符集对比也排除了「文件含特殊字符」：该文件除 ASCII 外只有常规 CJK 字符，**无任何控制字符或非法码点**。
+
+**结论**：本环境（重建后的 `pyright-python` 包装器 + Python 3.12 venv）**读文件本身不可靠**，`--level error` 门禁在本机**不可信**。
 
 **因此**：
 
@@ -53,6 +59,9 @@ work_queue_worker.py:216:46 - error: Statements must be separated by newlines or
 - 已排除代码侧原因：`ast.parse` 干净、48 项测试通过、同内容换路径同样报错、中文重文件可过。
 
 ## 三、本机仍可采信的证据
+
+> 注：下表的 48 项与 43 项在**环境重建后已复跑通过**（Python 3.12 venv），见
+> `work-queue-telemetry-pytest.txt` 与 `work-queue-recovery-verification.md`。
 
 - `ast.parse`：所有新增/修改文件通过；
 - 测试：`tests/test_work_queue_worker.py`（22）+ `test_work_queue_wiring.py`（12）+

@@ -1,0 +1,19 @@
+PASS  旧列 INSERT → attempt_count 取 DEFAULT 0  [0]
+PASS  旧列 INSERT → next_attempt_at 非空（DEFAULT now()）
+PASS  旧列 INSERT → last_error/flow/lease 为 NULL
+PASS  旧列 INSERT 的行可被正常认领  [1]
+PASS  首次认领成功
+PASS  崩溃后仍是 in_progress 且 attempt_count=0（claim 不递增）  [in_progress/0]
+PASS  启动清扫复位 1 条  [1]
+PASS  复位为 queued、lease 清空、attempt_count 仍为 0  [('queued', 0, None)]
+PASS  清扫留下 recovered 审计行  [['recovered']]
+PASS  重启后重新认领并执行成功  [processed=1 executed=['13b1369a-465a-4761-976a-d03923b0dfd1']]
+PASS  终态 succeeded 且 attempt_count=0（崩溃全程未消耗预算）  [('succeeded', 0, datetime.datetime(2026, 9, 22, 14, 12, 8, 705868, tzinfo=zoneinfo.ZoneInfo(key='Asia/Shanghai')))]
+PASS  副作用与终态同事务落库  [side=1]
+PASS  审计流 = recovered → succeeded  [['recovered', 'succeeded']]
+PASS  重复入队（同 idempotency_key）只产生一行  [3d92edf3-689d-4243-baaa-7e8f206df498 vs 3d92edf3-689d-4243-baaa-7e8f206df498]
+PASS  库中该键只有 1 行  [1]
+PASS  同键工作项只被执行一次  [['3d92edf3-689d-4243-baaa-7e8f206df498']]
+PASS  副作用只落一次（幂等 + 租约叠加）  [side=1]
+
+1.3 + 4.4 验证通过
