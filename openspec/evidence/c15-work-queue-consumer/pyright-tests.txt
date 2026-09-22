@@ -6,7 +6,7 @@ d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_session_
       "str" is not assignable to "SQL"
       "str" is not assignable to "Composed" (reportArgumentType)
 d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_webchat_identity.py
-  d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_webchat_identity.py:161:9 - error: Argument of type "_FakeWebSocket" cannot be assigned to parameter "websocket" of type "WebSocket[State]" in function "__init__"
+  d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_webchat_identity.py:162:9 - error: Argument of type "_FakeWebSocket" cannot be assigned to parameter "websocket" of type "WebSocket[State]" in function "__init__"
     "_FakeWebSocket" is not assignable to "WebSocket[State]" (reportArgumentType)
 d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_ws_guard.py
   d:\Project\NexusCompanion-worktrees\wt-c15\tests\auth_provisioning\test_ws_guard.py:55:34 - error: Argument of type "dict[Unknown, Unknown] | None" cannot be assigned to parameter "valid" of type "dict[Unknown, Unknown]" in function "__init__"

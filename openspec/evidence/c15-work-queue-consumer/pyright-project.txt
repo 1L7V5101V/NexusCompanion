@@ -53,6 +53,3 @@ d:\Project\NexusCompanion-worktrees\wt-c15\proactive_v2\mcp_sources.py
   d:\Project\NexusCompanion-worktrees\wt-c15\proactive_v2\mcp_sources.py:48:13 - error: No parameter named "raise_errors" (reportCallIssue)
   d:\Project\NexusCompanion-worktrees\wt-c15\proactive_v2\mcp_sources.py:49:13 - error: No parameter named "execution_timeout" (reportCallIssue)
 36 errors, 0 warnings, 0 informations
-WARNING: there is a new pyright version available (v1.1.411 -> v1.1.414).
-Please install the new version or set PYRIGHT_PYTHON_FORCE_VERSION to `latest`
-
