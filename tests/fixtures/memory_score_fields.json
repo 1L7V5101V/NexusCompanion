@@ -1,0 +1,97 @@
+{
+  "contract": "memory2 score 字段分离契约（C13 验收 1）",
+  "version": 1,
+  "fields": [
+    {
+      "field": "semantic",
+      "lane": "dense",
+      "type": "float",
+      "range": "[0,1]",
+      "producer": "store.vector_search → _score_debug.semantic",
+      "invariants": [
+        "仅 dense lane 命中携带",
+        "0 <= semantic <= 1（cosine similarity）"
+      ]
+    },
+    {
+      "field": "bm25_raw",
+      "lane": "sparse",
+      "type": "float-or-null",
+      "producer": "retriever._retrieve_keyword_lane（来自 keyword_search_bm25 的 keyword_score）",
+      "invariants": [
+        "仅 sparse lane 命中携带",
+        "BM25 命中为 float >= 0（越高越匹配，未归一化）",
+        "LIKE 保底命中为 null（无 BM25 raw）",
+        "永不与 cosine/hotness 原始值相加"
+      ]
+    },
+    {
+      "field": "bm25_normalized",
+      "lane": "sparse",
+      "type": "float",
+      "range": "[0,1)",
+      "producer": "enrich_keyword_hits（normalize_bm25）",
+      "invariants": [
+        "仅 sparse lane 命中携带",
+        "BM25 命中 = raw/(raw+K)，K=[retrieval.sparse].normalization_k",
+        "LIKE 保底命中 = min(1.0, 命中词数/len(terms))",
+        "0 <= bm25_normalized < 1"
+      ]
+    },
+    {
+      "field": "hotness",
+      "lane": "both",
+      "type": "float",
+      "range": "[0,1]",
+      "producer": "dense: _score_debug.hotness；sparse: enrich_keyword_hits",
+      "invariants": [
+        "双 lane 命中均携带",
+        "0 <= hotness <= 1（memory2.store._hotness_score）"
+      ]
+    },
+    {
+      "field": "dense_final",
+      "lane": "dense",
+      "type": "float",
+      "range": "[0,1]",
+      "producer": "store.vector_search → _score_debug.final",
+      "invariants": [
+        "仅 dense lane 命中携带",
+        "final = (1-alpha)*semantic + alpha*hotness（alpha 默认 0 → final==semantic）",
+        "既是 score 字段语义，也是 dense RRF 排名键"
+      ]
+    },
+    {
+      "field": "sparse_final",
+      "lane": "sparse",
+      "type": "float",
+      "range": "[0,1)",
+      "producer": "enrich_keyword_hits（fuse_sparse_final）",
+      "invariants": [
+        "仅 sparse lane 命中携带",
+        "sparse_final = (1-alpha_s)*bm25_normalized + alpha_s*hotness",
+        "0 <= sparse_final < 1",
+        "keyword-only 命中 score 回填为此值",
+        "是 sparse RRF 排名键"
+      ]
+    },
+    {
+      "field": "rrf_score",
+      "lane": "both",
+      "type": "float",
+      "producer": "retriever._rrf_merge",
+      "invariants": [
+        "RRF 融合后命中携带（融合前原始 RRF 值）",
+        "仅含 rank 整数经 1/(k+rank) 与 keyword_weight 加权，不含任何 lane 原始分",
+        "0 < rrf_score"
+      ]
+    }
+  ],
+  "lane_rank_separation": {
+    "dense_rank_key": "_score_debug.final",
+    "dense_rank_fallback": "score",
+    "sparse_rank_key": "sparse_final",
+    "sparse_rank_fallback": "lane 原顺序（stable sort）",
+    "rule": "cosine/BM25 raw/hotness 原始数值永不跨 lane 比较，仅以 rank 整数进入 RRF"
+  }
+}
