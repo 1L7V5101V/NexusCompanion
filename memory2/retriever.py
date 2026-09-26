@@ -13,9 +13,11 @@ import re
 from typing import Any, TypeVar, cast
 
 from infra.storage.interfaces import MemoryStorage, TenantContext
-from memory2.store import MemoryStore2
+from memory2.reranker import Reranker
+from memory2.sparse_lane import enrich_keyword_hits, sparse_final_of
 from memory2.store import _coerce_emotional_weight, _coerce_int, _hotness_score
 from memory2.embedder import Embedder
+from memory2.tokenizer import tokenize_query
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,8 @@ _KEYWORD_RRF_WEIGHT = 0.5
 # lane 内热度混合已置零，热度只在这个乘子里出现一次；β=0.05 是温和的形状调整，
 # 不改变纯相关性的主排序，只让接近的候选中更热的一方靠前。
 _POST_RRF_HOTNESS_BETA = 0.05
+_DEFAULT_SPARSE_NORMALIZATION_K = 4.0
+_DEFAULT_SPARSE_HOTNESS_ALPHA = 0.2
 _KEYWORD_LIMIT_FLOOR = 30
 _KEYWORD_LIMIT_MULTIPLIER = 2
 _EMBED_TIMEOUT_S = 8.0
@@ -38,6 +42,28 @@ _LOW_CONFIDENCE_PHRASES = (
     "未找到",
     "不确定",
 )
+
+
+def _store_bm25_ready(store: MemoryStorage) -> bool:
+    """BM25 路径运行时守卫（duck-typed，SQLite FTS5 与 PG pg_search 共用）。
+
+    - SQLite（MemoryStore2）：`keyword_search_bm25` 存在且 `_fts_available` 为
+      True（FTS5 建表成功）。
+    - PG（PostgresMemoryStore）：调用 `ensure_bm25_ready()` 做 pg_search 运行时
+      探测 + 幂等建索引，结果缓存于 backend；探测/建索引失败 fail-open 返回
+      False，检索路径降级 OR-LIKE，绝不影响启动。
+    - 两者都不满足返回 False，keyword lane 走 `keyword_search_summary` 保底。
+    """
+    if not callable(getattr(store, "keyword_search_bm25", None)):
+        return False
+    ensure = getattr(store, "ensure_bm25_ready", None)
+    if callable(ensure):
+        try:
+            return bool(ensure())
+        except Exception as e:  # noqa: BLE001 - fail-open，不抛给检索路径
+            logger.debug("memory2 retrieve: ensure_bm25_ready 失败，降级 ILIKE: %s", e)
+            return False
+    return bool(getattr(store, "_fts_available", False))
 
 
 class Retriever:
@@ -64,6 +90,11 @@ class Retriever:
         hotness_alpha: float = 0.0,
         hotness_half_life_days: float = 14.0,
         hotness_beta: float = _POST_RRF_HOTNESS_BETA,
+        sparse_normalization_k: float = _DEFAULT_SPARSE_NORMALIZATION_K,
+        sparse_hotness_alpha: float = _DEFAULT_SPARSE_HOTNESS_ALPHA,
+        rrf_k: int = _RRF_K,
+        keyword_rrf_weight: float = _KEYWORD_RRF_WEIGHT,
+        reranker: Reranker | None = None,
         run_db: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self._store_for = (
@@ -93,6 +124,14 @@ class Retriever:
         self._hotness_alpha = max(0.0, min(1.0, float(hotness_alpha)))
         self._hotness_half_life_days = max(1.0, float(hotness_half_life_days))
         self._hotness_beta = max(0.0, float(hotness_beta))
+        # sparse lane：BM25 归一化 K 与 hotness 融合 αs（C13 目标基线，§4.4）。
+        self._sparse_normalization_k = max(1e-9, float(sparse_normalization_k))
+        self._sparse_hotness_alpha = max(0.0, min(1.0, float(sparse_hotness_alpha)))
+        # RRF 参数（默认与历史常量一致）；RRF 输入排名只来自 lane final（验收 4）。
+        self._rrf_k = max(1, int(rrf_k))
+        self._keyword_rrf_weight = max(0.0, float(keyword_rrf_weight))
+        # 可选 reranker：RRF 截断后应用；默认 None（不进入默认路径）。
+        self._reranker = reranker
 
     # 统一检索入口：recall_memory 和被动预检索都复用这条查库路径。
     async def retrieve(
@@ -132,6 +171,8 @@ class Retriever:
         )
 
         # 2. 关键词 lane 只用原始 query，保留用户字面命中的召回能力。
+        # sparse 分数链：BM25 raw → query-local 归一化 → 与 hotness 融合为
+        # sparse_final；字段全程分离（bm25_raw/bm25_normalized/hotness/sparse_final）。
         keyword_items: list[dict] = []
         if keyword_enabled:
             keyword_items = await self._run_db(
@@ -148,15 +189,24 @@ class Retriever:
             )
 
         # 3. 最终只在这里做 RRF 融合，调用方不再各自拼召回列表。
-        # 热度不进 lane 内（alpha=0），而是 RRF 融合后按 (1 + β×hotness) 乘性增强，
-        # 对向量命中与 keyword 命中一视同仁。
+        # RRF 输入排名：dense 侧按 _score_debug.final（dense final），sparse 侧按
+        # sparse_final；cosine/BM25/hotness 原始数值不进入跨 lane 比较（验收 4）。
+        # 热度不进 dense lane 内（alpha=0），RRF 融合后按 (1 + β×hotness) 乘性增强，
+        # 对向量命中与 keyword 命中一视同仁；sparse lane 的热度已在 sparse_final
+        # 内融合（αs），β 只是融合后的统一形状微调。
         items = _rrf_merge(
             vector_items,
             keyword_items,
             top_n=actual_top_k,
+            k=self._rrf_k,
+            keyword_weight=self._keyword_rrf_weight,
             hotness_beta=self._hotness_beta,
             hotness_half_life_days=self._hotness_half_life_days,
         )
+        # 4. 可选 reranker（默认不注入）：对 RRF 截断后候选重排，最终注入序以
+        # reranker 结果为准；失败由 reranker 自行 fail-open 回 RRF 顺序。
+        if self._reranker is not None and items:
+            items = await self._reranker.rerank(query, items)
         logger.debug(
             "memory2 retrieve: query=%r vector=%d keyword=%d fused=%d",
             query[:60],
@@ -272,14 +322,15 @@ class Retriever:
         time_start: datetime | None,
         time_end: datetime | None,
     ) -> list[dict]:
-        terms = _extract_terms(query)
+        # 统一 term 来源：jieba 搜索粒度分词优先（不可用时 regex bigram 回退）。
+        terms = tokenize_query(query)
         if not terms:
             return []
         limit = max(_KEYWORD_LIMIT_FLOOR, actual_top_k * _KEYWORD_LIMIT_MULTIPLIER)
         # FTS5 BM25 (trigram tokenizer 需要 3+ 字符词条). 只在 query
         # 包含至少一个 3+ ASCII/CJK token 时启用, 否则纯 2 字 CJK
         # 查询会空结果, 直接走 OR-LIKE 保底.
-        if isinstance(store, MemoryStore2) and store._fts_available and (
+        if _store_bm25_ready(store) and (
             re.search(r"[a-zA-Z0-9_]{3,}", query)
             or re.search(r"[\u4e00-\u9fff]{3,}", query)
         ):
@@ -295,8 +346,13 @@ class Retriever:
                 raw_query=query,
             )
             if bm25_results:
-                return bm25_results
-        return store.keyword_search_summary(
+                # BM25 原始分（keyword_score = -bm25，越高越匹配）进 bm25_raw，
+                # 归一化与 hotness 融合在 enrich 中完成。
+                for hit in bm25_results:
+                    if isinstance(hit, dict) and hit.get("bm25_raw") is None:
+                        hit["bm25_raw"] = float(hit.get("keyword_score") or 0.0)
+                return self._enrich_sparse_hits(bm25_results)
+        like_results = store.keyword_search_summary(
             terms,
             memory_types=memory_types,
             limit=limit,
@@ -305,6 +361,17 @@ class Retriever:
             scope_channel=scope_channel,
             scope_chat_id=scope_chat_id,
             require_scope_match=require_scope_match,
+        )
+        return self._enrich_sparse_hits(like_results)
+
+    def _enrich_sparse_hits(self, hits: list[dict]) -> list[dict]:
+        """补齐 sparse 分数字段；hotness 复用与 post-RRF β 同一计算。"""
+        return enrich_keyword_hits(
+            [hit for hit in hits if isinstance(hit, dict)],
+            normalization_k=self._sparse_normalization_k,
+            hotness_alpha=self._sparse_hotness_alpha,
+            hotness_half_life_days=self._hotness_half_life_days,
+            hit_hotness_fn=_hit_hotness,
         )
 
     async def embed(self, query: str) -> list[float]:
@@ -357,16 +424,18 @@ class Retriever:
         self,
         items: list[dict],
     ) -> tuple[list[dict], list[tuple[str, str]], list[tuple[str, str]], list[tuple[str, str]]]:
-        """1. 筛选条目 2. 按段落准备格式化文本。"""
+        """1. 按返回序筛选条目（不再重排） 2. 按段落准备格式化文本。
+
+        items 已按 RRF（或 reranker）顺序返回：注入以该顺序为默认顺序（§4.4），
+        不再按 score 重排覆盖 RRF 序。类型阈值门只作用于 dense 命中（cosine
+        校准阈值）；keyword-only 命中的相关性证据是 sparse rank，不适用该量纲
+        （见 _passes_type_threshold），由分区配额与字符预算兜底。
+        """
         if not items:
             return [], [], [], []
 
-        sorted_items = sorted(
-            [i for i in items if isinstance(i, dict)],
-            key=lambda x: float(x.get("score", 0.0) or 0.0),
-            reverse=True,
-        )
-        if not sorted_items:
+        ordered_items = [i for i in items if isinstance(i, dict)]
+        if not ordered_items:
             return [], [], [], []
 
         selected: list[dict] = []
@@ -376,7 +445,7 @@ class Retriever:
         forced_count = 0
         norm_count = 0
         event_count = 0
-        for item in sorted_items:
+        for item in ordered_items:
             mtype = str(item.get("memory_type", "") or "")
             score = float(item.get("score", 0.0) or 0.0)
             extra = item.get("extra_json") or {}
@@ -398,7 +467,7 @@ class Retriever:
                     forced.append((item_id, f"- [{item_id}] {summary}（必须调用工具：{tool_req}）"))
                 continue
             type_th = self._score_thresholds.get(mtype, self._score_threshold)
-            if score < type_th:
+            if not self._passes_type_threshold(item, type_th):
                 continue
             if mtype in ("procedure", "preference"):
                 if norm_count >= self._inject_max_procedure_preference:
@@ -451,6 +520,20 @@ class Retriever:
                 )
 
         return selected, forced, norms, events
+
+    def _passes_type_threshold(self, item: dict, type_th: float) -> bool:
+        """类型阈值门（cosine 校准量纲）。
+
+        dense 命中（含未带 _lane_ranks 的直连调用方，保持既有行为）按
+        score（dense final）校验；keyword-only 命中的相关性证据是 BM25/RRF
+        rank 而非 cosine，不适用本量纲（sparse_final ∈ [0,1) 与 cosine 阈值
+        不可比），由 RRF top-k 选择、分区配额与字符预算兜底。
+        """
+        ranks = item.get("_lane_ranks")
+        if isinstance(ranks, dict) and "dense" not in ranks:
+            return True
+        score = float(item.get("score", 0.0) or 0.0)
+        return score >= type_th
 
     def _build_section_parts(
         self,
@@ -577,39 +660,18 @@ def _hit_hotness(item: dict, now: datetime, half_life_days: float) -> float:
     )
 
 
-_CJK_STOPWORDS = {
-    "用户", "助手", "我们", "他们", "这个", "那个", "什么", "如何", "是否",
-    "有没", "没有", "有过", "做过", "进行", "完成", "包括", "通过", "实现",
-    "行为", "内容", "相关", "情况", "问题", "方式", "时候", "时间", "目前",
-    "当前", "最近", "之前", "以前", "后来", "然后", "因为", "所以", "但是",
-    "用户在", "用户对", "的行为吗", "进行了",
-}
+def _dense_final_score(item: dict) -> float:
+    """dense lane 排名键：_score_debug.final（dense final），缺失回退 score。
 
-
-def _extract_terms(query: str) -> list[str]:
-    terms: list[str] = []
-    ascii_tokens = re.findall(r"[a-zA-Z0-9_\-\.]{2,}", query)
-    terms.extend(ascii_tokens)
-
-    cjk_chunks = re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]{2,}", query)
-    for chunk in cjk_chunks:
-        if len(chunk) <= 4:
-            if chunk not in _CJK_STOPWORDS:
-                terms.append(chunk)
-            continue
-        for i in range(len(chunk) - 1):
-            bigram = chunk[i:i + 2]
-            if bigram not in _CJK_STOPWORDS:
-                terms.append(bigram)
-
-    seen: set[str] = set()
-    result: list[str] = []
-    for term in terms:
-        if term in seen:
-            continue
-        seen.add(term)
-        result.append(term)
-    return result[:20]
+    α=0（默认）时 final==semantic，与既有纯 cosine 排名兼容；α>0 时 final
+    已含热度融合。
+    """
+    debug = item.get("_score_debug")
+    if isinstance(debug, dict):
+        raw = debug.get("final")
+        if isinstance(raw, int | float):
+            return float(raw)
+    return _hit_score(item)
 
 
 def _rrf_merge(
@@ -618,23 +680,34 @@ def _rrf_merge(
     *,
     top_n: int,
     k: int = _RRF_K,
+    keyword_weight: float = _KEYWORD_RRF_WEIGHT,
     hotness_beta: float = 0.0,
     hotness_half_life_days: float = 14.0,
 ) -> list[dict]:
-    """RRF 融合两条 lane。
+    """RRF 融合两条 lane；输入排名只来自 lane final（C13 验收 4）。
+
+    dense 侧排名键 = dense final（_score_debug.final，缺失回退 score）；
+    sparse 侧排名键 = sparse_final（缺失时 stable sort 保持 lane 原序，兼容
+    未改造的 fake store）。cosine、BM25 raw、hotness 的原始数值永不跨 lane
+    比较，只以 rank 整数进入 1/(k+rank)。
 
     排序分 = rrf_score × (1 + hotness_beta × hotness)。默认 beta=0 即纯 RRF；
     传入 hotness_beta 后热度才参与排序（Retriever 生产路径传 _POST_RRF_HOTNESS_BETA）。
+    平序由 rrf_score 与 item id 决出，不引入异构原始分。
     截断 top_n 之前增强，避免边界候选中"更热的那条"被提前截掉。
     """
     vec_rank: dict[str, int] = {}
-    for index, item in enumerate(sorted(vector_items, key=_hit_score, reverse=True)):
+    for index, item in enumerate(
+        sorted(vector_items, key=_dense_final_score, reverse=True)
+    ):
         item_id = _hit_id(item)
         if item_id and item_id not in vec_rank:
             vec_rank[item_id] = index + 1
 
     keyword_rank: dict[str, int] = {}
-    for index, item in enumerate(keyword_items):
+    for index, item in enumerate(
+        sorted(keyword_items, key=sparse_final_of, reverse=True)
+    ):
         item_id = _hit_id(item)
         if item_id and item_id not in keyword_rank:
             keyword_rank[item_id] = index + 1
@@ -642,36 +715,41 @@ def _rrf_merge(
     id_to_item: dict[str, dict] = {}
     for item in keyword_items:
         item_id = _hit_id(item)
-        if item_id:
-            merged_item = dict(item)
-            if "score" not in merged_item:
-                merged_item["score"] = _hit_score(merged_item, fallback_key="keyword_score")
-            id_to_item[item_id] = merged_item
+        if item_id and item_id not in id_to_item:
+            id_to_item[item_id] = dict(item)
     for item in vector_items:
         item_id = _hit_id(item)
         if item_id:
             id_to_item[item_id] = item
 
     now = datetime.now(timezone.utc)
-    scored: list[tuple[str, float, float, float]] = []
+    scored: list[tuple[str, float, float]] = []
     for item_id in set(vec_rank) | set(keyword_rank):
         rrf_score = 0.0
         if item_id in vec_rank:
             rrf_score += 1.0 / (k + vec_rank[item_id])
         if item_id in keyword_rank:
-            rrf_score += _KEYWORD_RRF_WEIGHT / (k + keyword_rank[item_id])
+            rrf_score += keyword_weight / (k + keyword_rank[item_id])
         item = id_to_item.get(item_id, {})
         boosted = rrf_score * (
             1.0 + hotness_beta * _hit_hotness(item, now, hotness_half_life_days)
         )
-        scored.append((item_id, boosted, _hit_score(item), rrf_score))
+        scored.append((item_id, boosted, rrf_score))
 
     # 排序用热度增强后的分数；rrf_score 字段仍记录融合前的原始 RRF 值。
-    scored.sort(key=lambda entry: (entry[1], entry[2]), reverse=True)
+    scored.sort(key=lambda entry: (entry[1], entry[2], entry[0]), reverse=True)
     result: list[dict] = []
-    for item_id, _boosted, _score, rrf_score in scored[:top_n]:
+    for item_id, _boosted, rrf_score in scored[:top_n]:
         item = dict(id_to_item[item_id])
         item["rrf_score"] = rrf_score
+        item["_lane_ranks"] = {
+            lane: rank
+            for lane, rank in (
+                ("dense", vec_rank.get(item_id)),
+                ("sparse", keyword_rank.get(item_id)),
+            )
+            if rank is not None
+        }
         result.append(item)
     return result
 

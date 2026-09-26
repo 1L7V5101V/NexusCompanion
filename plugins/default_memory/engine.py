@@ -45,10 +45,15 @@ from memory2.memorizer import Memorizer
 from memory2.post_response_worker import PostResponseMemoryWorker
 from memory2.procedure_tagger import ProcedureTagger
 from memory2.query_builder import build_procedure_queries
+from memory2.reranker import LightLLMReranker, Reranker
 from memory2.retriever import Retriever
 from memory2.rule_schema import build_procedure_rule_schema
 from memory2.store import VEC_DIM, MemoryStore2
-from plugins.default_memory.config import DefaultMemoryConfig, resolve_memory_db_path
+from plugins.default_memory.config import (
+    DefaultMemoryConfig,
+    ExperimentalRetrievalConfig,
+    resolve_memory_db_path,
+)
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -57,6 +62,7 @@ logger = logging.getLogger("plugins.default_memory.engine")
 
 _HYPOTHESIS_MAX_TOKENS = 80
 _HYPOTHESIS_TIMEOUT_S = 3.0
+_REWRITE_MAX_TOKENS = 120
 _VECTOR_SCORE_THRESHOLD = 0.35
 _VECTOR_TOP_K = 15
 _ChatCall = Callable[..., Awaitable[LLMResponse]]
@@ -476,6 +482,12 @@ class DefaultMemoryEngine:
         # 无 runtime（legacy single-user / 测试）时 run_db 为 None，直接同步调。
         run_db = self._storage_runtime.run_db if self._storage_runtime is not None else None
         self._memorizer = Memorizer(self._memory_for, self._embedder, run_db=run_db)
+        # 三实验开关（§10 DEFERRED BY EVIDENCE）：默认全关，不进入默认路径。
+        experimental = retrieval.experimental
+        self._reranker: Reranker | None = None
+        if experimental.reranker_enabled:
+            chat = cast(_ChatCall, getattr(self._light_provider, "chat"))
+            self._reranker = LightLLMReranker(chat, model=self._light_model)
         self._retriever = Retriever(
             self._memory_for,
             self._embedder,
@@ -494,8 +506,15 @@ class DefaultMemoryEngine:
             inject_max_event_profile=retrieval.inject.event_profile,
             inject_line_max=retrieval.inject.line_max,
             procedure_guard_enabled=retrieval.procedure_guard_enabled,
-            # 热度不再进 lane 内混合（hotness_alpha 默认 0）；Retriever 在 RRF
-            # 融合后按 (1 + β×hotness) 乘性增强，β 默认 0.05。
+            # 热度不再进 dense lane 内混合（hotness_alpha 默认 0）；Retriever 在 RRF
+            # 融合后按 (1 + β×hotness) 乘性增强；sparse lane 的热度经
+            # sparse.hotness_alpha 融合进 sparse_final（C13 目标基线）。
+            hotness_beta=retrieval.rrf.hotness_beta,
+            sparse_normalization_k=retrieval.sparse.normalization_k,
+            sparse_hotness_alpha=retrieval.sparse.hotness_alpha,
+            rrf_k=retrieval.rrf.k,
+            keyword_rrf_weight=retrieval.rrf.keyword_weight,
+            reranker=self._reranker,
             run_db=run_db,
         )
         skills_loader = SkillsLoader(workspace)
@@ -660,8 +679,11 @@ class DefaultMemoryEngine:
         scope = resolve_memory_scope(request.scope)
         queries = self._resolve_queries(request)
         memory_types = self._resolve_memory_types(request)
+        retrieval_query, rewrite_applied = await self._maybe_rewrite_query(
+            request.text, intent=request.intent
+        )
         items = await self._retrieve_related(
-            request.text,
+            retrieval_query,
             tenant=request.tenant,
             memory_types=memory_types,
             top_k=request.limit,
@@ -711,6 +733,7 @@ class DefaultMemoryEngine:
                 "profile": self.DESCRIPTOR.profile.value,
                 "intent": request.intent,
                 "effect": request.effect,
+                "query_rewrite_applied": rewrite_applied,
             },
             raw={"items": items},
         )
@@ -1077,14 +1100,24 @@ class DefaultMemoryEngine:
         self,
         request: MemoryQuery,
     ) -> MemoryQueryResult:
-        hyp1_task = asyncio.create_task(self._gen_hypothesis(request.text, style="event"))
-        hyp2_task = asyncio.create_task(self._gen_hypothesis(request.text, style="general"))
-        hyp1, hyp2 = await asyncio.gather(hyp1_task, hyp2_task)
-        aux_queries = [text for text in (hyp1, hyp2) if text]
+        # 三实验开关之一（§10 DEFERRED BY EVIDENCE）：HyDE 默认关闭。
+        # 关闭时不发起旧 answer HyDE 的 light LLM 调用（default-only Pilot
+        # 不因兼容旧逻辑隐式调用）；显式开启后行为与历史版本一致。
+        hyde_enabled = self._experiments().hyde_enabled
+        if hyde_enabled:
+            hyp1_task = asyncio.create_task(self._gen_hypothesis(request.text, style="event"))
+            hyp2_task = asyncio.create_task(self._gen_hypothesis(request.text, style="general"))
+            hyp1, hyp2 = await asyncio.gather(hyp1_task, hyp2_task)
+            aux_queries = [text for text in (hyp1, hyp2) if text]
+        else:
+            aux_queries = []
         scope = resolve_memory_scope(request.scope)
         types = self._resolve_memory_types(request)
+        retrieval_query, rewrite_applied = await self._maybe_rewrite_query(
+            request.text, intent="answer"
+        )
         hits = await self._retrieve_related(
-            request.text,
+            retrieval_query,
             tenant=request.tenant,
             memory_types=types,
             top_k=max(request.limit, _VECTOR_TOP_K),
@@ -1130,7 +1163,9 @@ class DefaultMemoryEngine:
                 "intent": request.intent,
                 "effect": request.effect,
                 "hit_count": len(sliced),
+                "hyde_enabled": hyde_enabled,
                 "hyde_hypotheses": aux_queries,
+                "query_rewrite_applied": rewrite_applied,
             },
             raw={"items": sliced},
         )
@@ -1245,6 +1280,47 @@ class DefaultMemoryEngine:
             return text if text else None
         except Exception as e:
             logger.debug("explicit retrieval hypothesis failed: %s", e)
+            return None
+
+    async def _maybe_rewrite_query(self, query: str, *, intent: str) -> tuple[str, bool]:
+        """三实验开关之二：query rewrite（§4.4 消融变量 C），默认关闭。
+
+        关闭时零 LLM 调用、原 query 直接返回；开启时经 light provider 改写
+        检索 query，失败/超时/空结果 fail-open 回原 query。
+        """
+        if not self._experiments().query_rewrite_enabled:
+            return query, False
+        rewritten = await self._rewrite_query(query, intent=intent)
+        if not rewritten or rewritten == query:
+            return query, False
+        return rewritten, True
+
+    def _experiments(self) -> Any:
+        """实验开关配置；__new__ 构造的测试 engine 无 _default_config 时按默认（全关）。"""
+        default_config = getattr(self, "_default_config", None)
+        retrieval = getattr(default_config, "retrieval", None)
+        experimental = getattr(retrieval, "experimental", None)
+        if experimental is None:
+            experimental = ExperimentalRetrievalConfig()
+        return experimental
+
+    async def _rewrite_query(self, query: str, *, intent: str) -> str | None:
+        prompt = _rewrite_query_prompt(query, intent)
+        try:
+            chat = cast(_ChatCall, getattr(self._light_provider, "chat"))
+            resp = await asyncio.wait_for(
+                chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    tools=[],
+                    model=self._light_model,
+                    max_tokens=_REWRITE_MAX_TOKENS,
+                ),
+                timeout=_HYPOTHESIS_TIMEOUT_S,
+            )
+            text = (resp.content or "").strip()
+            return text if text else None
+        except Exception as e:
+            logger.debug("retrieval query rewrite failed: %s", e)
             return None
 
     async def _attach_trigger_tags(
@@ -1440,4 +1516,14 @@ def _explicit_hypothesis_prompt(query: str, style: str) -> str:
         "你是个人助手的记忆系统。根据用户提问，生成一条假想记忆条目。\n"
         "规则：始终生成肯定式、第三人称（'用户…'）、简洁事实陈述、只输出那一条文本\n\n"
         f"用户提问：{query}\n假想记忆条目："
+    )
+
+
+def _rewrite_query_prompt(query: str, intent: str) -> str:
+    return (
+        "你是个人助手的记忆检索改写器。把用户 query 改写成更适合检索长期记忆的"
+        "陈述句：补全代词指代、去掉口语冗余，不添加原文没有的信息。\n"
+        f"intent：{intent}\n"
+        f"原 query：{query}\n"
+        "只输出改写后的 query，不要其他内容："
     )

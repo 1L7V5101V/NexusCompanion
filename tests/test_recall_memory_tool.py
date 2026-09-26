@@ -433,7 +433,13 @@ async def test_retriever_returns_keyword_hits_when_vector_empty() -> None:
     hits = await retriever.retrieve("支付", top_k=5, tenant=TenantContext(tenant_id="test"))
 
     assert [item["id"] for item in hits] == ["kw1"]
-    assert hits[0]["score"] == 1.0
+    # C13 sparse 分数链：LIKE 保底命中率 1.0 作为归一化基底，
+    # sparse_final = (1-αs)·1.0 + αs·hotness（无热度三件套时 hotness=0 → 0.8）。
+    assert hits[0]["bm25_raw"] is None
+    assert hits[0]["sparse_source"] == "like_fallback"
+    assert hits[0]["bm25_normalized"] == 1.0
+    assert hits[0]["sparse_final"] == 0.8
+    assert hits[0]["score"] == hits[0]["sparse_final"]
 
 
 @pytest.mark.asyncio
@@ -670,7 +676,9 @@ async def test_recall_memory_answer_intent_passes_time_range_to_searches() -> No
     assert payload["items"][0]["id"] == "deepseek"
     assert store.vector_kwargs == []
     assert store.vector_batch_kwargs
-    assert store.vector_batch_vec_count == 2
+    # C13 验收 3：HyDE 默认关闭，answer intent 只用原始 query（1 个向量），
+    # 不再隐式生成 2 个 hypothesis。
+    assert store.vector_batch_vec_count == 1
     assert store.keyword_kwargs
     assert store.vector_batch_kwargs[0]["memory_types"] is None
     assert store.vector_batch_kwargs[0]["time_start"] is not None
