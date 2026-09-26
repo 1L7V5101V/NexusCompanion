@@ -1,10 +1,10 @@
-# durable-work-queue 增量规格
+# durable-work-queue 规格
 
 ## Purpose
 
 定义 `background_work_items` 的 durable 消费契约：数据库租约认领、崩溃恢复清扫、同租户串行与跨租户并发、有界背压与延后语义、副作用与终态同事务的 effectively-once、租约丢失的写入禁止、运行期接线与优雅停止、租户隔离，以及 §7.1 生命周期事件的记录点与内容边界。时限与容量数值为可配置的 Pilot 初始值，不是业务成功保证。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: work item 数据库租约认领
 
