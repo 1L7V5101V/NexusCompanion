@@ -105,6 +105,23 @@ docker compose -f docker/debug/docker-compose.yml ps postgres
 
 原生安装的 PostgreSQL 仍是备用路径，初始化见 `python pg.py init-db`。
 
+### 回归测试（含 PG 前置）
+
+集成测试（canonical identity / control plane / migration / storage）在 PG 不可用时整组 `skip`，
+一次看似「全绿」的回归可能实际漏掉上百条 durability / turn / outbox 断言。因此回归必须带 PG 跑：
+
+```bash
+# 起库（若尚未运行）并跑全量回归，原始输出同时写入证据文件
+python scripts/regression.py --start-pg \
+  --evidence openspec/evidence/<change>/pytest-regression.txt
+```
+
+- `scripts/regression.py` 先校验 PG 可达，再跑 `pytest -q -W error tests/`；PG 不可达直接以退出码 2 失败，不产出误导性证据。
+- 也可直接跑 pytest，但要显式声明 PG 前置：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/`。
+  `tests/conftest.py::pytest_configure` 在该变量为 `1` 且 PG 不可达时以 usage error 中止。
+- 未设 `NEXUS_REQUIRE_PG` 时行为不变：无 PG 的机器照常可用，仅集成测试 `skip`（结果不可作为回归证据）。
+- 证据文件写进 `openspec/evidence/<change>/`，与 `openspec/README.md` 的「可复现证据」约定一致。
+
 ## 清空调试 workspace
 
 ```bash

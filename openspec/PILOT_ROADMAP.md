@@ -7,6 +7,8 @@
 > 上次审阅：2026-09-03。
 >
 > **当前实现状态（截至 2026-09-03）**：WebChat 已具备 P0.5 dev 模式最小闭环（commit `4e40e510`）。`bootstrap/chat_api.py` 与 `infra/channels/web_chat_channel.py` 提供本地 WebSocket 通道：hello 握手、`client_message_id` 幂等、进程内重放 buffer、慢消费者有界队列降级、`turn.completed`/`turn.failed` 终态帧；前端为 `frontend/chat/`（assistant-ui + 独立 connection/store 分层，构建到 `static/chat`），经 `[channels.chat]`（默认 disabled、127.0.0.1:6322）启用。协议契约与共享 fixture 见 `infra/channels/web_chat_protocol.py` 与 `tests/fixtures/chat_protocol_frames.json`。**尚未具备** Pilot 面向受邀用户的能力：认证/邀请 Token/tenant-bound principal、CSRF/Origin、durable ingress/outbox/delivery 状态机（5.9.11）、PG canonical control plane、跨端 Telegram 同步与 memory engine selector 均未实现；当前 WebChat 仅限本地 dev 单用户（`chat:local`，DEFAULT_TENANT），不得暴露公网。当前可用的另一对话入口仍是 Telegram Bot 通道。记忆运行时已支持按配置加载多个 engine（`default` 与 `rachael`）；但 `engine = "default,rachael"` 多引擎并存会因 `recall_memory` 重复注册在启动时崩溃（已知缺陷，需修复 `agent/tools/meta/register.py` 的注册逻辑），当前只能配置单引擎。
+>
+> **2026-09-20 更新（C4 / task-04）**：dev-only WebChat 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 `openspec/evidence/c4-webchat-protocol-dev-loop/`）：`hello` 回服务端派生身份三元组（`account_id`/`tenant_id`/`conversation_id`）、三层 dev-only 门禁（配置 ∧ 绑定 ∧ 运行期回环）、空闲连接回收（close 1001）、协议 contract fixture 前后端双向执行（31 项）、真实入口 e2e（收发/流式/重连补拉无重复/断线不取消 turn/空闲回收）。§10 的 `OPEN FOR P-1 SPEC — WebSocket frame/error schema` 由该 change 冻结（fixture = `tests/fixtures/chat_protocol_frames.json`）。公网 WebChat 仍 blocked（待 C5 认证与 tenant 隔离）。
 
 ## 1. North Star
 
@@ -1303,7 +1305,7 @@ Tenant provisioning 与运行时解析规则固定为：
 - 将 WebChat auth session、Telegram 私聊 identity binding 和其他入口统一收敛到服务端 `account_id → tenant_id → canonical_conversation_id` 映射；客户端 tenant/chat/session 字段不参与授权；
 - 本阶段只允许本地或显式 dev mode 使用临时单用户身份，不得在没有 P1 认证和 tenant 隔离能力的情况下将 WebChat 暴露给公网测试用户。
 
-**出口条件**：在本地或受控 dev mode 下，用户可以打开 WebChat、发送消息、收到 AgentLoop 回复和流式更新；刷新或断线重连后不会重复消息；消息顺序稳定；异常连接能够清理；相关后端、协议和前端测试通过。此时仍不视为可供受邀用户使用的 Pilot 客户端。
+**出口条件**：在本地或受控 dev mode 下，用户可以打开 WebChat、发送消息、收到 AgentLoop 回复和流式更新；刷新或断线重连后不会重复消息；消息顺序稳定；异常连接能够清理；相关后端、协议和前端测试通过。此时仍不视为可供受邀用户使用的 Pilot 客户端。（2026-09-20：C4 change 已在 dev-only 范围按此标准收口并通过 evidence；公网项待 C5。）
 
 ### P1：一次 Token 登录
 
@@ -1652,7 +1654,7 @@ result=success
 | PROPOSED DEFAULT | Schedule misfire | one-shot grace 5 分钟，超过后标记 `missed`；recurring 前进到下一未来 occurrence | 产品确认是否保留 5 分钟；无论数值如何都必须持久化 miss/attempt/outcome |
 | PROPOSED DEFAULT | 日志与审计保留 | operational metadata 30 天，audit metadata 180 天；内容型 debug 更短且默认关闭 | P-1 接受或调整 retention、访问审批和删除 job；指标 label 规则不可放宽为内容采集 |
 | OPEN FOR P-1 SPEC | Exact schema/DDL | 实体、首次启用和后续 schema evolution/rollback 语义已冻结；精确表名、列、index、constraint 名及 capability-specific SQL 尚未冻结 | 各 capability design/spec 给出可执行 DDL/SQL 和并发/唯一性测试，并明确哪些步骤适用或为 `not_applicable` |
-| OPEN FOR P-1 SPEC | WebSocket frame/error schema | hello/send/delta/completed/error/replay 语义已冻结，精确 JSON 字段、版本、错误码和 close code 尚未冻结 | P0.5 开工前提交 protocol fixture 与 contract test vectors |
+| DECIDED | WebSocket frame/error schema | P0.5 已冻结：`hello`（`connection_id`/`protocol_version`/`account_id`/`tenant_id`/`conversation_id`/`session_key`/`latest_seq`）、`send`/`replay`/`ping` 入站帧、`message.accepted`/`message.delta`/`tool.started`/`tool.completed`/`turn.completed`/`turn.failed`/`replay_required`/`error`/`pong` 出站帧、error code 词表、close code（1013 overload / 1001 idle / 1008 dev-only）；共享 contract fixture = `tests/fixtures/chat_protocol_frames.json` | C4 change `2026-09-20-c4-webchat-protocol-dev-loop` 已落地并前后端双向断言（协议版本保持 `0`，P0.5 内前后端同仓库同发布）；后续变更必须同步该 fixture 与两侧测试 |
 | OPEN FOR P-1 SPEC | Digest/encryption/key rotation | token/session 只存 digest、tenant secret 静态加密已冻结，具体算法、key source、rotation/recovery 未冻结 | Auth/tool-secret design 指定算法、版本字段、rotation 和 disaster recovery runbook |
 | DEFERRED BY EVIDENCE | SLO/容量阈值 | 先采集真实 latency、backlog、failure、recovery 数据 | Pilot 运行后再设 P95、最长等待、错误率、RPO/RTO 红线 |
 | DEFERRED BY EVIDENCE | Queue backend/多副本 | Pilot 保持单进程 `asyncio.Queue` 抽象 | 只有 backlog、恢复窗口或多副本需求越过 P4 闸门时评估 Redis Streams |

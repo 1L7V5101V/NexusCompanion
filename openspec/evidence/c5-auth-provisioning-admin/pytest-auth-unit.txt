@@ -1,0 +1,18 @@
+# C5 auth 非 PG 单元测试（crypto 7 / ws_guard 7 / cli_layer 10 / auth_config 3）实跑记录
+# 命令: python -m pytest -q -W error tests/auth_provisioning/test_crypto.py tests/auth_provisioning/test_ws_guard.py tests/auth_provisioning/test_cli_layer.py tests/auth_provisioning/test_auth_config.py -v
+# 运行时间: 2026-09-14
+
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\.Projects\NexusCompanion-c5
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
+collected 27 items
+
+tests\auth_provisioning\test_crypto.py .......                           [ 25%]
+tests\auth_provisioning\test_ws_guard.py .......                         [ 51%]
+tests\auth_provisioning\test_cli_layer.py ..........                     [ 88%]
+tests\auth_provisioning\test_auth_config.py ...                          [100%]
+
+============================= 27 passed in 1.50s ==============================

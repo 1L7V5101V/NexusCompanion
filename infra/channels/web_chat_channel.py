@@ -34,8 +34,16 @@ from bus.events_lifecycle import (
 from infra.channels.base import AttachmentStore, MessageDeduper
 from infra.channels.contract import ChannelContext
 from infra.channels.web_chat_protocol import (
+    CLOSE_IDLE_TIMEOUT,
     CLOSE_OVERLOAD,
+    DEV_ACCOUNT_ID,
     DEV_SESSION_KEY,
+    ERR_BAD_CLIENT_MESSAGE_ID,
+    ERR_BAD_FRAME,
+    ERR_BAD_REPLAY,
+    ERR_BAD_REQUEST,
+    ERR_OVERLOAD,
+    ERR_UNKNOWN_TYPE,
     SOFT_LIMIT,
     error as error_frame,
     hello,
@@ -60,6 +68,27 @@ _DEDUPER_SIZE = 500
 _SENDER_DRAIN_TIMEOUT_S = 2.0
 # §5.9.5：per-WebSocket outbound 累计 payload hard 上限（1 MiB）。
 _WS_MAX_PAYLOAD_BYTES = 1024 * 1024
+# §5.9.4 连接生命周期：空闲读超时（前端 keepalive 周期 25s，留 3.6 倍余量）。
+_DEFAULT_IDLE_TIMEOUT_S = 90.0
+
+
+@dataclass(frozen=True)
+class WebChatIdentity:
+    """WebChat 连接的服务端派生身份（dev 单用户回退；启用认证时按 session 派生）。
+
+    客户端帧里的 tenant/account/session 字段永远只是待校验输入，本对象是唯一
+    授权来源（§5.9.1 WS replay 硬冲突）。
+
+    ``chat_id`` 决定 ``InboundMessage`` 的 session 路由键（``channel:chat_id``）：
+    dev 回退保持历史值 ``"local"``（C4 契约不变），认证模式取该 tenant，
+    使不同登录者不共享同一 session 路由键。
+    """
+
+    account_id: str = DEV_ACCOUNT_ID
+    tenant_id: str = DEFAULT_TENANT
+    conversation_id: str = DEV_SESSION_KEY
+    session_key: str = DEV_SESSION_KEY
+    chat_id: str = "local"
 
 
 def _frame_size(frame: dict[str, Any]) -> int:
@@ -82,12 +111,17 @@ class _Connection:
         websocket: WebSocket,
         connection_id: str,
         *,
+        identity: WebChatIdentity | None = None,
         soft_limit: int = SOFT_LIMIT,
         hard_limit: int = _OUTBOUND_QUEUE_SIZE,
         max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
     ) -> None:
         self.websocket = websocket
         self.connection_id = connection_id
+        # 本连接的授权身份：认证模式下由入口按该连接的 session 派生后传入。
+        # 保持 None（而非默认 dev 身份）以免静默绕过通道级身份；消费点回退到
+        # ``self._identity``（§5.9.1 服务端派生）。
+        self.identity = identity
         self.soft_limit = soft_limit
         self.hard_limit = hard_limit
         self.max_payload_bytes = max_payload_bytes
@@ -157,17 +191,24 @@ class WebChatChannel:
         self,
         channel_name: str = "chat",
         *,
+        identity: WebChatIdentity | None = None,
+        ws_idle_timeout_s: float = _DEFAULT_IDLE_TIMEOUT_S,
+        replay_buffer_size: int | None = None,
         ws_outbound_soft_limit: int = SOFT_LIMIT,
         ws_outbound_hard_limit: int = _OUTBOUND_QUEUE_SIZE,
         ws_outbound_max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
     ) -> None:
         self.name = channel_name
+        self._identity = identity or WebChatIdentity()
+        self._ws_idle_timeout = ws_idle_timeout_s
         self._ws_soft_limit = ws_outbound_soft_limit
         self._ws_hard_limit = ws_outbound_hard_limit
         self._ws_max_payload = ws_outbound_max_payload_bytes
         self._ctx: ChannelContext | None = None
         self._connections: dict[WebSocket, _Connection] = {}
-        self._replay = _ReplayBuffer()
+        self._replay = _ReplayBuffer(
+            max_size=replay_buffer_size or _REPLAY_BUFFER_SIZE
+        )
         self._deduper = MessageDeduper(_DEDUPER_SIZE)
         self._accepted_frames: dict[str, dict[str, Any]] = {}
         self._attachments: AttachmentStore | None = None
@@ -240,21 +281,31 @@ class WebChatChannel:
 
     # ── WebSocket 连接处理 ──────────────────────────────────────
 
-    async def handle_websocket(self, websocket: WebSocket) -> None:
+    async def handle_websocket(
+        self,
+        websocket: WebSocket,
+        *,
+        identity: WebChatIdentity | None = None,
+    ) -> None:
         await websocket.accept()
         connection_id = uuid4().hex
+        # 认证模式下由入口传入按本连接 session 派生的身份；缺省为通道级 dev 回退。
+        identity = identity or self._identity
         conn = _Connection(
             websocket,
             connection_id,
+            identity=identity,
             soft_limit=self._ws_soft_limit,
             hard_limit=self._ws_hard_limit,
             max_payload_bytes=self._ws_max_payload,
         )
         self._connections[websocket] = conn
-
         hello_frame = hello(
             connection_id=connection_id,
-            session_key=DEV_SESSION_KEY,
+            account_id=identity.account_id,
+            tenant_id=identity.tenant_id,
+            conversation_id=identity.conversation_id,
+            session_key=identity.session_key,
             latest_seq=self._replay.next_seq - 1,
         )
         conn.sender_task = asyncio.create_task(self._sender_loop(conn))
@@ -262,17 +313,24 @@ class WebChatChannel:
 
         try:
             while True:
-                raw = await websocket.receive_text()
+                try:
+                    raw = await asyncio.wait_for(
+                        websocket.receive_text(), timeout=self._ws_idle_timeout
+                    )
+                except (TimeoutError, asyncio.TimeoutError):
+                    self._reap_idle(conn)
+                    break
                 try:
                     frame = json.loads(raw)
                 except (json.JSONDecodeError, TypeError):
                     conn.try_enqueue(
-                        error_frame(code="bad_frame", message="无法解析的帧")
+                        error_frame(code=ERR_BAD_FRAME, message="无法解析的帧")
                     )
                     continue
                 await self._handle_client_frame(conn, frame)
         except Exception:
             # 客户端断开（WebSocketDisconnect 等）是正常退出路径；清理在 finally。
+            # 注意：断线只影响显示，绝不取消服务端 turn/tool（§10 DECIDED）。
             pass
         finally:
             self._connections.pop(websocket, None)
@@ -283,6 +341,28 @@ class WebChatChannel:
                     await asyncio.wait_for(conn.sender_task, _SENDER_DRAIN_TIMEOUT_S)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     conn.sender_task.cancel()
+
+    def _reap_idle(self, conn: _Connection) -> None:
+        """心跳超时：回收静默连接（移除连接、释放 outbound、明确 close code）。
+
+        回收只针对连接资源，不触碰任何服务端 turn/tool（§10 DECIDED 工具取消）。
+        """
+        if conn.closed:
+            return
+        conn.closed = True
+        logger.info(
+            "webchat 空闲超时回收连接 conn=%s timeout=%ss",
+            conn.connection_id,
+            self._ws_idle_timeout,
+        )
+        try:
+            conn.outbound.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        asyncio.create_task(
+            conn.websocket.close(code=CLOSE_IDLE_TIMEOUT, reason="idle timeout"),
+            name=f"webchat-idle-close:{conn.connection_id}",
+        )
 
     async def _sender_loop(self, conn: _Connection) -> None:
         while True:
@@ -311,7 +391,7 @@ class WebChatChannel:
             if not isinstance(after_seq, int) or isinstance(after_seq, bool) or after_seq < 0:
                 conn.try_enqueue(
                     error_frame(
-                        code="bad_replay", message="after_seq 必须是非负整数"
+                        code=ERR_BAD_REPLAY, message="after_seq 必须是非负整数"
                     )
                 )
                 return
@@ -322,7 +402,7 @@ class WebChatChannel:
             return
         conn.try_enqueue(
             error_frame(
-                code="unknown_type",
+                code=ERR_UNKNOWN_TYPE,
                 message=f"未知帧类型: {frame_type or '<empty>'}",
             )
         )
@@ -343,7 +423,7 @@ class WebChatChannel:
         if not client_message_id:
             conn.try_enqueue(
                 error_frame(
-                    code="bad_client_message_id", message="client_message_id 必填"
+                    code=ERR_BAD_CLIENT_MESSAGE_ID, message="client_message_id 必填"
                 )
             )
             return
@@ -352,14 +432,14 @@ class WebChatChannel:
         except ValueError:
             conn.try_enqueue(
                 error_frame(
-                    code="bad_client_message_id",
+                    code=ERR_BAD_CLIENT_MESSAGE_ID,
                     message="client_message_id 必须是 UUID",
                 )
             )
             return
         if not content.strip() and not media:
             conn.try_enqueue(
-                error_frame(code="bad_request", message="内容不能为空")
+                error_frame(code=ERR_BAD_REQUEST, message="内容不能为空")
             )
             return
 
@@ -369,14 +449,17 @@ class WebChatChannel:
             conn.try_enqueue(dict(cached))
             return
 
+        # §5.9.1：客户端帧里的 tenant_id / account_id / session_key / channel
+        # 只是待校验输入，永不参与授权——这里刻意不读取它们，只用服务端身份。
+        identity = conn.identity or self._identity
         inbound = InboundMessage(
             channel=self.name,
             sender="webchat",
-            chat_id="local",
+            chat_id=identity.chat_id,
             content=content,
             media=[str(m) for m in media] if isinstance(media, list) else [],
             metadata={"client_message_id": client_message_id, "username": "webchat"},
-            tenant_id=DEFAULT_TENANT,
+            tenant_id=identity.tenant_id,
         )
         # §5.9.5：interactive overload 发生在 durable acceptance 之前——
         # 未盖 accepted seq、未缓存幂等，客户端收到结构化 overload 错误帧后可重发。
@@ -385,7 +468,7 @@ class WebChatChannel:
         except AdmissionOverloadError:
             conn.try_enqueue(
                 error_frame(
-                    code="overload",
+                    code=ERR_OVERLOAD,
                     message="服务繁忙，请稍后重发这条消息。",
                 )
             )
@@ -393,7 +476,8 @@ class WebChatChannel:
 
         accepted = self._replay.stamp(
             message_accepted(
-                client_message_id=client_message_id, session_key=DEV_SESSION_KEY
+                client_message_id=client_message_id,
+                session_key=identity.session_key,
             )
         )
         self._accepted_frames[client_message_id] = dict(accepted)

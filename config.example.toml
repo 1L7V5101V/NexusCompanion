@@ -94,6 +94,20 @@ search_enabled = true
 # memory_optimizer_enabled = true
 # memory_optimizer_interval_seconds = 64800
 
+# 可选：C3 tenant admission / 有界队列 / 分类资源并发上限。
+# 默认值为 Pilot §10 DECIDED 冻结初始值；压测记录前不建议调整。
+# [agent.admission]
+# global_interactive_queue = 128
+# per_tenant_pending_interactive = 16
+# global_maintenance_queue = 64
+# llm_concurrency = 30
+# embedding_concurrency = 4
+# mcp_concurrency = 8
+# process_concurrency = 2
+# ws_outbound_soft_limit = 192
+# ws_outbound_hard_limit = 256
+# ws_outbound_max_payload_bytes = 1048576
+
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
 # toolsets = ["meta_common", "spawn", "schedule", "mcp"]
@@ -119,12 +133,45 @@ allow_from = ["your_qq_number"]
 websocket_open_timeout_seconds = 5.0
 
 [channels.chat]
-# 本地 WebChat（P0.5 dev 模式，无认证）。仅建议绑定 127.0.0.1 使用；
-# 前端 bundle 构建到 static/chat 后，浏览器访问 http://127.0.0.1:6322/。
+# WebChat（用户面聊天入口）。前端 bundle 构建到 static/chat 后由本通道提供。
+# 生产建议：host 保持 127.0.0.1，由反向代理（TLS + 认证）前置；见下方 [auth] 节。
 enabled = false
 channel_name = "chat"
 host = "127.0.0.1"
 port = 6322
+# 启用门禁（design ADR-3，二选一成立即可）：
+#   · [auth].enabled = true  → 由已认证 session 派生身份（推荐；**不再要求** dev_mode）
+#   · agent.dev_mode  = true → dev 单用户回退身份（仅本地开发）
+# 两者皆无时 enabled=true 会启动 fail-fast，不静默放行。
+# 非回环 host 需显式 allow_public_bind=true。
+# ⚠️ 认证只解决「谁进得来」：在 C7 工具隔离与存储切换完成前，拿到 session 的
+#    主体即拥有本实例全部工具能力（含 shell/spawn），因此不得对非 owner 开放。
+idle_timeout_s = 90
+allow_public_bind = false
+
+# =============================================================================
+# C5 认证（邀请 Token → HttpOnly Cookie）。默认关闭 = P0.5 行为不变。
+# 与 [channels.chat] 联动：auth.enabled=true 时 WebChat 由 session 派生
+# account/tenant/conversation，且不再要求 agent.dev_mode。
+# =============================================================================
+[auth]
+enabled = false
+# Cookie 是否只走 HTTPS。生产（经 TLS 反代/隧道）必须为 true；
+# 仅本地 http://127.0.0.1 调试才设 false。
+# ⚠️ __Host- 前缀 Cookie 要求 Secure，因此 http 下浏览器不会保存会话。
+cookie_secure = true
+# 允许的来源（Origin/Referer）。登录（/api/auth/exchange）也会校验，因此**必须**
+# 包含用户实际访问的来源；公网部署时形如 "https://nexus.example.com"。
+origin_allowlist = []
+# admin 面（/api/admin/*）的网络边界：只允许这些地址访问。
+admin_allow_ips = ["127.0.0.1", "::1"]
+# 会话 timeout（创建时固化到会话行）。
+session_idle_hours = 168      # 普通会话空闲 7 天
+session_absolute_hours = 720  # 普通会话最长 30 天
+admin_idle_minutes = 30       # admin 会话空闲 30 分钟
+admin_absolute_hours = 12     # admin 会话最长 12 小时
+# 邀请 Token 有效期。
+invitation_token_ttl_hours = 168
 
 # 可选：允许在群组中使用（@bot 触发）
 # [[channels.qq.groups]]

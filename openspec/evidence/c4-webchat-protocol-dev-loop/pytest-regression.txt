@@ -1,0 +1,56 @@
+........................................................................ [  5%]
+........................................................................ [ 11%]
+........................................................................ [ 17%]
+........................................................................ [ 22%]
+..................................s.....sssss........................... [ 28%]
+........................................................................ [ 34%]
+........................................................................ [ 40%]
+.......................................................................s [ 45%]
+.........................................ssss.......F................... [ 51%]
+........................................................................ [ 57%]
+.......................................ssssssss..............ssssssss... [ 63%]
+........................................................................ [ 68%]
+........................................................................ [ 74%]
+....................sss....sssssssssssssssss....s.ssssssss.s............ [ 80%]
+.............................................................ssss....... [ 86%]
+........................................................................ [ 91%]
+................................s....................................... [ 97%]
+...............................                                          [100%]
+================================== FAILURES ===================================
+_______________ test_plugin_doctor_reports_healthy_skill_plugin _______________
+
+tmp_path = WindowsPath('C:/Users/15086/AppData/Local/Temp/pytest-of-15086/pytest-15/test_plugin_doctor_reports_hea0')
+
+    def test_plugin_doctor_reports_healthy_skill_plugin(tmp_path: Path) -> None:
+        plugins_home = tmp_path / ".nexus-plugin"
+        workspace = tmp_path / "workspace"
+        plugin_root = plugins_home / "cache" / "github" / "demo" / "0.1.0"
+        skill_dir = plugin_root / "skills" / "demo-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: demo\n---\nbody\n",
+            encoding="utf-8",
+        )
+        (plugin_root / "plugin.py").write_text(_PLUGIN_PY, encoding="utf-8")
+        (workspace / "skills").mkdir(parents=True)
+>       (workspace / "skills" / "demo-skill").symlink_to(skill_dir, target_is_directory=True)
+
+tests\test_plugin_doctor.py:39: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/Users/15086/AppData/Local/Temp/pytest-of-15086/pytest-15/test_plugin_doctor_reports_hea0/workspace/skills/demo-skill')
+target = WindowsPath('C:/Users/15086/AppData/Local/Temp/pytest-of-15086/pytest-15/test_plugin_doctor_reports_hea0/.nexus-plugin/cache/github/demo/0.1.0/skills/demo-skill')
+target_is_directory = True
+
+    def symlink_to(self, target, target_is_directory=False):
+        """
+        Make this path a symlink pointing to the target path.
+        Note the order of arguments (link, target) is the reverse of os.symlink.
+        """
+>       os.symlink(target, self, target_is_directory)
+E       OSError: [WinError 1314] 客户端没有所需的特权。: 'C:\\Users\\15086\\AppData\\Local\\Temp\\pytest-of-15086\\pytest-15\\test_plugin_doctor_reports_hea0\\.nexus-plugin\\cache\\github\\demo\\0.1.0\\skills\\demo-skill' -> 'C:\\Users\\15086\\AppData\\Local\\Temp\\pytest-of-15086\\pytest-15\\test_plugin_doctor_reports_hea0\\workspace\\skills\\demo-skill'
+
+C:\Users\15086\AppData\Local\Programs\Python\Python313\Lib\pathlib\_local.py:789: OSError
+=========================== short test summary info ===========================
+FAILED tests/test_plugin_doctor.py::test_plugin_doctor_reports_healthy_skill_plugin
+1 failed, 1192 passed, 62 skipped in 395.28s (0:06:35)

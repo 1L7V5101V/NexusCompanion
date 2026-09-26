@@ -46,6 +46,10 @@ class ChatChannelConfig:
     channel_name: str = "chat"
     host: str = "127.0.0.1"
     port: int = 6322
+    # §5.9.4 连接生命周期：客户端空闲读超时（秒），超时回收连接。
+    idle_timeout_s: float = 90.0
+    # dev-only 门禁：默认拒绝非回环绑定；P1 认证前不得公网暴露。
+    allow_public_bind: bool = False
 
 
 @dataclass
@@ -166,6 +170,46 @@ class AppServerConfig:
 
 
 @dataclass
+class AuthConfig:
+    """`[auth]` 配置节（C5 design ADR-7）。
+
+    timeout 数值 = §10 PROPOSED DEFAULT（session idle 7d / absolute 30d；
+    admin idle 30min / absolute 12h；invitation ttl 7d），P-1 复核后按部署记录。
+    会话创建时把数值固化到行，配置后续修改只影响新会话（design §1）。
+    """
+
+    enabled: bool = False
+    """Pilot auth 总开关（Enable 步）；默认关闭 = P0.5 行为不变。"""
+    cookie_secure: bool = True
+    """非 dev 环境固定 Secure；本地 HTTP 显式配置为 false（§5.9.3）。"""
+    origin_allowlist: list[str] = field(default_factory=list)
+    """允许的前端来源（Origin/Referer 校验用 scheme+host+port）。"""
+    admin_allow_ips: list[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
+    """admin HTTP/API 回环边界（ADR-5）。"""
+    session_idle_hours: int = 168
+    session_absolute_hours: int = 720
+    admin_idle_minutes: int = 30
+    admin_absolute_hours: int = 12
+    invitation_token_ttl_hours: int = 168
+
+    @property
+    def session_idle_s(self) -> int:
+        return self.session_idle_hours * 3600
+
+    @property
+    def session_absolute_s(self) -> int:
+        return self.session_absolute_hours * 3600
+
+    @property
+    def admin_idle_s(self) -> int:
+        return self.admin_idle_minutes * 60
+
+    @property
+    def admin_absolute_s(self) -> int:
+        return self.admin_absolute_hours * 3600
+
+
+@dataclass
 class AdmissionConfig:
     """C3 admission 容量初始值（§10 DECIDED 冻结数字；压测后由后续 change 调整）。"""
 
@@ -226,6 +270,7 @@ class Config:
     persona: PersonaConfig = field(default_factory=PersonaConfig)
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -238,6 +283,7 @@ class Config:
 __all__ = [
     "AdmissionConfig",
     "AppServerConfig",
+    "AuthConfig",
     "CacheConfig",
     "ChannelsConfig",
     "ChatChannelConfig",

@@ -1,9 +1,32 @@
 from __future__ import annotations
 
+import tempfile
+from functools import lru_cache
 from pathlib import Path
+
+import pytest
 
 from agent.plugins.doctor import format_plugin_doctor_report, run_plugin_doctor
 from agent.plugins.manifest import upsert_plugin_manifest
+
+
+@lru_cache(maxsize=1)
+def _symlink_supported() -> bool:
+    """当前环境能否创建目录符号链接。
+
+    Windows 需开发者模式或管理员权限，否则 ``os.symlink`` 抛
+    ``OSError [WinError 1314] 客户端没有所需的特权``。符号链接能力是环境
+    属性而非本仓库行为，不可用时相关用例应 skip 而非 fail。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "target"
+        target.mkdir()
+        try:
+            (Path(tmp) / "link").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
 
 _PLUGIN_PY = (
     "from agent.plugins import Plugin\n"
@@ -24,6 +47,10 @@ def _write_config(tmp_path: Path) -> Path:
     return config
 
 
+@pytest.mark.skipif(
+    not _symlink_supported(),
+    reason="当前环境不支持创建符号链接（Windows 需开发者模式/管理员权限）",
+)
 def test_plugin_doctor_reports_healthy_skill_plugin(tmp_path: Path) -> None:
     plugins_home = tmp_path / ".nexus-plugin"
     workspace = tmp_path / "workspace"

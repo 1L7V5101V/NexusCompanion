@@ -10,6 +10,10 @@ ARG BASE_IMAGE=python:3.12-slim
 # ---- Frontend build stage ----
 FROM node:20-slim AS frontend-builder
 
+# 国内服务器直连 registry.npmjs.org 会超时，改用 npmmirror 加速
+# （与下方清华 PyPI 镜像同理，仅用于国内构建环境）
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 WORKDIR /build
 
 # 先复制依赖文件，利用 Docker 缓存层
@@ -18,9 +22,10 @@ RUN npm ci
 
 # 复制前端源码
 COPY frontend/dashboard/ frontend/dashboard/
+COPY frontend/chat/ frontend/chat/
 
-# 构建 Dashboard 前端
-RUN npm run build:dashboard
+# 构建 Dashboard 与 WebChat 前端（WebChat 是用户面入口，必须进镜像）
+RUN npm run build:dashboard && npm run build:chat
 
 
 # ---- Runtime stage ----
@@ -33,6 +38,7 @@ WORKDIR /app
 
 # 从 builder 复制构建好的前端资源
 COPY --from=frontend-builder /build/static/dashboard/ /app/static/dashboard/
+COPY --from=frontend-builder /build/static/chat/ /app/static/chat/
 
 # 安装 uv（Python 包管理加速工具）
 # 使用清华 PyPI 镜像加速国内下载

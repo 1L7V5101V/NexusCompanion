@@ -202,6 +202,16 @@ class DeepSeekStrategy(ProviderStrategy):
         return stream_kwargs
 
 
+class DeepSeekVisionStrategy(DeepSeekStrategy):
+    """DeepSeek vision-exp 模型：支持图片输入，因此不去图。
+
+    其余行为（thinking 参数、reasoning_content 提取）与 DeepSeekStrategy 一致。
+    """
+
+    def normalize_messages(self, messages: list[dict]) -> list[dict]:
+        return _normalize_chat_messages(messages, fill_tool_call_content=False)
+
+
 class DashScopeStrategy(ProviderStrategy):
     def prepare_request(
         self,
@@ -255,6 +265,12 @@ class LLMProvider:
                 "x-codex-installation-id": self._codex_installation_id,
                 "x-codex-window-id": self._codex_window_id,
             }
+        # opencode.ai /zen/go 网关要求携带 session 路由头（x-opencode-session 或
+        # session-id），Chat Completions 路径由这里注入一个每次实例随机的 session id
+        if normalized_base_url and "opencode.ai" in normalized_base_url.lower():
+            if default_headers is None:
+                default_headers = {}
+            default_headers.setdefault("x-opencode-session", str(uuid.uuid4()))
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=normalized_base_url,
@@ -914,6 +930,10 @@ def _select_provider_strategy(
 ) -> ProviderStrategy:
     provider_text = f"{provider_name} {base_url} {model}".lower()
     if "deepseek" in provider_text:
+        # vision 后缀的 deepseek 模型（如 deepseek-v4-flash-vision-exp）支持
+        # 图片输入，不能走去图逻辑，否则 VL 调用拿不到图片。
+        if "vision" in model.lower():
+            return DeepSeekVisionStrategy()
         return DeepSeekStrategy()
     if (
         "dashscope.aliyuncs.com" in provider_text
