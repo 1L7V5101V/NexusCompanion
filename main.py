@@ -267,6 +267,18 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
+    if args and args[0] == "pilot-admin":
+        # C5 admin bootstrap/status/rotate/revoke-sessions/disable/enable（§5.9.3）。
+        from bootstrap.auth.cli import run_pilot_admin
+
+        sys.exit(
+            run_pilot_admin(
+                args[1:],
+                config_path=config_path,
+                workspace=workspace or _default_workspace(),
+            )
+        )
+
     if "--inspect-modules" in args:
         asyncio.run(inspect_modules(config_path, workspace))
     elif "cli" in args:

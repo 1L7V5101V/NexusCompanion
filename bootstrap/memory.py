@@ -105,6 +105,7 @@ def build_memory_runtime(
         event_bus=event_publisher,
         recent_context_provider=light_provider or provider,
         recent_context_model=config.light_model or config.model,
+        global_maintenance_limit=config.admission.global_maintenance_queue,
     )
 
     closeables: list[object] = []
@@ -162,6 +163,7 @@ def build_memory_admin_runtime(
         event_bus=event_publisher,
         recent_context_provider=light_provider or provider,
         recent_context_model=config.light_model or config.model,
+        global_maintenance_limit=config.admission.global_maintenance_queue,
     )
     closeables: list[object] = [http_resources]
     engines: dict[str, MemoryEngine] = {}

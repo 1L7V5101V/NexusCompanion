@@ -1,0 +1,47 @@
+# C5 5.1 digest-only 静态检查证据
+
+结论：五表写入路径与日志调用**均不出现明文凭据**；明文只在 CLI TTY 回显
+一次（bootstrap / rotate-recovery-token），且 DB CHECK 约束强制 64-hex digest。
+
+## 1. repository 层零明文
+
+- `bootstrap/db/repository/auth_repo.py`：参数仅接受 `token_digest` /
+  `session_digest` / `recovery_digest`；整个模块 **无 `logger` / `print` 调用**
+  （grep 结果：NONE）。
+- `bootstrap/db/repository/provisioning_repo.py`：同上，无日志/打印。
+- 入库形态由 migration CHECK 约束强制（`ck_access_tokens_digest_sha256`、
+  `ck_admin_credentials_digest` 等 64-hex），`test_migration.py` 有负向用例
+  （非 64 字符被拒）。
+
+## 2. service / crypto 层
+
+- `bootstrap/auth/service.py`：签发/兑换前一律 `digest_value(raw, pepper)` 后
+  才进 repo；明文只在方法返回值（一次性展示）。日志仅 `provisioning job …
+  失败`（job_id + executor 异常），不含 token。
+- `bootstrap/auth/crypto.py`：`digest_value()` = HMAC-SHA-256；pepper 生成日志
+  只写文件路径，且 `test_crypto.py::test_pepper_not_written_to_logs` 断言日志
+  不含 pepper 值。
+- `bootstrap/auth/runtime.py`：日志只含恢复/扫描计数。
+
+## 3. API / CLI 明文出口审计
+
+grep `bootstrap/auth/` 中 `logger\.|print\(|\braw\b`：
+- `cli.py:140 / 190`：`print_fn(raw)` —— 仅两处，且紧邻「只显示一次」提示；
+  `bootstrap` 与 `--force-local` 走 `sys.stdin.isatty()` 门禁（`cli.py:131/170`），
+  交互轮换用 `getpass_fn` 读取当前值（不回显）。
+- `api.py` / `ws_guard.py`：`raw` 全是**传入**的 Cookie/请求值（digest 化后
+  校验），无任何输出落库或落日志。Set-Cookie 里出现的 `raw_session`/明文 token
+  仅一次（HTTP 响应面）。
+
+## 4. 日志审计负向用例（PG 实跑）
+
+`tests/auth_provisioning/test_provisioning_lifecycle.py::test_admin_audit_never_records_plaintext`
+：bootstrap + 轮换 + 兑换 + suspend 后全量读取 `admin_audit_events`，断言
+detail/字段不出现在何明文 token / session / recovery 值。**服务器 PG 上实跑
+PASSED**（见 `pytest-pg-integration.txt`，47 passed）。
+
+## 5. 器检原始输出（本文件所在目录）
+
+- `pytest-auth-unit.txt`：crypto/ws_guard/cli_layer 24 项实跑通过。
+- `pytest-pg-integration.txt`：auth/provisioning PG 集成 20 项 + 非 PG 单元
+  27 项，服务器 PG（SSH tunnel）实跑 47 passed；含上述审计负向用例。

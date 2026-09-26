@@ -1,0 +1,125 @@
+########## 0. 前置状态 ##########
+  admin_credentials.revision = 12
+admin_credentials 行数 = 1
+enabled = true
+access_tokens = 9
+auth_sessions = 17
+  pepper sha256 前 16 位（容器内）：a4f13bbcf352c841
+  pepper 已备份到宿主机 /root/drill/pepper.orig（sha256 前 16 位：a4f13bbcf352c841）
+
+########## 路径 A：lost-token（未外泄） ##########
+  A1 rotate-recovery-token --force-local（受信主机 TTY）
+    [OK] A1 轮换后新令牌 T1：明文已捕获（len=47，前缀 nad_），仅存于容器 /tmp/drill/T1；CLI 原始输出已删除
+  A2 status：
+        ^@admin: enabled
+        revision: 13
+        last_rotated_at: 2026-09-14 15:34:51.017437+00:00
+        active_sessions: 1
+    [OK] A2 revision 由 12 增至 13
+        admin-exchange status=200
+        admin cookie captured len=46
+    [OK] A2 新令牌兑换 200（本机来源）
+  A2 轮换不动浏览器会话（该断言在 B1 以「轮换前建立的会话仍 200」实证）：
+        ^@admin: enabled
+        revision: 13
+        last_rotated_at: 2026-09-14 15:34:51.017437+00:00
+        active_sessions: 1
+    [OK] A2 status 输出含 active_sessions
+  A3 收尾：T1 为当前有效明文，演练结束后按运维流程入 secret 管理（本演练留存于容器 /tmp/drill/T1）
+
+########## 路径 B：suspected-leak ##########
+  B1 立即轮换（新 digest 替换；旧明文 T1 不可再兑换）
+    [OK] B1 轮换后新令牌 T2：明文已捕获（len=47，前缀 nad_），仅存于容器 /tmp/drill/T2；CLI 原始输出已删除
+        admin-GET /api/admin/test-accounts status=200
+    [OK] B1 轮换不影响已有 admin 浏览器会话（§10 DECIDED：轮换与撤销独立）
+  B2 revoke-sessions --all（撤销全部 admin 会话，recovery token 不变）
+        ^@已撤销全部 admin 浏览器会话（2 个）。recovery token 不变。
+    [OK] B2 会话撤销命令成功
+        admin-GET /api/admin/test-accounts status=401
+    [OK] B2 撤销后原 admin 会话立即失效（401）
+  B3 核对审计（admin_audit_events，无明文）
+        admin.revoke_sessions {"revoked": 2}
+        admin.rotate_recovery {"force_local": true}
+        admin.rotate_recovery {"force_local": true}
+    [OK] admin.rotate_recovery(force_local=true) 行数=13；admin.revoke_sessions 行数=5
+  B4 兜底：disable → enable（enable 不复活已撤销会话）
+        ^@admin 网页登录已关闭（现有 admin 会话已全部撤销）
+    [OK] B4 disable 关闭管理入口并撤销会话
+        ^@admin 网页登录已启用
+    [OK] B4 enable 重开管理入口
+  B5 验证：泄露的旧明文 T1 兑换必须 401（统一文案，不泄露原因）
+        admin-exchange status=401
+    [OK] B5 旧令牌 T1 兑换 401
+
+########## 路径 C：database-restore / pepper 代次失配 ##########
+  C0 备份 admin_credentials 行（运维清行前的备份）
+DROP TABLE
+SELECT 1
+    备份行数 = 1，备份行 revision = 14
+  C-基线 用 T2 建立 admin 会话 ck2，并签发两个用户邀请
+        admin-exchange status=200
+        admin cookie captured len=46
+    [OK] C-基线 T2 兑换成功（同代次）
+        admin-GET /api/admin/test-accounts status=200
+    [OK] C-基线 ck2 会话可用
+    签发用户邀请 utok_old（随即兑换，证明变更前可用）
+        create-account status=200
+        invitation token captured len=47
+        account status=active
+    [OK] C-基线 建账号+签发 utok_old
+        service user-exchange status=200
+    [OK] C-基线 utok_old 兑换 200
+    签发用户邀请 utok_hold（不兑换，留待变更后断言 401）
+        service issue status=200 token_len=47
+    [OK] C-基线 签发 utok_hold（服务层签发）
+  C2 制造 pepper 代次失配（写入新代次 pepper 并重启服务）
+    新 pepper sha256 前 16 位：c66e3633897b3c4f；服务重启中…
+service up
+        admin-exchange status=401
+    [OK] C2 失配后旧 recovery token T2 兑换 401
+        admin-GET /api/admin/test-accounts status=401
+    [OK] C2 失配后旧 admin 会话 401
+        service user-exchange status=401
+    [OK] C2 失配后既有用户邀请 token 兑换 401（全部 digest 失效）
+  C2 重建 admin（旧行已备份并在下方清行，再 bootstrap）
+DELETE 1
+    清行后行数 = 0
+    [OK] bootstrap：明文已捕获（len=47），仅存于容器 /tmp/drill/T3
+        admin-exchange status=200
+        admin cookie captured len=46
+    [OK] C2 bootstrap 后新令牌 T3 兑换 200
+        admin-GET /api/admin/test-accounts status=200
+    [OK] C2 新 admin 会话 ck3 可用
+    重新签发用户邀请（新代次）
+        create-account status=200
+        invitation token captured len=47
+        account status=active
+    [OK] C2 新代次建账号+签发 utok_new
+        service user-exchange status=200
+    [OK] C2 新代次邀请兑换 200（重新走邀请流程即恢复）
+  C1 恢复原代次：pepper 与 admin_credentials 行同时回到备份（同代即贯通）
+DELETE 1
+INSERT 0 1
+DROP TABLE
+service up
+    pepper sha256 前 16 位（恢复后）：a4f13bbcf352c841
+        admin-GET /api/admin/test-accounts status=200
+    [OK] C1 恢复同代次后原 admin 会话 ck2 贯通（digest 重新匹配）
+        admin-exchange status=200
+    [OK] C1 恢复同代次后原 recovery token T2 兑换 200
+        admin-GET /api/admin/test-accounts status=401
+    [OK] C1 对照：失配期新建的 ck3 在恢复后失效（digest 不跨代次）
+    C4 复核：恢复后 admin_credentials.revision = 14（C0 备份行 revision = 14），行数 = 1
+
+########## 收尾核对 ##########
+  digest-only（部署态库内）
+access_tokens 64-hex 行数 = 12 / 12
+auth_sessions 64-hex 行数 = 23 / 23
+admin_audit_events 明文前缀命中 = 0
+  最终 status：
+        ^@admin: enabled
+        revision: 14
+        last_rotated_at: 2026-09-14 15:35:01.254824+00:00
+        active_sessions: 3
+
+DRILL COMPLETE

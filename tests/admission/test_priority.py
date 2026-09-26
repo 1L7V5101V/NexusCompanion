@@ -6,6 +6,8 @@ import asyncio
 from collections import deque
 from typing import Any, cast
 
+import pytest
+
 from core.memory.markdown import MarkdownMemoryMaintenance
 
 
@@ -41,7 +43,7 @@ async def _async_noop() -> None:
 
 async def test_maintenance_intent_merged_per_session() -> None:
     maintenance = _make_maintenance()
-    # 同一 session 连续两次提交：per-(tenant,kind) 只保留 1 个 pending 意图
+    # 同一 session 连续两次提交：per-session 单槽只保留 1 个 pending 意图
     maintenance._enqueue_maintenance("session-a")
     maintenance._enqueue_maintenance("session-a")
     queue = maintenance._maintenance_queues.get("session-a")
@@ -50,6 +52,29 @@ async def test_maintenance_intent_merged_per_session() -> None:
     # 让任务排空后清理
     await asyncio.sleep(0.05)
     assert maintenance._maintenance_queues.get("session-a") in (None, deque())
+
+
+def test_global_maintenance_limit_is_injectable() -> None:
+    """[agent.admission].global_maintenance_queue 必须能覆盖模块常量默认值。"""
+    assert _make_maintenance()._maintenance_global_limit == 64
+    tuned = MarkdownMemoryMaintenance(
+        store=cast(Any, object()),
+        provider=cast(Any, object()),
+        model="test-model",
+        keep_count=20,
+        event_bus=None,
+        global_maintenance_limit=3,
+    )
+    assert tuned._maintenance_global_limit == 3
+    with pytest.raises(ValueError):
+        MarkdownMemoryMaintenance(
+            store=cast(Any, object()),
+            provider=cast(Any, object()),
+            model="test-model",
+            keep_count=20,
+            event_bus=None,
+            global_maintenance_limit=0,
+        )
 
 
 async def test_maintenance_deferred_when_global_queue_full() -> None:

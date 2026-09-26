@@ -1,5 +1,6 @@
 import {
   CLOSE_OVERLOAD,
+  KEEPALIVE_INTERVAL_MS,
   PROTOCOL_VERSION,
   parseServerFrame,
   type ClientFrame,
@@ -20,11 +21,15 @@ export type ConnectionEvents = {
   onStatus: (status: ConnectionStatus) => void;
   onFrame: (frame: ServerFrame) => void;
   onHistory: (messages: HistoryMessage[]) => void;
+  /** 会话失效（WS 4401 或用户面 HTTP 401/403）→ 上层回登录入口。 */
+  onUnauthorized?: () => void;
 };
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 const HISTORY_PAGE_SIZE = 200;
+/** 服务端在 WS handshake 凭据无效时使用的 close code（chat_api.chat_ws）。 */
+const CLOSE_UNAUTHORIZED = 4401;
 
 /**
  * ChatConnection 是协议唯一接缝：WS 连接、hello 握手、client_message_id
@@ -38,9 +43,12 @@ export class ChatConnection {
   private lastSeq = 0;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   /** 已发送、尚未收到 message.accepted 的 client_message_id 集合。 */
   private readonly pendingIds = new Set<string>();
+  /** 服务端在 hello 中派生的 canonical session 路由键（历史拉取用）。 */
+  private sessionKey: string | null = null;
 
   constructor(events: ConnectionEvents) {
     this.events = events;
@@ -64,6 +72,14 @@ export class ChatConnection {
     };
     ws.onclose = (event) => {
       this.ws = null;
+      this.stopKeepalive();
+      if (event.code === CLOSE_UNAUTHORIZED) {
+        // 凭据无效/会话失效：不再重连，交回登录入口。
+        this.disposed = true;
+        this.setStatus("offline");
+        this.events.onUnauthorized?.();
+        return;
+      }
       if (event.code === CLOSE_OVERLOAD) {
         // 服务端过载断开：立即重连（客户端视角与普通断线相同）。
       }
@@ -76,12 +92,28 @@ export class ChatConnection {
 
   dispose(): void {
     this.disposed = true;
+    this.stopKeepalive();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
     this.ws?.close();
     this.ws = null;
+  }
+
+  /** keepalive：服务端空闲超时 90s，客户端周期发 ping（服务端回 pong）。 */
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      this.sendFrame({ type: "ping" });
+    }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer !== null) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
   }
 
   send(content: string, media: string[] = []): string {
@@ -121,6 +153,10 @@ export class ChatConnection {
         }
         this.reconnectAttempt = 0;
         this.setStatus("online");
+        this.startKeepalive();
+        // 身份由服务端在 hello 派生；历史拉取必须用该 session 路由键，
+        // 不能用 dev 常量 "chat:local"（多租户下会串数据）。
+        this.sessionKey = frame.session_key;
         // 重连时先尝试 WS 补拉，gap 超出服务端 buffer 时由 replay_required
         // 触发 REST 重建；首次连接（lastSeq=0）直接拉历史。
         if (this.lastSeq > 0) {
@@ -163,10 +199,20 @@ export class ChatConnection {
 
   /** REST 全量重建（首次加载与 replay gap 时）。 */
   private async loadHistory(): Promise<void> {
+    const sessionKey = this.sessionKey;
+    if (!sessionKey) return;
     try {
       const resp = await fetch(
-        `/api/chat/sessions/${encodeURIComponent("chat:local")}/messages?page_size=${HISTORY_PAGE_SIZE}&sort_order=asc`,
+        `/api/chat/sessions/${encodeURIComponent(sessionKey)}/messages?page_size=${HISTORY_PAGE_SIZE}&sort_order=asc`,
+        { credentials: "same-origin" },
       );
+      if (resp.status === 401 || resp.status === 403) {
+        // 会话失效：交回登录入口，不再重试。
+        this.disposed = true;
+        this.setStatus("offline");
+        this.events.onUnauthorized?.();
+        return;
+      }
       if (!resp.ok) return;
       const body = (await resp.json()) as { items?: Array<Record<string, unknown>> };
       const items = body.items ?? [];

@@ -1,0 +1,571 @@
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 28292, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 33876, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 16840, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 26568, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 1103ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 572ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 25972, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 2 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 4348, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 30256, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 804ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 444ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 460ms
+[CodeGraph MCP] Auto-synced 72 file(s) in 3815ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 435ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 433ms
+[CodeGraph MCP] Auto-synced 32 file(s) in 1187ms
+[CodeGraph MCP] Auto-synced 7 file(s) in 793ms
+[CodeGraph MCP] Auto-synced 8 file(s) in 836ms
+[CodeGraph MCP] Auto-synced 5 file(s) in 482ms
+[CodeGraph MCP] Auto-synced 5 file(s) in 670ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 415ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 458ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 448ms
+[CodeGraph MCP] Auto-synced 3 file(s) in 563ms
+[CodeGraph MCP] Auto-synced 3 file(s) in 558ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 580ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 562ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 34716, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 11660, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 38 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 16420, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 1 file(s) changed since last run
+[CodeGraph MCP] Auto-synced 1 file(s) in 675ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 29080, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 32132, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 1151ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 40352, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 32388, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 1663ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 887ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 984ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 777ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 767ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 778ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 719ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 20804, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 1537ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 31400, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 16324, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 28460, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 774ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 397ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 415ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 463ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 394ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 407ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 419ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 458ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 439ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 434ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 399ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 425ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 409ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 413ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 426ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 31604, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 16464, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 25740, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 1 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 32700, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 24588, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 24956, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 13040, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 23616, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 31136, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-4404970ee9c3c095 (pid 11800, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 3120, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 1 file(s) in 2320ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 27820, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 22368, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 27124, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 17324, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 35236, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 10 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 13892, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Auto-synced 16 file(s) in 2405ms
+[CodeGraph MCP] Auto-synced 16 file(s) in 724ms
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 34092, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 19164, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 1 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 23908, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 23376, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 28840, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 13992, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 17356, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 4748, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 23336, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 3796, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 39640, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 25896, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 25236, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 19496, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 26968, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 16 file(s) changed since last run
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 29776, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 34644, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 25960, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Another daemon (pid 25960) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 25960) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 25960) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 25960) already holds the lock; exiting.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 38052, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Caught up 3 file(s) changed since last run
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 14844, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 29540, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 4440, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 5804, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 27512, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 916, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 45324, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 1068, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 28332, v1.0.1). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 41848, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph daemon] Another daemon (pid 41848) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 4 file(s) in 2502ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 462ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 5ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 509ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 618ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 505ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 5ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 5ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 492ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 563ms
+[CodeGraph MCP] Auto-synced 6 file(s) in 687ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 504ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 521ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 487ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 574ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 496ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 740ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 620ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 638ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 477ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 545ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 448ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 605ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 537ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 500ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 511ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 529ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 514ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 523ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 487ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 492ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 485ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 501ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 488ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 514ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 492ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 446ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 522ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 637ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 563ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 636ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 677ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 494ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 477ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 604ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 5ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 500ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 67ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 481ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 470ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 571ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 548ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 452ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 436ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 153ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 106ms
+[CodeGraph MCP] Auto-synced 16 file(s) in 886ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 608ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 484ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 455ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 481ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 461ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 510ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 476ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 556ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 518ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 781ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1478ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1784ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 59ms
+[CodeGraph daemon] Another daemon (pid 41848) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 2114ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1083ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 563ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 642ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 498ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 545ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 492ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 569ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 508ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 483ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 831ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1196ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 459ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 498ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 739ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 476ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 626ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 494ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 511ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 655ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 496ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 492ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1033ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 596ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 694ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 864ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 960ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 648ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 805ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 865ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 589ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 688ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 490ms
+[CodeGraph MCP] Auto-synced 355 file(s) in 4439ms
+[CodeGraph MCP] Auto-synced 234 file(s) in 5436ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 17ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1119ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1858ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1300ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1147ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1360ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 990ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1284ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1429ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1428ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1096ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1216ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1352ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 765ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 652ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 654ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1089ms
+[CodeGraph] Watch sync failed { error: 'cannot rollback - no transaction is active', retryCount: 1 }
+[CodeGraph MCP] Auto-sync error: cannot rollback - no transaction is active
+[CodeGraph] Watch sync failed { error: 'database or disk is full', retryCount: 2 }
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 29756, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 4448, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph MCP] Auto-synced 588 file(s) in 8801ms
+[CodeGraph daemon] Another daemon (pid 4448) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 25 file(s) in 1852ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 312ms
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-753912755b79997e (pid 28768, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 843ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 497ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 354ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 398ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 350ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 458ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 421ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 423ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 369ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 514ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 427ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 451ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 365ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 447ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 429ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 381ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 364ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 378ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 396ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 384ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 605ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 419ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 327ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 351ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 87ms
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 555ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 636ms
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 559ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 364ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 444ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 409ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 400ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 447ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 766ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 467ms
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 1134ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 501ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 429ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 460ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 361ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 477ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 526ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 478ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 358ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 373ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 339ms
+[CodeGraph MCP] Auto-synced 5 file(s) in 692ms
+[CodeGraph MCP] Auto-synced 5 file(s) in 397ms
+[CodeGraph MCP] Auto-synced 8 file(s) in 632ms
+[CodeGraph MCP] Auto-synced 8 file(s) in 375ms
+[CodeGraph daemon] Another daemon (pid 28768) already holds the lock; exiting.
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-a7c1888ac9a1624b (pid 28228, v1.5.0). Idle timeout 300000ms.
+[CodeGraph daemon] Another daemon (pid 28228) already holds the lock; exiting.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph MCP] Auto-synced 1 file(s) in 667ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 375ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 355ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 343ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 345ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 345ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 369ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 339ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 355ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 362ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 347ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 329ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 342ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 327ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 371ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 372ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 359ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 340ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 368ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 363ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 346ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 355ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 353ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 340ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 392ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 344ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 338ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 342ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 362ms
+[CodeGraph MCP] Auto-synced 9 file(s) in 136ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 23ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 368ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 435ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 374ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 317ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 324ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 2 file(s) in 320ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 539ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 424ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 405ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 525ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 452ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 376ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 397ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 390ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 391ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 473ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 501ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 461ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 433ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 491ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 514ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 378ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 407ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 365ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 437ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 357ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 385ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 356ms
+[CodeGraph MCP] Auto-synced 6 file(s) in 460ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 453ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 359ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 343ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 393ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 378ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 365ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 360ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 349ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 330ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 332ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 365ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 366ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 371ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 424ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 436ms
+[CodeGraph MCP] Auto-synced 9 file(s) in 659ms
+[CodeGraph MCP] Auto-synced 15 file(s) in 1526ms
+[CodeGraph MCP] Auto-synced 16 file(s) in 311ms
+[CodeGraph MCP] Auto-synced 31 file(s) in 952ms
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-a7c1888ac9a1624b (pid 25292, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-a7c1888ac9a1624b (pid 39112, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph MCP] Caught up 1 file(s) changed since last run
+[CodeGraph daemon] Another daemon (pid 39112) already holds the lock; exiting.
+[CodeGraph MCP] Auto-synced 1 file(s) in 657ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 430ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 423ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 459ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 503ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 427ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 546ms
+[CodeGraph daemon] Another daemon (pid 39112) already holds the lock; exiting.
+[CodeGraph daemon] Shutting down (inactivity backstop; clients=1).
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-a7c1888ac9a1624b (pid 31748, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph MCP] Auto-synced 1 file(s) in 2084ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 1722ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 461ms
+[CodeGraph MCP] Auto-synced 1 file(s) in 6ms
+[CodeGraph] v1.6.0 is available (this server is running v1.5.0). Update with `codegraph upgrade`.
+[CodeGraph daemon] Listening on \\.\pipe\codegraph-a7c1888ac9a1624b (pid 3156, v1.5.0). Idle timeout 300000ms.
+[CodeGraph MCP] File watcher active — graph will auto-sync on changes
+[CodeGraph MCP] Query pool: up to 11 worker thread(s) for concurrent reads.
+[CodeGraph MCP] Caught up 59 file(s) changed since last run
+[CodeGraph daemon] Shutting down (idle timeout; clients=0).

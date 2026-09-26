@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P1（公网门禁）
 - **§5.9 引用**：§5.9.3（auth/admin credential/浏览器安全）、§5.9.13（provisioning/readiness）、§5.9.9（test_accounts/access_tokens/auth_sessions 实体与约束）、§5.4 端点、§5.5 管理端、§10 DECIDED（Admin bootstrap）
 - **§6 出口条件引用**：P1 出口「用户只输入一次 Token；首次进入完成一次性人设设置；刷新/重开浏览器仍能登录；越权请求全拒；重复兑换同一 Token 不产生多个账号」
-- **状态**：planned
+- **状态**：in_progress（active change：`openspec/changes/2026-09-07-c5-auth-provisioning-admin/`，2026-09-07）
 
 ## 目标
 
@@ -28,18 +28,29 @@
 - 测试/证据：并发兑换测试、digest-only grep + 日志审计、错误码测试、CSRF/Origin 测试、provisioning 状态机测试、Cookie 隔离测试、CLI 测试、runbook 演练
 - 交付物：recovery runbook（lost-token / suspected-leak / database-restore，§10 DECIDED）
 
+## 证据索引（`openspec/evidence/c5-auth-provisioning-admin/`）
+
+- `pytest-auth-unit.txt` — 非 PG 单元实跑：crypto 7 / ws_guard 7 / cli_layer 10 / auth_config 3 = 27 passed
+- `pytest-pg-integration.txt` — **服务器 PG 实跑 47 passed**（20 项 PG 集成 + 27 项非 PG，SSH tunnel → 阿里云 ECS nexus-pg-c5）
+- `pytest-regression.txt` — 全量非 PG 回归（crypto/cli 变更后全 `tests/`，`-W error`）
+- `pyright.txt` — C5 触及源码与测试 0 errors；全项目基线 36 == main
+- `static-digest-only.txt` — digest-only 静态检查（repo 无 logger/print、CLI TTY 单次回显、pepper 不落日志）+ 审计负向用例实跑 PASSED
+- `canary-deploy-smoke.txt` — **部署态实况冒烟 20/20 PASS**（阿里云 ECS canary 容器真实 HTTP：兑换/反例矩阵/建账号/provisioning/suspend/revoke + 部署态库 digest-only 复核）
+- `runbook-drill.md` — 三条恢复路径可执行程序；演练结论「待回填」
+
 ## 验收标准
 
-- [ ] 一次性兑换原子性：并发兑换同 Token 仅一个成功（§5.9.13「retry 不生成第二个 tenant/conversation/seed」） — 验证：并发兑换测试
-- [ ] 明文 Token/session 不落库/不落日志/不落前端持久（digest-only） — 验证：grep digest-only + 日志审计
-- [ ] 401（无 principal/session 过期）vs 403（封禁/capability 不足/资源非本 tenant）契约；错误响应不泄露存在性 — 验证：错误码负向测试
-- [ ] mutation API 同时检查 Origin/Referer + session-bound CSRF token；WS handshake 校验 Cookie + Origin — 验证：CSRF/Origin 测试矩阵
-- [ ] provisioning pending/failed 幂等 retry，ready 前不发 Token；pending 在进程启动时从 PG 恢复 — 验证：provisioning 状态机 + 重启恢复测试
-- [ ] 普通/admin 凭据分离（`__Host-nexus_session` vs `__Host-nexus_admin`） — 验证：Cookie 隔离测试
-- [ ] `pilot-admin` CLI 命令面完整且明文不进进程参数/仓库/配置/DB（local 强制恢复仅 trusted-host TTY） — 验证：CLI 测试 + grep
-- [ ] runbook 演练：recovery token 丢失 / 疑似泄露 / 数据库恢复三条路径 — 验证：runbook 测试记录
-- [ ] timeout 契约：普通 idle 7d / absolute 30d；admin idle 30min / absolute 12h（数值按 §10 PROPOSED DEFAULT 于 P-1 复核） — 验证：配置 + timeout 测试
-- [ ] 本 task 不触碰 attachment（C6）、工具 allowlist 执行（C7） — 验证：PR diff 范围检查
+- [x] 一次性兑换原子性：并发兑换同 Token 仅一个成功（§5.9.13「retry 不生成第二个 tenant/conversation/seed」） — 验证：并发兑换测试 —— 实跑：`test_exchange_atomic.py` 服务器 PG 上 PASSED（并发恰好 1 成功 + 重复兑换 401）
+- [x] 明文 Token/session 不落库/不落日志/不落前端持久（digest-only） — 验证：grep digest-only + 日志审计 —— 实跑：静态 grep（static-digest-only.txt）、`test_pepper_not_written_to_logs`、`test_admin_audit_never_records_plaintext`（PG）均 PASSED
+- [x] 401（无 principal/session 过期）vs 403（封禁/capability 不足/资源非本 tenant）契约；错误响应不泄露存在性 — 验证：错误码负向测试 —— 实跑：`test_http_contract.py` 负向用例服务器 PG 上 PASSED
+- [x] mutation API 同时检查 Origin/Referer + session-bound CSRF token；WS handshake 校验 Cookie + Origin — 验证：CSRF/Origin 测试矩阵 —— 实跑：`test_http_contract.py::test_user_mutation_requires_origin_then_csrf` + `test_ws_guard.py` 均 PASSED
+- [x] provisioning pending/failed 幂等 retry，ready 前不发 Token；pending 在进程启动时从 PG 恢复 — 验证：provisioning 状态机 + 重启恢复测试 —— 实跑：`test_provisioning_lifecycle.py` 8 项服务器 PG 上 PASSED（状态机/崩溃恢复/幂等 retry/failed 恢复/suspend/revoke/审计）
+- [x] 普通/admin 凭据分离（`__Host-nexus_session` vs `__Host-nexus_admin`） — 验证：Cookie 隔离测试 —— 实跑：`test_http_contract.py` Cookie 隔离用例 PASSED
+- [x] `pilot-admin` CLI 命令面完整且明文不进进程参数/仓库/配置/DB（local 强制恢复仅 trusted-host TTY） — 验证：CLI 测试 + grep —— 实跑：`test_cli_layer.py` 10 项通过（TTY 门禁、回显次数、命令面），static-digest-only.txt grep 证实明文仅 CLI TTY 一次；部署态经 `script` 分配 pty 触发 `rotate-recovery-token --force-local` 成功（canary-deploy-smoke.txt），明文仅落在服务器临时文件、跑完即删
+- [x] 部署态可运行：C5 代码同步进云 canary 后真实 HTTP 服务全生命周期通过 — 验证：容器内端到端冒烟 —— 实跑：`canary-deploy-smoke.txt` 20/20 PASS（兑换/cookie 属性/401-403 反例/建账号 provisioning→active/suspend/unsuspend/revoke 均 200 不 500；部署态库 digest-only 复核全 64-hex、审计无明文）
+- [x] runbook 演练：recovery token 丢失 / 疑似泄露 / 数据库恢复三条路径 — 验证：runbook 测试记录 —— 实跑：`runbook-drill.md` 三路径在 canary 部署态（真实进程 + 真实控制面库 + 真实 Cookie/CSRF/Origin/回环门禁）逐条执行 **全 PASS**，原始转录 `runbook-drill-transcript.txt` + 驱动脚本（`runbook-drill-script.sh` 及两个探针）；含路径 C 的 pepper 代次失配与恢复反向对照（恢复后 ck2/T2 重新 200、失配期 ck3 仍 401）。**该演练由 AI 在 canary 执行，非人工在生产环境执行**——生产侧真人验收仍属 PR「实际验证」人工填写项，未代填、未勾选
+- [x] timeout 契约：普通 idle 7d / absolute 30d；admin idle 30min / absolute 12h（数值按 §10 PROPOSED DEFAULT 于 P-1 复核） — 验证：配置 + timeout 测试 —— 实跑：配置冻结值 `test_auth_config.py` 3 项 PASSED；创建时固化到 session 行并经 exchange 流程真实验证（PG）；过期边界由 `test_session_timeout.py` 6 项收口（idle 边界内外两侧、absolute 优先于 idle 并可反向对照、真实时钟 sleep 后失效、HTTP 层 401 `authentication required`），全量 `pytest tests/auth_provisioning/` → 53 passed
+- [x] 本 task 不触碰 attachment（C6）、工具 allowlist 执行（C7） — 验证：PR diff 范围检查 —— 实查：C5 变更集 `git diff --name-only $(git merge-base origin/main HEAD)..HEAD` = 39 个文件，全为 C5 范围，无 C6/C7 文件；origin/main 后进至 3328a556（3 提交 9 文件）与 C5 集合**零交集**（`comm -12` 为空），rebasing 后 PR diff 仍仅 C5 文件
 
 > 判定「真正完成」而非「执行过」：并发兑换原子性、digest-only 存储、401/403 区分三条是安全闸门，必须有负向测试证据；runbook 演练需真实按步骤执行并记录。
 

@@ -1,6 +1,7 @@
 """Shared fixtures and test bootstrap helpers."""
 
 import asyncio
+import os
 import sys
 import types
 from datetime import datetime, timezone, timedelta
@@ -27,6 +28,7 @@ if "openai" not in sys.modules:
     class AsyncOpenAI:
         def __init__(self, *args, **kwargs):
             self.chat = _DummyChat()
+            self._init_kwargs = kwargs
 
     openai_stub.AsyncOpenAI = AsyncOpenAI
     sys.modules["openai"] = openai_stub
@@ -234,3 +236,58 @@ async def drain_tasks():
             await asyncio.gather(*still_pending, return_exceptions=True)
         if done:
             await asyncio.gather(*done, return_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
+# 回归环境守卫：NEXUS_REQUIRE_PG=1 时禁止集成测试静默跳过
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TEST_PG_URL = "postgresql://nexus:nexus_dev@localhost:5433/nexus"
+
+
+def test_pg_url() -> str:
+    """集成测试使用的 PG 连接串（与各 conftest 的 ``NEXUS_TEST_PG_URL`` 同源）。"""
+    return os.environ.get("NEXUS_TEST_PG_URL", _DEFAULT_TEST_PG_URL)
+
+
+def test_pg_reachable() -> bool:
+    """本地集成测试 PG 是否可达（2s 超时，不抛）。"""
+    import psycopg
+
+    try:
+        conn = psycopg.connect(test_pg_url(), connect_timeout=2)
+    except Exception:
+        return False
+    conn.close()
+    return True
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """``NEXUS_REQUIRE_PG=1`` 时，PG 不可达直接 fail 而非静默跳过。
+
+    背景：canonical identity / control plane / migration / storage 集成测试在 PG
+    不可用时整组 ``skip``（近十处 ``pytest.skip("本地 PG 不可用")`` 与三个
+    conftest 的 session fixture）。于是一次看似「全绿」的回归实际可能漏掉上百条
+    durability 断言——2026-09-20 的 main 回归即为 ``166 skipped``，其中 117 项是
+    ``postgres`` marker。
+
+    需要产出**可信**回归证据时，用::
+
+        NEXUS_REQUIRE_PG=1 pytest -q -W error tests/
+
+    此时 PG 不可达会以 usage error 中止（而非跑完再让人误读为通过）。
+
+    默认（未设该变量）行为完全不变，保持无 docker / 无本地 PG 的开发环境可用。
+    """
+    if os.environ.get("NEXUS_REQUIRE_PG") != "1":
+        return
+    if test_pg_reachable():
+        return
+    raise pytest.UsageError(
+        "NEXUS_REQUIRE_PG=1 但本地 PostgreSQL 不可达："
+        f"{test_pg_url()}\n"
+        "请先起 pgvector 开发库：\n"
+        "  docker compose -f docker/debug/docker-compose.yml up -d postgres\n"
+        "或用 NEXUS_TEST_PG_URL 指向可用的 pgvector 实例。\n"
+        "若确实要在无 PG 环境跑（结果不可作为回归证据），去掉 NEXUS_REQUIRE_PG。"
+    )

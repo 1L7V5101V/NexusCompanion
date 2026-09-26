@@ -5,12 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from fastapi.testclient import TestClient
+
+# 第三方 anyio 4.15 的 lazy alias 在 pytest `-W error` 下会在 import 时抛
+# DeprecationWarning（经 starlette.testclient 的 BlockingPortal 别名）；与本仓库
+# 代码无关。pytest.ini 的 -W error 会覆盖 ini filterwarnings 且无法按文件豁免，
+# 所以只在 import 点局部抑制，不改全局告警策略。
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    from fastapi.testclient import TestClient
 
 from bootstrap.chat_api import create_chat_app
 from bus.queue import MessageBus
@@ -50,7 +58,8 @@ def _build(tmp_path: Path) -> tuple[TestClient, WebChatChannel, MessageBus]:
             log=logging.getLogger("test"),
         )
     )
-    app = create_chat_app(workspace=tmp_path, channel=channel)
+    # static_root 指向 tmp：避免本地已构建的 static/chat 影响“无 bundle”回退断言
+    app = create_chat_app(workspace=tmp_path, channel=channel, static_root=tmp_path / "chat")
     client = TestClient(app)
     return client, channel, bus
 

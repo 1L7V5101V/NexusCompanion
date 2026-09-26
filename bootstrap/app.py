@@ -234,6 +234,7 @@ class AppRuntime:
         self._memory_optimizer = None
         self._shutdown = False
         self._started = False
+        self.auth_runtime = None
         self._plugin_candidate_tasks: set[asyncio.Task[Any]] = set()
         self._plugin_reload_signal_installed = False
         self._runtime_tasks: set[asyncio.Future[Any]] = set()
@@ -395,11 +396,28 @@ class AppRuntime:
                     self.plugin_service_host.swap_plugin_services
                 )
             plugin_channels = list(plugin_manager.channels) if plugin_manager else []
-            if self.config.channels.chat.enabled:
-                from infra.channels.web_chat_channel import WebChatChannel
+            chat_config = self.config.channels.chat
+            # design ADR-3：放行条件 = auth.enabled 或 dev_mode；两者皆无则 fail-fast。
+            if (
+                chat_config.enabled
+                and not self.config.auth.enabled
+                and not self.config.dev_mode
+            ):
+                raise RuntimeError(
+                    "[channels.chat].enabled=true 要求 [auth].enabled=true 或"
+                    " agent.dev_mode=true：WebChat 未启用认证时只能走 dev 回退，"
+                    "不得静默放行。"
+                )
+            if chat_config.enabled:
+                from infra.channels.web_chat_channel import (
+                    WebChatChannel,
+                    WebChatIdentity,
+                )
 
                 self.web_chat_channel = WebChatChannel(
-                    channel_name=self.config.channels.chat.channel_name,
+                    channel_name=chat_config.channel_name,
+                    identity=WebChatIdentity(),
+                    ws_idle_timeout_s=chat_config.idle_timeout_s,
                     ws_outbound_soft_limit=self.config.admission.ws_outbound_soft_limit,
                     ws_outbound_hard_limit=self.config.admission.ws_outbound_hard_limit,
                     ws_outbound_max_payload_bytes=(
@@ -458,6 +476,8 @@ class AppRuntime:
                 memory_store=self.memory_runtime.markdown.store,
             )
             self.tasks.extend(optimizer_tasks)
+            auth_runtime = await self._maybe_build_auth_runtime()
+            self.auth_runtime = auth_runtime
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 manual_consolidator=self.agent_loop,
@@ -465,6 +485,7 @@ class AppRuntime:
                 memory_admin=self.memory_runtime.engine,
                 memory_store=self.memory_runtime.markdown.store,
                 config=self.config,
+                auth_runtime=auth_runtime,
             )
             self.dashboard_task = asyncio.create_task(
                 self.dashboard_server.serve(),
@@ -474,8 +495,11 @@ class AppRuntime:
                 self.chat_server = build_chat_server(
                     workspace=self.workspace,
                     channel=self.web_chat_channel,
+                    dev_mode=self.config.dev_mode,
                     host=self.config.channels.chat.host,
                     port=self.config.channels.chat.port,
+                    auth_runtime=auth_runtime,
+                    allow_public_bind=self.config.channels.chat.allow_public_bind,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -752,6 +776,10 @@ class AppRuntime:
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
+                    "auth_runtime.aclose",
+                    self.auth_runtime.aclose if self.auth_runtime else _noop_async,
+                ),
+                (
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
@@ -769,6 +797,31 @@ class AppRuntime:
         loop = asyncio.get_running_loop()
         loop.add_signal_handler(signal.SIGHUP, self._schedule_plugin_candidate_scan)
         self._plugin_reload_signal_installed = True
+
+    async def _maybe_build_auth_runtime(self):
+        """C5（design ADR-6/7）：auth.enabled 时装配 AuthRuntime 供 dashboard/chat
+        挂载；默认关闭返回 None（P0.5 行为完全不变）。
+
+        partition_step 复用控制面 ``TenantProvisioningService.request_provisioning``
+        （入队 DDL，由既有分区 worker 异步完成；turn/ready 侧的纵深门禁另行接线）。
+        """
+        if not self.config.auth.enabled:
+            return None
+        from bootstrap.auth import create_auth_runtime
+
+        partition_step = None
+        if self.provisioning_service is not None:
+            # request_provisioning 返回 PartitionStatus，executor seam 只需完成
+            # 入队这一副作用；丢弃返回值以满足 Callable[[str], Awaitable[None]]。
+            async def _enqueue_partition(tenant_id: str) -> None:
+                _ = await self.provisioning_service.request_provisioning(tenant_id)  # type: ignore[union-attr]
+
+            partition_step = _enqueue_partition
+        return create_auth_runtime(
+            config=self.config,
+            workspace=self.workspace,
+            partition_step=partition_step,
+        )
 
     def _remove_plugin_reload_signal(self) -> None:
         if not self._plugin_reload_signal_installed:
