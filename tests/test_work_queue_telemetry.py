@@ -34,9 +34,7 @@ FIXTURE = json.loads(
 )
 _LIFECYCLE = FIXTURE["lifecycle_event"]
 FIXTURE_FIELDS = frozenset(
-    field
-    for fields in _LIFECYCLE["field_groups"].values()
-    for field in fields
+    field for fields in _LIFECYCLE["field_groups"].values() for field in fields
 ) | frozenset(_LIFECYCLE["derived_metrics"])
 FORBIDDEN_CONTENT_FIELDS = frozenset(_LIFECYCLE["forbidden_content_fields"])
 
@@ -75,7 +73,7 @@ def test_emitted_events_are_subset_of_fixture() -> None:
             tenant_id="t1",
             work_kind="maintenance",
             flow="consolidation",
-            status="succeeded",
+            status="completed",
             started_at=started,
             finished_at=started + timedelta(seconds=2),
             attempt=1,
@@ -89,6 +87,15 @@ def test_emitted_events_are_subset_of_fixture() -> None:
             restart_started_at=started,
             recovered_at=(started + timedelta(milliseconds=500)).isoformat(),
         ),
+        _telemetry().abandon(
+            work_id="w1",
+            tenant_id="t1",
+            work_kind="maintenance",
+            flow="consolidation",
+            reason="LeaseLost",
+            started_at=started,
+            finished_at=started + timedelta(seconds=5),
+        ),
     ]
     for event in events:
         assert set(event) <= FIXTURE_FIELDS, f"事件含 fixture 之外的字段: {event}"
@@ -97,7 +104,13 @@ def test_emitted_events_are_subset_of_fixture() -> None:
 def test_no_forbidden_content_field_can_appear() -> None:
     """负向：fixture 的 forbidden_content_fields 结构上不可能出现在事件里。"""
     assert not (ALLOWED_EVENT_FIELDS & FORBIDDEN_CONTENT_FIELDS)
-    for name in ("payload", "payload_json", "tool_args", "message_content", "full_prompt"):
+    for name in (
+        "payload",
+        "payload_json",
+        "tool_args",
+        "message_content",
+        "full_prompt",
+    ):
         assert name not in ALLOWED_EVENT_FIELDS
 
 
@@ -130,7 +143,8 @@ def test_claim_derives_queue_wait_ms() -> None:
         started_at=_T0,
     )
     assert event["queue_wait_ms"] == 1500.0
-    assert event["status"] == "in_progress"
+    # 认领是过程事件：不带终态 status（冻结枚举只有四个结果词）
+    assert "status" not in event
 
 
 def test_finish_derives_execution_ms() -> None:
@@ -139,12 +153,26 @@ def test_finish_derives_execution_ms() -> None:
         tenant_id="t1",
         work_kind="maintenance",
         flow="consolidation",
-        status="succeeded",
+        status="completed",
         started_at=_T0,
         finished_at=_T0 + timedelta(seconds=2.25),
         attempt=1,
     )
     assert event["execution_ms"] == 2250.0
+
+
+def test_finish_rejects_non_frozen_status() -> None:
+    """状态词（succeeded/queued）不得漏进事件——超出冻结枚举立刻抛错。"""
+    with pytest.raises(ValueError, match="冻结枚举"):
+        _telemetry().finish(
+            work_id="w1",
+            tenant_id="t1",
+            work_kind="maintenance",
+            flow="consolidation",
+            status="succeeded",
+            started_at=_T0,
+            finished_at=_T0 + timedelta(seconds=1),
+        )
 
 
 def test_recovery_derives_restart_to_recovered_ms() -> None:
@@ -194,11 +222,29 @@ def test_missing_error_is_omitted() -> None:
         tenant_id="t1",
         work_kind="maintenance",
         flow="consolidation",
-        status="succeeded",
+        status="completed",
         started_at=_T0,
         finished_at=_T0,
     )
     assert "last_error" not in event
+
+
+def test_abandon_uses_interrupted_status() -> None:
+    """失租放弃：`status=interrupted`（冻结枚举内）+ 原因归入 `error_type`。"""
+    event = _telemetry().abandon(
+        work_id="w1",
+        tenant_id="t1",
+        work_kind="maintenance",
+        flow="consolidation",
+        reason="LeaseLost",
+        started_at=_T0,
+        finished_at=_T0 + timedelta(seconds=4),
+        attempt=2,
+    )
+    assert event["status"] == "interrupted"
+    assert event["error_type"] == "LeaseLost"
+    assert event["attempt"] == 2
+    assert set(event) <= FIXTURE_FIELDS
 
 
 # ── 指标：注册幂等 + label 白名单 ──
@@ -254,7 +300,7 @@ def test_metrics_record_with_whitelisted_labels() -> None:
         tenant_id="t1",
         work_kind="maintenance",
         flow="consolidation",
-        status="succeeded",
+        status="completed",
         started_at=_T0,
         finished_at=_T0 + timedelta(seconds=1),
         attempt=1,
@@ -279,13 +325,17 @@ def test_metrics_record_with_whitelisted_labels() -> None:
     # label 用了白名单维度（有界枚举），且**绝不含**高基数身份字段/内容字段
     for entry in snapshot:
         labels = set(entry["labels"])
-        assert not (labels & FORBIDDEN_IDENTITY_LABELS), f"指标 label 含身份字段: {labels}"
-        assert not (labels & FORBIDDEN_CONTENT_LABELS), f"指标 label 含内容字段: {labels}"
+        assert not (
+            labels & FORBIDDEN_IDENTITY_LABELS
+        ), f"指标 label 含身份字段: {labels}"
+        assert not (
+            labels & FORBIDDEN_CONTENT_LABELS
+        ), f"指标 label 含内容字段: {labels}"
     items = [entry for entry in snapshot if entry["name"] == "work_items_total"]
     assert items, "收束计数应至少有一个 label 组合"
     assert items[0]["labels"] == {
         "work_kind": "maintenance",
         "flow": "consolidation",
-        "status": "succeeded",
+        "status": "completed",
     }
     assert items[0]["value"] == 1.0

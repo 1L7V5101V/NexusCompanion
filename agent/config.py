@@ -35,6 +35,8 @@ from agent.config_models import (
     TelegramChannelConfig,
     WiringConfig,
 )
+from bootstrap.work_queue_defaults import DEFAULT_BACKOFF_SECONDS
+
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 
@@ -63,6 +65,7 @@ def _normalize_cli_socket_endpoint(value: str | None) -> str:
             pass
     port_seed = zlib.crc32(text.encode("utf-8")) % 20000
     return f"127.0.0.1:{20000 + port_seed}"
+
 
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
@@ -94,7 +97,9 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
     def _protocol_value(slot: dict) -> str:
         """协议槽位值: [llm.<slot>] protocol > [llm] protocol > "openai"。"""
-        raw = str(slot.get("protocol") or llm.get("protocol") or "openai").strip().lower()
+        raw = (
+            str(slot.get("protocol") or llm.get("protocol") or "openai").strip().lower()
+        )
         if raw not in {"openai", "chat", "codex", "responses"}:
             raise ValueError(f"llm protocol 无效: {raw!r}（可选 openai/codex）")
         return raw
@@ -118,6 +123,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     )
 
     from agent.persona import apply_persona_config
+
     apply_persona_config(persona)
 
     admission_cfg = _load_admission_config(data)
@@ -139,7 +145,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         memory_window=int(
             agent_context.get("memory_window", data.get("memory_window", 40))
         ),
-        base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
+        base_url=str(
+            llm_main.get("base_url")
+            or data.get("base_url")
+            or _PRESETS.get(provider)
+            or ""
+        ),
         protocol=_protocol_value(llm_main),
         light_protocol=_protocol_value(llm_fast),
         agent_protocol=_protocol_value(llm_agent),
@@ -163,16 +174,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         light_api_key=_resolve(
             str(llm_fast.get("api_key") or data.get("light_api_key", ""))
         ),
-        light_base_url=str(
-            llm_fast.get("base_url") or data.get("light_base_url", "")
-        ),
+        light_base_url=str(llm_fast.get("base_url") or data.get("light_base_url", "")),
         agent_model=str(llm_agent.get("model") or data.get("agent_model", "")),
         agent_api_key=_resolve(
             str(llm_agent.get("api_key") or data.get("agent_api_key", ""))
         ),
-        agent_base_url=str(
-            llm_agent.get("base_url") or data.get("agent_base_url", "")
-        ),
+        agent_base_url=str(llm_agent.get("base_url") or data.get("agent_base_url", "")),
         memory=memory,
         fitbit=fitbit,
         storage=storage,
@@ -205,9 +212,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         auth=auth_cfg,
         work_queue=work_queue_cfg,
         logging=logging_cfg,
-        router_mode=str(
-            data.get("router_mode", "rule")
-        ),
+        router_mode=str(data.get("router_mode", "rule")),
     )
 
 
@@ -226,7 +231,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 channel_name=str(tg.get("channel_name", "telegram")),
                 api_base_url=_normalize_optional_config_text(
                     str(tg.get("api_base_url", ""))
-                ) or None,
+                )
+                or None,
             )
 
     qq = None
@@ -235,12 +241,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         if bool(qq_data.get("enabled", True)) and bot_uin:
             groups = [
                 QQGroupConfig(
-                    group_id=str(
-                        g["group_id"] if "group_id" in g else g["groupId"]
-                    ),
+                    group_id=str(g["group_id"] if "group_id" in g else g["groupId"]),
                     allow_from=[
-                        str(u)
-                        for u in g.get("allow_from", g.get("allowFrom", []))
+                        str(u) for u in g.get("allow_from", g.get("allowFrom", []))
                     ],
                     require_at=g.get("require_at", g.get("requireAt", True)),
                 )
@@ -259,9 +262,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             )
 
     cli_data = _as_dict(channels_data.get("cli"))
-    socket_value = channels_data.get("socket") or cli_data.get(
-        "socket", DEFAULT_SOCKET
-    )
+    socket_value = channels_data.get("socket") or cli_data.get("socket", DEFAULT_SOCKET)
     cli_session_key = str(cli_data.get("session_key") or "").strip()
     cli_channel = str(cli_data.get("channel") or "").strip()
     cli_chat_id = str(cli_data.get("chat_id") or "").strip()
@@ -325,9 +326,7 @@ def _load_storage_config(data: dict) -> StorageConfig:
     default = StorageConfig()
     return StorageConfig(
         backend=str(storage.get("backend") or default.backend),
-        postgres_url=_resolve(
-            str(storage.get("postgres_url") or default.postgres_url)
-        ),
+        postgres_url=_resolve(str(storage.get("postgres_url") or default.postgres_url)),
         pool_size=int(storage.get("pool_size", default.pool_size)),
     )
 
@@ -436,10 +435,7 @@ def _load_admission_config(data: dict) -> AdmissionConfig:
             raise ValueError(f"agent.admission.{name} 必须为正整数，当前: {value!r}")
         return parsed
 
-    if (
-        _int("ws_outbound_soft_limit")
-        >= _int("ws_outbound_hard_limit")
-    ):
+    if _int("ws_outbound_soft_limit") >= _int("ws_outbound_hard_limit"):
         raise ValueError(
             "agent.admission.ws_outbound_soft_limit 必须小于 ws_outbound_hard_limit"
         )
@@ -508,9 +504,11 @@ def _parse_int_positive(name: str, value: object) -> int:
     if parsed < 1:
         raise ValueError(f"{name} 必须为正整数，当前: {value!r}")
     return parsed
-_WORK_QUEUE_BACKOFF_STAGES = 5
+
+
+_WORK_QUEUE_BACKOFF_STAGES = len(DEFAULT_BACKOFF_SECONDS)
 """[agent.work_queue] `max_attempts` 上限 = 退避表档数（与 `WorkQueueWorkerConfig`
-冻结默认 1m/5m/30m/2h/6h 一致）。"""
+冻结默认 1m/5m/30m/2h/6h 一致，字面量单一来源 = `bootstrap/work_queue_defaults.py`）。"""
 
 
 def _load_work_queue_config(data: dict) -> WorkQueueConfig:

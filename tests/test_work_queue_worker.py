@@ -19,12 +19,13 @@ from bootstrap.work_queue_worker import (
 
 
 class RecordingTelemetry:
-    """记录三个记录点调用的遥测桩（不落日志/指标）。"""
+    """记录四个记录点调用的遥测桩（不落日志/指标）。"""
 
     def __init__(self) -> None:
         self.claims: list[dict[str, Any]] = []
         self.finishes: list[dict[str, Any]] = []
         self.recoveries: list[dict[str, Any]] = []
+        self.abandons: list[dict[str, Any]] = []
 
     def claim(self, **kwargs: Any) -> dict[str, Any]:
         self.claims.append(kwargs)
@@ -37,6 +38,11 @@ class RecordingTelemetry:
     def recovery(self, **kwargs: Any) -> dict[str, Any]:
         self.recoveries.append(kwargs)
         return kwargs
+
+    def abandon(self, **kwargs: Any) -> dict[str, Any]:
+        self.abandons.append(kwargs)
+        return kwargs
+
 
 _SENTINEL_SESSION = object()
 
@@ -427,9 +433,7 @@ def test_config_error_backoff_invariants() -> None:
     with pytest.raises(ValueError):
         WorkQueueWorkerConfig(error_backoff_seconds=0)
     with pytest.raises(ValueError):
-        WorkQueueWorkerConfig(
-            error_backoff_seconds=10.0, max_error_backoff_seconds=1.0
-        )
+        WorkQueueWorkerConfig(error_backoff_seconds=10.0, max_error_backoff_seconds=1.0)
     cfg = WorkQueueWorkerConfig()
     assert cfg.error_backoff_seconds == 5.0
     assert cfg.max_error_backoff_seconds == 60.0
@@ -500,7 +504,8 @@ async def test_claim_and_finish_events_recorded_on_success() -> None:
     assert telemetry.claims[0]["work_kind"] == "maintenance"
     assert telemetry.claims[0]["flow"] == "consolidation"
     assert len(telemetry.finishes) == 1
-    assert telemetry.finishes[0]["status"] == "succeeded"
+    # 成功 → 事件 status 用冻结枚举 completed（succeeded 是 DB 状态词）
+    assert telemetry.finishes[0]["status"] == "completed"
 
 
 async def test_finish_event_records_retryable_failure() -> None:
@@ -522,7 +527,8 @@ async def test_finish_event_records_retryable_failure() -> None:
 
     assert len(telemetry.finishes) == 1
     finish = telemetry.finishes[0]
-    assert finish["status"] == "queued"
+    # 业务失败（未达上限，DB 回 queued）→ 事件 status 冻结为 failed，retryable 区分
+    assert finish["status"] == "failed"
     assert finish["retryable"] is True
     assert finish["error_type"] == "RuntimeError"
     assert finish["attempt"] == 2
@@ -547,6 +553,34 @@ async def test_finish_event_records_dead_letter_as_not_retryable() -> None:
 
     assert telemetry.finishes[0]["status"] == "failed"
     assert telemetry.finishes[0]["retryable"] is False
+
+
+async def test_lease_lost_records_abandon_via_telemetry() -> None:
+    """失租放弃有遥测记录（spec 136「SHALL 记录该放弃」），且不写任何状态。"""
+    repo = FakeWorkRepo([_item("i1", "t1")])
+    handler = RecordingHandler()
+    handler.gate = asyncio.Event()
+    telemetry = RecordingTelemetry()
+    worker = _worker(
+        repo,
+        {"consolidation": handler},
+        telemetry,
+        heartbeat_interval_seconds=0.01,
+        lease_ttl_seconds=0.5,
+    )
+
+    task = asyncio.create_task(worker.process_once())
+    await asyncio.wait_for(handler.started.wait(), timeout=2)
+    repo.lease_lost = True
+    await asyncio.sleep(0.05)  # 让心跳跑一轮并标记失租
+    handler.gate.set()
+    assert await asyncio.wait_for(task, timeout=2) == 1
+
+    assert repo.succeeded == []
+    assert repo.failed == []
+    abandons = [a for a in telemetry.abandons if a["work_id"] == "i1"]
+    assert abandons, "失租必须有 abandon 记录"
+    assert abandons[-1]["reason"] == "LeaseLost"
 
 
 async def test_maintenance_deferral_finishes_as_interrupted() -> None:
@@ -608,7 +642,9 @@ async def test_run_sweeps_before_polling() -> None:
     repo = FakeWorkRepo([_item("i1", "t1")])
     telemetry = RecordingTelemetry()
     worker = _worker(
-        repo, {"consolidation": RecordingHandler()}, telemetry,
+        repo,
+        {"consolidation": RecordingHandler()},
+        telemetry,
         poll_interval_seconds=0.01,
     )
 

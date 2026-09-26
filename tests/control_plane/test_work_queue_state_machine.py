@@ -147,7 +147,9 @@ async def test_heartbeat_and_lease_lost(
     await work_repo.claim_batch("owner-1")
 
     assert await work_repo.heartbeat(tenant["tenant_id"], item["id"], "owner-1") is True
-    assert await work_repo.heartbeat(tenant["tenant_id"], item["id"], "owner-2") is False
+    assert (
+        await work_repo.heartbeat(tenant["tenant_id"], item["id"], "owner-2") is False
+    )
 
 
 # ── 终态与同事务副作用（ADR-6） ──
@@ -236,7 +238,9 @@ async def test_redrive_resets_and_preserves_history(
     await work_repo.record_work_failed(
         tenant["tenant_id"], item["id"], "w1", "boom", max_attempts=1
     )
-    assert (await work_repo.get_work_item(tenant["tenant_id"], item["id"]))["status"] == "failed"
+    assert (await work_repo.get_work_item(tenant["tenant_id"], item["id"]))[
+        "status"
+    ] == "failed"
 
     redriven = await work_repo.redrive_work_item(
         tenant["tenant_id"], item["id"], "已修好", operator="admin"
@@ -329,9 +333,13 @@ async def test_lease_lost_cannot_write_state(
     await work_repo.claim_batch("owner-a")
 
     with pytest.raises(LeaseLostError):
-        await work_repo.record_work_failed(tenant["tenant_id"], item["id"], "owner-b", "x")
+        await work_repo.record_work_failed(
+            tenant["tenant_id"], item["id"], "owner-b", "x"
+        )
     with pytest.raises(LeaseLostError):
-        await work_repo.record_work_succeeded(tenant["tenant_id"], item["id"], "owner-b")
+        await work_repo.record_work_succeeded(
+            tenant["tenant_id"], item["id"], "owner-b"
+        )
     with pytest.raises(LeaseLostError):
         await work_repo.release_for_retry(tenant["tenant_id"], item["id"], "owner-b")
 
@@ -358,7 +366,9 @@ async def test_audit_stream_is_append_only_in_order(
     tenant = await make_tenant(prefix="c15q")
     item = await _new_work(control, tenant, idempotency_key="q-0")
     await work_repo.claim_batch("w1")
-    await work_repo.release_for_retry(tenant["tenant_id"], item["id"], "w1", delay_seconds=1)
+    await work_repo.release_for_retry(
+        tenant["tenant_id"], item["id"], "w1", delay_seconds=1
+    )
     await _make_due(exec_sql, item["id"])
     await work_repo.claim_batch("w2")
     await work_repo.record_work_failed(
@@ -381,7 +391,9 @@ async def test_work_kind_vocabulary_rejects_flow_value(
     tenant = await make_tenant(prefix="c15r")
     with pytest.raises(ValueError):
         await control.create_work_item(
-            tenant["tenant_id"], "consolidation", conversation_id=tenant["conversation_id"]
+            tenant["tenant_id"],
+            "consolidation",
+            conversation_id=tenant["conversation_id"],
         )
     with pytest.raises(ValueError):
         await control.create_work_item(
@@ -430,7 +442,9 @@ class _RecoveryHandler:
         self.executed.append(envelope.work_item_id)
         return envelope.work_item_id
 
-    async def persist(self, session, envelope: WorkItemEnvelope, result: object) -> None:
+    async def persist(
+        self, session, envelope: WorkItemEnvelope, result: object
+    ) -> None:
         await session.execute(
             text(
                 "INSERT INTO test_accounts (id, tenant_id, status, display_name) "
@@ -460,9 +474,7 @@ async def test_crash_recovery_e2e(
 
     # 第二步：重启后的 worker 进场清扫
     first = _RecoveryHandler()
-    worker = WorkQueueWorker(
-        work_repo, {"consolidation": first}, worker_id="w-restart"
-    )
+    worker = WorkQueueWorker(work_repo, {"consolidation": first}, worker_id="w-restart")
     assert await worker.recover_stale() == 1
 
     recovered = await work_repo.get_work_item(tenant["tenant_id"], item["id"])

@@ -71,13 +71,17 @@ RETURNING i.id, i.tenant_id, i.work_kind, i.attempt_count, i.status, i.lease_own
 
 
 def reset(conn: psycopg.Connection) -> None:
-    conn.execute("TRUNCATE background_work_items, canonical_conversations, test_accounts CASCADE")
+    conn.execute(
+        "TRUNCATE background_work_items, canonical_conversations, test_accounts CASCADE"
+    )
     conn.execute(
         "INSERT INTO test_accounts (id, tenant_id, status, display_name) VALUES "
         "(%s,'t1','active','a1'), (%s,'t2','active','a2')",
         (uuid.uuid4(), uuid.uuid4()),
     )
-    accts = conn.execute("SELECT id, tenant_id FROM test_accounts ORDER BY tenant_id").fetchall()
+    accts = conn.execute(
+        "SELECT id, tenant_id FROM test_accounts ORDER BY tenant_id"
+    ).fetchall()
     for acct_id, tenant in accts:
         conn.execute(
             "INSERT INTO canonical_conversations (id, tenant_id, account_id) VALUES (%s,%s,%s)",
@@ -97,8 +101,10 @@ def add_work(
     lease_expires: str | None = None,
 ) -> uuid.UUID:
     wid = uuid.uuid4()
-    lease_expr = "now() + interval '60 seconds'" if lease_expires == "future" else (
-        "now() - interval '60 seconds'" if lease_expires == "past" else "NULL"
+    lease_expr = (
+        "now() + interval '60 seconds'"
+        if lease_expires == "future"
+        else ("now() - interval '60 seconds'" if lease_expires == "past" else "NULL")
     )
     conn.execute(
         f"""
@@ -112,17 +118,28 @@ def add_work(
     return wid
 
 
-def claim(conn: psycopg.Connection, owner: str, batch_size: int = 10,
-          max_attempts: int = 5, lease_ttl: float = 60.0) -> list[tuple]:
+def claim(
+    conn: psycopg.Connection,
+    owner: str,
+    batch_size: int = 10,
+    max_attempts: int = 5,
+    lease_ttl: float = 60.0,
+) -> list[tuple]:
     return conn.execute(
         CLAIM_SQL,
-        {"owner": owner, "batch_size": batch_size, "max_attempts": max_attempts,
-         "lease_ttl": lease_ttl},
+        {
+            "owner": owner,
+            "batch_size": batch_size,
+            "max_attempts": max_attempts,
+            "lease_ttl": lease_ttl,
+        },
     ).fetchall()
 
 
 def check(label: str, cond: bool, detail: str = "") -> None:
-    print(f"{'PASS' if cond else 'FAIL'}  {label}" + (f"  [{detail}]" if detail else ""))
+    print(
+        f"{'PASS' if cond else 'FAIL'}  {label}" + (f"  [{detail}]" if detail else "")
+    )
     if not cond:
         raise SystemExit(1)
 
@@ -130,26 +147,42 @@ def check(label: str, cond: bool, detail: str = "") -> None:
 with psycopg.connect(URL, autocommit=True) as conn:
     # ── 1. 每租户每轮至多 1 条 ──
     reset(conn)
-    add_work(conn, "t1"); add_work(conn, "t1"); add_work(conn, "t1")
-    add_work(conn, "t2"); add_work(conn, "t2")
+    add_work(conn, "t1")
+    add_work(conn, "t1")
+    add_work(conn, "t1")
+    add_work(conn, "t2")
+    add_work(conn, "t2")
     rows = claim(conn, "w1")
     tenants = [r[1] for r in rows]
-    check("每轮每 tenant 至多 1 条", len(rows) == 2 and sorted(tenants) == ["t1", "t2"],
-          f"claimed={tenants}")
+    check(
+        "每轮每 tenant 至多 1 条",
+        len(rows) == 2 and sorted(tenants) == ["t1", "t2"],
+        f"claimed={tenants}",
+    )
 
     # ── 2. attempt_count 递增 + 租约写入 ──
-    check("claim 后 attempt_count=1", all(r[3] == 1 for r in rows), f"{[r[3] for r in rows]}")
+    check(
+        "claim 后 attempt_count=1",
+        all(r[3] == 1 for r in rows),
+        f"{[r[3] for r in rows]}",
+    )
     check("claim 后 status=in_progress", all(r[4] == "in_progress" for r in rows))
     check("claim 后 lease_owner 写入", all(r[5] == "w1" for r in rows))
 
     # ── 3. 已认领（租约未过期）不再被认出 ──
     rows2 = claim(conn, "w2")
-    check("持租约中的行不被二次认领", rows2 == [], f"claimed={[(r[0], r[1]) for r in rows2]}")
+    check(
+        "持租约中的行不被二次认领",
+        rows2 == [],
+        f"claimed={[(r[0], r[1]) for r in rows2]}",
+    )
 
     # ── 4. 剩余同租户项在下一轮被认领（每轮 1 条） ──
     #    先把 t1/t2 的 in_progress 收束掉，才能看到排队的其它项
-    conn.execute("UPDATE background_work_items SET status='queued', lease_owner=NULL, "
-                 "lease_expires_at=NULL WHERE status='in_progress'")
+    conn.execute(
+        "UPDATE background_work_items SET status='queued', lease_owner=NULL, "
+        "lease_expires_at=NULL WHERE status='in_progress'"
+    )
     rows3 = claim(conn, "w3")
     check("下一轮仍每 tenant 1 条", len(rows3) == 2, f"claimed={len(rows3)}")
 
@@ -157,7 +190,9 @@ with psycopg.connect(URL, autocommit=True) as conn:
     reset(conn)
     add_work(conn, "t1", status="failed", next_attempt_at="now() + interval '1 hour'")
     check("未到期 failed 不认领", claim(conn, "w") == [])
-    conn.execute("UPDATE background_work_items SET next_attempt_at = now() - interval '1 second'")
+    conn.execute(
+        "UPDATE background_work_items SET next_attempt_at = now() - interval '1 second'"
+    )
     check("到期 failed 可认领", len(claim(conn, "w")) == 1)
 
     # ── 6. 达 max_attempts 不再认领 ──
@@ -170,32 +205,48 @@ with psycopg.connect(URL, autocommit=True) as conn:
 
     # ── 7. stale in_progress（租约过期）可被接管 ──
     reset(conn)
-    add_work(conn, "t1", status="in_progress", lease_owner="dead", lease_expires="past",
-             attempt_count=1)
+    add_work(
+        conn,
+        "t1",
+        status="in_progress",
+        lease_owner="dead",
+        lease_expires="past",
+        attempt_count=1,
+    )
     rows7 = claim(conn, "alive")
     check("stale in_progress 被接管", len(rows7) == 1 and rows7[0][5] == "alive")
 
     # ── 8. 租约未过期的 in_progress 不被接管 ──
     reset(conn)
-    add_work(conn, "t1", status="in_progress", lease_owner="busy", lease_expires="future")
+    add_work(
+        conn, "t1", status="in_progress", lease_owner="busy", lease_expires="future"
+    )
     check("租约未过期的 in_progress 不被接管", claim(conn, "alive") == [])
 
     # ── 9. batch_size 上限生效 ──
     reset(conn)
     for t in ("ta", "tb", "tc", "td"):
-        conn.execute("INSERT INTO background_work_items (tenant_id, work_kind) VALUES (%s,'k')", (t,))
+        conn.execute(
+            "INSERT INTO background_work_items (tenant_id, work_kind) VALUES (%s,'k')",
+            (t,),
+        )
     check("batch_size 限制认领数", len(claim(conn, "w", batch_size=2)) == 2)
 
     # ── 10. 并发认领同一行只有一个成功 ──
     reset(conn)
     wid = add_work(conn, "t1")
     with psycopg.connect(URL) as c1, psycopg.connect(URL) as c2:
-        t1 = c1.execute(CLAIM_SQL, {"owner": "c1", "batch_size": 10, "max_attempts": 5,
-                                    "lease_ttl": 60.0}).fetchall()
-        t2 = c2.execute(CLAIM_SQL, {"owner": "c2", "batch_size": 10, "max_attempts": 5,
-                                    "lease_ttl": 60.0}).fetchall()
+        t1 = c1.execute(
+            CLAIM_SQL,
+            {"owner": "c1", "batch_size": 10, "max_attempts": 5, "lease_ttl": 60.0},
+        ).fetchall()
+        t2 = c2.execute(
+            CLAIM_SQL,
+            {"owner": "c2", "batch_size": 10, "max_attempts": 5, "lease_ttl": 60.0},
+        ).fetchall()
         # 两个事务都拿锁后各自提交，只有一个应真正写入
-        c1.commit(); c2.commit()
+        c1.commit()
+        c2.commit()
     winner = [r for r in (t1, t2) if r]
     check("并发认领不重复", len(winner) <= 1, f"t1={len(t1)} t2={len(t2)}")
     final_owner = conn.execute(

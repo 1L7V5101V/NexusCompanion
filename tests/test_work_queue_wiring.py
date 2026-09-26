@@ -46,10 +46,19 @@ class _Handler:
             "postgresql+psycopg://nexus:pw@localhost:5433/nexus",
             "postgresql+asyncpg://nexus:pw@localhost:5433/nexus",
         ),
-        ("postgresql://nexus:pw@db:5432/nexus", "postgresql+asyncpg://nexus:pw@db:5432/nexus"),
-        ("postgresql+psycopg2://nexus:pw@db/nexus", "postgresql+asyncpg://nexus:pw@db/nexus"),
+        (
+            "postgresql://nexus:pw@db:5432/nexus",
+            "postgresql+asyncpg://nexus:pw@db:5432/nexus",
+        ),
+        (
+            "postgresql+psycopg2://nexus:pw@db/nexus",
+            "postgresql+asyncpg://nexus:pw@db/nexus",
+        ),
         # 已是 async 驱动则保持不变（幂等）
-        ("postgresql+asyncpg://nexus:pw@db/nexus", "postgresql+asyncpg://nexus:pw@db/nexus"),
+        (
+            "postgresql+asyncpg://nexus:pw@db/nexus",
+            "postgresql+asyncpg://nexus:pw@db/nexus",
+        ),
     ],
 )
 def test_async_pg_url_converts_driver(sync_url: str, expected: str) -> None:
@@ -120,7 +129,15 @@ def test_load_work_queue_defaults_when_absent() -> None:
 
 def test_load_work_queue_overrides() -> None:
     cfg = _load_work_queue_config(
-        {"agent": {"work_queue": {"enabled": True, "batch_size": 3, "poll_interval_seconds": 0.5}}}
+        {
+            "agent": {
+                "work_queue": {
+                    "enabled": True,
+                    "batch_size": 3,
+                    "poll_interval_seconds": 0.5,
+                }
+            }
+        }
     )
     assert cfg.enabled is True
     assert cfg.batch_size == 3
@@ -130,7 +147,14 @@ def test_load_work_queue_overrides() -> None:
 def test_load_work_queue_rejects_invalid_values() -> None:
     with pytest.raises(ValueError, match="必须大于 heartbeat_interval_seconds"):
         _load_work_queue_config(
-            {"agent": {"work_queue": {"lease_ttl_seconds": 10, "heartbeat_interval_seconds": 20}}}
+            {
+                "agent": {
+                    "work_queue": {
+                        "lease_ttl_seconds": 10,
+                        "heartbeat_interval_seconds": 20,
+                    }
+                }
+            }
         )
     with pytest.raises(ValueError, match="最多 5"):
         _load_work_queue_config({"agent": {"work_queue": {"max_attempts": 6}}})

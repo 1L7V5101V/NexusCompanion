@@ -33,7 +33,6 @@ from infra.channels.web_chat_channel import (
 )
 from infra.storage.tenancy import DEFAULT_TENANT
 
-
 # ── stubs ────────────────────────────────────────────────────────
 
 
@@ -43,7 +42,9 @@ class _CanonicalRepoStub:
     def __init__(self, by_account: dict[str, list[dict[str, Any]]]) -> None:
         self._by_account = by_account
 
-    async def list_conversations_by_account(self, account_id: Any) -> list[dict[str, Any]]:
+    async def list_conversations_by_account(
+        self, account_id: Any
+    ) -> list[dict[str, Any]]:
         return list(self._by_account.get(str(account_id), []))
 
 
@@ -155,7 +156,9 @@ async def test_rejects_account_without_canonical_conversation() -> None:
 @pytest.mark.asyncio
 async def test_connection_identity_overrides_channel_identity() -> None:
     channel = _make_channel(
-        WebChatIdentity(tenant_id="tenant:channel", chat_id="channel", session_key="chat:channel")
+        WebChatIdentity(
+            tenant_id="tenant:channel", chat_id="channel", session_key="chat:channel"
+        )
     )
     bus = channel._require_ctx().bus
     conn = _Connection(  # type: ignore[arg-type]
@@ -193,7 +196,9 @@ async def test_connection_identity_overrides_channel_identity() -> None:
 async def test_connection_without_identity_falls_back_to_channel_identity() -> None:
     """未传连接身份时回退通道身份（dev 回退语义，与改动前一致）。"""
     channel = _make_channel(
-        WebChatIdentity(tenant_id="tenant:channel", chat_id="channel", session_key="chat:channel")
+        WebChatIdentity(
+            tenant_id="tenant:channel", chat_id="channel", session_key="chat:channel"
+        )
     )
     bus = channel._require_ctx().bus
     conn = _Connection(_FakeWebSocket(), uuid4().hex)  # type: ignore[arg-type]
