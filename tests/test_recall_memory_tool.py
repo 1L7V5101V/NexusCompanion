@@ -678,7 +678,7 @@ async def test_recall_memory_answer_intent_passes_time_range_to_searches() -> No
     assert store.vector_batch_kwargs
     # C13 验收 3：HyDE 默认关闭，answer intent 只用原始 query（1 个向量），
     # 不再隐式生成 2 个 hypothesis。
-    assert store.vector_batch_vec_count == 2
+    assert store.vector_batch_vec_count == 1
     assert store.keyword_kwargs
     assert store.vector_batch_kwargs[0]["memory_types"] is None
     assert store.vector_batch_kwargs[0]["time_start"] is not None
