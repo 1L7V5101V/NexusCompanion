@@ -47,6 +47,13 @@ from bootstrap.db.models.control_plane import (
     WorkAttemptModel,
 )
 
+from bootstrap.work_queue_defaults import (
+    DEFAULT_BACKOFF_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+)
+
+from core.telemetry.redaction import redact_text
+
 __all__ = [
     "AcceptInboundResult",
     "CompletionResult",
@@ -68,8 +75,7 @@ __all__ = [
 # 第二个分支自然接管，design.md ADR-5）。pending/failed 分支按本周期
 # attempt_count < max_attempts 把门，防止 dead_letter 前无限认领；stale
 # attempting 分支不受该门限制（worker 崩溃残留必须可接管收束）。
-_CLAIM_SQL = text(
-    """
+_CLAIM_SQL = text("""
     WITH due AS (
         SELECT id FROM outbound_delivery_intents
         WHERE (
@@ -93,8 +99,7 @@ _CLAIM_SQL = text(
               i.idempotency_key, i.channel, i.target_chat_id, i.payload_json,
               i.status, i.attempt_count, i.lease_owner, i.lease_expires_at,
               i.next_attempt_at, i.last_error, i.sent_at, i.created_at, i.updated_at
-    """
-)
+    """)
 
 _WORK_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
 
@@ -109,8 +114,7 @@ WorkMutation = Callable[[AsyncSession], Awaitable[None]]
 #   只做②会被实测证伪（已持租那条退出候选集后，同租户的下一条 queued 仍会被认领）。
 # - 条件②不能用 `row_number()`/`DISTINCT ON`：PostgreSQL 的 `FOR UPDATE` 与窗口函数、
 #   DISTINCT 同层冲突（`FOR UPDATE is not allowed with window functions`）。
-_CLAIM_WORK_SQL = text(
-    """
+_CLAIM_WORK_SQL = text("""
     WITH picked AS (
         SELECT w.id
         FROM background_work_items w
@@ -149,13 +153,11 @@ _CLAIM_WORK_SQL = text(
               i.idempotency_key, i.payload_json, i.status, i.attempt_count,
               i.lease_owner, i.lease_expires_at, i.next_attempt_at, i.last_error,
               i.created_at, i.updated_at, i.finished_at
-    """
-)
+    """)
 
 # 崩溃恢复清扫（ADR-3）：把过期 `in_progress` 复位 `queued`，**不碰 `attempt_count`**。
 # 同时带回扫前的租约/活动信息，供 `work_attempts(outcome='recovered')` 与恢复指标使用。
-_SWEEP_WORK_SQL = text(
-    """
+_SWEEP_WORK_SQL = text("""
     WITH stale AS (
         SELECT id,
                lease_owner      AS prev_lease_owner,
@@ -177,8 +179,7 @@ _SWEEP_WORK_SQL = text(
     RETURNING i.id, i.tenant_id, i.work_kind, i.flow, i.attempt_count,
               stale.prev_lease_owner, stale.prev_lease_expires_at,
               stale.prev_updated_at, now() AS recovered_at
-    """
-)
+    """)
 
 
 class ControlPlaneError(Exception):
@@ -338,7 +339,9 @@ class IngressRepository:
                         source_message_id=source_message_id,
                     )
                     .on_conflict_do_nothing(
-                        index_where=MessageDeduplicationKeyModel.source_message_id.is_not(None)
+                        index_where=MessageDeduplicationKeyModel.source_message_id.is_not(
+                            None
+                        )
                     )
                 )
             else:
@@ -351,7 +354,9 @@ class IngressRepository:
                         client_message_id=client_message_id,
                     )
                     .on_conflict_do_nothing(
-                        index_where=MessageDeduplicationKeyModel.client_message_id.is_not(None)
+                        index_where=MessageDeduplicationKeyModel.client_message_id.is_not(
+                            None
+                        )
                     )
                 )
             inserted = (await sess.execute(dedup_stmt)).rowcount
@@ -721,7 +726,10 @@ class TurnControlRepository:
             row = (
                 await sess.execute(
                     select(ToolCallModel)
-                    .where(ToolCallModel.id == call_id, ToolCallModel.tenant_id == tenant_id)
+                    .where(
+                        ToolCallModel.id == call_id,
+                        ToolCallModel.tenant_id == tenant_id,
+                    )
                     .with_for_update()
                 )
             ).scalar_one_or_none()
@@ -829,16 +837,20 @@ class DeliveryRepository:
         # 单语句事务：认领必须真实提交，否则 lease 写入随 session close 回滚。
         async with self._sf() as sess, sess.begin():
             rows = (
-                await sess.execute(
-                    _CLAIM_SQL,
-                    {
-                        "owner": owner,
-                        "batch_size": batch_size,
-                        "lease_ttl": lease_ttl_seconds,
-                        "max_attempts": max_attempts,
-                    },
+                (
+                    await sess.execute(
+                        _CLAIM_SQL,
+                        {
+                            "owner": owner,
+                            "batch_size": batch_size,
+                            "lease_ttl": lease_ttl_seconds,
+                            "max_attempts": max_attempts,
+                        },
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             return [_intent_row_to_dict(dict(row)) for row in rows]
 
     async def heartbeat(
@@ -852,15 +864,13 @@ class DeliveryRepository:
         """续租；返回 False = 租约已失（他人接管），本次尝试不得再推进 sent。"""
         itnt_id = _require_uuid(intent_id, "intent_id")
         # 原生 SQL：lease 到期时间必须与 claim 的比较同源（DB 时钟，ADR-5）。
-        stmt = text(
-            """
+        stmt = text("""
             UPDATE outbound_delivery_intents
             SET lease_expires_at = now() + make_interval(secs => :lease_ttl),
                 updated_at = now()
             WHERE id = :intent_id AND tenant_id = :tenant_id
               AND lease_owner = :owner AND status = 'attempting'
-            """
-        )
+            """)
         async with self._sf() as sess, sess.begin():
             result = await sess.execute(
                 stmt,
@@ -961,9 +971,7 @@ class DeliveryRepository:
                 )
             attempt_count = int(row.attempt_count)
             is_dead = attempt_count >= max_attempts
-            db_now = (
-                await sess.execute(select(func.now()))
-            ).scalar_one()
+            db_now = (await sess.execute(select(func.now()))).scalar_one()
             if is_dead:
                 row.status = "dead_letter"
             else:
@@ -1031,7 +1039,9 @@ class DeliveryRepository:
             row.next_attempt_at = datetime.now(UTC)
             row.lease_owner = None
             row.lease_expires_at = None
-            row.updated_at = datetime.now(UTC)  # 显式赋值，避开 onupdate 刷新 SELECT（MissingGreenlet）
+            row.updated_at = datetime.now(
+                UTC
+            )  # 显式赋值，避开 onupdate 刷新 SELECT（MissingGreenlet）
             await sess.flush()
             return _intent_to_dict(row)
 
@@ -1053,15 +1063,19 @@ class DeliveryRepository:
         """管理员可见查询（按租户过滤，§5.9.11 stale/dead-letter 处置入口的底座）。"""
         async with self._sf() as sess:
             rows = (
-                await sess.execute(
-                    select(OutboundDeliveryIntentModel)
-                    .where(
-                        OutboundDeliveryIntentModel.tenant_id == tenant_id,
-                        OutboundDeliveryIntentModel.status == status,
+                (
+                    await sess.execute(
+                        select(OutboundDeliveryIntentModel)
+                        .where(
+                            OutboundDeliveryIntentModel.tenant_id == tenant_id,
+                            OutboundDeliveryIntentModel.status == status,
+                        )
+                        .order_by(OutboundDeliveryIntentModel.created_at.asc())
                     )
-                    .order_by(OutboundDeliveryIntentModel.created_at.asc())
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [_intent_to_dict(r) for r in rows]
 
     async def list_delivery_attempts(
@@ -1071,19 +1085,26 @@ class DeliveryRepository:
         itnt_id = _require_uuid(intent_id, "intent_id")
         async with self._sf() as sess:
             rows = (
-                await sess.execute(
-                    select(DeliveryAttemptModel)
-                    .where(
-                        DeliveryAttemptModel.intent_id.in_(
-                            select(OutboundDeliveryIntentModel.id).where(
-                                OutboundDeliveryIntentModel.id == itnt_id,
-                                OutboundDeliveryIntentModel.tenant_id == tenant_id,
+                (
+                    await sess.execute(
+                        select(DeliveryAttemptModel)
+                        .where(
+                            DeliveryAttemptModel.intent_id.in_(
+                                select(OutboundDeliveryIntentModel.id).where(
+                                    OutboundDeliveryIntentModel.id == itnt_id,
+                                    OutboundDeliveryIntentModel.tenant_id == tenant_id,
+                                )
                             )
                         )
+                        .order_by(
+                            DeliveryAttemptModel.started_at.asc(),
+                            DeliveryAttemptModel.id.asc(),
+                        )
                     )
-                    .order_by(DeliveryAttemptModel.started_at.asc(), DeliveryAttemptModel.id.asc())
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [_attempt_to_dict(r) for r in rows]
 
 
@@ -1125,15 +1146,19 @@ class WorkItemRepository:
             raise ValueError("batch_size 必须 >= 1")
         async with self._sf() as sess, sess.begin():
             rows = (
-                await sess.execute(
-                    _CLAIM_WORK_SQL,
-                    {
-                        "owner": owner,
-                        "batch_size": batch_size,
-                        "lease_ttl": lease_ttl_seconds,
-                    },
+                (
+                    await sess.execute(
+                        _CLAIM_WORK_SQL,
+                        {
+                            "owner": owner,
+                            "batch_size": batch_size,
+                            "lease_ttl": lease_ttl_seconds,
+                        },
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
             return [_work_item_row_to_dict(dict(row)) for row in rows]
 
     async def heartbeat(
@@ -1147,15 +1172,13 @@ class WorkItemRepository:
         """续租；返回 False = 租约已失（他人接管），本次尝试不得再推进终态。"""
         item_id = _require_uuid(work_item_id, "work_item_id")
         # 原生 SQL：lease 到期时间必须与 claim 的比较同源（DB 时钟，ADR-4）。
-        stmt = text(
-            """
+        stmt = text("""
             UPDATE background_work_items
             SET lease_expires_at = now() + make_interval(secs => :lease_ttl),
                 updated_at = now()
             WHERE id = :work_item_id AND tenant_id = :tenant_id
               AND lease_owner = :owner AND status = 'in_progress'
-            """
-        )
+            """)
         async with self._sf() as sess, sess.begin():
             result = await sess.execute(
                 stmt,
@@ -1210,8 +1233,8 @@ class WorkItemRepository:
         owner: str,
         error: str,
         *,
-        max_attempts: int = 5,
-        backoff_seconds: tuple[float, ...] = (60.0, 300.0, 1800.0, 7200.0, 21600.0),
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        backoff_seconds: tuple[float, ...] = DEFAULT_BACKOFF_SECONDS,
         started_at: datetime | None = None,
     ) -> dict[str, Any]:
         """记录一次业务失败：递增 `attempt_count`，按退避排程或进入死信终态。
@@ -1219,10 +1242,15 @@ class WorkItemRepository:
         `attempt_count` 是**全仓唯一递增点**（ADR-3 实现期细化），因此崩溃复位与
         维护类延后都不消耗重试预算。`attempt_count >= max_attempts` → `failed`
         **死信终态**（claim 的 due 判据不含 `failed`，故不再被认领，仅 redrive 可回）。
+
+        自由文本 `error` 在落库前过 `redact_text`（spec「自由文本字段 SHALL 入库前
+        经脱敏」；`last_error` 与审计流 `work_attempts.error` 同时脱敏）。
+        默认参数与 `bootstrap/work_queue_defaults.py` 单一来源一致。
         """
         item_id = _require_uuid(work_item_id, "work_item_id")
         if max_attempts < 1:
             raise ValueError("max_attempts 必须 >= 1")
+        safe_error = redact_text(error)
         async with self._sf() as sess, sess.begin():
             row = await _lock_leased_work_item(
                 sess, tenant_id, item_id, owner, action="记录失败"
@@ -1231,7 +1259,7 @@ class WorkItemRepository:
             row.attempt_count = int(row.attempt_count) + 1
             row.lease_owner = None
             row.lease_expires_at = None
-            row.last_error = error
+            row.last_error = safe_error
             row.updated_at = db_now
             if row.attempt_count >= max_attempts:
                 row.status = "failed"
@@ -1244,7 +1272,7 @@ class WorkItemRepository:
                 sess,
                 item_id,
                 "failed",
-                error=error,
+                error=safe_error,
                 started_at=started_at,
                 finished_at=db_now,
             )
@@ -1264,8 +1292,10 @@ class WorkItemRepository:
         """维护类延后专用（ADR-5）：回 `queued` 并延后排程，**不计失败**。
 
         `attempt_count` 与 `last_error` 均**不动**——延后不是失败（ADR-3）。
+        `note` 为自由文本，落库前过 `redact_text`（与 record_work_failed 同规则）。
         """
         item_id = _require_uuid(work_item_id, "work_item_id")
+        safe_note = redact_text(note) if note else None
         async with self._sf() as sess, sess.begin():
             row = await _lock_leased_work_item(
                 sess, tenant_id, item_id, owner, action="释放延后"
@@ -1280,7 +1310,7 @@ class WorkItemRepository:
                 sess,
                 item_id,
                 "released",
-                error=note,
+                error=safe_note,
                 started_at=started_at,
                 finished_at=db_now,
             )
@@ -1299,11 +1329,13 @@ class WorkItemRepository:
 
         追加带原因的处置记录，**不删不改**既有 `work_attempts` 历史；
         复位 `attempt_count = 0`（否则 redrive 一次又立即超限），回到 `queued`。
+        `reason` 为自由文本，落库前过 `redact_text`。
         """
         item_id = _require_uuid(work_item_id, "work_item_id")
         if not reason.strip():
             raise ValueError("redrive 需要非空原因")
-        detail = reason if operator is None else f"[{operator}] {reason}"
+        safe_reason = redact_text(reason)
+        detail = safe_reason if operator is None else f"[{operator}] {safe_reason}"
         async with self._sf() as sess, sess.begin():
             row = (
                 await sess.execute(
@@ -1316,7 +1348,9 @@ class WorkItemRepository:
                 )
             ).scalar_one_or_none()
             if row is None:
-                raise WorkItemNotFoundError(f"work item 不存在: work_item_id={item_id!r}")
+                raise WorkItemNotFoundError(
+                    f"work item 不存在: work_item_id={item_id!r}"
+                )
             if row.status != "failed":
                 raise RedriveNotAllowedError(
                     f"仅 failed 死信可 redrive: work_item_id={item_id!r} "
@@ -1352,8 +1386,8 @@ class WorkItemRepository:
             raise ValueError("limit 必须 >= 1")
         async with self._sf() as sess, sess.begin():
             rows = (
-                await sess.execute(_SWEEP_WORK_SQL, {"limit": limit})
-            ).mappings().all()
+                (await sess.execute(_SWEEP_WORK_SQL, {"limit": limit})).mappings().all()
+            )
             items = [dict(r) for r in rows]
             for item in items:
                 _add_work_attempt(
@@ -1387,15 +1421,19 @@ class WorkItemRepository:
         """管理员可见查询（按租户过滤；死信盘点入口）。"""
         async with self._sf() as sess:
             rows = (
-                await sess.execute(
-                    select(BackgroundWorkItemModel)
-                    .where(
-                        BackgroundWorkItemModel.tenant_id == tenant_id,
-                        BackgroundWorkItemModel.status == status,
+                (
+                    await sess.execute(
+                        select(BackgroundWorkItemModel)
+                        .where(
+                            BackgroundWorkItemModel.tenant_id == tenant_id,
+                            BackgroundWorkItemModel.status == status,
+                        )
+                        .order_by(BackgroundWorkItemModel.created_at.asc())
                     )
-                    .order_by(BackgroundWorkItemModel.created_at.asc())
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [_work_item_to_dict(r) for r in rows]
 
     async def list_work_attempts(
@@ -1405,22 +1443,26 @@ class WorkItemRepository:
         item_id = _require_uuid(work_item_id, "work_item_id")
         async with self._sf() as sess:
             rows = (
-                await sess.execute(
-                    select(WorkAttemptModel)
-                    .where(
-                        WorkAttemptModel.work_item_id.in_(
-                            select(BackgroundWorkItemModel.id).where(
-                                BackgroundWorkItemModel.id == item_id,
-                                BackgroundWorkItemModel.tenant_id == tenant_id,
+                (
+                    await sess.execute(
+                        select(WorkAttemptModel)
+                        .where(
+                            WorkAttemptModel.work_item_id.in_(
+                                select(BackgroundWorkItemModel.id).where(
+                                    BackgroundWorkItemModel.id == item_id,
+                                    BackgroundWorkItemModel.tenant_id == tenant_id,
+                                )
                             )
                         )
-                    )
-                    .order_by(
-                        WorkAttemptModel.started_at.asc(),
-                        WorkAttemptModel.id.asc(),
+                        .order_by(
+                            WorkAttemptModel.started_at.asc(),
+                            WorkAttemptModel.id.asc(),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             return [_work_attempt_to_dict(r) for r in rows]
 
 

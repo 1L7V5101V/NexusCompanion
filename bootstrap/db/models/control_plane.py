@@ -39,7 +39,14 @@ INBOX_STATUSES = ("accepted", "processed")
 """inbox 收束枚举：processed = durable acceptance/terminal processing 已收束
 （`complete_inbound` 等价语义），不表示 channel 已成功展示。"""
 
-TURN_STATUSES = ("queued", "in_progress", "completed", "interrupted", "failed", "cancelled")
+TURN_STATUSES = (
+    "queued",
+    "in_progress",
+    "completed",
+    "interrupted",
+    "failed",
+    "cancelled",
+)
 """turn 状态枚举：沿用 ConversationRuntime 冻结终态集（PILOT_ROADMAP §3.1）。"""
 
 TOOL_CALL_STATUSES = ("running", "succeeded", "failed", "cancelled", "unknown")
@@ -139,7 +146,9 @@ class InboxRecordModel(Base):
     __tablename__ = "inbox_records"
     __table_args__ = (
         UniqueConstraint("dedup_key_id", name="uq_inbox_records_dedup_key_id"),
-        CheckConstraint("status IN ('accepted', 'processed')", name="ck_inbox_records_status"),
+        CheckConstraint(
+            "status IN ('accepted', 'processed')", name="ck_inbox_records_status"
+        ),
         Index(
             "ix_inbox_records_conversation",
             "tenant_id",
@@ -289,9 +298,10 @@ class BackgroundWorkItemModel(Base):
 
     `attempt_count` / `lease_owner` / `lease_expires_at` / `next_attempt_at` /
     `last_error` 与 `outbound_delivery_intents` **同名同语义**（C15 design ADR-2），
-    但 lease 语义有一处关键差异：`attempt_count` **只由 claim 递增**，崩溃清扫复位
-    **不**递增（ADR-3）——否则反复崩溃会在没有任何业务失败的情况下退避耗尽成
-    `failed`。状态词汇沿用 queued/in_progress/succeeded/failed/cancelled（ADR-1）。
+    但 lease 语义有一处关键差异：`attempt_count` **只由 `record_work_failed`（业务
+    失败）递增**，认领与崩溃清扫复位**均不**递增（ADR-3）——否则反复崩溃会在
+    没有任何业务失败的情况下退避耗尽成 `failed`。状态词汇沿用
+    queued/in_progress/succeeded/failed/cancelled（ADR-1）。
     """
 
     __tablename__ = "background_work_items"

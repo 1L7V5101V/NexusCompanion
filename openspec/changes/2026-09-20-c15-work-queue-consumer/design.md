@@ -35,7 +35,7 @@
 
 | 列 | 类型 | 约束 | 用途 |
 | --- | --- | --- | --- |
-| `attempt_count` | `INTEGER` | `NOT NULL DEFAULT 0` | 执行计数（`claim` 时 +1）；**(B) 定案下不再用作认领门槛**，仅供退避索引与观测 |
+| `attempt_count` | `INTEGER` | `NOT NULL DEFAULT 0` | 业务失败计数（仅 `record_work_failed` 递增）；**(B) 定案下不再用作认领门槛**，仅供退避索引与观测 |
 | `lease_owner` | `VARCHAR(128)` | `NULL` | 认领者标识 |
 | `lease_expires_at` | `TIMESTAMPTZ` | `NULL` | 租约到期（`claim` 时 `now() + lease_ttl`） |
 | `next_attempt_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT now()` | 到期后可再认领的时间（退避写入） |
@@ -71,7 +71,7 @@
   - **清扫**表达「这一轮执行从未收束」，产出可观测记录（这正是 §5.9.6 要求「每次恢复记录 recovery_started_at/finished_at/action/result」的落点），也让 `attempt_count` 的语义保持「真实执行次数」。
   - **claim-stale 接管**保证即使在清扫周期间隔内，到期 work 也不会饿死。
 - 复位为 `queued` 而非「原地换 owner 继续 `in_progress`」：前者让「未收束」这个事实在状态上可见（下一位认领者从干净前置开始），并与用户诉求「超时重置为 pending」一致。
-- 复位**不**递增 `attempt_count` 之外的语义：`attempt_count` 只由 `claim` 递增，因此崩溃次数不虚增尝试次数（崩溃不是业务失败，不该触发退避耗尽 → `failed`）。反之，如果崩溃也计入 attempts，一次反复崩溃的 work 会在没有任何业务失败的情况下被判定 `failed` —— 这是**错误**的终态。
+- 复位**不**递增 `attempt_count` 之外的语义：`attempt_count` 只由 `record_work_failed`（业务失败）递增，因此崩溃次数不虚增尝试次数（崩溃不是业务失败，不该触发退避耗尽 → `failed`）。反之，如果崩溃也计入 attempts，一次反复崩溃的 work 会在没有任何业务失败的情况下被判定 `failed` —— 这是**错误**的终态。
 
 **边界**：work item 的 handler 必须是**可重放或幂等**的（§5.9.6「纯内部、声明幂等的 work 可 recompute」）。带外部副作用的 handler 必须自带幂等键并落在 ADR-6 的同事务协议内；本 change 不为 handler 提供「禁止无确认重放」的自动判定（那是 C2 `tool_calls` 的 `unknown/compensation_required` 职责）。
 
@@ -193,7 +193,7 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 - 这是 §5.9.11 在 turn/outbox 上已确立的协议（执行完成事务 = final message + turn 终态 + outbox intent 同事务），work item 沿用同一形状：**要么「副作用 + succeeded」都在，要么都不在**。
 - 只靠 `idempotency_key` 不足以防重复执行（它防的是**重复入队**，不防**重复执行**）；只靠 lease 也不足以防「执行成功但状态未写」导致的重放。两者叠加才是 effectively-once：
   - 入队侧：`idempotency_key` 唯一约束 ⇒ 同一逻辑工作不会产生第二行；
-  - 执行侧：`claim` 的 `attempt_count+1` + 租约 CAS ⇒ 同一行同一时刻只有一个执行者；
+  - 执行侧：`claim` 的租约 CAS + 后续 `record_work_failed` 才递增 `attempt_count` ⇒ 同一行同一时刻只有一个执行者；
   - 提交侧：副作用与 `succeeded` 同事务 ⇒ 不存在「副作用生效但状态仍是 in_progress」的窗口；
   - 崩溃侧：ADR-3 的复位只可能造成**重放**，由 handler 自身幂等（或 ADR-6 的事务协议）吸收。
 - 因此本 change 对外的承诺是 **effectively-once**（不是 exactly-once）：在 handler 满足「幂等或与终态同事务」的前提下，可观察副作用恰好一次。
@@ -222,7 +222,7 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 ## ADR-7 运行期接线：首次建立 control plane async engine，并纳入优雅停止
 
 **结论**：在 bootstrap 建立 control plane 的 async engine + session factory（`bootstrap/db/engine.py` 已有工厂，但生产从未调用），构造 `WorkItemRepository` + `WorkQueueWorker`：
-- 启动：`AppRuntime.start()` 内在 `provisioning_worker.start()` 之后创建并启动 worker task（照 `TenantProvisioningWorker.start()/stop()` 的生命周期模式，不使用裸 `asyncio.create_task` 于 tasks 列表之外）。
+- 启动：`AppRuntime.start()` 内在 `provisioning_worker.start()` 之后创建并启动 worker task（照 `TenantProvisioningWorker.start()/stop()` 的生命周期模式）。**不放入 `self.tasks`**（与 `_run_primary_tasks` 的一损俱损语义解耦），以独立 `asyncio.create_task` 启动并挂 `done_callback` 大声记录异常（tasks.md 4.2 的定案）。
 - 停止：加入 `AppRuntime.shutdown()` 的 `_run_cleanup_steps`，位置在 `conversation_runtime.shutdown` 之前、`core.stop` 之前；`stop()` 语义 = 置停止标志 → 停止认领新 work → 等待在途 handler 收束（**不**中途取消正在执行的 handler，避免留下「副作用已写但状态未推进」）。
 - engine 释放：cleanup 内 `engine.dispose()`，避免连接泄漏。
 - 尊重既有的 PG/SQLite 二态：`storage.backend == "sqlite"` 时不建 control plane engine、不启 worker（旧单体路径不受影响）。
@@ -259,7 +259,7 @@ UPDATE background_work_items i SET ... FROM picked WHERE i.id = picked.id RETURN
 **结论**：本 change 作为 `background_work_items` 的落地方，**同时承担 C12「伴随落地协议」对本 canonical store 的指标与事件记录点**，按 `tests/fixtures/observability_event_schema.json` 落字段：
 
 - 记录点：`claim`（`enqueued_at`→`started_at` 的 `queue_wait_ms`）、`finish`（`execution_ms`、`status`）、`recovery`（清扫时的 `restart_to_recovered_ms`、`recovery_action`）。
-- 身份与归属：`work_id`、`tenant_id`、`work_kind`、`flow`、`attempt`、`session_key`（有则记）。
+- 身份与归属：`work_id`、`tenant_id`、`work_kind`、`flow`、`attempt`、`session_key`（**事件字段**按 fixture identity 组允许、有则记；**metric label** 一律禁用——高基数，见 `label_policy.FORBIDDEN_IDENTITY_LABELS`）。
 - 禁止内容字段：不记 `payload_json` 原文、不记 handler 输入输出原文（fixture 的 `forbidden_content_fields`）。
 - 自由文本（`last_error` 等）入库前过 `core/telemetry/redaction.redact_text`。
 - label 白名单：只允许 `core/telemetry/label_policy.py` 已登记的维度（`work_kind`/`flow`/`channel`/`model` 等），**不**以 `work_id`/`tenant_id` 作 metric label（高基数）。

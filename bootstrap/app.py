@@ -131,7 +131,9 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
         raise
 
 
-def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
+def _stop_plugin_jobs(
+    runtime: PluginJobRuntime | None,
+) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
             runtime.stop()
@@ -279,7 +281,10 @@ class AppRuntime:
             # PG 下装配 provisioning control path：service 供 turn gate 两阶段检查，
             # worker 独立消费队列执行幂等 DDL（M4H-4 commit 5）。
             storage_runtime = self.core.storage_runtime
-            if storage_runtime is not None and storage_runtime.memory_backend is not None:
+            if (
+                storage_runtime is not None
+                and storage_runtime.memory_backend is not None
+            ):
                 self.provisioning_service = TenantProvisioningService(
                     storage_runtime.memory_backend,
                     run_db=storage_runtime.run_db,
@@ -288,9 +293,7 @@ class AppRuntime:
                     self.provisioning_service
                 )
             await self.core.start()
-            self.workspace_mcp_watcher_task = (
-                self.core.workspace_mcp_watcher_task
-            )
+            self.workspace_mcp_watcher_task = self.core.workspace_mcp_watcher_task
 
             async def _execute_control_request(request: TurnRequest):
                 assert self.agent_loop is not None
@@ -395,11 +398,12 @@ class AppRuntime:
                 snapshot = plugin_manager.current_snapshot
                 service_bindings = {
                     plugin_id: {
-                        service_id: dict(spec)
-                        for service_id, spec in services.items()
+                        service_id: dict(spec) for service_id, spec in services.items()
                     }
                     for plugin_id, services in (
-                        snapshot.managed_services.items() if snapshot is not None else ()
+                        snapshot.managed_services.items()
+                        if snapshot is not None
+                        else ()
                     )
                 }
                 self.plugin_service_host.bind_plugin_services(service_bindings)
@@ -445,26 +449,26 @@ class AppRuntime:
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 bot_commands=(
-                    plugin_manager.telegram_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.telegram_bot_commands if plugin_manager else None
                 ),
                 interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
             )
             await self.channel_host.start_all()
             if plugin_manager is not None:
-                channel_bindings = {
-                    plugin_id: generation.contributions.channels
-                    for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
-                } if plugin_manager.current_snapshot is not None else {}
+                channel_bindings = (
+                    {
+                        plugin_id: generation.contributions.channels
+                        for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
+                    }
+                    if plugin_manager.current_snapshot is not None
+                    else {}
+                )
                 self.channel_host.bind_plugin_channels(channel_bindings)
                 plugin_manager.bind_channel_switcher(
                     self.channel_host.swap_plugin_channels
                 )
-                plugin_manager.bind_endpoint_switcher(
-                    self._swap_plugin_endpoints
-                )
+                plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
 
             self.tasks = [
                 self.passive_worker.run(),
@@ -529,9 +533,7 @@ class AppRuntime:
                 event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
-                    list(plugin_manager.proactive_modules)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_modules) if plugin_manager else None
                 ),
                 proactive_lifecycles=(
                     list(plugin_manager.proactive_lifecycles)
@@ -658,7 +660,7 @@ class AppRuntime:
                 scheduled.append(task)
         except (asyncio.CancelledError, Exception):
             self._runtime_tasks = set(scheduled)
-            self.tasks = pending[len(scheduled):]
+            self.tasks = pending[len(scheduled) :]
             for awaitable in self.tasks:
                 if inspect.iscoroutine(awaitable):
                     awaitable.close()
@@ -789,15 +791,19 @@ class AppRuntime:
                 ),
                 (
                     "control_service.shutdown",
-                    self.control_service.shutdown
-                    if self.control_service
-                    else _noop_async,
+                    (
+                        self.control_service.shutdown
+                        if self.control_service
+                        else _noop_async
+                    ),
                 ),
                 (
                     "conversation_runtime.shutdown",
-                    self.conversation_runtime.shutdown
-                    if self.conversation_runtime
-                    else _noop_async,
+                    (
+                        self.conversation_runtime.shutdown
+                        if self.conversation_runtime
+                        else _noop_async
+                    ),
                 ),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
@@ -806,22 +812,24 @@ class AppRuntime:
                 ),
                 (
                     "plugin_services.stop",
-                    self.plugin_service_host.stop_all
-                    if self.plugin_service_host
-                    else _noop_async,
+                    (
+                        self.plugin_service_host.stop_all
+                        if self.plugin_service_host
+                        else _noop_async
+                    ),
                 ),
                 (
                     "provisioning_worker.stop",
-                    self.provisioning_worker.stop
-                    if self.provisioning_worker
-                    else _noop_async,
+                    (
+                        self.provisioning_worker.stop
+                        if self.provisioning_worker
+                        else _noop_async
+                    ),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
-                    self.memory_runtime.aclose
-                    if self.memory_runtime
-                    else _noop_async,
+                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
@@ -832,7 +840,10 @@ class AppRuntime:
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
-                ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
+                (
+                    "workspace_lock.release",
+                    _release_workspace_lock(self._workspace_lock),
+                ),
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)

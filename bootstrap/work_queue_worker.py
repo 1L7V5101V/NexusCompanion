@@ -41,6 +41,19 @@ from bootstrap.db.repository.control_plane_repo import (
     WorkItemRepository,
 )
 
+from bootstrap.work_queue_defaults import (
+    DEFAULT_BACKOFF_SECONDS,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_ERROR_BACKOFF_SECONDS,
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_LEASE_TTL_SECONDS,
+    DEFAULT_MAINTENANCE_ACQUIRE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_ERROR_BACKOFF_SECONDS,
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    DEFAULT_RELEASE_DELAY_SECONDS,
+)
+
 from bootstrap.work_queue_telemetry import WorkQueueTelemetry
 
 logger = logging.getLogger(__name__)
@@ -55,18 +68,23 @@ __all__ = [
 
 @dataclass(frozen=True)
 class WorkQueueWorkerConfig:
-    """冻结的 Pilot 初始运行参数（可配置，不是业务成功保证）。"""
+    """冻结的 Pilot 初始运行参数（可配置，不是业务成功保证）。
 
-    lease_ttl_seconds: float = 60.0
-    heartbeat_interval_seconds: float = 20.0
-    max_attempts: int = 5
-    backoff_seconds: tuple[float, ...] = (60.0, 300.0, 1800.0, 7200.0, 21600.0)
-    poll_interval_seconds: float = 1.0
-    batch_size: int = 10
-    maintenance_acquire_timeout_seconds: float = 5.0
-    release_delay_seconds: float = 60.0
-    error_backoff_seconds: float = 5.0
-    max_error_backoff_seconds: float = 60.0
+    字面量单一来源 = `bootstrap/work_queue_defaults.py`（worker / 仓储 / config 共用）。
+    """
+
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    backoff_seconds: tuple[float, ...] = DEFAULT_BACKOFF_SECONDS
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    batch_size: int = DEFAULT_BATCH_SIZE
+    maintenance_acquire_timeout_seconds: float = (
+        DEFAULT_MAINTENANCE_ACQUIRE_TIMEOUT_SECONDS
+    )
+    release_delay_seconds: float = DEFAULT_RELEASE_DELAY_SECONDS
+    error_backoff_seconds: float = DEFAULT_ERROR_BACKOFF_SECONDS
+    max_error_backoff_seconds: float = DEFAULT_MAX_ERROR_BACKOFF_SECONDS
 
     def __post_init__(self) -> None:
         if self.lease_ttl_seconds <= self.heartbeat_interval_seconds:
@@ -82,9 +100,7 @@ class WorkQueueWorkerConfig:
         if self.error_backoff_seconds <= 0:
             raise ValueError("error_backoff_seconds 必须为正")
         if self.max_error_backoff_seconds < self.error_backoff_seconds:
-            raise ValueError(
-                "max_error_backoff_seconds 必须 >= error_backoff_seconds"
-            )
+            raise ValueError("max_error_backoff_seconds 必须 >= error_backoff_seconds")
 
 
 @dataclass(frozen=True)
@@ -343,6 +359,7 @@ class WorkQueueWorker:
                     "handler 失败且租约已失，放弃本次 attempt（不写状态）work_item_id=%s",
                     envelope.work_item_id,
                 )
+                self._abandon(envelope, reason="LeaseLost", started_at=started_at)
                 return
             await self._fail(
                 envelope,
@@ -357,6 +374,7 @@ class WorkQueueWorker:
                 "handler 成功但租约已失，放弃终态推进（可能重复执行）work_item_id=%s",
                 envelope.work_item_id,
             )
+            self._abandon(envelope, reason="LeaseLost", started_at=started_at)
             return
 
         async def mutate(session: AsyncSession) -> None:
@@ -375,10 +393,12 @@ class WorkQueueWorker:
                 "推进终态时租约已失，放弃本次 attempt（不写状态）work_item_id=%s",
                 envelope.work_item_id,
             )
+            self._abandon(envelope, reason="LeaseLost", started_at=started_at)
         except WorkItemNotFoundError:
             logger.warning(
                 "推进终态时 work item 已不存在 work_item_id=%s", envelope.work_item_id
             )
+            self._abandon(envelope, reason="WorkItemNotFound", started_at=started_at)
         except Exception as exc:
             # persist 失败：终态与副作用已整体回滚，按业务失败计入预算
             if lease_lost.is_set():
@@ -386,6 +406,7 @@ class WorkQueueWorker:
                     "persist 失败且租约已失，放弃本次 attempt（不写状态）work_item_id=%s",
                     envelope.work_item_id,
                 )
+                self._abandon(envelope, reason="LeaseLost", started_at=started_at)
                 return
             await self._fail(
                 envelope,
@@ -404,7 +425,7 @@ class WorkQueueWorker:
                 tenant_id=envelope.tenant_id,
                 work_kind=envelope.work_kind,
                 flow=envelope.flow,
-                status="succeeded",
+                status="completed",  # fixture 冻结枚举（succeeded 是 DB 状态词）
                 started_at=started_at,
                 finished_at=datetime.now(UTC),
                 attempt=envelope.attempt_count,
@@ -434,6 +455,11 @@ class WorkQueueWorker:
                 envelope.work_item_id,
                 exc,
             )
+            self._abandon(
+                envelope,
+                reason=type(exc).__name__,
+                started_at=started_at or datetime.now(UTC),
+            )
             return
         logger.info(
             "work item failed work_item_id=%s error=%s",
@@ -441,7 +467,10 @@ class WorkQueueWorker:
             error,
         )
         if started_at is not None:
-            status = str(recorded.get("status") or "failed")
+            # DB 状态词（queued 待重试 / failed 死信）→ 事件冻结枚举：都是 failed，
+            # 是否可重试由 retryable 区分（未达上限 → True；死信 → False）。
+            status = "failed"
+            retryable = str(recorded.get("status") or "failed") != "failed"
             self._telemetry.finish(
                 work_id=envelope.work_item_id,
                 tenant_id=envelope.tenant_id,
@@ -452,8 +481,7 @@ class WorkQueueWorker:
                 finished_at=datetime.now(UTC),
                 attempt=_as_int(recorded.get("attempt_count")),
                 error_type=error_type,
-                # 未达上限 → 回 queued（可重试）；达上限 → failed 死信终态
-                retryable=status != "failed",
+                retryable=retryable,
                 error=error,
             )
 
@@ -473,6 +501,11 @@ class WorkQueueWorker:
                 envelope.work_item_id,
                 exc,
             )
+            self._abandon(
+                envelope,
+                reason=type(exc).__name__,
+                started_at=datetime.now(UTC),
+            )
             return
         logger.info(
             "work item released（延后）work_item_id=%s note=%s",
@@ -487,6 +520,29 @@ class WorkQueueWorker:
             status="interrupted",  # 延后：本次尝试未完成，但不算失败
             started_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),
+        )
+
+    def _abandon(
+        self,
+        envelope: WorkItemEnvelope,
+        *,
+        reason: str,
+        started_at: datetime,
+    ) -> None:
+        """失租/行消失的放弃记录（spec 136「SHALL 记录该放弃」）。
+
+        只调遥测、不写任何 DB 状态——被放弃项由接管者或下次启动清扫收束。
+        """
+        ended_at = datetime.now(UTC)
+        self._telemetry.abandon(
+            work_id=envelope.work_item_id,
+            tenant_id=envelope.tenant_id,
+            work_kind=envelope.work_kind,
+            flow=envelope.flow,
+            reason=reason,
+            started_at=started_at,
+            finished_at=ended_at,
+            attempt=envelope.attempt_count,
         )
 
     async def _heartbeat_loop(
@@ -521,7 +577,9 @@ def _as_int(value: Any) -> int | None:
 
 def _build_envelope(item: dict[str, Any]) -> WorkItemEnvelope:
     payload_raw = item.get("payload")
-    payload: dict[str, object] = dict(payload_raw) if isinstance(payload_raw, dict) else {}
+    payload: dict[str, object] = (
+        dict(payload_raw) if isinstance(payload_raw, dict) else {}
+    )
     attempt_raw = item.get("attempt_count")
     conversation_id = item.get("conversation_id")
     flow = item.get("flow")
