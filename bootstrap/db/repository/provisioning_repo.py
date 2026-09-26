@@ -65,6 +65,8 @@ def _account_to_dict(row: TestAccountModel) -> dict:
         "id": row.id,
         "status": row.status,
         "display_name": row.display_name,
+        "email": row.email,
+        # password_digest 永不进入任何 API/审计响应（§5.9.3：仅存 argon2 哈希）。
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
@@ -166,8 +168,10 @@ class ProvisioningRepository:
         """单事务：job `ready` + 账号 `active`（§5.9.13：ready 才可签发 Token）。
 
         首次执行要求账号 `provisioning`；幂等 retry 允许账号已是 `active`
-        （§5.9.13 同 tenant 不产生第二个 agent，重跑直接收尾）。task 状态机
-        禁止项（suspended/revoked/failed 终态）仍抛 :class:`ProvisioningStateError`。
+        （§5.9.13 同 tenant 不产生第二个 agent，重跑直接收尾）；注册流程失败
+        后账号为 `failed`（invite-code-tenant-registration），retry 收敛时同样
+        允许进入 active。task 状态机禁止项（suspended/revoked 终态）仍抛
+        :class:`ProvisioningStateError`。
         """
         async with self._sf() as sess, sess.begin():
             row = await sess.get(
@@ -180,7 +184,11 @@ class ProvisioningRepository:
             account = await sess.get(
                 TestAccountModel, row.account_id, with_for_update=True
             )
-            if account is None or account.status not in ("provisioning", "active"):
+            if account is None or account.status not in (
+                "provisioning",
+                "active",
+                "failed",
+            ):
                 raise ProvisioningStateError(
                     f"账号 {row.account_id!r} 状态非法，不能进入 active"
                 )
@@ -205,6 +213,29 @@ class ProvisioningRepository:
             row.finished_at = _UTC_NOW()
             await sess.flush()
             return _job_to_dict(row)
+
+    async def mark_account_failed(
+        self, account_id: uuid.UUID | str, *, reason: str = "provisioning failed"
+    ) -> dict:
+        """注册流程失败收束：账号从 `provisioning` 显式进入 `failed`。
+
+        （invite-code-tenant-registration spec：provisioning 失败时账号进入
+        failed + 邀请码已消费；管理员可对同一 job 幂等 retry ——
+        ``mark_ready`` 允许从 failed 恢复 active。）
+        """
+        async with self._sf() as sess, sess.begin():
+            row = await sess.get(
+                TestAccountModel, to_uuid(account_id), with_for_update=True
+            )
+            if row is None or row.status not in ("provisioning", "failed"):
+                raise ProvisioningStateError(
+                    f"账号 {account_id!r} 状态 {row.status if row else 'missing'} "
+                    "不允许置 failed"
+                )
+            snapshot = _account_to_dict(row)
+            row.status = "failed"
+            await sess.flush()
+            return snapshot
 
     async def retry_failed(self, job_id: uuid.UUID | str) -> dict:
         """failed → pending（同一 job 行、tenant 不变；幂等 retry 不产生第二个

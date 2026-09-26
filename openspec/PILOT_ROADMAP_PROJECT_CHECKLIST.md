@@ -106,6 +106,7 @@
   - [ ] **服务端 principal/tenant 派生与越权测试** → outcome 见 [PILOT_ROADMAP §5.9.1](PILOT_ROADMAP.md)；**部分完成**：C1 规范身份链（account→tenant→conversation，fail-closed）已 `verified`；**WebChat 入口的 principal→tenant 派生未接线**（通道固定 `DEFAULT_TENANT`，见上条）
   - [ ] **PersonaProfile / RelationshipState PostgreSQL 当前值存储、tenant 串行更新与最小审计** → outcome 见 [PILOT_ROADMAP §5.9.8](PILOT_ROADMAP.md)
   - [ ] **Telegram Bot 用户私聊身份绑定 + cross-channel 去重/同步** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [x] **邀请码租户注册 + 邮箱密码登录**（invite-code-tenant-registration change）— 一次性租户邀请码（签发不要求预存账号，携带租户名）+ 邮箱/密码自助注册 + 登录；argon2 密码哈希；`POST /api/auth/register` / `POST /api/auth/login` / admin `POST /api/admin/tenant-invites`；注册即消费邀请码 + provisioning 收束 + 会话；存量 exchange 路径兼容。migration `c9d7e3a5f2b1`（test_accounts.email/password_digest、access_tokens.account_id nullable + tenant_name、账号状态枚举 + failed）。测试：82/82（tests/auth_provisioning）全绿 + 前端 `npm run build:chat`。change 未归档时以 `openspec/changes/invite-code-tenant-registration/` 为准
   - [ ] **PostgreSQL inbox/turn/tool/work/outbox/delivery/schedule/provisioning durable source of truth**（公网前移除 Pilot 多规范源） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
 - [ ] **P2 账号控制与长期试用** — Dashboard/CLI 发放、查询、过期、撤销、封禁和 tenant 下钻；`planned`
   - [ ] **账号 `suspended`/`revoked` 状态 + active WebSocket/tenant lane/tool 取消传播** → outcome 见 [PILOT_ROADMAP §5.3](PILOT_ROADMAP.md)

@@ -31,8 +31,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from bootstrap.db.models.base import Base
 
-ACCOUNT_STATUSES = ("provisioning", "active", "suspended", "revoked")
-"""账号状态枚举（§5.9.9 冻结）：revoked 为终态，suspended 可解除但旧凭据不复活。"""
+ACCOUNT_STATUSES = ("provisioning", "active", "suspended", "revoked", "failed")
+"""账号状态枚举（§5.9.9 冻结 + invite-code-tenant-registration 扩展）：
+revoked 为终态，suspended 可解除但旧凭据不复活；failed 为 provisioning
+执行失败态（非终态，注册流程可经 admin retry 恢复 active）。"""
 
 CONVERSATION_STATUSES = ("active", "archived")
 """规范会话状态枚举：C1 只区分可用与归档，archived 不做任何行为。"""
@@ -52,7 +54,7 @@ class TestAccountModel(Base):
     __tablename__ = "test_accounts"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('provisioning', 'active', 'suspended', 'revoked')",
+            "status IN ('provisioning', 'active', 'suspended', 'revoked', 'failed')",
             name="ck_test_accounts_status",
         ),
     )
@@ -64,6 +66,12 @@ class TestAccountModel(Base):
         String(32), nullable=False, default="provisioning"
     )
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # 邮箱密码注册 (invite-code-tenant-registration): 全局唯一登录名，存量行为 NULL。
+    email: Mapped[str | None] = mapped_column(
+        String(255), unique=True, nullable=True, index=False
+    )
+    # argon2 密码哈希（D3，仅存哈希）。存量行为 NULL（无密码，仅走旧 Token 兑换）。
+    password_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

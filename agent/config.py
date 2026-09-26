@@ -487,6 +487,10 @@ def _load_auth_config(data: dict) -> AuthConfig:
             "auth.invitation_token_ttl_hours",
             raw.get("invitation_token_ttl_hours", defaults.invitation_token_ttl_hours),
         ),
+        password_min_length=_parse_int_positive(
+            "auth.password_min_length",
+            raw.get("password_min_length", defaults.password_min_length),
+        ),
     )
 
 
