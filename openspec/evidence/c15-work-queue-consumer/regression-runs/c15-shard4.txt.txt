@@ -1,0 +1,99 @@
+........................................................................ [ 48%]
+........................................F............................... [ 96%]
+......                                                                   [100%]
+================================== FAILURES ===================================
+________________ test_trace_complete_and_correlated[postgres] _________________
+
+backend = 'postgres'
+tmp_path = WindowsPath('C:/Users/HP/AppData/Local/Temp/pytest-of-HP/pytest-129/test_trace_complete_and_correl1')
+
+    @pytest.mark.parametrize("backend", ["sqlite", "postgres"])
+    def test_trace_complete_and_correlated(backend: str, tmp_path: Path) -> None:
+        if backend == "postgres" and not _pg_alive(PG_URL):
+            pytest.skip(f"本地 PG 不可用（{PG_URL}），跳过 postgres trace parity")
+    
+        tenant = f"parity_{os.getpid()}_{uuid.uuid4().hex[:6]}"
+        spec = _make_spec(backend, tmp_path, tenant)
+        store = TraceStore(max_entries=4096, dump_dir=tmp_path / "traces")
+>       core, _sm, runtime = build_core(
+            workspace=tmp_path,
+            storage=StorageConfig(backend=backend),
+            spec=spec,
+            trace_store=store,
+        )
+
+tests\test_trace_backend_parity.py:61: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+scripts\load\driver.py:242: in build_core
+    runtime = create_storage_runtime(
+infra\storage\factory.py:85: in create_storage_runtime
+    _check_pg_schema(config.postgres_url, "memory_items")
+infra\storage\factory.py:27: in _check_pg_schema
+    conn = psycopg.connect(url)
+           ^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+cls = <class 'psycopg.Connection'>
+conninfo = 'user=nexus password=nexus_dev dbname=nexus host=localhost port=5433 hostaddr=::1'
+autocommit = False, prepare_threshold = 5, context = None, row_factory = None
+cursor_factory = None, kwargs = {}
+
+    @classmethod
+    def connect(
+        cls,
+        conninfo: str = "",
+        *,
+        autocommit: bool = False,
+        prepare_threshold: int | None = 5,
+        context: AdaptContext | None = None,
+        row_factory: RowFactory[Row] | None = None,
+        cursor_factory: type[Cursor[Row]] | None = None,
+        **kwargs: ConnParam,
+    ) -> Self:
+        """
+        Connect to a database server and return a new `Connection` instance.
+        """
+    
+        params = cls._get_connection_params(conninfo, **kwargs)
+        timeout = timeout_from_conninfo(params)
+        rv = None
+        attempts = conninfo_attempts(params)
+        conn_errors: list[tuple[e.Error, str]] = []
+        for attempt in attempts:
+            tdescr = (attempt.get("host"), attempt.get("port"), attempt.get("hostaddr"))
+            descr = "host: %r, port: %r, hostaddr: %r" % tdescr
+            logger.debug("connection attempt: %s", descr)
+            try:
+                conninfo = make_conninfo("", **attempt)
+                gen = cls._connect_gen(conninfo, timeout=timeout)
+                rv = waiting.wait_conn(gen, interval=_WAIT_INTERVAL)
+            except e.Error as ex:
+                logger.debug("connection failed: %s: %s", descr, str(ex))
+                conn_errors.append((ex, descr))
+            except e._NO_TRACEBACK as ex:
+                raise ex.with_traceback(None)
+            else:
+                logger.debug("connection succeeded: %s", descr)
+                break
+    
+        if not rv:
+            last_ex = conn_errors[-1][0]
+            if len(conn_errors) == 1:
+                raise last_ex.with_traceback(None)
+    
+            # Create a new exception with the same type as the last one, containing
+            # all attempt errors while preserving backward compatibility.
+            lines = [str(last_ex)]
+            lines.append("Multiple connection attempts failed. All failures were:")
+            lines.extend((f"- {descr}: {error}" for error, descr in conn_errors))
+            new_ex = type(last_ex)("\n".join(lines), pgconn=last_ex.pgconn)
+>           raise new_ex.with_traceback(None)
+E           psycopg.errors.ConnectionTimeout: connection timeout expired
+E           Multiple connection attempts failed. All failures were:
+E           - host: 'localhost', port: '5433', hostaddr: '127.0.0.1': connection timeout expired
+E           - host: 'localhost', port: '5433', hostaddr: '::1': connection timeout expired
+
+..\..\NexusCompanion\.venv\Lib\site-packages\psycopg\connection.py:130: ConnectionTimeout
+=========================== short test summary info ===========================
+FAILED tests/test_trace_backend_parity.py::test_trace_complete_and_correlated[postgres]
+1 failed, 149 passed in 287.63s (0:04:47)

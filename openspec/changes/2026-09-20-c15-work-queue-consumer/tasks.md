@@ -59,7 +59,7 @@
 ## 7. 回归与状态
 
 - [x] 7.1 `pyright --level error`（project + tests 两配置）无新增错误。验证：`openspec/evidence/c15-work-queue-consumer/pyright-project.txt`（**36 errors**，与 C12 基线 36 一致）+ `pyright-tests.txt`（41 errors；较旧基线 31 的增量来自 `main` 前进带入的既有文件，**按文件核对无任何 C15 文件**）。本机 pyright 因「天锐绿盾」透明加密读到密文而不可用，已按 C4 先例用 `git show` 把跟踪的 `.py` 重写为明文后复跑；判读与解法见 `env-rebuild-and-pyright-anomaly.md`
-- [ ] 7.2 带 PG 全量回归无新增失败：`python scripts/regression.py --start-pg --evidence openspec/evidence/c15-work-queue-consumer/pytest-regression.txt`（PG 前置由 `NEXUS_REQUIRE_PG` 守卫保证，不允许静默 skip）。验证：证据文件
+- [x] 7.2 带 PG 全量回归无新增失败：`python scripts/regression.py --start-pg --evidence openspec/evidence/c15-work-queue-consumer/pytest-regression.txt`（PG 前置由 `NEXUS_REQUIRE_PG` 守卫保证，不允许静默 skip）。验证：证据文件——本机 Docker 起 `pgvector/pgvector:pg16`（同服务器 c15-test-pg 版本）`alembic upgrade head` 后分片全量回归 **1591 passed / 0 失败**（C15 相关），汇总与各分片原始输出见 `pytest-regression.md` 与 `regression-runs/`；已知环境差异为 web_chat_e2e 平台问题（C4 既有，不在 C15 diff）与两个 C12 已记录的 collection 错误（同服务器处理）。回归中暴露并修复第 9 项审查发现（state_machine 副作用 INSERT 引用已删列的 bug，提交 `f541cb8d`）
 - [x] 7.3 `openspec validate` 通过（C15 与 C12 均通过）；tasks 勾选与 evidence 同步；`openspec status` 显示 4/4 artifacts complete。证据目录 `openspec/evidence/c15-work-queue-consumer/`：claim SQL 冒烟、仓储验证（43 项）、worker/接线/遥测测试输出（48 项）、恢复 e2e（含 1.3/4.4/5.2）、环境重建与 pyright 异常判读。
 
 ## 8. 已知边界（不在本 change 内）
