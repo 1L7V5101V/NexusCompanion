@@ -146,9 +146,15 @@ class PostgresMemoryBackend:
         self._vec_dim = vec_dim
         self._lock = threading.RLock()
         self._closed = False
-        # PG 无 FTS5；镜像 SQLite 的 _fts_available 让 retriever 守卫短路到
-        # keyword_search_summary（PG store 已实现，语义等价于 SQLite 基线 OR-LIKE）
+        # PG 无 FTS5（_fts_available 恒 False，语义上不存在）。C13 后 retriever
+        # 的 BM25 守卫走 duck-typed ensure_bm25_ready()（pg_search 探测+幂等建
+        # 索引），本字段仅保留给 SQLite-only 语义兼容检查使用。
         self._fts_available = False
+        # pg_search 运行时探测缓存：首次 ensure_bm25_ready() 探测一次（可用 +
+        # 已安装），之后每次 retrieve 复用；探测/建索引失败 remain False →
+        # 检索降级 OR-LIKE（ADR-4）。
+        self._pg_search_probed = False
+        self._pg_search_available = False
         # 分区存在性是 catalog 级，天然跨 tenant 共享，放 backend
         self._partitions_known: set[str] = set()
         # pool 是连接唯一所有者；每条借出连接经 configure 注册 vector 适配器
@@ -1476,6 +1482,178 @@ class PostgresMemoryStore:
                 )
 
         return matched
+
+    # ------------------------------------------------------------------
+    # pg_search BM25（ADR-4：运行时探测 + 幂等建索引 + 失败降级）
+    # ------------------------------------------------------------------
+
+    def ensure_bm25_ready(self) -> bool:
+        """pg_search 运行时探测 + 幂等建 bm25 索引；结果缓存于 backend。
+
+        探测一次（`pg_available_extensions` 可用 + `pg_extension` 已安装），随后
+        retrieve 复用缓存；`CREATE INDEX IF NOT EXISTS` 幂等。任何失败 fail-open
+        返回 False——检索方降级 `keyword_search_summary`，绝不影响启动/检索。
+        """
+        with self._lock, self._backend.connection():
+            self._check_open()
+            if self._backend._pg_search_probed:
+                return self._backend._pg_search_available
+            self._backend._pg_search_probed = True
+            try:
+                available = self._probe_pg_search()
+                if available:
+                    self._create_bm25_index()
+                self._backend._pg_search_available = available
+            except Exception as e:  # noqa: BLE001 - fail-open 降级 ILIKE
+                logger.warning("pg_search 探测/建索引失败，降级 ILIKE: %s", e)
+                self._backend._pg_search_available = False
+            return self._backend._pg_search_available
+
+    def _probe_pg_search(self) -> bool:
+        """扩展「可用 + 已安装」都满足才启用 BM25 路径。"""
+        available = self._conn.execute(
+            "SELECT 1 FROM pg_available_extensions "
+            "WHERE name=%s AND installed_version IS NOT NULL",
+            ("pg_search",),
+        ).fetchone()
+        if available is None:
+            return False
+        installed = self._conn.execute(
+            "SELECT 1 FROM pg_extension WHERE extname=%s",
+            ("pg_search",),
+        ).fetchone()
+        return installed is not None
+
+    def _create_bm25_index(self) -> None:
+        """幂等创建 pg_search bm25 索引（索引名固定，重复调用无副作用）。
+
+        本地 Windows 便携 PG / 标准 PG 无 pg_search：探测阶段即短路，不会走到
+        这里；生产 ParadeDB 若建索引报错，由 ensure_bm25_ready 捕获降级。
+        """
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS memory_items_bm25_idx "
+            "ON memory_items USING bm25 (id, summary) WITH (key_field='id')"
+        )
+        self._conn.commit()
+
+    def keyword_search_bm25(
+        self,
+        terms: list[str],
+        memory_types: list[str] | None = None,
+        limit: int = 20,
+        scope_channel: str | None = None,
+        scope_chat_id: str | None = None,
+        require_scope_match: bool = False,
+        time_start: datetime | None = None,
+        time_end: datetime | None = None,
+        raw_query: str | None = None,
+    ) -> list[dict[str, object]]:
+        """pg_search BM25 全文检索；返回格式与 SQLite `keyword_search_bm25` 兼容。
+
+        query 由 jieba terms 构造（空格 OR 连接），`summary @@@ :query` 匹配 +
+        `pdb.score()` 排序。pg_search 未启用或任何异常返回 []，由调用方降级
+        `keyword_search_summary`（与 SQLite FTS5 不可用时的降级路径同构）。
+        """
+        if not self._backend._pg_search_available:
+            return []
+        cleaned = [t for t in terms if t and len(t) >= 2]
+        if not cleaned:
+            return []
+        bm25_query = " OR ".join(f'"{term}"' for term in dict.fromkeys(cleaned))
+
+        type_filter = ""
+        type_params: list[str] = []
+        if memory_types:
+            placeholders = ",".join(["%s"] * len(memory_types))
+            type_filter = f" AND memory_type IN ({placeholders})"
+            type_params = list(memory_types)
+
+        scope_filter = ""
+        scope_params: list[str] = []
+        if require_scope_match:
+            scope_filter = (
+                f" AND {_SCOPE_CHANNEL_SQL} = %s"
+                f" AND {_SCOPE_CHAT_SQL} = %s"
+            )
+            scope_params = [(scope_channel or "").strip(), (scope_chat_id or "").strip()]
+
+        has_time_filter = time_start is not None or time_end is not None
+        time_filter = ""
+        time_params: list[object] = []
+        if has_time_filter:
+            time_clauses, time_params = _pg_time_prefilter_clauses(
+                "happened_at", time_start, time_end
+            )
+            time_filter = " AND " + " AND ".join(time_clauses)
+
+        batch_size = (
+            max(limit, _TIME_FILTER_KEYWORD_CANDIDATE_LIMIT)
+            if has_time_filter
+            else limit * 4
+        )
+
+        sql = _q(
+            "SELECT id, memory_type, summary, source_ref, happened_at, created_at, "
+            "reinforcement, updated_at, emotional_weight, pdb.score() AS rank "
+            "FROM memory_items "
+            "WHERE tenant_id=%s AND status='active' AND summary @@@ %s"
+            f"{type_filter}{scope_filter}{time_filter} "
+            "ORDER BY rank DESC "
+            "LIMIT %s"
+        )
+        try:
+            with self._lock, self._backend.connection():
+                self._check_open()
+                rows = self._conn.execute(
+                    sql,
+                    (self._tenant_id, bm25_query)
+                    + tuple(type_params)
+                    + tuple(scope_params)
+                    + tuple(time_params)
+                    + (batch_size,),
+                ).fetchall()
+        except Exception as e:  # noqa: BLE001 - 查询失败降级 ILIKE
+            logger.warning("pg_search BM25 检索失败，降级 ILIKE: %s", e)
+            return []
+
+        results: list[_MemoryHit] = []
+        for row in rows:
+            (
+                row_id,
+                mtype,
+                summary,
+                source_ref,
+                happened_at,
+                created_at,
+                _reinforcement,
+                _updated_at,
+                _emotional_weight,
+                rank,
+            ) = row
+            if has_time_filter and not _is_memory_time_in_range(
+                _to_iso(happened_at), time_start, time_end
+            ):
+                continue
+            # pg_search pdb.score() 正值越高越匹配，直接作为 bm25 raw 语义；
+            # retriever 侧 enrich 再归一化 raw/(raw+K)（ADR-1）。
+            keyword_score = max(0.0, _coerce_float(rank))
+            results.append(
+                {
+                    "id": str(row_id),
+                    "memory_type": str(mtype),
+                    "summary": str(summary),
+                    "source_ref": str(source_ref) if source_ref else "",
+                    "happened_at": _to_iso(happened_at) or _to_iso(created_at) or "",
+                    "keyword_score": round(keyword_score, 4),
+                    # RRF 之后做乘性热度增强时，keyword 命中也要能拿到热度三件套
+                    "_reinforcement": _coerce_int(_reinforcement, 1),
+                    "_updated_at": _to_iso(_updated_at) or "",
+                    "_emotional_weight": _coerce_emotional_weight(_emotional_weight),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
 
     def keyword_search_summary(
         self,
