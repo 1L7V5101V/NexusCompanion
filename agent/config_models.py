@@ -191,6 +191,9 @@ class AuthConfig:
     admin_idle_minutes: int = 30
     admin_absolute_hours: int = 12
     invitation_token_ttl_hours: int = 168
+    """邀请 Token TTL；租户邀请码同样适用（签发时固化到行）。"""
+    password_min_length: int = 8
+    """邮箱密码注册/登录的最小密码长度策略（注册时校验，默认 8 位）。"""
 
     @property
     def session_idle_s(self) -> int:
