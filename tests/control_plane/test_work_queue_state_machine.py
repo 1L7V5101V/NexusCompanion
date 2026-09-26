@@ -60,13 +60,17 @@ def _side_effects(exec_sql: Callable[..., Any]) -> int:
 
 
 async def _insert_side_effect(sess: AsyncSession, tenant_id: str) -> None:
-    """handler 的业务副作用（ADR-6：必须与终态同事务）。"""
+    """handler 的业务副作用（ADR-6：必须与终态同事务）。
+
+    test_accounts 的 C1 迁移把 tenant_id 列去掉了（account→N tenant 后租户归属
+    在 canonical 侧），所以这里不能再写 tenant_id 列；tenant_id 仅作调用方
+    可读参数保留。
+    """
     await sess.execute(
         text(
-            "INSERT INTO test_accounts (id, tenant_id, status, display_name) "
-            "VALUES (gen_random_uuid(), :t, 'active', 'side-effect')"
-        ),
-        {"t": tenant_id},
+            "INSERT INTO test_accounts (id, status, display_name) "
+            "VALUES (gen_random_uuid(), 'active', 'side-effect')"
+        )
     )
 
 
@@ -445,12 +449,12 @@ class _RecoveryHandler:
     async def persist(
         self, session, envelope: WorkItemEnvelope, result: object
     ) -> None:
+        # test_accounts 无 tenant_id 列（C1 迁移去多租户化，见 _insert_side_effect 注释）
         await session.execute(
             text(
-                "INSERT INTO test_accounts (id, tenant_id, status, display_name) "
-                "VALUES (gen_random_uuid(), :t, 'active', 'recovery-side-effect')"
-            ),
-            {"t": f"c15-rec-{envelope.work_item_id[:8]}"},
+                "INSERT INTO test_accounts (id, status, display_name) "
+                "VALUES (gen_random_uuid(), 'active', 'side-effect')"
+            )
         )
 
 
