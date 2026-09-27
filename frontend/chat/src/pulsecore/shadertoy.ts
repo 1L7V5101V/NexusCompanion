@@ -45,20 +45,16 @@ export const heartbeatPulse = (t: number): number => {
     return Math.exp(-a * a) + 0.55 * Math.exp(-b * b);
 };
 
-// Overlay：心跳式径向扩张收缩（围绕黑洞屏幕位置）+ 亮度增益，上屏
+// Overlay：亮度增益上屏（黑洞本体的心跳缩放在 Pass A 里改质量尺度实现）
 export const OVERLAY_FRAG = /* glsl */ `
 precision highp float;
 uniform sampler2D uTex;
 uniform vec2 uOutRes;
-uniform vec2 uCenter;        // 黑洞在画面中的归一化位置 (0..1)
 uniform float uGain;         // 亮度增益（已含心跳/音频/闪烁）
-uniform float uZoom;         // 心跳径向扩张量（0 时无缩放）
 out vec4 fragColor;
 void main() {
     vec2 uv = gl_FragCoord.xy / uOutRes;
-    // 放大采样 = 画面围绕洞心向外扩张；分子式缩放边缘安全（不会采出界）
-    vec2 uv2 = uCenter + (uv - uCenter) / (1.0 + uZoom);
-    vec3 col = texture(uTex, uv2).rgb;
+    vec3 col = texture(uTex, uv).rgb;
     fragColor = vec4(col * uGain, 1.0);
 }
 `;
