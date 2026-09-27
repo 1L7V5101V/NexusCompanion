@@ -45,3 +45,22 @@
   仅记录（test_hook_failure_policy::test_post_error_hook_timeout_does_not_mask_tool_error）。
 - 环境记录：便携 PG（C:\Users\HP\.localpg）以 `-o "-p 5433"` 启动后 166 项
   PG 依赖测试从 skip 转为通过。
+
+## Rebase 后受影响验证（origin/main = `bd592ec6`，2026-09-27）
+
+按 issue-lifecycle 规范，主题分支 PR 前 rebase 到目标分支最新提交并完成受影响验证：
+
+- **冲突处理**（3 处，均为双侧新增并存）：
+  - `core/memory/markdown.py`：main 的 `global_maintenance_limit` 参数 + C8 的 `runtime_snapshot_store` 参数；
+  - `agent/config_models.py`：main 的 `auth: AuthConfig` 字段 + C8 的 `plugin_runtime: PluginRuntimeConfig` 字段；
+  - `agent/config.py`：`_load_auth_config`（C5）与 `_load_plugin_runtime_config`（C8）两个加载器及对应 import/构造参数并存。
+- **pyright**：`36 errors`，与 main 既有 36 错误基线一致。
+- **全量 pytest（隔离库对照法）**：本机共享 PG 存在其他会话并发跑测试的干扰
+  （同一 `nexus` 库互相踩踏导致运行间波动），故创建独立 `nexus_c8` 库
+  （`NEXUS_TEST_PG_URL` 指向）并以 `NEXUS_REQUIRE_PG=1` 跑双份全量对照：
+  - C8 分支（rebase 后）：`37 failed, 1458 passed, 4 errors`；
+  - origin/main 干净 worktree（`bd592ec6`，同 venv 同库同环境）：`37 failed, 1398 passed, 4 errors`；
+  - **FAILED/ERROR 清单逐项 diff 完全一致** → 41 项失败全部为 main 既有环境性失败
+    （含 memory 记录的 `test_web_chat_e2e_dev` 环境性失败组），C8 零新增失败；
+  - 1458 = 1398 + 60（C8 新增 60 项测试全部通过）。
+- 结论：rebase 后无回归，冲突合并正确，可进入 PR。
