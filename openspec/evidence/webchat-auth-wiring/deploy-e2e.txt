@@ -1,0 +1,55 @@
+# webchat-auth-wiring 任务 5.2 — 部署后服务器实跑 e2e（deploy-e2e）
+
+- 日期：2026-09-27（UTC 12:05 实跑）
+- 目标：阿里云 ECS `114.55.243.189`，生产容器 `NexusCompanion`
+  （image `76bbf48d4012`，构建于 2026-09-27 12:19 +0800，Python 3.12.14），
+  控制面 PG 为 compose 内 `nexus-postgres`（pgvector/pgvector:pg16，健康）。
+- 入口链路：Cloudflare Tunnel（cloudflared）→ Caddy → `127.0.0.1:6322`
+  （容器内 uvicorn）；WebChat 域名 `https://nexus.il7510n.dpdns.org`
+  （= config `[auth].origin_allowlist` 唯一项）。
+- 脚本：`scripts/e2e_deploy_webchat_auth.py`（docker cp 进容器后
+  `python /tmp/e2e_deploy_webchat_auth.py`），与真实 uvicorn 应用进程、真实
+  控制面 PG 同环境运行；canary 账号经 service 层创建、结束后撤销（保留审计）。
+
+## 实跑输出（E2E PASS）
+
+```text
+[1] canary 账号 ready：account=53bf9b2d-776d-44ea-a2de-ab4206aa2742
+    PG 派生预期：tenant=pilot-fsaigcr2tb37 conv=d8774b34-330e-4076-95cd-85dbc1796264
+[2] exchange 200：Set-Cookie name=__Host-nexus_session；属性=Path=/;HttpOnly;SameSite=Lax;Secure;Max-Age=2592000
+[3] 无 Cookie 握手被拒：InvalidStatus
+[4] 非法 Origin 握手被拒：InvalidStatus
+[5] hello 三元组与 PG 派生一致（latest_seq=0）
+[6] message.accepted（seq=1）
+[7] 流式 delta 0 段（合计 0 字符）→ turn.completed（seq=2，content[:60]='OK'）
+[8] canary 账号已撤销（保留审计记录）
+E2E PASS: exchange → handshake(负向×2) → hello → 收发一轮（流式+终态）
+```
+
+## 各步验收对照（任务 5.2：exchange → handshake → hello → 收发一轮）
+
+| 步骤 | 验收点 | 结果 |
+| --- | --- | --- |
+| provisioning | canary 账号 ready 前不发 Token；ready 后才有 canonical conversation | ✅ `[1]`（真实 PG，`status=active` 后才签发邀请） |
+| exchange | 一次性邀请 token → 200 + `__Host-nexus_session`（HttpOnly/Secure/SameSite=Lax/Path=/） | ✅ `[2]`（生产 config `cookie_secure=true`，前缀/Secure 属实） |
+| 负向握手 ×2 | 无 Cookie / Origin 不在 allowlist → 升级被拒（HTTP 403→`InvalidStatus`），不产生 hello、不入队 | ✅ `[3]``[4]` |
+| hello | 服务端按 session 经 C1 派生 `account → tenant → canonical conversation`，与 PG 记录逐字一致；客户端声明字段无效 | ✅ `[5]` |
+| 收发一轮 | 真实 AgentLoop：`message.accepted(seq=1)` → `turn.completed(seq=2)`，模型实答 `OK` | ✅ `[6]``[7]` |
+| 清理 | canary 账号 revoke（审计保留） | ✅ `[8]` |
+
+## 说明与边界
+
+- **流式 delta 在生产为 0 段**：生产 LLM provider 该轮未产生分段 delta（与
+  provider 流式配置有关，非 auth 接线范围）。流式帧链路已由本地真实 PG e2e
+  （`real-pg-e2e.txt`，stub worker 显式产生 delta）与 C4 dev e2e 覆盖。
+- **首次运行失败为脚本缺陷**（非产品缺陷）：`client_message_id` 未用 UUID，
+  服务端正确回 error 帧（`ERR_BAD_CLIENT_MESSAGE_ID`），脚本当时未显式处理
+  error 帧导致等待空闲回收；已修复脚本（cmid 用 UUID + error 帧即失败）。
+  该轮产生的 canary 账号 `8a297ab8-8394-4f77-8004-8dc170e3d7ab` 同样已撤销。
+- **部署代码版本**：服务器快照包含 webchat-auth-wiring 主体（`3da7f9d5`）；
+  与 main 的差异仅为 `chat_api.py` 黑格式化（无语义差异）及 C15
+  （`work-queue`）对 `bootstrap/app.py` 的增量（属 C15 部署范围，与本 change
+  验收无关）。核心身份/握手/门禁文件（`web_chat_channel.py`、
+  `auth/identity.py`、`auth/ws_guard.py`）与 main 逐字节一致。
+- **运维边界**（同 5.5）：本 change 只解决认证闭环；对外部用户开放 MUST 等
+  C7 工具隔离 + 存储切换。
