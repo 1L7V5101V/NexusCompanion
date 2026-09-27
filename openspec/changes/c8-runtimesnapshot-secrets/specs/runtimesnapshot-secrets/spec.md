@@ -46,17 +46,22 @@ Passive、Proactive、Drift（经 proactive tick）、consolidation、optimizer 
 
 ### Requirement: hook failure 分层
 
-gate/interceptor 型 hook（pre-tool、生命周期 phase module、EventBus emit intercept）在超时、异常或上下文缺失时 SHALL fail-closed：pre-tool 一律 deny 该次工具调用，phase module 异常中断当前 turn；fanout/telemetry 型 hook（post-tool、EventBus observe/fanout 观察者）SHALL 使用有界 timeout（默认 5.0s，可配置），单观察者超时/异常 SHALL 被记录且 SHALL NOT 中断主链路、SHALL NOT 反向改写已提交的业务终态。
+gate/interceptor 型 hook（pre-tool、生命周期 phase module、EventBus emit intercept）在超时、异常或上下文缺失时 SHALL fail-closed：pre-tool SHALL 被受控拒绝（显式 deny 或携带 hook 失败信息的受控 error 结果），真实工具 SHALL NOT 执行，phase module 异常中断当前 turn；fanout/telemetry 型 hook（post-tool、EventBus observe/fanout 观察者）SHALL 使用有界 timeout（默认 5.0s，可配置），单观察者超时/异常 SHALL 被记录且 SHALL NOT 中断主链路、SHALL NOT 反向改写已提交的业务终态。
 
 #### Scenario: pre-tool hook 超时拒绝工具调用
 
 - **WHEN** 某插件 pre-tool hook 执行超过有界 timeout
-- **THEN** 该次工具调用被 deny，真实工具未执行，主链路收到类型化拒绝
+- **THEN** 该次工具调用被受控拒绝（携带 hook 名称与超时信息的 error 结果），真实工具未执行，主链路不崩溃
 
 #### Scenario: post-tool hook 超时不影响工具结果
 
 - **WHEN** 某插件 post_tool_use hook 执行超过有界 timeout
 - **THEN** 超时被记录为 hook 失败，工具结果与 turn 终态保持不变，后续 hook 与主链路继续
+
+#### Scenario: post_tool_error hook 失败不掩盖工具错误
+
+- **WHEN** 工具执行抛错，且某 post_tool_error hook 随后超时或异常
+- **THEN** 工具本身的错误信息保持为终态输出，hook 失败仅记录在 trace 中
 
 #### Scenario: 观察者异常隔离
 
