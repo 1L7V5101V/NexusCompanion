@@ -85,7 +85,7 @@
 - [ ] **P0 Pilot 基础运行基线** — 单机 FastAPI/Uvicorn、PostgreSQL + pgvector、有界进程内队列、HTTPS/WSS 入口；`planned`
   - [ ] **单机长期运行与重启恢复基线** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
   - [ ] **当前 persistence map、backup manifest、健康检查与基础指标** → outcome 见 [PILOT_ROADMAP §3.4](PILOT_ROADMAP.md) 与 [§5.9.12](PILOT_ROADMAP.md)
-  - [ ] **RuntimeSnapshot 全入口 lease coverage audit** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
+  - [x] **RuntimeSnapshot 全入口 lease coverage audit** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)；C8 P0 段（全入口 work-start lease + revocation recheck fail-closed + 热更新不切 snapshot）`verified`（change `c8-runtimesnapshot-secrets`，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit；revocation 真实账号源接线归 C5）
   - [ ] **结构化日志 redaction 与默认 content-off 基线** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
@@ -115,7 +115,7 @@
   - [ ] **工具资源与副作用隔离**（path resolver、target binding、owner、幂等、typed outcome） → outcome 见 [PILOT_ROADMAP §5.8.5](PILOT_ROADMAP.md)
   - [ ] **跨租户工具负向测试和并发交错测试** → outcome 见 [PILOT_ROADMAP §5.8.8](PILOT_ROADMAP.md)
   - [ ] **显式用户 schedule tenant ownership + server-resolved delivery binding** → outcome 见 [PILOT_ROADMAP §5.9.14](PILOT_ROADMAP.md)
-  - [ ] **RuntimeSnapshot/per-task tenant context + hook failure/revocation gate** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
+  - [x] **RuntimeSnapshot/per-task tenant context + hook failure/revocation gate** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)；C8 P2 段（TenantRuntimePlan/Resolver/PluginInvocationContext 接缝 + contribution 元数据 + hook failure 分层 + secret 静态加密/rotation + 发布失败回退 + dormant 安装）`verified`（change `c8-runtimesnapshot-secrets`，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit；TenantToolCatalog 消费归 C7、tenant plugin catalog/engine slot 归 C14、tenant binding durable 化归 C14/C5）
   - [ ] **用户 MCP tenant namespace**（不随 Token 登录自动开放；独立 binding/runtime/catalog/secret/audit 与负向测试完成后再单独开放） → outcome 见 [PILOT_ROADMAP §5.8.4](PILOT_ROADMAP.md)
 - [ ] **P3 稳定性与备份** — 恢复演练、崩溃重启、运行指标和维护 runbook；`planned`
   - [ ] **PostgreSQL / workspace / attachment 备份恢复演练，并独立保存 legacy SQLite/workspace** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)

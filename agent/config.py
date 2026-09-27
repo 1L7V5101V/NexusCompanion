@@ -28,6 +28,7 @@ from agent.config_models import (
     MemoryEmbeddingConfig,
     PeerAgentConfig,
     PersonaConfig,
+    PluginRuntimeConfig,
     QQChannelConfig,
     QQGroupConfig,
     StorageConfig,
@@ -121,6 +122,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
     admission_cfg = _load_admission_config(data)
     auth_cfg = _load_auth_config(data)
+    plugin_runtime_cfg = _load_plugin_runtime_config(data)
 
     return Config(
         provider=provider,
@@ -201,6 +203,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         app_server=app_server,
         admission=admission_cfg,
         auth=auth_cfg,
+        plugin_runtime=plugin_runtime_cfg,
         logging=logging_cfg,
         router_mode=str(
             data.get("router_mode", "rule")
@@ -509,6 +512,25 @@ def _parse_int_positive(name: str, value: object) -> int:
     if parsed < 1:
         raise ValueError(f"{name} 必须为正整数，当前: {value!r}")
     return parsed
+
+
+def _load_plugin_runtime_config(data: dict) -> PluginRuntimeConfig:
+    """[agent.plugins] C8 hook 有界 timeout；未配置即 5s 默认。"""
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("plugins")) or {}
+    defaults = PluginRuntimeConfig()
+
+    def _float(name: str) -> float:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(f"agent.plugins.{name} 必须为正数，当前: {value!r}")
+        return parsed
+
+    return PluginRuntimeConfig(
+        hook_timeout_seconds=_float("hook_timeout_seconds"),
+        observer_timeout_seconds=_float("observer_timeout_seconds"),
+    )
 
 
 def _load_wiring_config(data: dict) -> WiringConfig:

@@ -28,8 +28,10 @@ from typing import Any, Callable
 
 from zoneinfo import ZoneInfo
 
+from agent.admission.revocation import RevocationGate
 from core.common.timekit import parse_iso as _parse_iso
 from infra.persistence.json_store import load_json, save_json
+from infra.storage.tenancy import tenant_id_for_channel
 
 logger = logging.getLogger(__name__)
 
@@ -346,11 +348,14 @@ class SchedulerService:
         agent_loop_provider: Callable[[], Any] | None = None,
         tracker: LatencyTracker | None = None,
         _now_fn: Callable[[], datetime] | None = None,
+        # C8 §5.9.16：instant 直推前的副作用方 revocation recheck（fail-closed）。
+        revocation_gate: RevocationGate | None = None,
     ) -> None:
         self.store = JobStore(store_path)
         self.push_tool = push_tool
         self.agent_loop = agent_loop
         self._agent_loop_provider = agent_loop_provider
+        self._revocation_gate = revocation_gate
         self.tracker = tracker or LatencyTracker()
         self._now = _now_fn or (lambda: datetime.now(timezone.utc))
         self._jobs: dict[str, ScheduledJob] = {}
@@ -474,6 +479,12 @@ class SchedulerService:
     async def _execute(self, job: ScheduledJob) -> None:
         label = job.name or job.id[:8]
         if job.tier == "instant":
+            # C8 §5.9.16：外部副作用 + outbound delivery 前 revocation recheck。
+            if self._revocation_gate is not None:
+                await self._revocation_gate.check(
+                    tenant_id_for_channel(job.channel, job.chat_id),
+                    action="scheduler_instant_push",
+                )
             result = await self.push_tool.execute(
                 channel=job.channel,
                 chat_id=job.chat_id,
