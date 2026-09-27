@@ -34,7 +34,8 @@
 **白名单冻结**（P1 初始，精确 tool id，依据 §5.9.7 第 4 条与 §5.8.3 表；实现时以 `tasks.md` T2 的程序化清单核对为准）：
 
 - 允许：`recall_memory`、`memorize`、`forget_memory`、`search_messages`、`fetch_messages`、`read_file`、`list_dir`、`write_file`、`edit_file`、`read_image_vision`、`message_push`（服务端绑定目标）、`schedule`、`remind`、`list_schedules`、`cancel_schedule`、`web_search`、`web_fetch`（限流 + SSRF 防护）
-- 默认关闭（普通 tenant）：`shell`、`spawn`/`spawn_manage`、`task_output`/`task_stop`（随 spawn 关闭）、`peer_agent`、`load_skill`（插件/skill 管理面）、system MCP 管理、`memory_signal`（内部信号）
+- **类别规则（memory engine 注入工具）**：memory engine `tool_profile()` 经壳类 `_MemorySignalTool`（`agent/tools/meta/register.py:21`，name/description/参数由 spec 注入）动态注册的工具，按**注册来源 = 租户 active engine 的 tool_profile** 归类处理，不按静态 id 枚举：视为标准记忆工具（`recall_memory`/`memorize`/`forget_memory`）的同类，对启用该引擎的租户按记忆工具策略放行，effect 按引擎声明的 `MemoryToolSpec.risk` 如实映射（`read-only` → `read-only`，`write` → `tenant-local-write`，`external-side-effect` → `external-write`，后者落入 ADR-4 高危默认拒绝语义），审计照走 tool_call 记录点；租户未启用该引擎时自然不可见。现实实例：rachael 引擎的 `reinforce_memory`（`plugins/rachael/engine.py:239`，`risk="write"`，用户纠正时的记忆信号强化）——屏蔽它会使 rachael 的纠正学习失效，属功能自残而非安全边界；default 引擎 tool_profile 为空，无此动态工具
+- 默认关闭（普通 tenant）：`shell`、`spawn`/`spawn_manage`、`task_output`/`task_stop`（随 spawn 关闭）、`peer_agent`、`load_skill`（插件/skill 管理面）、system MCP 管理
 - `text`/`stream_text` 为非注册执行面工具，不进目录决策
 
 ## ADR-4 effect policy 载体与 typed outcome
