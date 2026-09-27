@@ -24,6 +24,32 @@ class RetrievalInjectConfig:
 
 
 @dataclass(frozen=True)
+class SparseLaneConfig:
+    """sparse lane 分数链（C13 §4.4）：BM25 raw → raw/(raw+K) 归一化 → 与 hotness 融合。"""
+
+    normalization_k: float = 4.0
+    hotness_alpha: float = 0.2
+
+
+@dataclass(frozen=True)
+class RRFConfig:
+    """RRF 融合参数；默认与历史常量一致（k=60、keyword 权重 0.5、β=0.05）。"""
+
+    k: int = 60
+    keyword_weight: float = 0.5
+    hotness_beta: float = 0.05
+
+
+@dataclass(frozen=True)
+class ExperimentalRetrievalConfig:
+    """三实验开关（§10 DEFERRED BY EVIDENCE）：默认全关，不进入默认路径。"""
+
+    hyde_enabled: bool = False
+    query_rewrite_enabled: bool = False
+    reranker_enabled: bool = False
+
+
+@dataclass(frozen=True)
 class RetrievalConfig:
     top_k_history: int = 8
     score_threshold: float = 0.45
@@ -33,6 +59,11 @@ class RetrievalConfig:
         default_factory=RetrievalThresholdsConfig
     )
     inject: RetrievalInjectConfig = field(default_factory=RetrievalInjectConfig)
+    sparse: SparseLaneConfig = field(default_factory=SparseLaneConfig)
+    rrf: RRFConfig = field(default_factory=RRFConfig)
+    experimental: ExperimentalRetrievalConfig = field(
+        default_factory=ExperimentalRetrievalConfig
+    )
 
 
 @dataclass(frozen=True)
@@ -75,6 +106,20 @@ def render_default_memory_config(config: DefaultMemoryConfig | None = None) -> s
         f"event_profile = {retrieval.inject.event_profile}",
         f"line_max = {retrieval.inject.line_max}",
         "",
+        "[retrieval.sparse]",
+        f"normalization_k = {retrieval.sparse.normalization_k}",
+        f"hotness_alpha = {retrieval.sparse.hotness_alpha}",
+        "",
+        "[retrieval.rrf]",
+        f"k = {retrieval.rrf.k}",
+        f"keyword_weight = {retrieval.rrf.keyword_weight}",
+        f"hotness_beta = {retrieval.rrf.hotness_beta}",
+        "",
+        "[retrieval.experimental]",
+        f"hyde_enabled = {str(retrieval.experimental.hyde_enabled).lower()}",
+        f"query_rewrite_enabled = {str(retrieval.experimental.query_rewrite_enabled).lower()}",
+        f"reranker_enabled = {str(retrieval.experimental.reranker_enabled).lower()}",
+        "",
     ])
 
 
@@ -101,6 +146,9 @@ def _build_config(payload: dict[str, Any]) -> DefaultMemoryConfig:
     retrieval = _as_dict(payload.get("retrieval"))
     thresholds = _as_dict(retrieval.get("thresholds"))
     inject = _as_dict(retrieval.get("inject"))
+    sparse = _as_dict(retrieval.get("sparse"))
+    rrf = _as_dict(retrieval.get("rrf"))
+    experimental = _as_dict(retrieval.get("experimental"))
     return DefaultMemoryConfig(
         db_path=str(payload.get("db_path", "")),
         retrieval=RetrievalConfig(
@@ -122,6 +170,22 @@ def _build_config(payload: dict[str, Any]) -> DefaultMemoryConfig:
                 procedure_preference=int(inject.get("procedure_preference", 4)),
                 event_profile=int(inject.get("event_profile", 4)),
                 line_max=int(inject.get("line_max", 600)),
+            ),
+            sparse=SparseLaneConfig(
+                normalization_k=float(sparse.get("normalization_k", 4.0)),
+                hotness_alpha=float(sparse.get("hotness_alpha", 0.2)),
+            ),
+            rrf=RRFConfig(
+                k=int(rrf.get("k", 60)),
+                keyword_weight=float(rrf.get("keyword_weight", 0.5)),
+                hotness_beta=float(rrf.get("hotness_beta", 0.05)),
+            ),
+            experimental=ExperimentalRetrievalConfig(
+                hyde_enabled=bool(experimental.get("hyde_enabled", False)),
+                query_rewrite_enabled=bool(
+                    experimental.get("query_rewrite_enabled", False)
+                ),
+                reranker_enabled=bool(experimental.get("reranker_enabled", False)),
             ),
         ),
     )
