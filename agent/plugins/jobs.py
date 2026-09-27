@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
+from agent.admission.revocation import RevocationGate
 from bus.event_bus import EventSubscription
+from infra.storage.tenancy import DEFAULT_TENANT
 
 if TYPE_CHECKING:
     from agent.plugins.snapshot import RuntimeSnapshotLease, RuntimeSnapshotStore
@@ -123,11 +125,14 @@ class PluginJobRuntime:
         llm: PluginLlmService,
         jobs: list[RegisteredPluginJob] | None = None,
         snapshot_store: RuntimeSnapshotStore | None = None,
+        # C8 §5.9.16：job 执行前副作用方 revocation recheck（fail-closed）。
+        revocation_gate: RevocationGate | None = None,
     ) -> None:
         self._event_bus = event_bus
         self._llm = llm
         self._jobs = {plugin_job_key(job): job for job in jobs or []}
         self._snapshot_store = snapshot_store
+        self._revocation_gate = revocation_gate
         self._queue: asyncio.Queue[_JobRequest | None] = asyncio.Queue()
         self._queued_keys: set[str] = set()
         self._last_run_at: dict[str, datetime] = {}
@@ -341,8 +346,20 @@ class PluginJobRuntime:
             self._last_run_at[request.key] = ctx.triggered_at
 
     async def _invoke(self, request: _JobRequest, ctx: PluginJobContext) -> None:
+        # C8 §5.9.16：job handler 执行前副作用方 revocation recheck。
+        # job 无独立 tenant 维度，优先取触发 event 携带的 tenant_id，缺省回退
+        # DEFAULT_TENANT（C5 账号模型落地后由 provider 扩展语义）。
+        # gate 放进 lease 内再检查：拒绝也走 `async with lease` 退出路径，
+        # 保证 enqueue 时已获取的 snapshot lease 一定释放（否则拒绝会永久
+        # 卡住 quiesce/drain）。
         lease = request.snapshot_lease
         if lease is None:
+            if self._revocation_gate is not None:
+                tenant = (
+                    str(getattr(request.event, "tenant_id", "") or "").strip()
+                    or DEFAULT_TENANT
+                )
+                await self._revocation_gate.check(tenant, action="plugin_job")
             await request.job.spec.handler(ctx)
             return
         from agent.plugins.snapshot import bind_runtime_snapshot, reset_runtime_snapshot
@@ -350,6 +367,12 @@ class PluginJobRuntime:
         async with lease:
             token = bind_runtime_snapshot(lease)
             try:
+                if self._revocation_gate is not None:
+                    tenant = (
+                        str(getattr(request.event, "tenant_id", "") or "").strip()
+                        or DEFAULT_TENANT
+                    )
+                    await self._revocation_gate.check(tenant, action="plugin_job")
                 await request.job.spec.handler(ctx)
             finally:
                 reset_runtime_snapshot(token)

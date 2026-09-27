@@ -54,6 +54,7 @@ def build_scheduler(
     push_tool: MessagePushTool,
     *,
     agent_loop_provider: Callable[[], Any] | None = None,
+    revocation_gate: "Any | None" = None,
 ) -> SchedulerService:
     return SchedulerService(
         store_path=workspace / "schedules.json",
@@ -61,6 +62,7 @@ def build_scheduler(
         agent_loop=None,
         agent_loop_provider=agent_loop_provider,
         tracker=LatencyTracker(),
+        revocation_gate=revocation_gate,
     )
 
 

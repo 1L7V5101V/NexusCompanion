@@ -23,6 +23,7 @@ from core.memory.events import ConsolidationCommitted
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
+    from agent.plugins.snapshot import RuntimeSnapshotStore
 
 logger = logging.getLogger("memory.markdown")
 
@@ -1012,6 +1013,8 @@ class MarkdownMemoryMaintenance:
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
         global_maintenance_limit: int = GLOBAL_MAINTENANCE_QUEUE,
+        # C8 §5.9.16：后台 maintenance worker work-start snapshot lease。
+        runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
@@ -1036,8 +1039,17 @@ class MarkdownMemoryMaintenance:
             raise ValueError("global_maintenance_limit 必须为正")
         self._maintenance_global_limit = global_maintenance_limit
         self._maintenance_deferred_count = 0
+        self._runtime_snapshot_store = runtime_snapshot_store
         if event_bus is not None:
             event_bus.on(TurnCommitted, self.on_turn_committed)
+
+    def bind_runtime_snapshot_store(self, store: "RuntimeSnapshotStore") -> None:
+        """C8 §5.9.16：后台 maintenance worker 复用 loop 的 snapshot store。
+
+        AgentLoop 在其 store 现网接线时同步注入，consolidation worker 即可在
+        turn 外（turn 已结束）也能持有 snapshot lease。
+        """
+        self._runtime_snapshot_store = store
 
     def bind_lifecycle(self, request: MemoryLifecycleBindRequest) -> None:
         self._get_session = request.get_session
@@ -1095,16 +1107,21 @@ class MarkdownMemoryMaintenance:
                     session = self._get_session(session_key) if self._get_session else None
                     if session is None:
                         return
-                    if self._should_consolidate_session(session):
-                        result = await self._consolidate_unlocked(
-                            ConsolidateRequest(session=session)
-                        )
-                        if result.trace.get("mode") == "markdown" and self._save_session:
-                            await self._save_session(session)
-                    else:
-                        await self.refresh_recent_turns(
-                            RefreshRecentTurnsRequest(session=session)
-                        )
+                    # C8 §5.9.16：maintenance work start 取一次 snapshot lease
+                    #（退出含异常/取消统一释放；lease 只计数不互斥）。
+                    from agent.plugins.snapshot import work_runtime_lease
+
+                    async with work_runtime_lease(self._runtime_snapshot_store):
+                        if self._should_consolidate_session(session):
+                            result = await self._consolidate_unlocked(
+                                ConsolidateRequest(session=session)
+                            )
+                            if result.trace.get("mode") == "markdown" and self._save_session:
+                                await self._save_session(session)
+                        else:
+                            await self.refresh_recent_turns(
+                                RefreshRecentTurnsRequest(session=session)
+                            )
                 except Exception:
                     logger.exception(
                         "markdown memory maintenance iteration failed for session=%s — continuing queue",

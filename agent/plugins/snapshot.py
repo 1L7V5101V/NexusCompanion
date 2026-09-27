@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, cast
@@ -361,6 +362,30 @@ def get_current_runtime_lease() -> RuntimeSnapshotLease | None:
     ):
         return None
     return binding.lease
+
+
+@asynccontextmanager
+async def work_runtime_lease(
+    store: RuntimeSnapshotStore | None,
+) -> AsyncIterator[RuntimeSnapshot | None]:
+    """work start 统一 lease 入口（§5.9.16）：取一次 lease 并绑定到当前 task。
+
+    每类入口（passive/proactive/drift-via-proactive/consolidation/optimizer/
+    plugin job）在 work start 各取一次 lease，退出（含异常/取消）统一解绑释放；
+    lease 只计数不互斥，maintenance 嵌套在 passive turn 内时各自持有。
+    store 为 None（未接线）时 yield None，保持既有行为；接线完整性由
+    lease coverage audit 测试矩阵保证，不靠此分支兜底。
+    """
+    if store is None:
+        yield None
+        return
+    lease = await store.acquire()
+    token = bind_runtime_snapshot(lease)
+    try:
+        yield lease.snapshot
+    finally:
+        reset_runtime_snapshot(token)
+        await lease.release()
 
 
 class RuntimeSnapshotStore:
