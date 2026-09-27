@@ -37,53 +37,28 @@ in vec2 position;
 void main() { gl_Position = vec4(position, 0.0, 1.0); }
 `;
 
-// 状态调制/上采样输出 pass：乘全局增益后画到屏幕（不改原作色调）
+// 心跳包络：lub-dub 双峰（主峰 0.10，次峰 0.32），JS 传相位
+export const heartbeatPulse = (t: number): number => {
+    const x = t - Math.floor(t);
+    const a = (x - 0.10) / 0.05;
+    const b = (x - 0.32) / 0.075;
+    return Math.exp(-a * a) + 0.55 * Math.exp(-b * b);
+};
+
+// Overlay：心跳式径向扩张收缩（围绕黑洞屏幕位置）+ 亮度增益，上屏
 export const OVERLAY_FRAG = /* glsl */ `
 precision highp float;
 uniform sampler2D uTex;
 uniform vec2 uOutRes;
-uniform float uGain;
+uniform vec2 uCenter;        // 黑洞在画面中的归一化位置 (0..1)
+uniform float uGain;         // 亮度增益（已含心跳/音频/闪烁）
+uniform float uZoom;         // 心跳径向扩张量（0 时无缩放）
 out vec4 fragColor;
 void main() {
     vec2 uv = gl_FragCoord.xy / uOutRes;
-    vec3 col = texture(uTex, uv).rgb;
+    // 放大采样 = 画面围绕洞心向外扩张；分子式缩放边缘安全（不会采出界）
+    vec2 uv2 = uCenter + (uv - uCenter) / (1.0 + uZoom);
+    vec3 col = texture(uTex, uv2).rgb;
     fragColor = vec4(col * uGain, 1.0);
-}
-`;
-
-// 星尘粒子：绕心流动，避让屏幕中心黑洞区域
-export const PARTICLE_VERT = /* glsl */ `
-precision highp float;
-in vec3 aSeed;                // x:轨道半径(0..1) y:初相 z:速度因子
-uniform float uTime;
-uniform float uAspect;
-uniform float uSpeed;
-uniform float uPulse;         // 心跳泵出量 0..1
-out float vAlpha;
-out vec3 vColor;
-void main() {
-    float ang = aSeed.y + uTime * uSpeed * (0.05 + 0.12 * aSeed.z);
-    float rad = mix(0.30, 0.98, aSeed.x) + uPulse * 0.04 * sin(uTime * (1.0 + aSeed.z * 3.0) + aSeed.y * 7.0);
-    vec2 p = vec2(cos(ang) * rad * uAspect, sin(ang) * rad);
-    // 微扰动:让粒子轨迹不死板
-    p += 0.012 * vec2(sin(uTime * 0.7 + aSeed.y * 13.0), cos(uTime * 0.9 + aSeed.x * 17.0));
-    float r = length(p) / max(uAspect, 1.0);
-    vAlpha = smoothstep(0.28, 0.5, r) * (0.35 + 0.65 * aSeed.z);
-    vColor = mix(vec3(0.75, 0.82, 1.0), vec3(1.0, 0.82, 0.6), step(0.8, fract(aSeed.x * 5.7)));
-    gl_Position = vec4(p, 0.0, 1.0);
-    gl_PointSize = 1.0 + 2.2 * aSeed.z;
-}
-`;
-
-export const PARTICLE_FRAG = /* glsl */ `
-precision highp float;
-in float vAlpha;
-in vec3 vColor;
-uniform float uBrightness;
-out vec4 fragColor;
-void main() {
-    vec2 d = gl_PointCoord - 0.5;
-    float m = exp(-dot(d, d) * 14.0);
-    fragColor = vec4(vColor * m * vAlpha * uBrightness, 1.0);
 }
 `;

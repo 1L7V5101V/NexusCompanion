@@ -31,7 +31,7 @@ let frames = 0, last = performance.now();
 function tick(now: number) {
     frames++;
     if (now - last >= 1000) {
-        fpsEl.textContent = `${frames} fps · scale 0.5`;
+        fpsEl.textContent = `${frames} fps · scale 0.4 · 30fps cap`;
         frames = 0; last = now;
     }
     requestAnimationFrame(tick);
