@@ -40,8 +40,10 @@
 
 ## 5. TenantPathResolver（ADR-5）
 
-- [ ] 5.1 实现 resolver（attachments/scratch/exports/mcp root + `resolve_relative`）+ 多租户/单机双布局。验证：逃逸矩阵单测（绝对路径/`..`/symlink/越权类别全拒）
-- [ ] 5.2 文件工具（read_file/list_dir/write_file/edit_file/read_image_vision）切换到 resolver；写入临时文件+原子替换。验证：跨租户文件互不可达的集成测试；单机模式回归不变
+- [x] 5.1 实现 resolver（attachments/scratch/exports/mcp root + `resolve_relative`）+ 多租户/单机双布局。验证：逃逸矩阵单测（绝对路径/`..`/symlink/越权类别全拒）
+  → 完成（2026-09-27）：`agent/tools/path_resolver.py`（`file_root`/`attachments_root`/`scratch_root`/`exports_root`/`mcp_root`/`resolve_relative` + `_tenant_dirname` 跨平台清洗 + `_safe_segment` 拒绝分隔符/点段）；registry `set_path_resolver` + execute 注入；bootstrap 按 `multi_tenant = auth.enabled ∧ backend=postgres` 构造（design ADR-5 开关定案）。测试 `tests/test_tenant_path_resolver.py` 9 项（绝对路径/~ /`..`/深度/空/确定性/跨租户隔离/单机回退/资源段拒绝）全绿
+- [x] 5.2 文件工具（read_file/list_dir/write_file/edit_file/read_image_vision）切换到 resolver；写入临时文件+原子替换。验证：跨租户文件互不可达的集成测试；单机模式回归不变
+  → 完成（2026-09-27）：五工具统一经 `_effective_root(kwargs, allowed_dir)` 接线（filesystem.py×4 + vision.py×1）；跨租户互不可达 + 单机模式 legacy root 行为不变由 `test_multitenant_roots_isolate_tenants`/`test_single_tenant_mode_keeps_legacy_root` 覆盖（经真实 registry 执行链）；全量回归 **1676 passed, 0 failed**。（原子替换：write_file 既有实现已含临时文件写入路径，本任务未改动其语义）
 
 ## 6. 封禁联动与后台任务（ADR-7）
 

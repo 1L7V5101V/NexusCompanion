@@ -46,6 +46,7 @@ from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tool_hooks.executor import ToolExecutor
 from agent.tool_hooks.tenant_gate import TenantToolGateHook
+from agent.tools.path_resolver import TenantPathResolver
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -427,6 +428,18 @@ def build_registered_tools(
     # ── 第一阶段：建服务（依赖无顺序陷阱）────────────────────────────────────
     wiring = getattr(config, "wiring", WiringConfig())
     tools = tools or ToolRegistry()
+    # C7 task 5.1（ADR-5）：多租户文件布局与存储切换同步激活
+    # （auth.enabled ∧ backend=postgres）；单机模式回退工具构造期 root。
+    tools.set_path_resolver(
+        TenantPathResolver(
+            workspace,
+            multi_tenant=(
+                getattr(getattr(config, "auth", None), "enabled", False)
+                and getattr(getattr(config, "storage", None), "backend", "sqlite")
+                == "postgres"
+            ),
+        )
+    )
     multimodal = getattr(config, "multimodal", True)
     vl_available = (not multimodal) and bool(getattr(config, "vl_model", ""))
     readonly_tools = build_readonly_tools(

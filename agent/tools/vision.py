@@ -10,6 +10,7 @@ from agent.provider import LLMProvider
 from agent.tools.base import Tool
 from agent.tools.filesystem import (
     _detect_supported_image_mime_from_header,
+    _effective_root,
     _resolve_path,
 )
 
@@ -147,7 +148,9 @@ class ReadImageVisionTool(Tool):
 
     async def execute(self, path: str, prompt: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(
+                path, _effective_root(kwargs, self._allowed_dir)
+            )
             if not file_path.exists():
                 return f"错误：文件不存在：{path}"
             if not file_path.is_file():

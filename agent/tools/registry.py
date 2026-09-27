@@ -148,6 +148,12 @@ class ToolRegistry:
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
         self._backend: SearchBackend = backend or KeywordSearchBackend()
+        # C7 task 5.1：租户路径解析器（进程级无状态配置对象，bootstrap 设置一次；
+        # 每次执行时注入 kwargs，文件工具据此按租户解析 root）。
+        self._path_resolver: Any | None = None
+
+    def set_path_resolver(self, resolver: Any) -> None:
+        self._path_resolver = resolver
 
     def register(
         self,
@@ -326,6 +332,8 @@ class ToolRegistry:
                         f"错误：工具作用等级不允许在当前会话执行"
                         f"（code=tool_denied_effect，effect={meta.effect.value}）"
                     )
+            if self._path_resolver is not None:
+                merged.setdefault("path_resolver", self._path_resolver)
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
             result = await tool.execute(**merged)

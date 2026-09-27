@@ -41,6 +41,19 @@ def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     return resolved
 
 
+def _effective_root(kwargs: dict[str, Any], allowed_dir: "Path | None") -> "Path | None":
+    """C7 task 5.2：多租户模式按 tenant 解析文件根；单机模式回退构造期 root。
+
+    ``path_resolver``/``tenant_id`` 由 ToolRegistry.execute 注入（服务端派生，
+    模型参数不参与）；工具未声明这两个形参时经 **kwargs 透传到这里。
+    """
+    resolver = kwargs.get("path_resolver")
+    if resolver is None:
+        return allowed_dir
+    tenant_id = str(kwargs.get("tenant_id", "") or "")
+    return resolver.file_root(tenant_id=tenant_id, fallback=allowed_dir)
+
+
 def _strip_utf8_bom(text: str) -> tuple[str, bool]:
     if text.startswith("\ufeff"):
         return text[1:], True
@@ -323,7 +336,7 @@ class ReadFileTool(Tool):
         if limit is not None:
             limit = int(limit)
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, _effective_root(kwargs, self._allowed_dir))
             if not file_path.exists():
                 return f"错误：文件不存在：{path}"
             if not file_path.is_file():
@@ -440,7 +453,7 @@ class WriteFileTool(Tool):
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, _effective_root(kwargs, self._allowed_dir))
 
             async def _write() -> str:
                 if file_path.exists() and file_path.is_dir():
@@ -503,7 +516,7 @@ class EditFileTool(Tool):
     ) -> str:
         replace_all: bool = bool(kwargs.get("replace_all", False))
         try:
-            file_path = _resolve_path(path, self._allowed_dir)
+            file_path = _resolve_path(path, _effective_root(kwargs, self._allowed_dir))
 
             async def _edit() -> str:
                 if not file_path.exists():
@@ -575,7 +588,7 @@ class ListDirTool(Tool):
 
     async def execute(self, path: str, **kwargs: Any) -> str:
         try:
-            dir_path = _resolve_path(path, self._allowed_dir)
+            dir_path = _resolve_path(path, _effective_root(kwargs, self._allowed_dir))
             if not dir_path.exists():
                 return f"错误：目录不存在：{path}"
             if not dir_path.is_dir():

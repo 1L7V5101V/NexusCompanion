@@ -51,6 +51,8 @@
 
 **目录迁移**：多租户模式下不迁移存量文件（Pilot 从空历史开始是既定决策）；单机模式根不变故无迁移。
 
+**开关定案（2026-09-27 补）**：`multi_tenant = auth.enabled ∧ storage.backend == "postgres"`——文件隔离与**存储切换同步激活**（生产当前 backend=sqlite → 单机回退，owner 与 WebChat 租户共享既有 workspace 根为已知过渡态；存储切换 change 落地后自动进入租户隔离布局）。租户目录名经确定性清洗（非法字符→`_` + 8 位 sha1 后缀，Windows 无 `:` 且跨平台唯一）。落地实现 `agent/tools/path_resolver.py`；registry 持有 resolver 并在 execute 注入 `path_resolver` kwarg（进程级无状态配置对象，非 per-turn 授权态）；文件工具经 `_effective_root(kwargs, allowed_dir)` 统一接线。
+
 ## ADR-6 审计落点（C12 §8.2 承接）
 
 **冻结**：新建控制面 PG 表 `tool_audit_events`（字段 = §5.8.6 的统一 schema：`request_id, account_id, tenant_id, session_id, turn_id, tool_call_id, tool_binding_id, tool_name, effect_class, status, arguments_redacted/arguments_hash, duration_ms, error_code, created_at`），alembic 迁移 `b3f7a1c5d9e2`（expand-only，单 head 接 C15 `a7f2c9e4b1d8` 之后）。脱敏：secret/credential 形态参数（键名含 token/key/secret/password）只存 hash；文件内容类参数截断至定长摘要。C12 §8.2 勾选条件 = 本表接线 + redaction + 对应指标 label 进白名单。
