@@ -47,6 +47,7 @@ def test_tool_kwargs_expose_identity_keys_only() -> None:
         "channel": "chat",
         "chat_id": "tenant:acct-1",
         "tenant_id": "tenant:acct-1",
+        "principal_type": "user",
         "current_timestamp": "",
         "current_user_source_ref": "",
     }

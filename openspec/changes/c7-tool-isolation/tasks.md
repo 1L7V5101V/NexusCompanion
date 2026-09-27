@@ -29,7 +29,8 @@
   → 主体完成（2026-09-27）：目录层 `agent/tools/catalog.py` + 两个消费点（schema 过滤 task 2.3、pre-hook 重查 task 3.2）已落地并有单测；PG 双租户集成验证并入 task 8.2 跨租户负向测试（同需 PG 双账号环境），完成后一并勾选
 - [ ] 3.2 pre-tool hook 执行前重查（账号状态/binding/白名单/capability），结构化拒绝错误码冻结。验证：suspended 账号调用被拒的负向测试；错误码进协议 fixture（如涉及）
   → 完成（2026-09-27）：`agent/tool_hooks/tenant_gate.py::TenantToolGateHook`（账号状态委托 C8 `RevocationGate` fail-closed；白名单仅对 user principal 重查；错误码冻结 `tool_denied_account_status`/`tool_denied_tenant_scope`）；`ToolExecutionRequest` 增 `tool_context` 字段（passive 两处构造点传入）；bootstrap 在插件 hook 之前注册 gate。binding/capability 重查归 C14（引擎绑定）与后续 capability 系统，design 已注明。测试 `tests/test_tenant_tool_gate.py` 8 项全绿；全量回归 **1659 passed, 0 failed**
-- [ ] 3.3 `message_push` 服务端绑定目标校验 + `web_search`/`web_fetch` 限流与 SSRF 基线（内网/loopback/metadata 拒绝）。验证：负向测试（任意目标、内网地址被拒）
+- [x] 3.3 `message_push` 服务端绑定目标校验 + `web_search`/`web_fetch` 限流与 SSRF 基线（内网/loopback/metadata 拒绝）。验证：负向测试（任意目标、内网地址被拒）
+  → 完成（2026-09-27）：registry 路由字段精化（`ROUTING_ARGUMENT_FIELDS` 仅 user principal 剥离并打标 `_routing_overridden`；dev/owner 保留合法跨目标推送）+ `message_push` 显式拒绝（`push_target_not_allowed`，不静默改址）；SSRF 基线已有实现确认覆盖（loopback/private/link-local/reserved + .local/.localhost 含云 metadata 169.254）；新增 `agent/tools/rate_limit.py` 租户级滑动窗口限流（web 两件接入，仅 user principal）。测试 `tests/test_tool_routing_and_limits.py` 12 项全绿；全量回归 **1688 passed, 0 failed**
 
 ## 4. effect policy 与 typed outcome（ADR-4）
 

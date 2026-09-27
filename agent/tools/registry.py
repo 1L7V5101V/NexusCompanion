@@ -31,6 +31,10 @@ TRUST_ARGUMENT_FIELDS: frozenset[str] = frozenset(
         "chat_id",
     }
 )
+
+# 路由目标字段（channel/chat_id）：user principal 一律剥离（message_push 只能
+# 推送到服务端绑定目标，task 3.3）；dev/owner 保留参数覆盖（合法跨目标推送）。
+ROUTING_ARGUMENT_FIELDS: frozenset[str] = frozenset({"channel", "chat_id"})
 _PROGRESS_DESCRIPTION_FIELD = "description"
 _PROGRESS_DESCRIPTION_SCHEMA: dict[str, str] = {
     "type": "string",
@@ -314,12 +318,22 @@ class ToolRegistry:
             # C7 语义反转（design ADR-2）：
             #   1. arguments 剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
             #   2. ToolExecutionContext 注入身份与 per-turn 提示键——唯一授权依据。
+            strip_fields = TRUST_ARGUMENT_FIELDS
+            if context is not None and context.principal_type != "user":
+                # dev/owner：路由目标允许由模型指定（合法跨目标推送）。
+                strip_fields = strip_fields - ROUTING_ARGUMENT_FIELDS
             safe_arguments = {
-                k: v for k, v in arguments.items() if k not in TRUST_ARGUMENT_FIELDS
+                k: v for k, v in arguments.items() if k not in strip_fields
             }
             merged: dict[str, Any] = dict(safe_arguments)
             if context is not None:
                 merged.update(context.tool_kwargs())
+                if (
+                    context.principal_type == "user"
+                    and set(arguments) & ROUTING_ARGUMENT_FIELDS
+                ):
+                    # user 试图指定任意推送目标 → 剥离并打标，工具侧结构化拒绝。
+                    merged["_routing_overridden"] = True
                 # C7 task 4.1（ADR-4）：effect 等级执行面强制（仅 user principal；
                 # owner/dev 路径不受限，与租户白名单同哲学）。
                 meta = self._metadata.get(name)

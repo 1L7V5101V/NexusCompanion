@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from agent.tools.base import Tool
+from agent.tools.rate_limit import shared_limiter
 
 _MCP_URL = "https://mcp.exa.ai/mcp"
 _DEFAULT_NUM_RESULTS = 8
@@ -50,6 +51,11 @@ class WebSearchTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         import httpx
 
+        # C7 task 3.3：租户级限流（仅 user principal；owner 不限）。
+        if str(kwargs.get("principal_type", "")) == "user" and not shared_limiter().allow(
+            str(kwargs.get("tenant_id", "")), self.name
+        ):
+            return "错误：搜索请求过于频繁，请稍后再试（code=rate_limited）"
         query: str = kwargs["query"]
         num_results: int = min(int(kwargs.get("num_results", _DEFAULT_NUM_RESULTS)), 20)
         livecrawl: str = kwargs.get("livecrawl", "fallback")

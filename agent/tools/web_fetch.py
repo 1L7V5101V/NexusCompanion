@@ -12,6 +12,7 @@ from lxml import html as lxml_html
 from lxml.etree import ParserError
 
 from agent.tools.base import Tool
+from agent.tools.rate_limit import shared_limiter
 from core.net.http import (
     HttpRequester,
     RequestBudget,
@@ -67,6 +68,11 @@ class WebFetchTool(Tool):
         self._requester = requester or get_default_http_requester("external_default")
 
     async def execute(self, **kwargs: Any) -> str:
+        # C7 task 3.3：租户级限流（仅 user principal；owner 不限）。
+        if str(kwargs.get("principal_type", "")) == "user" and not shared_limiter().allow(
+            str(kwargs.get("tenant_id", "")), self.name
+        ):
+            return _err(str(kwargs.get("url", "")), "请求过于频繁，请稍后再试（code=rate_limited）")
         url: str = kwargs["url"]
         fmt: str = kwargs.get("format", "markdown")
         timeout: int = min(int(kwargs.get("timeout", _DEFAULT_TIMEOUT)), _MAX_TIMEOUT)

@@ -79,6 +79,11 @@ class MessagePushTool(Tool):
         )
 
     async def execute(self, **kwargs: Any) -> str:
+        # C7 task 3.3：user principal 只能推送到服务端绑定目标（registry 已把
+        # 模型指定的 channel/chat_id 剥离并替换为 context 归属，此处显式拒绝
+        # 而非静默改址；dev/owner 跨目标推送不受限）。
+        if kwargs.get("_routing_overridden"):
+            return "错误：只能向当前会话推送消息（code=push_target_not_allowed）"
         channel: str = kwargs["channel"]
         chat_id: str = str(kwargs["chat_id"])
         message: str | None = kwargs.get("message")

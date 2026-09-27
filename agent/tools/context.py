@@ -80,6 +80,7 @@ class ToolExecutionContext:
             "channel": self.channel,
             "chat_id": self.chat_id,
             "tenant_id": self.tenant_id,
+            "principal_type": self.principal_type,
             "current_timestamp": self.current_timestamp,
             "current_user_source_ref": self.current_user_source_ref,
         }
