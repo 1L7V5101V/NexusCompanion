@@ -47,3 +47,146 @@ body,
   color: var(--color-fg);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
+
+/* ---- Composer：Gemini 风格极光边框（等待响应时点亮）----
+   双层结构：halo 光斑层在 composer 外缘 ±10px 游走（厚度随光斑位置变化），
+   ring 是 1.5px 蒙版渐变环，保证最低限度的边缘光线。 */
+
+@property --composer-ring-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.composer-halo,
+.composer-ring {
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+}
+
+.composer[data-running] .composer-halo {
+  opacity: 1;
+}
+
+.composer-halo {
+  position: absolute;
+  inset: -10px;
+}
+
+.composer-blob {
+  position: absolute;
+  width: 42%;
+  aspect-ratio: 2.3;
+  border-radius: 50%;
+  filter: blur(24px) saturate(1.3);
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+}
+
+.composer-blob-blue {
+  left: 4%;
+  top: -48%;
+  background: radial-gradient(closest-side, rgba(66, 133, 244, 0.95), rgba(66, 133, 244, 0) 72%);
+  animation: composer-drift-a 11.3s ease-in-out -2.1s infinite;
+}
+
+.composer-blob-violet {
+  right: -16%;
+  top: -18%;
+  background: radial-gradient(closest-side, rgba(155, 114, 203, 0.9), rgba(155, 114, 203, 0) 72%);
+  animation: composer-drift-b 13.7s ease-in-out -7.3s infinite;
+}
+
+.composer-blob-pink {
+  left: 12%;
+  bottom: -58%;
+  background: radial-gradient(closest-side, rgba(217, 101, 112, 0.9), rgba(217, 101, 112, 0) 72%);
+  animation: composer-drift-c 9.8s ease-in-out -4.4s infinite;
+}
+
+.composer-blob-amber {
+  left: -18%;
+  top: -12%;
+  background: radial-gradient(closest-side, rgba(242, 169, 59, 0.85), rgba(242, 169, 59, 0) 72%);
+  animation: composer-drift-d 12.4s ease-in-out -9.2s infinite;
+}
+
+/* 平移以横向贴边游走为主，纵向小幅呼吸（blob 高度≈composer 高，大位移会飘离边框）。 */
+@keyframes composer-drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.85; }
+  23% { transform: translate(120%, 18%) scale(1.12); opacity: 0.5; }
+  47% { transform: translate(70%, -14%) scale(0.92); opacity: 0.8; }
+  71% { transform: translate(170%, 10%) scale(1.05); opacity: 0.45; }
+}
+
+@keyframes composer-drift-b {
+  0%, 100% { transform: translate(0, 0) scale(0.95); opacity: 0.7; }
+  30% { transform: translate(-85%, 34%) scale(1.15); opacity: 0.9; }
+  55% { transform: translate(-55%, -22%) scale(0.9); opacity: 0.4; }
+  80% { transform: translate(-120%, 12%) scale(1.08); opacity: 0.75; }
+}
+
+@keyframes composer-drift-c {
+  0%, 100% { transform: translate(0, 0) scale(1.05); opacity: 0.55; }
+  28% { transform: translate(110%, -20%) scale(0.9); opacity: 0.85; }
+  52% { transform: translate(45%, 16%) scale(1.1); opacity: 0.5; }
+  76% { transform: translate(150%, -12%) scale(0.95); opacity: 0.8; }
+}
+
+@keyframes composer-drift-d {
+  0%, 100% { transform: translate(0, 0) scale(0.9); opacity: 0.65; }
+  26% { transform: translate(70%, 30%) scale(1.12); opacity: 0.35; }
+  54% { transform: translate(140%, -26%) scale(1); opacity: 0.9; }
+  79% { transform: translate(45%, 14%) scale(1.18); opacity: 0.55; }
+}
+
+.composer-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--composer-ring-angle),
+    rgba(66, 133, 244, 0) 0deg,
+    rgba(66, 133, 244, 0.9) 40deg,
+    rgba(155, 114, 203, 0.95) 110deg,
+    rgba(217, 101, 112, 0.95) 185deg,
+    rgba(242, 169, 59, 0.9) 255deg,
+    rgba(66, 133, 244, 0.9) 320deg,
+    rgba(66, 133, 244, 0) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* wander 只在 running 时挂载：keyframes 里的 opacity 优先级高于过渡的显隐。 */
+.composer[data-running] .composer-ring {
+  opacity: 1;
+  animation:
+    composer-ring-wander 13s ease-in-out infinite,
+    composer-ring-breathe 5.5s ease-in-out infinite;
+}
+
+/* 光弧沿边框往复游走（无净旋转），配合光斑形成流动感。 */
+@keyframes composer-ring-wander {
+  0% { --composer-ring-angle: 0deg; }
+  28% { --composer-ring-angle: 150deg; }
+  52% { --composer-ring-angle: 60deg; }
+  76% { --composer-ring-angle: 240deg; }
+  100% { --composer-ring-angle: 0deg; }
+}
+
+@keyframes composer-ring-breathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-blob,
+  .composer[data-running] .composer-ring {
+    animation: none;
+  }
+}

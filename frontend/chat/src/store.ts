@@ -275,6 +275,7 @@ export class ChatStore {
 export function useChatRuntime(onUnauthorized?: () => void): {
   runtime: ReturnType<typeof useExternalStoreRuntime>;
   status: ConnectionStatus;
+  isRunning: boolean;
 } {
   const store = useMemo(() => new ChatStore(), []);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
@@ -332,5 +333,5 @@ export function useChatRuntime(onUnauthorized?: () => void): {
     convertMessage: (message) => message,
   });
 
-  return { runtime, status };
+  return { runtime, status, isRunning: snapshot.isRunning };
 }

@@ -1,8 +1,9 @@
 import { AssistantRuntimeProvider, ThreadPrimitive, ComposerPrimitive, MessagePrimitive } from "@assistant-ui/react";
+import { ArrowUp } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useChatRuntime } from "./store";
 import type { ConnectionStatus } from "./connection";
-import { fetchMe, logout, type AuthState, type AuthUser } from "./auth";
+import { fetchMe, logout, type AuthState } from "./auth";
 import { LoginPanel } from "./LoginPanel";
 
 function ConnectionBadge({ status }: { status: ConnectionStatus }) {
@@ -76,9 +77,9 @@ function UserMessage() {
   );
 }
 
-function ChatView({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }) {
+function ChatView({ onSignOut }: { onSignOut: () => void }) {
   // 只在已认证时挂载：未认证不会有 WS 连接（避免对 4401 反复重连）。
-  const { runtime, status } = useChatRuntime(onSignOut);
+  const { runtime, status, isRunning } = useChatRuntime(onSignOut);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -116,24 +117,36 @@ function ChatView({ user, onSignOut }: { user: AuthUser; onSignOut: () => void }
           </div>
         </ThreadPrimitive.Viewport>
 
-        <footer className="border-t border-border px-4 py-3">
+        <footer className="px-4 pb-6 pt-2">
           <div className="mx-auto max-w-3xl">
-            <ComposerPrimitive.Root className="flex items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2">
-              <ComposerPrimitive.Input
-                auto-focus
-                rows={1}
-                placeholder="输入消息…"
-                className="max-h-40 flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-subtle"
-              />
-              <ComposerPrimitive.Send
-                className="rounded-md bg-accent px-3 py-1.5 text-sm text-accent-ink disabled:opacity-40"
-              >
-                发送
-              </ComposerPrimitive.Send>
+            <ComposerPrimitive.Root
+              data-running={isRunning ? "true" : undefined}
+              className="composer relative rounded-[28px] p-[2px]"
+            >
+              <div className="composer-halo" aria-hidden="true">
+                <span className="composer-blob composer-blob-blue" />
+                <span className="composer-blob composer-blob-violet" />
+                <span className="composer-blob composer-blob-pink" />
+                <span className="composer-blob composer-blob-amber" />
+              </div>
+              <div className="composer-ring" aria-hidden="true" />
+              <div className="relative rounded-[26px] bg-surface-3 ring-1 ring-inset ring-border">
+                <ComposerPrimitive.Input
+                  auto-focus
+                  rows={1}
+                  placeholder="输入消息…"
+                  className="max-h-40 w-full resize-none bg-transparent px-5 pt-4 text-sm outline-none placeholder:text-subtle"
+                />
+                <div className="flex items-center justify-end px-3.5 pb-3 pt-2">
+                  <ComposerPrimitive.Send
+                    aria-label="发送"
+                    className="flex h-10 w-10 items-center justify-center rounded-full bg-[#4285f4] text-white transition-colors hover:bg-[#5b95f6] disabled:opacity-40"
+                  >
+                    <ArrowUp size={18} strokeWidth={2.5} />
+                  </ComposerPrimitive.Send>
+                </div>
+              </div>
             </ComposerPrimitive.Root>
-            <p className="mt-1 text-[10px] text-subtle">
-              已登录 · {user.display_name || user.account_id}
-            </p>
           </div>
         </footer>
       </div>
@@ -184,10 +197,5 @@ export default function App() {
     );
   }
 
-  return (
-    <ChatView
-      user={auth.user}
-      onSignOut={() => setAuth({ phase: "anonymous" })}
-    />
-  );
+  return <ChatView onSignOut={() => setAuth({ phase: "anonymous" })} />;
 }
