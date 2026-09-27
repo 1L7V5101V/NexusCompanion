@@ -87,9 +87,8 @@ async def process_spawn_completion_event(
         channel=item.channel,
         chat_id=item.chat_id,
         principal_type="dev",
+        current_timestamp=item.timestamp.isoformat(),
     )
-    # 非可信运行时提示键仍走兼容 shim（行为与改动前一致）。
-    tools.set_context(current_timestamp=item.timestamp.isoformat())
     prompt_render = await prompt_render_fn(
         PromptRenderInput(
             session_key=key,

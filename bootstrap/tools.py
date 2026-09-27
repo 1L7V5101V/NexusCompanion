@@ -263,8 +263,6 @@ class CoreRuntime:
                 "before_reasoning",
                 default_before_reasoning_modules(
                     self.event_bus,
-                    self.tools,
-                    self.session_manager,
                     cast(Any, context),
                     plugin_modules=cast(Any, before_reasoning_modules),
                 ),

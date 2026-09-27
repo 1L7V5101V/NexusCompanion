@@ -800,89 +800,6 @@ async def test_before_turn_chain_can_modify_skill_names():
 
 
 @pytest.mark.asyncio
-async def test_before_reasoning_setup_calls_tools_set_context():
-    bus = EventBus()
-    tools = Mock()
-    tools.set_context = Mock()
-
-    session = _DummySession("telegram:123")
-    session.messages.append({"role": "user", "content": "prev", "id": "msg_42"})
-    session_mgr = SimpleNamespace(get_or_create=lambda _tenant_id, key: session)
-
-    context_builder = Mock()
-    context_builder.render = Mock(return_value=None)
-
-    phase = Phase(
-        default_before_reasoning_modules(
-            bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
-            cast(ContextBuilder, context_builder),
-        ),
-        frame_factory=BeforeReasoningFrame,
-    )
-    msg = _inbound()
-
-    before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="block", retrieval_trace_raw=None,
-        history_messages=(),
-        skill_names=["search"],
-    )
-
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-    state.session = session
-
-    ctx = await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
-
-    tools.set_context.assert_called_once()
-    call_kwargs = tools.set_context.call_args[1]
-    # C7：可信归属字段（channel/chat_id/tenant_id）不再进共享 set_context，
-    # 由 ToolExecutionContext 显式注入；这里只允许非可信运行时提示键。
-    assert "channel" not in call_kwargs
-    assert "chat_id" not in call_kwargs
-    assert "tenant_id" not in call_kwargs
-    assert "current_user_source_ref" in call_kwargs
-
-    assert ctx.skill_names == ["search"]
-    assert ctx.retrieved_memory_block == "block"
-    assert ctx.extra_hints == []
-
-
-@pytest.mark.asyncio
-async def test_before_reasoning_requires_session():
-    bus = EventBus()
-    tools = Mock()
-    session_mgr = Mock()
-    context_builder = Mock()
-
-    phase = Phase(
-        default_before_reasoning_modules(
-            bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
-            cast(ContextBuilder, context_builder),
-        ),
-        frame_factory=BeforeReasoningFrame,
-    )
-    msg = _inbound()
-
-    before_turn = BeforeTurnCtx(
-        session_key="telegram:123", channel=msg.channel, chat_id=msg.chat_id,
-        content=msg.content, timestamp=msg.timestamp,
-        retrieved_memory_block="", retrieval_trace_raw=None,
-        history_messages=(),
-    )
-
-    state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
-    # session is None
-
-    with pytest.raises(RuntimeError, match="BeforeReasoning requires TurnState.session"):
-        await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
-
-
-@pytest.mark.asyncio
 async def test_before_reasoning_finalize_calls_render():
     bus = EventBus()
     tools = Mock()
@@ -899,8 +816,6 @@ async def test_before_reasoning_finalize_calls_render():
     phase = Phase(
         default_before_reasoning_modules(
             bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
             cast(ContextBuilder, context_builder),
         ),
         frame_factory=BeforeReasoningFrame,
@@ -949,8 +864,6 @@ async def test_before_reasoning_chain_can_add_extra_hints():
     phase = Phase(
         default_before_reasoning_modules(
             bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
             cast(ContextBuilder, context_builder),
         ),
         frame_factory=BeforeReasoningFrame,
@@ -994,8 +907,6 @@ async def test_before_reasoning_collects_export_slots():
     phase = Phase(
         default_before_reasoning_modules(
             bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
             cast(ContextBuilder, context_builder),
             plugin_modules=[SlotModule()],
         ),
@@ -1041,8 +952,6 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     phase = Phase(
         default_before_reasoning_modules(
             bus,
-            cast(ToolRegistry, tools),
-            cast(SessionManager, session_mgr),
             cast(ContextBuilder, context_builder),
         ),
         frame_factory=BeforeReasoningFrame,

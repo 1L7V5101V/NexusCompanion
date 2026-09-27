@@ -139,29 +139,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._metadata: dict[str, ToolMeta] = {}
         self._documents: dict[str, ToolDocument] = {}
-        self._context: dict[str, str] = {}
         self._backend: SearchBackend = backend or KeywordSearchBackend()
-
-    def set_context(self, **kwargs: str) -> None:
-        """兼容 shim：仅承载非可信的每 turn 运行时键（current_timestamp 等）。
-
-        C7 语义反转后本方法**不再参与授权**：传入可信归属字段（tenant_id 等）
-        会被丢弃并告警——可信身份只能经 ``ToolExecutionContext`` 显式穿线
-        （design ADR-2）。全量调用点迁移完成后本方法将被移除（task 2.4）。
-        """
-        trust = {k: v for k, v in kwargs.items() if k in TRUST_ARGUMENT_FIELDS}
-        safe = {k: v for k, v in kwargs.items() if k not in TRUST_ARGUMENT_FIELDS}
-        if trust:
-            logger.warning(
-                "set_context 收到可信归属字段 %s，已忽略（C7：身份只能经 "
-                "ToolExecutionContext 派生）",
-                sorted(trust),
-            )
-        self._context.update(safe)
-
-    def get_context(self) -> dict[str, str]:
-        """兼容读取（仅非可信键）。授权语义已移除，新代码不得依赖。"""
-        return self._context
 
     def register(
         self,
@@ -314,13 +292,12 @@ class ToolRegistry:
             return f"工具 '{name}' 不存在"
         try:
             # C7 语义反转（design ADR-2）：
-            #   1. arguments 先剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
-            #   2. 兼容 _context（仅非可信键）作低优先级默认；
-            #   3. ToolExecutionContext 的可信 kwarg 最后覆盖——唯一授权依据。
+            #   1. arguments 剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
+            #   2. ToolExecutionContext 注入身份与 per-turn 提示键——唯一授权依据。
             safe_arguments = {
                 k: v for k, v in arguments.items() if k not in TRUST_ARGUMENT_FIELDS
             }
-            merged: dict[str, Any] = {**self._context, **safe_arguments}
+            merged: dict[str, Any] = dict(safe_arguments)
             if context is not None:
                 merged.update(context.tool_kwargs())
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):

@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias, cast
 
-from agent.core.passive_support import predict_current_user_source_ref
 from agent.core.types import ContextRequest
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -17,8 +16,6 @@ from bus.event_bus import EventBus
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
-    from agent.tools.registry import ToolRegistry
-    from session.manager import SessionManager
 
 
 @dataclass
@@ -34,39 +31,9 @@ _EXTRA_HINT_PREFIX = "reasoning:extra_hint:"
 _ABORT_REPLY_SLOT = "reasoning:abort_reply"
 
 
-class _SyncToolContextModule:
-    slot = "before_reasoning.sync_tools"
-    requires: tuple[str, ...] = ()
-
-    def __init__(
-        self,
-        tools: ToolRegistry,
-        session_manager: SessionManager,
-    ) -> None:
-        self._tools = tools
-        self._session_manager = session_manager
-
-    async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
-        state = frame.input.state
-        before_turn = frame.input.before_turn
-        if state.session is None:
-            raise RuntimeError("BeforeReasoning requires TurnState.session")
-        # C7：可信归属字段（channel/chat_id/tenant_id）不再进共享 set_context，
-        # 由 DefaultReasoner.run_turn 构造的 ToolExecutionContext 显式注入
-        # （design ADR-1/2）；这里只保留非可信的每 turn 运行时提示键。
-        self._tools.set_context(
-            current_timestamp=before_turn.timestamp.isoformat(),
-            current_user_source_ref=predict_current_user_source_ref(
-                session_manager=self._session_manager,
-                session=state.session,
-            ),
-        )
-        return frame
-
-
 class _BuildBeforeReasoningCtxModule:
     slot = "before_reasoning.build_ctx"
-    requires = ("before_reasoning.sync_tools",)
+    requires: tuple[str, ...] = ()
     produces = (_CTX_SLOT,)
 
     async def run(self, frame: BeforeReasoningFrame) -> BeforeReasoningFrame:
@@ -153,13 +120,10 @@ class _ReturnBeforeReasoningCtxModule:
 
 def default_before_reasoning_modules(
     bus: EventBus,
-    tools: ToolRegistry,
-    session_manager: SessionManager,
     context: ContextBuilder,
     plugin_modules: BeforeReasoningModules | None = None,
 ) -> BeforeReasoningModules:
     builtins: BeforeReasoningModules = [
-        _SyncToolContextModule(tools, session_manager),
         _BuildBeforeReasoningCtxModule(),
         _EmitBeforeReasoningCtxModule(bus),
         _CollectBeforeReasoningExportSlotsModule(),

@@ -64,43 +64,63 @@ async def test_arguments_cannot_override_trust_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_context_overrides_legacy_shared_context() -> None:
-    """context 注入优先于兼容 set_context 的同名键（若有残留）。"""
+async def test_context_hint_keys_override_model_arguments() -> None:
+    """per-turn 提示键由服务端派生：模型参数携带同名键不生效（C7 task 2.4）。"""
+
+    class _HintTool(Tool):
+        name = "hint_echo"
+        description = "回显 current_timestamp"
+        parameters = {"type": "object", "properties": {}, "required": []}
+
+        async def execute(self, **kwargs: Any) -> str:
+            return f"ts={kwargs.get('current_timestamp', '')}"
+
     registry = ToolRegistry()
-    registry.register(_EchoTool())
-    registry.set_context(channel="stale-channel", current_timestamp="2026-01-01")
-
-    result = await registry.execute("echo_scope", {}, context=_context())
-
-    assert "channel=chat" in str(result)
-    assert "stale-channel" not in str(result)
-
-
-@pytest.mark.asyncio
-async def test_set_context_drops_trust_keys() -> None:
-    registry = ToolRegistry()
-    registry.register(_EchoTool())
-    # 旧调用方式（before_reasoning 时代）：trust 键被丢弃并告警，不进 merged。
-    registry.set_context(
-        tenant_id="tenant:attacker",
-        channel="telegram",
-        current_timestamp="2026-01-01",
+    registry.register(_HintTool())
+    ctx = ToolExecutionContext(
+        request_id="req-1",
+        account_id="acct-1",
+        tenant_id="tenant:real",
+        session_id="chat:tenant:real",
+        turn_id="turn-1",
+        channel="chat",
+        chat_id="tenant:real",
+        principal_type="user",
+        current_timestamp="2026-01-01T00:00:00",
     )
 
-    result = await registry.execute("echo_scope", {})
+    result = await registry.execute(
+        "hint_echo",
+        {"current_timestamp": "1999-01-01T00:00:00"},
+        context=ctx,
+    )
 
-    assert result == "tenant=|channel=|session_key="
-    assert registry.get_context() == {"current_timestamp": "2026-01-01"}
+    assert result == "ts=2026-01-01T00:00:00"
 
 
 @pytest.mark.asyncio
-async def test_without_context_trust_fields_stay_absent() -> None:
+async def test_context_overrides_nothing_when_absent() -> None:
     """无 context 时（未接线路径）可信字段为空——宁可失败不可串租户。"""
     registry = ToolRegistry()
     registry.register(_EchoTool())
 
     result = await registry.execute(
-        "echo_scope", {"tenant_id": "tenant:attacker"}
+        "echo_scope", {"tenant_id": "tenant:attacker", "content": "hi"}
     )
 
     assert result == "tenant=|channel=|session_key="
+
+
+@pytest.mark.asyncio
+async def test_context_hint_keys_flow_to_tools() -> None:
+    """per-turn 提示键（timestamp/source_ref）经 context 注入，模型参数不参与覆盖。"""
+    registry = ToolRegistry()
+    registry.register(_EchoTool())
+    ctx = _context()
+    result = await registry.execute(
+        "echo_scope",
+        {"current_timestamp": "1999-01-01T00:00:00"},
+        context=ctx,
+    )
+    assert str(result)  # echo 工具不回显提示键，这里只验证调用不抛错
+

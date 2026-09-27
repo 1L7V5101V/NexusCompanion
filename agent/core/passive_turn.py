@@ -27,7 +27,9 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
+from agent.tools.catalog import tenant_visible_names
 from agent.tools.context import ToolExecutionContext
+from agent.core.passive_support import predict_current_user_source_ref
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
@@ -329,8 +331,6 @@ class PassiveTurnPipeline:
         return Phase(
             default_before_reasoning_modules(
                 self._bus,
-                self._tools,
-                self._session.session_manager,
                 self._context,
                 plugin_modules=cast("list[Any]", self._before_reasoning_plugin_modules),
             ),
@@ -986,6 +986,11 @@ class DefaultReasoner(Reasoner):
             channel=msg.channel,
             chat_id=msg.chat_id,
             principal_type="user" if msg_metadata.get("account_id") else "dev",
+            current_timestamp=msg.timestamp.isoformat() if msg.timestamp else "",
+            current_user_source_ref=predict_current_user_source_ref(
+                session_manager=self._session_manager,
+                session=session,
+            ),
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
@@ -1229,6 +1234,16 @@ class DefaultReasoner(Reasoner):
                 schema_names = self._tools.get_registered_names() - disabled
             elif schema_names is not None:
                 schema_names = [name for name in schema_names if name not in disabled]
+            # C7（task 2.3）：租户 principal 的 reasoning 只看到租户目录 schema
+            # （三层目录第一道防线；执行前 pre-hook 仍重查，task 3.2）。
+            tenant_visible = tenant_visible_names(self._tools, tool_context)
+            if tenant_visible is not None:
+                if schema_names is None:
+                    schema_names = tenant_visible
+                else:
+                    schema_names = [
+                        name for name in schema_names if name in tenant_visible
+                    ]
             response = await self._llm.provider.chat(
                 messages=messages,
                 tools=self._tools.get_schemas(names=schema_names),
