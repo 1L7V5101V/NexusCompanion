@@ -8,6 +8,7 @@ from agent.config_models import Config
 from agent.policies.delegation import DelegationPolicy
 from agent.provider import LLMProvider
 from agent.tool_bundles import build_readonly_research_tools
+from agent.tools.base import ToolEffect
 from agent.tools.base import Tool
 from agent.tools.meta import register_common_meta_tools
 from agent.tools.message_push import MessagePushTool
@@ -44,6 +45,7 @@ class CommonMetaToolsetProvider(ToolsetProvider):
             LoadSkillTool(SkillsLoader(deps.workspace)),
             always_on=True,
             risk="read-only",
+            effect=ToolEffect.ADMIN,
             search_hint="技能 skill SKILL.md 使用能力 先 load_skill 不要 read_file 猜路径",
         )
 
@@ -91,12 +93,14 @@ class SpawnToolsetProvider(ToolsetProvider):
                 SpawnTool(subagent_manager, registry, policy=DelegationPolicy()),
                 always_on=True,
                 risk="write",
+                effect=ToolEffect.PROCESS_EXEC,
                 search_hint="后台执行 子任务 多步调研 独立任务",
             )
             registry.register(
                 SpawnManageTool(subagent_manager),
                 always_on=True,
                 risk="external-side-effect",
+                effect=ToolEffect.PROCESS_EXEC,
                 search_hint="查看 取消 后台任务 subagent job_id spawn_manage",
             )
         return build_registration_result(

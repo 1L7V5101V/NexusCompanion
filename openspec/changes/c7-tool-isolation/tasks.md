@@ -33,8 +33,10 @@
 
 ## 4. effect policy 与 typed outcome（ADR-4）
 
-- [ ] 4.1 工具基类 + `ToolResult` 增加 effect 枚举与 `tool_call_id`；终态枚举接 C2 control plane tool_call 状态。验证：单测——每白名单工具声明 effect；无补偿的 external-write 调用被默认拒绝
-- [ ] 4.2 process-exec/admin 等级对普通 tenant 一律拒绝（shell/spawn/peer_agent 关闭面）。验证：关闭工具直接调用被结构化拒绝的负向矩阵
+- [x] 4.1 工具基类 + `ToolResult` 增加 effect 枚举与 `tool_call_id`；终态枚举接 C2 control plane tool_call 状态。验证：单测——每白名单工具声明 effect；无补偿的 external-write 调用被默认拒绝
+  → 完成（2026-09-27）：`agent/tools/base.py` 新增 `ToolEffect`（七级 StrEnum）+ `RISK_TO_EFFECT` 保守映射 + `ToolResult.tool_call_id`；`ToolMeta` 增 `effect`/`requires_compensation`（register/fork 全链携带）；registry.execute 分配并附着 tool_call_id（str 返回路径无法附着，随 7.1 审计管道补全）。effect 初值按 effect-mapping.md 在注册点显式覆盖：message_push/web_search/web_fetch→network、shell/spawn/spawn_manage/task_stop→process-exec、mcp_add/remove+load_skill→admin；engine 注入工具按引擎 risk 自动映射（external-side-effect → external-write 无登记即拒，符合保守规则）。C2 `record_tool_call`/`finish_tool_call` 已存在（CAS 终态），写入接线随 7.1 审计管道一并落地
+- [x] 4.2 process-exec/admin 等级对普通 tenant 一律拒绝（shell/spawn/peer_agent 关闭面）。验证：关闭工具直接调用被结构化拒绝的负向矩阵
+  → 完成（2026-09-27）：`registry._effect_allowed()` 执行面强制（仅 user principal；dev/owner 不受限）：process-exec/admin 一律拒、external-write 无 `requires_compensation` 拒、其余放行；错误码 `tool_denied_effect`。测试 `tests/test_tool_effect_enforcement.py` 8 项（含 risk 自动映射与 dev 路径不受限）全绿；全量回归 **1667 passed, 0 failed**
 
 ## 5. TenantPathResolver（ADR-5）
 

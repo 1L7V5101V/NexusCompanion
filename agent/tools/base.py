@@ -1,13 +1,38 @@
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+class ToolEffect(StrEnum):
+    """工具作用等级（C7 §5.8.3 / design ADR-4；effect-mapping.md 为落地初值）。"""
+
+    READ_ONLY = "read-only"
+    TENANT_LOCAL_WRITE = "tenant-local-write"
+    EXTERNAL_READ = "external-read"
+    EXTERNAL_WRITE = "external-write"
+    NETWORK = "network"
+    PROCESS_EXEC = "process-exec"
+    ADMIN = "admin"
+
+
+#: 存量 risk 标签 → effect 的保守映射（ADR-4：external-side-effect → external-write；
+#: 逐工具例外在注册点显式传 ``effect=`` 覆盖，见 effect-mapping.md）。
+RISK_TO_EFFECT: dict[str, ToolEffect] = {
+    "read-only": ToolEffect.READ_ONLY,
+    "write": ToolEffect.TENANT_LOCAL_WRITE,
+    "external-side-effect": ToolEffect.EXTERNAL_WRITE,
+}
 
 
 @dataclass
 class ToolResult:
     text: str = ""
     content_blocks: list[dict[str, Any]] = field(default_factory=list)
+    # C7 task 4.1：本次调用的 tool_call_id（registry.execute 分配；str 结果无法
+    # 附着，仅 ToolResult 返回路径携带）。
+    tool_call_id: str = ""
 
     def preview(self) -> str:
         if self.text:

@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
 
-from agent.tools.base import Tool, ToolResult
+from agent.tools.base import Tool, ToolEffect, ToolResult, RISK_TO_EFFECT
 from agent.tools.context import ToolExecutionContext
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
 
@@ -84,11 +84,19 @@ def _with_progress_description(schema: dict[str, Any], tool: Tool) -> dict[str, 
 
 @dataclass
 class ToolMeta:
-    risk: str = "read-only"  # "read-only" | "write" | "external-side-effect"
+    risk: str = "read-only"  # "read-only" | "write" | "external-side-effect"（存量标签）
     always_on: bool = False
     # 可选：3–10 词短语，补充工具名和描述中没有的别名或口语化表达。
     # 不需要重复名称或描述里已有的词——搜索后端自动索引 name + description。
     search_hint: str | None = None
+    # C7 task 4.1：作用等级（缺省由 risk 标签保守映射；注册点可显式覆盖，
+    # 见 effect-mapping.md）与补偿登记（external-write 无登记即默认拒绝）。
+    effect: ToolEffect = ToolEffect.READ_ONLY
+    requires_compensation: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.effect, ToolEffect):
+            self.effect = ToolEffect(self.effect)
 
 
 # ── ToolDocument ──────────────────────────────────────────────────────────────
@@ -150,12 +158,16 @@ class ToolRegistry:
         search_hint: str | None = None,
         source_type: str = "builtin",
         source_name: str = "",
+        effect: ToolEffect | str | None = None,
+        requires_compensation: bool = False,
     ) -> None:
         self._tools[tool.name] = tool
         meta = ToolMeta(
             risk=risk,
             always_on=always_on,
             search_hint=search_hint,
+            effect=effect if effect is not None else RISK_TO_EFFECT.get(risk, ToolEffect.READ_ONLY),
+            requires_compensation=requires_compensation,
         )
         self._metadata[tool.name] = meta
         doc = ToolDocument.from_tool_and_meta(
@@ -209,6 +221,8 @@ class ToolRegistry:
                 search_hint=meta.search_hint if meta else None,
                 source_type=doc.source_type,
                 source_name=doc.source_name,
+                effect=meta.effect if meta else ToolEffect.READ_ONLY,
+                requires_compensation=meta.requires_compensation if meta else False,
             )
         return fork_registry
 
@@ -300,12 +314,37 @@ class ToolRegistry:
             merged: dict[str, Any] = dict(safe_arguments)
             if context is not None:
                 merged.update(context.tool_kwargs())
+                # C7 task 4.1（ADR-4）：effect 等级执行面强制（仅 user principal；
+                # owner/dev 路径不受限，与租户白名单同哲学）。
+                meta = self._metadata.get(name)
+                if (
+                    meta is not None
+                    and context.principal_type == "user"
+                    and not self._effect_allowed(meta)
+                ):
+                    return (
+                        f"错误：工具作用等级不允许在当前会话执行"
+                        f"（code=tool_denied_effect，effect={meta.effect.value}）"
+                    )
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            return await tool.execute(**merged)
+            result = await tool.execute(**merged)
+            if isinstance(result, ToolResult) and context is not None:
+                result.tool_call_id = context.request_id
+            return result
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             return f"工具执行出错: {e}"
+
+    @staticmethod
+    def _effect_allowed(meta: ToolMeta) -> bool:
+        """effect 执行面强制（ADR-4）：process-exec/admin 一律拒绝普通租户；
+        external-write 无补偿登记即拒绝；其余等级放行。"""
+        if meta.effect in (ToolEffect.PROCESS_EXEC, ToolEffect.ADMIN):
+            return False
+        if meta.effect is ToolEffect.EXTERNAL_WRITE:
+            return meta.requires_compensation
+        return True
 
     def get_schemas_as_doc_results(self, names: list[str]) -> list[dict[str, Any]]:
         """将工具名列表转为与 search() 相同格式的结果列表。

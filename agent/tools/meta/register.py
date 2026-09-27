@@ -10,6 +10,7 @@ from agent.tools.memorize import MemorizeTool
 from agent.tools.message_lookup import FetchMessagesTool, SearchMessagesTool
 from agent.tools.message_push import MessagePushTool
 from agent.tools.recall_memory import RecallMemoryTool
+from agent.tools.base import ToolEffect
 from agent.tools.registry import ToolRegistry
 from agent.tools.shell import ShellTool, ShellTaskOutputTool, ShellTaskStopTool
 from agent.tools.tool_search import ToolSearchTool
@@ -62,6 +63,7 @@ def register_common_meta_tools(
         ShellTool(),
         always_on=True,
         risk="external-side-effect",
+        effect=ToolEffect.PROCESS_EXEC,
         search_hint="终端 脚本 bash 命令",
     )
     tools.register(
@@ -74,18 +76,21 @@ def register_common_meta_tools(
         ShellTaskStopTool(),
         always_on=True,
         risk="external-side-effect",
+        effect=ToolEffect.PROCESS_EXEC,
         search_hint="停止后台任务 task_stop 杀进程",
     )
     tools.register(
         cast(Tool, readonly_tools["web_search"]),
         always_on=True,
         risk="read-only",
+        effect=ToolEffect.NETWORK,
         search_hint="谷歌 Bing 查资料",
     )
     tools.register(
         cast(Tool, readonly_tools["web_fetch"]),
         always_on=True,
         risk="read-only",
+        effect=ToolEffect.NETWORK,
         search_hint="读取网址 浏览网页",
     )
     tools.register(
@@ -116,6 +121,7 @@ def register_common_meta_tools(
         resolved_push_tool,
         always_on=True,
         risk="external-side-effect",
+        effect=ToolEffect.NETWORK,
     )
     tools.register(
         WriteFileTool(),

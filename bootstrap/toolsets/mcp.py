@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent.mcp.manage_tools import McpAddTool, McpListTool, McpRemoveTool
 from agent.mcp.registry import McpServerRegistry
+from agent.tools.base import ToolEffect
 from agent.tools.registry import ToolRegistry
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
@@ -19,8 +20,16 @@ class McpToolsetProvider(ToolsetProvider):
             config_path=deps.workspace / "mcp_servers.json",
             tool_registry=registry,
         )
-        registry.register(McpAddTool(mcp_registry), risk="external-side-effect")
-        registry.register(McpRemoveTool(mcp_registry), risk="write")
+        registry.register(
+            McpAddTool(mcp_registry),
+            risk="external-side-effect",
+            effect=ToolEffect.ADMIN,
+        )
+        registry.register(
+            McpRemoveTool(mcp_registry),
+            risk="write",
+            effect=ToolEffect.ADMIN,
+        )
         registry.register(McpListTool(mcp_registry), risk="read-only")
         return build_registration_result(
             registry=registry,
