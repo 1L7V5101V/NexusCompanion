@@ -7,7 +7,7 @@
 - **所属阶段**：P-1 契约定义 → P0 基线 → P3 演练（贯穿，D5）
 - **§5.9 引用**：§5.9.17（observability 与 privacy 默认值）、§5.9.12（persistence ownership 与 backup manifest）、§7（验收指标与必采集数据）、§10 PROPOSED DEFAULT（日志与审计保留）、§10 DECIDED（Persistence ownership）
 - **§6 出口条件引用**：P0 出口「当前 persistence map、backup manifest、健康检查与基础指标」「默认日志执行 secret、PII 和本地路径脱敏」；P3 出口「从备份恢复演练」「总控制台聚合缓存命中率/Token 消耗/错误率/延迟/在线数/队列状态」
-- **状态**：in_progress（P-1 契约层已交付：change `c12-observability-backup`，2026-09-06，证据 `evidence/c12-observability-backup/`；§8 伴随落地条目与 P0/P3 出口项未完成，全项 `verified` 需等基线报告与恢复演练）
+- **状态**：in_progress（P-1 契约层已交付：change `c12-observability-backup`，2026-09-06，证据 `evidence/c12-observability-backup/`；验收标准 1/2/3/4/9 契约层已勾选；§8.1 已由 C15 承接落地——`background_work_items` 记录点与 fixture 逐字一致，2026-09-27 PR #7；§8.2–8.6 与 P0/P3 出口项未完成，全项 `verified` 需等基线报告与恢复演练）
 
 ## 目标
 
@@ -29,15 +29,15 @@
 
 ## 验收标准
 
-- [ ] 默认只采集结构化 lifecycle metadata；raw payload/prompt/tool args/attachment content 默认关闭（admin 开关短期、审计化、入库前脱敏） — 验证：采集负向测试
-- [ ] metrics label 无 account/message/tool-call 高基数字段/原始 args/内容 — 验证：label 规则测试（§5.9.17）
-- [ ] retention 可配置且 job 生效（operational 30d / audit 180d，§10 PROPOSED DEFAULT 于 P-1 复核） — 验证：retention job 测试
-- [ ] backup manifest 列全 canonical store（PG / workspace blob / 配置 / secret）+ legacy SQLite 独立项 + 恢复顺序 + 一致性点/加密/校验 — 验证：manifest 校验（含 C6 blob root 覆盖检查）
+- [x] 默认只采集结构化 lifecycle metadata；raw payload/prompt/tool args/attachment content 默认关闭（admin 开关短期、审计化、入库前脱敏） — 验证：采集负向测试 — **P-1 契约层已交付并验证**（change `c12-observability-backup`：`ContentCaptureGate` 默认关闭/三要素开启/TTL/审计 + 采集负向测试，58 项契约测试，2026-09-06）；emit 接线伴随各 Cxx（8.1 已由 C15 首个落地）
+- [x] metrics label 无 account/message/tool-call 高基数字段/原始 args/内容 — 验证：label 规则测试（§5.9.17） — **已交付并验证**（`core/telemetry/label_policy.py` 白名单 + 注册期 fail-fast + fixture 交叉契约测试；C8 已沿用，见 task-08 验收引用）
+- [x] retention 可配置且 job 生效（operational 30d / audit 180d，§10 PROPOSED DEFAULT 于 P-1 复核） — 验证：retention job 测试 — **契约层已交付并验证**（`core/telemetry/retention.py` 30/180/7 可配置 + sweep 幂等/dry-run/失败逐条测试）；config.toml 接线与进程内定时归 P0（§8.4）
+- [x] backup manifest 列全 canonical store（PG / workspace blob / 配置 / secret）+ legacy SQLite 独立项 + 恢复顺序 + 一致性点/加密/校验 — 验证：manifest 校验（含 C6 blob root 覆盖检查） — **模板级已交付并验证**（`tests/fixtures/backup_manifest_template.json` + `core/backup/manifest.py` 校验器：kind 全集//tmp 排除/legacy legacy-only/secrets 独立/恢复顺序全覆盖）；C6 blob root 条目细化归 §8.3
 - [ ] P3 演练：从备份恢复 + PITR + attachment orphan/missing reconciliation — 验证：恢复演练报告
 - [ ] 基线报告（前两周/首批稳定运行后）含 backlog/latency/failure rate/cancellation/compensation/recovery window — 验证：基线报告产出（§7）
-- [ ] admin 内容查看/跨 tenant 下钻/导出产生 audit event — 验证：audit 测试（§5.9.17）
+- [ ] admin 内容查看/跨 tenant 下钻/导出产生 audit event — 验证：audit 测试（§5.9.17） — 契约层已交付（`AdminAccessAuditEvent` schema + `enable_content_capture` 审计 + 契约测试）；**保持未勾**：内容查看端点未落地，C5（已归档）的 `admin_audit_events` 只覆盖 admin 生命周期动作、未接 C12 事件契约（§8.2）
 - [ ] 总控台按 work_kind/flow/stage/tenant/channel/model 聚合 — 验证：聚合 API 测试
-- [ ] SLO/容量阈值**不在编码前冻结**（DEFERRED BY EVIDENCE），先采集后设 — 验证：基线报告用于 SLO 制定
+- [x] SLO/容量阈值**不在编码前冻结**（DEFERRED BY EVIDENCE），先采集后设 — 验证：基线报告用于 SLO 制定 — **负向保障已交付并验证**（AST 静态扫描 `core/telemetry/`+`core/backup/` 无 SLO 红线常量）；阈值引入待基线报告（§8.5）
 
 > 判定「真正完成」而非「执行过」：采集负向测试证明 content 默认关闭；manifest 校验证明 canonical store 全覆盖；恢复演练报告是 P3 出口证据。本 task 为贯穿型（D5），每项 Cxx 落地时同步实现其 §7.1 指标字段 + redaction + backup manifest 条目（落地协议见下）。
 
