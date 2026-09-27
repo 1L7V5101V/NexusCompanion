@@ -145,6 +145,9 @@ def _register_memory_tool(
         always_on=True,
         risk=risk,
         search_hint=search_hint,
+        # C7（ADR-3 类别规则）：memory engine tool_profile 注入的工具以注册来源
+        # 标记，租户目录按来源放行（启用该引擎的租户可见），不按静态 id 枚举。
+        source_type="memory_engine",
     )
 
 

@@ -73,9 +73,7 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
             )
         )
     )
-    tools = SimpleNamespace(
-        set_context=MagicMock(side_effect=lambda **kwargs: order.append("tool_context"))
-    )
+    tools = SimpleNamespace()
     reasoner = SimpleNamespace(
         run_turn=AsyncMock(
             side_effect=lambda *args, **kwargs: order.append("run")
@@ -119,16 +117,12 @@ async def test_agent_core_process_runs_prepare_prompt_run_commit_in_order():
     out = await agent_core.process(msg, "telegram:123")
 
     assert out.content == "final <meme:shy>\n§cited:[mem_1]§"
-    assert order == ["prepare", "tool_context", "render", "run"]
+    assert order == ["prepare", "render", "run"]
     assert context_store.prepare.await_args.kwargs["session_key"] == "telegram:123"
     render_request = context.render.call_args.args[0]
     assert render_request.current_message == ""
     assert render_request.skill_names == ["refactor"]
     assert render_request.retrieved_memory_block == "remembered"
-    tools.set_context.assert_called_once_with(
-        current_user_source_ref="telegram:123:0",
-        current_timestamp="2026-04-04T22:00:00",
-    )
     assert reasoner.run_turn.await_args.kwargs["skill_names"] == ["refactor"]
     assert reasoner.run_turn.await_args.kwargs["retrieved_memory_block"] == "remembered"
     # AfterReasoning persists user+assistant messages to session

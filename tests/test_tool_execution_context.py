@@ -47,6 +47,8 @@ def test_tool_kwargs_expose_identity_keys_only() -> None:
         "channel": "chat",
         "chat_id": "tenant:acct-1",
         "tenant_id": "tenant:acct-1",
+        "current_timestamp": "",
+        "current_user_source_ref": "",
     }
     # 其余可信字段不经 kwargs 暴露（避免 LLM 上下文泄漏与参数面伪造）。
     assert "account_id" not in kwargs

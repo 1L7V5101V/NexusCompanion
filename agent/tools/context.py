@@ -59,6 +59,9 @@ class ToolExecutionContext:
     capabilities: frozenset[str] = frozenset()
     resource_scope: ResourceScope = field(default_factory=ResourceScope)
     path_resolver: TenantPathResolver | None = None
+    # 每 turn 运行时提示（非授权字段）：记忆召回的时间锚点与写入溯源。
+    current_timestamp: str = ""
+    current_user_source_ref: str = ""
 
     def __post_init__(self) -> None:
         # fail-closed：tenant 是资源边界，缺失即拒绝构造（不回落默认租户）。
@@ -68,13 +71,15 @@ class ToolExecutionContext:
             raise ValueError("ToolExecutionContext.turn_id 不能为空")
 
     def tool_kwargs(self) -> dict[str, str]:
-        """工具执行时以最高优先级注入的可信 kwarg（覆盖 arguments 同名字段）。
+        """工具执行时注入的 kwarg。
 
-        仅注入工具今天实际消费的三个身份键；其余可信字段不经 kwargs 暴露，
-        需要完整上下文的工具走显式传参（后续任务按需切换）。
+        前三个为可信身份键（最高优先级，覆盖 arguments 同名字段）；后两个为
+        per-turn 提示键（同样由服务端派生，模型参数不参与覆盖）。
         """
         return {
             "channel": self.channel,
             "chat_id": self.chat_id,
             "tenant_id": self.tenant_id,
+            "current_timestamp": self.current_timestamp,
+            "current_user_source_ref": self.current_user_source_ref,
         }

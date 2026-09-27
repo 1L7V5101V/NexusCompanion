@@ -116,7 +116,6 @@ async def test_spawn_tool_blocks_when_concurrent_limit_reached():
     manager = AsyncMock()
     manager.get_running_count = Mock(return_value=3)  # at limit
     tool = SpawnTool(manager, registry)
-    registry.set_context(channel="telegram", chat_id="123")
 
     result = await tool.execute(task="another task", run_in_background=True)
 
