@@ -67,5 +67,7 @@
   → 完成（2026-09-28）：对照表 `openspec/evidence/c7-tool-isolation/task-8.1-gate-reconciliation.md`——12/12 闸门全部有测试/evidence 落点（#3 由 C8/C5 承接、工具侧 C7 锁定；#6/#12 由「Pilot 用户 MCP 整体关闭」定案满足，关闭面负向测试锁定）；全部 C7 测试文件按门逐一登记（10 个测试文件的精确用例名）
 - [x] 8.2 跨租户并发交错测试（共享 registry 无串租户）。验证：交错测试在 CI/本地稳定通过（≥3 次重跑）
   → 完成（2026-09-28）：`tests/c7/test_tool_isolation_pg.py`（PG scratch DB `nexus_c7test`，真实 C5 provisioning 双账号双租户）——持久化目录互不可达 + 共享 registry 24 轮交错写/读/列目录交叉断言零跨租户泄漏 + per-tenant 目录不含关闭工具；交错测试本地 3/3 重跑稳定通过；同时为 3.1/5.2 的 PG 双租户验证完成勾选
-- [ ] 8.3 回归与基线：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` + `pyright --level error`（project + tests 两配置）对齐 main 基线。验证：evidence 回归记录
-- [ ] 8.4 checklist 回填：webchat-auth-wiring 运维边界解除说明 + C7 状态更新（仅在有 evidence 时）；公网 blocker 更新为「存储切换」
+- [x] 8.3 回归与基线：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` + `pyright --level error`（project + tests 两配置）对齐 main 基线。验证：evidence 回归记录
+  → 完成（2026-09-28）：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` = **1738 passed, 0 failed**（0 skip，含全部 PG 集成组 + tests/c7 双租户交错）；pyright project 38 errors = task 2.4 基线（全部既有无误）、tests 57 errors（全部既有无误）、本 change 文件零新增（evidence `task-8.3-regression.txt`）
+- [x] 8.4 checklist 回填：webchat-auth-wiring 运维边界解除说明 + C7 状态更新（仅在有 evidence 时）；公网 blocker 更新为「存储切换」
+  → 完成（2026-09-28）：`PILOT_ROADMAP_PROJECT_CHECKLIST.md`——webchat-auth-wiring 运维边界解除说明（per-tenant ToolExecutionContext/effect 闸门/目录/路径解析，evidence 全覆盖）；公网 blocker 更新为「存储切换」（§5.9.6）；C7 状态更新（实现完成主体 22/22，六条 P-item 勾选带 evidence 指针 + §5.8.8 12/12 对账）；next decision 清除过期的 C7 提名项

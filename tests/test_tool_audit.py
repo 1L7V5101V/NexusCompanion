@@ -219,7 +219,7 @@ async def test_tenant_cancellation_writes_cancelled():
     await asyncio.sleep(0.05)
     await shared_registry().cancel_tenant("tenant:slow", reason="test")
     result = await asyncio.wait_for(turn, timeout=5)
-
+    assert isinstance(result, str)
     assert "tool_cancelled_account_status" in result
     assert len(sink.events) == 1
     assert sink.events[0].status == "cancelled"

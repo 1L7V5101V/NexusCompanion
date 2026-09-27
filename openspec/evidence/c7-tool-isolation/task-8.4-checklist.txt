@@ -1,0 +1,22 @@
+C7 task 8.4 —— checklist 回填（PILOT_ROADMAP_PROJECT_CHECKLIST）
+================================================================================
+
+2026-09-28 更新（均有 evidence 支撑）：
+- **webchat-auth-wiring 运维边界解除说明**：原 blocker「拿到 session 的主体即拥有
+  全实例工具能力」已解除——C7 落地 per-tenant `ToolExecutionContext`（账户/租户/
+  会话/turn 服务端派生、模型不可覆盖）+ effect 闸门（process-exec/admin 对普通
+  租户一律拒绝、external-write 无补偿拒）+ 白名单内目录（精确 tool id）+ 租户
+  路径解析（逃逸面矩阵）。当前 blocker 更新为「存储切换」（Pilot 多规范源 →
+  PostgreSQL durable source of truth，§5.9.6）。
+- **C7 状态更新**：工具隔离实现完成主体 22/22 任务勾选（2026-09-28）；checklist
+  五条 P-item 勾选并带 evidence 指针：
+  - ToolExecutionContext 三层注入 + 首版精确白名单（§5.9.7）；
+  - 工具 scope/effect 基线（§5.8，普通 tenant 关闭 shell/全局能力）；
+  - suspended/revoked + active tool 取消传播（§5.3，工具侧）；
+  - ToolExecutionContext / TenantToolCatalog / ToolPolicy（§5.8）；
+  - 工具资源与副作用隔离（§5.8.5）；
+  - 跨租户负向 + 并发交错（§5.8.8，12/12 闸门对账）。
+- next decision 清除过期的「C7 设计提名后冻结决策」项。
+
+验证：checklist 更新均为 evidence 驱动的勾选（task-1.1/2.x/3.x/4.x/5.x/6.x/7.x/8.x
+evidence 文件 + tests/c7 PG 组 + task-8.1 对照表）。

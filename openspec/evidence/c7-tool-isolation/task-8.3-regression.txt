@@ -1,0 +1,23 @@
+C7 task 8.3 —— 回归与基线（PG 全量 + pyright 双配置）
+================================================================================
+
+环境：Windows 本地，Docker PG `nexus-postgres`（5433），Python 3.12.13（uv）。
+
+PG 全量回归（含全部 postgres marker 组）
+----------------------------------------
+命令：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/`
+结果：**1738 passed, 0 failed**（0 skipped，PG 严格模式；含 C5/C1/C2/C15/C7 PG
+集成组与本 change 新增 `tests/c7/` 双租户跨租户交错组）。
+对比：本 change 各 task 递增回归 1659 → 1667 → 1676 → 1688 → 1695 → 1709 →
+1726 → 1735 → 1738，全程 0 失败。
+
+pyright 双配置（`--level error` 等义 basic 全量）
+-------------------------------------------------
+- project 配置（`pyrightconfig.json`）：**38 errors** —— 与任务 2.4 基线一致；
+  全部为未触碰文件既有项（agent_restart/workspace_mcp import、
+  proactive_v2.context 遗留、TurnLogger 等）；本 change 全部文件零新增。
+- tests 配置（`pyrightconfig.tests.json`）：**57 errors** —— 均为既有文件
+  （test_ws_guard/remind/web_chat_channel/memory_score_fields 等）；本 change
+  测试文件零 error（曾出现的 test_tool_audit.py 单处 str|ToolResult 断言已修）。
+
+结论：PG 全量绿 + pyright 对齐 main 基线，无新增。证据命令与输出同上。
