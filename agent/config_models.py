@@ -4,6 +4,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bootstrap.work_queue_defaults import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_ERROR_BACKOFF_SECONDS,
+    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    DEFAULT_LEASE_TTL_SECONDS,
+    DEFAULT_MAINTENANCE_ACQUIRE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_MAX_ERROR_BACKOFF_SECONDS,
+    DEFAULT_POLL_INTERVAL_SECONDS,
+    DEFAULT_RELEASE_DELAY_SECONDS,
+)
 from proactive_v2.config import ProactiveConfig
 
 
@@ -92,9 +103,7 @@ class StorageConfig:
     """存储层配置：sqlite（单机兼容）或 postgres（Phase 1 目标）。"""
 
     backend: str = "sqlite"
-    postgres_url: str = (
-        "postgresql+psycopg://nexus:nexus_dev@localhost:5433/nexus"
-    )
+    postgres_url: str = "postgresql+psycopg://nexus:nexus_dev@localhost:5433/nexus"
     """postgres 后端连接串。默认指向 docker/debug 的本地开发库（宿主端口 5433）。"""
     pool_size: int = 20
 
@@ -126,9 +135,9 @@ class PersonaConfig:
 class PeerAgentConfig:
     name: str
     base_url: str
-    launcher: list[str]          # 拉起命令，如 ["uv", "run", "python", "-m", "app.a2a_server"]
-    cwd: str | None = None       # 子进程工作目录，None 表示继承父进程
-    description: str = ""        # 工具描述，用于 LLM 路由；服务器在线时会被 AgentCard 覆盖
+    launcher: list[str]  # 拉起命令，如 ["uv", "run", "python", "-m", "app.a2a_server"]
+    cwd: str | None = None  # 子进程工作目录，None 表示继承父进程
+    description: str = ""  # 工具描述，用于 LLM 路由；服务器在线时会被 AgentCard 覆盖
     health_path: str = "/health"
     startup_timeout_s: int = 30
     shutdown_timeout_s: int = 10
@@ -229,6 +238,32 @@ class AdmissionConfig:
 
 
 @dataclass
+class WorkQueueConfig:
+    """C15 work item 消费层运行参数（design ADR-7 冻结初始值；可配置）。
+
+    `enabled` 默认 **False**：接线到位但默认不启动消费者。这不只是保守——在还没有
+    注册任何 `flow` handler 的部署上启动消费者，会让所有 work item 以「未注册 flow」
+    计入失败并最终进死信（ADR-7 的 fail-fast 与 `<work_queue.enabled>` 共同约束）。
+
+    `max_attempts` 上限为退避表档数（5 档：1m/5m/30m/2h/6h；字面量单一来源 =
+    `bootstrap/work_queue_defaults.py`）。
+    """
+
+    enabled: bool = False
+    lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS
+    heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS
+    poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    batch_size: int = DEFAULT_BATCH_SIZE
+    maintenance_acquire_timeout_seconds: float = (
+        DEFAULT_MAINTENANCE_ACQUIRE_TIMEOUT_SECONDS
+    )
+    release_delay_seconds: float = DEFAULT_RELEASE_DELAY_SECONDS
+    error_backoff_seconds: float = DEFAULT_ERROR_BACKOFF_SECONDS
+    max_error_backoff_seconds: float = DEFAULT_MAX_ERROR_BACKOFF_SECONDS
+
+
+@dataclass
 class PluginRuntimeConfig:
     """C8 hook failure 分层的有界 timeout（§5.9.16，task-08）。
 
@@ -286,6 +321,7 @@ class Config:
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    work_queue: WorkQueueConfig = field(default_factory=WorkQueueConfig)
     plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -316,4 +352,5 @@ __all__ = [
     "StorageConfig",
     "TelegramChannelConfig",
     "WiringConfig",
+    "WorkQueueConfig",
 ]

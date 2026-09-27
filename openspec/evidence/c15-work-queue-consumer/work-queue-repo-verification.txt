@@ -1,0 +1,45 @@
+PASS  每租户每轮至多 1 条  [['t1', 't2']]
+PASS  认领不改 attempt_count
+PASS  在途租户本轮不再被认领（条件①）  [[]]
+PASS  心跳成功
+PASS  他人续租失败（失租）
+PASS  成功副作用与终态同事务提交  [status=succeeded side=1]
+PASS  成功写审计行  [['succeeded']]
+PASS  mutate 抛错向上传播
+PASS  整体回滚（终态未推进 + 副作用未落库）  [status=in_progress side=0]
+PASS  第 1 次认领拿到该行  [1]
+PASS  第 1 次失败后 attempt_count=1 且回 queued  [count=1 status=queued]
+PASS  第 2 次认领拿到该行  [1]
+PASS  第 2 次失败后 attempt_count=2 且回 queued  [count=2 status=queued]
+PASS  第 3 次认领拿到该行  [1]
+PASS  第 3 次失败后 attempt_count=3 且回 queued  [count=3 status=queued]
+PASS  第 4 次认领拿到该行  [1]
+PASS  第 4 次失败后 attempt_count=4 且回 queued  [count=4 status=queued]
+PASS  第 5 次可认领
+PASS  达上限进入死信终态  [status=failed]
+PASS  死信不再被认领
+PASS  逐次失败各留一行审计  [['failed', 'failed', 'failed', 'failed', 'failed']]
+PASS  redrive 复位 attempt_count 与状态  [0/queued]
+PASS  redrive 不抹除历史（5 失败 + 1 重投）  [['failed', 'failed', 'failed', 'failed', 'failed', 'redrive']]
+PASS  redrive 后可再认领
+PASS  非死信 redrive 被拒
+PASS  延后回 queued 且不消耗预算  [queued/0]
+PASS  延后写 released 审计行  [['released']]
+PASS  stale 被清扫复位  [1]
+PASS  清扫带回前 owner
+PASS  清扫不碰 attempt_count  [0]
+PASS  清扫写 recovered 审计行  [['recovered']]
+PASS  清扫后租约清空
+PASS  清扫后可再认领
+PASS  租约未过期不被清扫
+PASS  7 次崩溃后仍 queued 且 attempt_count=0 且未判死  [queued/0]
+PASS  7 次崩溃仍可认领
+PASS  失租记录失败被拒
+PASS  失租推进成功被拒
+PASS  跨租户 get 不可见
+PASS  同租户 get 可见
+PASS  跨租户审计不可见
+PASS  跨租户推进被拒（NotFound）
+PASS  审计流含 released→failed 且顺序稳定  [['released', 'failed']]
+
+全部 WorkItemRepository 验证通过

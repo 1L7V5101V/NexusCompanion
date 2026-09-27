@@ -29,6 +29,7 @@ from bootstrap.dashboard_api import build_dashboard_server
 from bootstrap.proactive import build_memory_optimizer_task, build_proactive_runtime
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
+from bootstrap.work_queue import WorkQueueRuntime, build_work_queue_runtime
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
@@ -130,7 +131,9 @@ async def _run_primary_tasks(tasks: list[asyncio.Future[Any]]) -> None:
         raise
 
 
-def _stop_plugin_jobs(runtime: PluginJobRuntime | None) -> Callable[[], Awaitable[None]]:
+def _stop_plugin_jobs(
+    runtime: PluginJobRuntime | None,
+) -> Callable[[], Awaitable[None]]:
     async def stop() -> None:
         if runtime is not None:
             runtime.stop()
@@ -218,6 +221,8 @@ class AppRuntime:
         self.proactive_loop = None
         self.provisioning_service: TenantProvisioningService | None = None
         self.provisioning_worker: TenantProvisioningWorker | None = None
+        self.work_queue: WorkQueueRuntime | None = None
+        self.work_queue_task: asyncio.Task[None] | None = None
         self.peer_process_manager = None
         self.peer_poller = None
         self.dashboard_server = None
@@ -276,7 +281,10 @@ class AppRuntime:
             # PG 下装配 provisioning control path：service 供 turn gate 两阶段检查，
             # worker 独立消费队列执行幂等 DDL（M4H-4 commit 5）。
             storage_runtime = self.core.storage_runtime
-            if storage_runtime is not None and storage_runtime.memory_backend is not None:
+            if (
+                storage_runtime is not None
+                and storage_runtime.memory_backend is not None
+            ):
                 self.provisioning_service = TenantProvisioningService(
                     storage_runtime.memory_backend,
                     run_db=storage_runtime.run_db,
@@ -285,9 +293,7 @@ class AppRuntime:
                     self.provisioning_service
                 )
             await self.core.start()
-            self.workspace_mcp_watcher_task = (
-                self.core.workspace_mcp_watcher_task
-            )
+            self.workspace_mcp_watcher_task = self.core.workspace_mcp_watcher_task
 
             async def _execute_control_request(request: TurnRequest):
                 assert self.agent_loop is not None
@@ -311,6 +317,15 @@ class AppRuntime:
             ).scan()
             if self.provisioning_worker is not None:
                 await self.provisioning_worker.start()
+            # C15：首次在生产构造 control plane 的 async engine 并启动 work item 消费者。
+            # `[agent.work_queue].enabled` 默认 false ⇒ 通常返回 None（不建连接、不启 task）。
+            # 启用但没有任何 flow handler 时 `build_work_queue_runtime` fail-fast 抛错。
+            self.work_queue = build_work_queue_runtime(self.config)
+            if self.work_queue is not None:
+                self.work_queue_task = asyncio.create_task(
+                    self.work_queue.worker.run(), name="work_queue_worker"
+                )
+                self.work_queue_task.add_done_callback(self._work_queue_done)
             if self.restart_coordinator is not None:
                 self.restart_coordinator.bind_admission(
                     quiesce=self.conversation_runtime.quiesce_for_restart,
@@ -383,11 +398,12 @@ class AppRuntime:
                 snapshot = plugin_manager.current_snapshot
                 service_bindings = {
                     plugin_id: {
-                        service_id: dict(spec)
-                        for service_id, spec in services.items()
+                        service_id: dict(spec) for service_id, spec in services.items()
                     }
                     for plugin_id, services in (
-                        snapshot.managed_services.items() if snapshot is not None else ()
+                        snapshot.managed_services.items()
+                        if snapshot is not None
+                        else ()
                     )
                 }
                 self.plugin_service_host.bind_plugin_services(service_bindings)
@@ -433,26 +449,26 @@ class AppRuntime:
                 http_resources=self.http_resources,
                 event_bus=event_bus,
                 bot_commands=(
-                    plugin_manager.telegram_bot_commands
-                    if plugin_manager
-                    else None
+                    plugin_manager.telegram_bot_commands if plugin_manager else None
                 ),
                 interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
             )
             await self.channel_host.start_all()
             if plugin_manager is not None:
-                channel_bindings = {
-                    plugin_id: generation.contributions.channels
-                    for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
-                } if plugin_manager.current_snapshot is not None else {}
+                channel_bindings = (
+                    {
+                        plugin_id: generation.contributions.channels
+                        for plugin_id, generation in plugin_manager.current_snapshot.generations.items()
+                    }
+                    if plugin_manager.current_snapshot is not None
+                    else {}
+                )
                 self.channel_host.bind_plugin_channels(channel_bindings)
                 plugin_manager.bind_channel_switcher(
                     self.channel_host.swap_plugin_channels
                 )
-                plugin_manager.bind_endpoint_switcher(
-                    self._swap_plugin_endpoints
-                )
+                plugin_manager.bind_endpoint_switcher(self._swap_plugin_endpoints)
 
             self.tasks = [
                 self.passive_worker.run(),
@@ -527,9 +543,7 @@ class AppRuntime:
                 event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(
-                    list(plugin_manager.proactive_modules)
-                    if plugin_manager
-                    else None
+                    list(plugin_manager.proactive_modules) if plugin_manager else None
                 ),
                 proactive_lifecycles=(
                     list(plugin_manager.proactive_lifecycles)
@@ -664,7 +678,7 @@ class AppRuntime:
                 scheduled.append(task)
         except (asyncio.CancelledError, Exception):
             self._runtime_tasks = set(scheduled)
-            self.tasks = pending[len(scheduled):]
+            self.tasks = pending[len(scheduled) :]
             for awaitable in self.tasks:
                 if inspect.iscoroutine(awaitable):
                     awaitable.close()
@@ -699,6 +713,39 @@ class AppRuntime:
 
         _raise_unexpected_task_errors("primary runtime task", results)
 
+    async def _stop_work_queue(self) -> None:
+        """停止 work queue 消费者：不再认领新 work、等在途收束、释放连接池（ADR-7）。
+
+        worker task 不放入 `self.tasks`（那会与 `_run_primary_tasks` 的一损俱损语义
+        耦合，并且 `runtime_tasks.cancel` 会中途取消在途 handler）；改为独立 task，
+        由本步骤负责 drain，异常经 `_work_queue_done` 回调大声记录。
+        """
+        runtime = self.work_queue
+        if runtime is not None:
+            runtime.worker.stop()
+        task = self.work_queue_task
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("work queue worker 停止时异常")
+            self.work_queue_task = None
+        if runtime is not None:
+            await runtime.aclose()
+
+    def _work_queue_done(self, task: asyncio.Task[None]) -> None:
+        """worker task 意外退出时大声记录（`run()` 已保证轮询异常不逃逸）。"""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "work queue worker 意外退出",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
     async def _cancel_plugin_candidate_tasks(self) -> None:
         for task in self._plugin_candidate_tasks:
             _ = task.cancel()
@@ -727,6 +774,10 @@ class AppRuntime:
             self._remove_plugin_reload_signal()
             await _run_cleanup_steps(
                 ("plugin_candidate_tasks.cancel", self._cancel_plugin_candidate_tasks),
+                # 必须在 runtime task 取消**之前**：`stop()` 只阻止认领新 work 并等
+                # 在途 handler 收束（ADR-7），若先走 `runtime_tasks.cancel` 会在 handler
+                # 执行中直接取消它。
+                ("work_queue.drain_and_stop", self._stop_work_queue),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 (
@@ -758,15 +809,19 @@ class AppRuntime:
                 ),
                 (
                     "control_service.shutdown",
-                    self.control_service.shutdown
-                    if self.control_service
-                    else _noop_async,
+                    (
+                        self.control_service.shutdown
+                        if self.control_service
+                        else _noop_async
+                    ),
                 ),
                 (
                     "conversation_runtime.shutdown",
-                    self.conversation_runtime.shutdown
-                    if self.conversation_runtime
-                    else _noop_async,
+                    (
+                        self.conversation_runtime.shutdown
+                        if self.conversation_runtime
+                        else _noop_async
+                    ),
                 ),
                 ("ipc.stop", self.ipc.stop if self.ipc else _noop_async),
                 (
@@ -775,22 +830,24 @@ class AppRuntime:
                 ),
                 (
                     "plugin_services.stop",
-                    self.plugin_service_host.stop_all
-                    if self.plugin_service_host
-                    else _noop_async,
+                    (
+                        self.plugin_service_host.stop_all
+                        if self.plugin_service_host
+                        else _noop_async
+                    ),
                 ),
                 (
                     "provisioning_worker.stop",
-                    self.provisioning_worker.stop
-                    if self.provisioning_worker
-                    else _noop_async,
+                    (
+                        self.provisioning_worker.stop
+                        if self.provisioning_worker
+                        else _noop_async
+                    ),
                 ),
                 ("core.stop", self.core.stop if self.core else _noop_async),
                 (
                     "memory_runtime.aclose",
-                    self.memory_runtime.aclose
-                    if self.memory_runtime
-                    else _noop_async,
+                    self.memory_runtime.aclose if self.memory_runtime else _noop_async,
                 ),
                 ("http_resources.aclose", self.http_resources.aclose),
                 (
@@ -801,7 +858,10 @@ class AppRuntime:
                     "runtime_readiness.clear",
                     _clear_readiness(self.readiness),
                 ),
-                ("workspace_lock.release", _release_workspace_lock(self._workspace_lock)),
+                (
+                    "workspace_lock.release",
+                    _release_workspace_lock(self._workspace_lock),
+                ),
             )
         finally:
             clear_default_shared_http_resources(self.http_resources)
