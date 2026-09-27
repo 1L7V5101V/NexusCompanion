@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseCore Demo — Kerr-Newman Black Hole</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+    #host { position: fixed; inset: 0; }
+    #panel {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; z-index: 10;
+      background: rgba(10, 12, 20, 0.72); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(8px);
+    }
+    #panel button {
+      background: rgba(255,255,255,0.06); color: #cfd6e4; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 7px; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: all .15s;
+    }
+    #panel button:hover { background: rgba(255,255,255,0.14); }
+    #panel button.active { background: #3b5bd6; color: #fff; border-color: #5b7bf0; }
+    #hint { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.45); font-size: 12px; z-index: 10; }
+    #fps { position: fixed; top: 16px; left: 16px; color: rgba(255,255,255,0.5); font-size: 12px;
+      font-variant-numeric: tabular-nums; z-index: 10; }
+  </style>
+</head>
+<body>
+  <div id="host"></div>
+  <div id="panel">
+    <button data-state="idle" class="active">idle</button>
+    <button data-state="thinking">thinking</button>
+    <button data-state="streaming">streaming</button>
+    <button data-state="error">error</button>
+  </div>
+  <div id="fps"></div>
+  <div id="hint">拖动鼠标环视 · W/A/S/D + R/F 移动 · Q/E 翻滚（与 Shadertoy 原作操作一致）</div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
