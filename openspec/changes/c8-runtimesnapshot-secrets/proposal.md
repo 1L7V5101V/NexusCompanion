@@ -30,7 +30,7 @@ C8 是批次 1 可早启的并行根；`TenantRuntimePlan` 是 C7（E4：TenantT
   - `PluginJobRuntime._run_one`：执行前 revocation recheck（lease 已有）；
   - `SchedulerService._execute`：instant 直推前 revocation recheck（soft 经 passive 路径已被覆盖）。
 - **新模块 `agent/plugins/tenant_plan.py`** — §5.9.16/§5.9.7 per-task 接缝：`ContributionMeta`（`contribution_id` + 固定 hook/tool/job 类型 + `binding_policy=required|default_on|opt_in` + `tenant_configurable`）、不可变 `TenantRuntimePlan`（`snapshot_id`/`tenant_id`/`tenant_policy_revision`/enabled contributions）、`TenantRuntimeResolver.resolve(snapshot, tenant_id, tenant_policy_revision, bindings)`（未在 plan 中的 contribution 不可见/不可调用）、`PluginInvocationContext`（每次 hook/tool/job 调用显式携带，插件实例不得保存跨 await 的 tenant 状态）。
-- **hook failure 分层（§5.9.16）**：`ToolExecutor` pre-tool hook 超时/异常/缺 context 一律 deny（fail-closed），post_tool_use 与 EventBus `observe`/`fanout` 每观察者有界 timeout（默认 5s，可配）+ 失败记录、不改写已提交终态。
+- **hook failure 分层（§5.9.16）**：`ToolExecutor` pre-tool hook 超时/异常/上下文缺失受控拒绝且真实工具不执行（fail-closed）；post_tool_use/post_tool_error 与 EventBus `observe`/`fanout` 每观察者有界 timeout（默认 5s，可配）+ 失败记录、不改写已提交终态（含修正 post_tool_error 原会掩盖工具错误的行为）。
 - **新模块 `core/crypto/secret_box.py`** — tenant secret 静态加密：AES-256-GCM（`cryptography` 库），sealed 格式 `v1:<key_id>:<nonce>:<ct>`；keyring 多 key 支持 rotation（active 加密、按 key_id 解密、撤销旧 key 后解密失败）；key source = workspace `keys/` 文件（design.md ADR-7 冻结）；`requirements.txt` 显式声明 `cryptography`。
 - **snapshot 发布失败回退与 dormant 安装测试**：候选编译/发布失败保留旧 committed snapshot（不发布半成品、不清空当前可用）；插件安装只登记 package/manifest 不执行插件代码。
 - **P0 lease coverage audit 报告**：`openspec/evidence/c8-runtimesnapshot-secrets/` 登记 Passive/Proactive/Drift/maintenance/plugin job 全入口 lease 证据与测试入口（每类入口一条测试）。
