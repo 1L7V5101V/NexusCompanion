@@ -1,0 +1,33 @@
+C7 task 6.1 —— 封禁事件 → 执行中工具调用按 tenant 取消传播（design ADR-7）
+================================================================================
+
+结论（前沿基线在 main）：
+- `agent/admission/tool_cancellation.py`：进程级 `TenantCancellationRegistry`
+  （tenant → 执行中工具任务句柄；`register/unregister/cancel_tenant/active_count`）。
+- `agent/tools/registry.py::_execute_managed`：有执行上下文时工具挂在子任务并向注册表
+  注册；租户取消 → 结构化取消结果（`code=tool_cancelled_account_status`），turn 继续
+  收束；外层 turn 取消 → CancelledError 原样上抛（不吞取消）。
+- `bootstrap/auth/api.py`：admin suspend/revoke 端点经 `_cancel_tenant_tools` 传播
+  （C1 身份链 canonical conversation → tenant_id）；查不到/异常 fail-safe 返回 0，
+  不阻断封禁主流程；响应增 `cancelled_tool_calls` 字段。
+
+关键设计修正（3.12 行为核对）：
+- Python 3.12 起 `asyncio.Task.cancel()` 会把取消转发给当前被 await 的子任务
+  （`cancel() → _fut_waiter.cancel()`，纯 asyncio 复现确认：parent.cancel() →
+  child 收到 CancelledError）。因此外层 turn 取消也会让执行中的工具任务收到
+  CancelledError，仅凭 `task.cancelled()` 无法区分「租户取消」与「外层取消」。
+- 修正：`cancel_tenant` 对目标 handle 打标（`_tenant_cancelled`），
+  `_execute_managed` 经 `_take_cancellation` 消费标记判别来源。
+
+验证
+----
+- `pytest tests/test_tool_cancellation.py -q`：7 passed
+  （租户级取消且其他租户不受影响、多租户只命中目标、无 active 时返回 0、
+  正常完成注销、外层 turn 取消不吞、admin 接线传播、fail-safe 两分支）。
+- `pytest -q -W error tests/`：1695 passed, 0 failed（task 6.1 新增 7 项）。
+- pyright：本任务文件零新增 error（registry.py:180 为既有基线项）。
+
+历史说明：上一会话测试曾挂死，根因是测试两个 stub 同名，第二次注册覆盖第一个
+（工具永不执行）；本会话改为按工具名动态建类修复；随后发现本会话初版
+`_execute_managed` 仅凭 `task.cancelled()` 判别来源在 3.12 上不成立（外层取消会被
+转发给子任务），以 handle 打标修正。

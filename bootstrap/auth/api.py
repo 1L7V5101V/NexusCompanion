@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import uuid
 from http.cookies import CookieError, SimpleCookie
 from typing import Any, Literal
@@ -322,6 +323,7 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
             "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
         }
 
+
     @router.get("/api/admin/test-accounts")
     async def list_accounts(_: _AdminSession = Depends(_admin_session)) -> dict[str, Any]:
         return {"items": await runtime.provisioning.list_accounts()}
@@ -334,7 +336,8 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
             await runtime.provisioning.suspend_account(account_id, reason="admin:suspend")
         except ProvisioningStateError:
             raise HTTPException(409, detail="invalid account state") from None
-        return {"status": "suspended"}
+        cancelled = await _cancel_tenant_tools(runtime, account_id)
+        return {"status": "suspended", "cancelled_tool_calls": str(cancelled)}
 
     @router.post("/api/admin/test-accounts/{account_id}/unsuspend")
     async def unsuspend_account(
@@ -354,7 +357,8 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
             await runtime.provisioning.revoke_account(account_id, reason="admin:revoke")
         except ProvisioningStateError:
             raise HTTPException(409, detail="invalid account state") from None
-        return {"status": "revoked"}
+        cancelled = await _cancel_tenant_tools(runtime, account_id)
+        return {"status": "revoked", "cancelled_tool_calls": str(cancelled)}
 
     @router.post("/api/admin/tokens/{token_id}/revoke")
     async def revoke_token(
@@ -365,6 +369,29 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
         return {"status": "revoked"}
 
     return router
+
+
+async def _cancel_tenant_tools(runtime: Any, account_id: str) -> int:
+    """C7 task 6.1（ADR-7）：封禁后取消该账号租户的执行中工具调用。
+
+    经 C1 身份链取该账号的 canonical conversation → tenant_id；查不到（未完成
+    provisioning）则无事可做。单进程注册表；失败不阻断封禁本身。
+    """
+    from agent.admission.tool_cancellation import shared_registry
+
+    try:
+        convs = await runtime.canonical_repo.list_conversations_by_account(account_id)
+        if not convs:
+            return 0
+        tenant_id = str(convs[0]["tenant_id"])
+        return await shared_registry().cancel_tenant(
+            tenant_id, reason="admin:account_status_change"
+        )
+    except Exception:  # noqa: BLE001 —— 取消失败不阻断封禁主流程
+        logging.getLogger(__name__).warning(
+            "cancel_tenant_tools 失败 account=%s", account_id, exc_info=True
+        )
+        return 0
 
 
 def _require_origin(runtime: AuthRuntime, request: Request) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable, Set as AbstractSet
 from copy import deepcopy
@@ -350,13 +351,51 @@ class ToolRegistry:
                 merged.setdefault("path_resolver", self._path_resolver)
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            result = await tool.execute(**merged)
+            if context is not None:
+                result = await self._execute_managed(tool, merged, context)
+            else:
+                result = await tool.execute(**merged)
             if isinstance(result, ToolResult) and context is not None:
                 result.tool_call_id = context.request_id
             return result
         except Exception as e:
             logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
             return f"工具执行出错: {e}"
+
+    @staticmethod
+    async def _execute_managed(
+        tool: Tool,
+        merged: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> str | ToolResult:
+        """C7 task 6.1（ADR-7）：执行中工具挂入租户取消注册表。
+
+        封禁事件经 :meth:`TenantCancellationRegistry.cancel_tenant` 直接取消任务；
+        区分「工具被租户取消」（转结构化取消结果，turn 继续收束）与「外层 turn
+        取消」（原样上抛，不吞取消）。
+
+        判别依据：3.12 起 ``Task.cancel()`` 会把取消转发给被 await 的子任务，外层
+        turn 取消也会让工具任务收到 CancelledError——以注册表的 handle 标记
+        （:meth:`TenantCancellationRegistry._take_cancellation`）区分来源，而非
+        仅凭 ``task.cancelled()``。
+        """
+        from agent.admission.tool_cancellation import shared_registry
+
+        task = asyncio.create_task(tool.execute(**merged))
+        handle = await shared_registry().register(context.tenant_id, task)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if task.cancelled() and await shared_registry()._take_cancellation(  # noqa: SLF001
+                handle
+            ):
+                return (
+                    "错误：工具调用已被账号状态变更取消"
+                    "（code=tool_cancelled_account_status）"
+                )
+            raise
+        finally:
+            await shared_registry().unregister(handle)
 
     @staticmethod
     def _effect_allowed(meta: ToolMeta) -> bool:
