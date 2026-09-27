@@ -1,0 +1,56 @@
+{
+  "config": {
+    "seed": 202600901,
+    "items": 120,
+    "queries": 40,
+    "top_k": 8,
+    "threshold": 0.3
+  },
+  "rows": [
+    {
+      "mode": "A",
+      "name": "默认",
+      "recall@1": 0.3133,
+      "recall@3": 0.3433,
+      "recall@5": 0.3733,
+      "mrr": 1.0,
+      "ndcg@3": 0.481,
+      "injection_hit_rate": 1.0,
+      "p95_latency_s": 0.009465
+    },
+    {
+      "mode": "B",
+      "name": "A+HyDE",
+      "recall@1": 0.305,
+      "recall@3": 0.3433,
+      "recall@5": 0.3733,
+      "mrr": 0.9875,
+      "ndcg@3": 0.4767,
+      "injection_hit_rate": 1.0,
+      "p95_latency_s": 0.017908
+    },
+    {
+      "mode": "C",
+      "name": "A+rewrite",
+      "recall@1": 0.2633,
+      "recall@3": 0.3433,
+      "recall@5": 0.3733,
+      "mrr": 0.925,
+      "ndcg@3": 0.455,
+      "injection_hit_rate": 1.0,
+      "p95_latency_s": 0.025367
+    },
+    {
+      "mode": "D",
+      "name": "A+reranker",
+      "recall@1": 0.3133,
+      "recall@3": 0.3433,
+      "recall@5": 0.3733,
+      "mrr": 1.0,
+      "ndcg@3": 0.481,
+      "injection_hit_rate": 1.0,
+      "p95_latency_s": 0.009804
+    }
+  ],
+  "timestamp": "2026-09-26T20:15:49.727809+00:00"
+}
