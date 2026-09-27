@@ -23,21 +23,18 @@ export type PulseCoreState = 'idle' | 'thinking' | 'streaming' | 'error';
 
 interface StateProfile {
     bpm: number;         // 心率（次/分）
-    zoomAmp: number;     // 心跳径向扩张幅度（0.05 = 峰值放大 5%）
+    holeAmp: number;     // 黑洞本体心跳缩放幅度（0.06 = 峰值放大 6%）
     gain: number;        // 基准亮度增益
     flicker: number;     // 闪烁强度 (error)
 }
 
 // 色彩一律不动（用户要求保留原作配色），状态只调制亮度/心跳节奏
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    idle:      { bpm: 42,  zoomAmp: 0.022, gain: 1.00, flicker: 0.0 },
-    thinking:  { bpm: 84,  zoomAmp: 0.048, gain: 1.06, flicker: 0.0 },
-    streaming: { bpm: 96,  zoomAmp: 0.060, gain: 1.10, flicker: 0.0 },
-    error:     { bpm: 110, zoomAmp: 0.075, gain: 0.90, flicker: 0.20 },
+    idle:      { bpm: 42,  holeAmp: 0.030, gain: 1.00, flicker: 0.0 },
+    thinking:  { bpm: 84,  holeAmp: 0.055, gain: 1.06, flicker: 0.0 },
+    streaming: { bpm: 96,  holeAmp: 0.075, gain: 1.10, flicker: 0.0 },
+    error:     { bpm: 110, holeAmp: 0.095, gain: 0.90, flicker: 0.20 },
 };
-
-/** 黑洞（透镜影）在画面中的归一化位置：按默认机位实际渲染结果标定 */
-const HOLE_CENTER = new THREE.Vector2(0.6, 0.32);
 
 interface RT {
     rt: THREE.WebGLRenderTarget;
@@ -111,26 +108,32 @@ export class PulseCorePipeline {
             fragmentShader: SHIM_PREFIX + src + SHIM_MAIN,
             depthTest: false,
             depthWrite: false,
-            uniforms: {
-                iResolution: { value: new THREE.Vector3(1, 1, 1) },
-                iTime: { value: 0 },
-                iTimeDelta: { value: 0 },
-                iFrame: { value: 0 },
-                iMouse: { value: new THREE.Vector4(0, 0, -1, -1) },   // 恒未拖拽 → 相机固定
-                iChannelResolution: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
-                iChannel0: { value: null },
-                iChannel1: { value: null },
-                iChannel2: { value: null },
-                iChannel3: { value: null },
-            },
+                uniforms: {
+                    iResolution: { value: new THREE.Vector3(1, 1, 1) },
+                    iTime: { value: 0 },
+                    iTimeDelta: { value: 0 },
+                    iFrame: { value: 0 },
+                    iMouse: { value: new THREE.Vector4(0, 0, -1, -1) },   // 恒未拖拽 → 相机固定
+                    iChannelResolution: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+                    iChannel0: { value: null },
+                    iChannel1: { value: null },
+                    iChannel2: { value: null },
+                    iChannel3: { value: null },
+                    uCONST_M: { value: 0.5 },   // 仅 Pass A 使用：心跳缩放的几何质量
+                },
         });
 
         // 拓扑图 UI 是原作调试面板（右上角蓝框），网站背景用不到。
         // 加载层精确替换调用行，磁盘上的原作 glsl 文件保持零修改；
         // 若上游版本改了这行导致 no-op，拓扑图会原样出现（可发现、可再适配）。
-        const aSrc = opts?.hideTopologyMap === false
+        const aSrc0 = opts?.hideTopologyMap === false
             ? bufferASrc
             : bufferASrc.replace(/vec4 mapCol = RenderTopologyMap\([^;]+;/, 'vec4 mapCol = vec4(0.0);');
+        // 黑洞本体心跳：把几何质量 CONST_M（度规/视界/盘半径 Rs 的共同尺度根）
+        // 换成 uniform，由 JS 每帧按心跳包络设值——洞、光子环、吸积盘整体缩放
+        const aSrc = aSrc0
+            .replace(/const float CONST_M\s*=\s*0\.5;/, 'uniform float uCONST_M;')
+            .replace(/\bCONST_M\b/g, 'uCONST_M');
 
         this.passes = {
             A: mkPass(aSrc),
@@ -147,9 +150,7 @@ export class PulseCorePipeline {
                 uniforms: {
                     uTex: { value: null },
                     uOutRes: { value: new THREE.Vector2(1, 1) },
-                    uCenter: { value: HOLE_CENTER.clone() },
                     uGain: { value: 1 },
-                    uZoom: { value: 0 },
                 },
             }),
         };
@@ -236,7 +237,7 @@ export class PulseCorePipeline {
         // 状态参数平滑过渡
         const k = 1 - Math.exp(-dt * 3);
         this.cur.bpm += (p.bpm - this.cur.bpm) * k;
-        this.cur.zoomAmp += (p.zoomAmp - this.cur.zoomAmp) * k;
+        this.cur.holeAmp += (p.holeAmp - this.cur.holeAmp) * k;
         this.cur.gain += (p.gain - this.cur.gain) * k;
         this.cur.flicker += (p.flicker - this.cur.flicker) * k;
 
@@ -248,7 +249,8 @@ export class PulseCorePipeline {
         const beat = heartbeatPulse(this.heartPhase);
         const flick = 1 - this.cur.flicker * Math.max(0, Math.sin(this.time * 23.0) * Math.sin(this.time * 7.3));
         const gain = this.cur.gain * (1 + 0.10 * beat + this.energySmooth * 0.12) * flick;
-        const zoom = this.cur.zoomAmp * beat + this.energySmooth * 0.012;
+        // 黑洞本体缩放：质量尺度随心跳泵动（洞+光子环+盘 Rs 一起缩放）
+        const holePulse = this.cur.holeAmp * beat + this.energySmooth * 0.010;
 
         const w = this.rtImage.w, h = this.rtImage.h;
         const aspect = w / h;
@@ -267,6 +269,7 @@ export class PulseCorePipeline {
         // ---- Pass A: GR 渲染（读 B 上帧 + A 上帧历史 + 键盘） ----
         const m = this.passes.A;
         setRes(m);
+        m.uniforms.uCONST_M.value = 0.5 * (1 + holePulse);
         m.uniforms.iChannel0.value = this.keyboardTex;
         m.uniforms.iChannel1.value = null;
         m.uniforms.iChannel2.value = this.rtB[this.flip].rt.texture;         // 上帧 B
@@ -302,14 +305,12 @@ export class PulseCorePipeline {
         mi.uniforms.iChannel3.value = this.rtD.rt.texture;
         this.renderPass(mi, this.rtImage);
 
-        // ---- Overlay: 心跳径向扩张收缩 + 增益，上屏 ----
+        // ---- Overlay: 增益调制，上屏 ----
         const mo = this.passes.overlay;
         mo.uniforms.uTex.value = this.rtImage.rt.texture;
         const cw = this.renderer.domElement.width, chh = this.renderer.domElement.height;
         (mo.uniforms.uOutRes.value as THREE.Vector2).set(cw, chh);
-        (mo.uniforms.uCenter.value as THREE.Vector2).copy(HOLE_CENTER);
         mo.uniforms.uGain.value = gain;
-        mo.uniforms.uZoom.value = zoom;
         this.renderPass(mo, null);
     }
 
