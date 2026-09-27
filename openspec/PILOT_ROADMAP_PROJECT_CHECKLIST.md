@@ -89,7 +89,7 @@
   - [ ] **结构化日志 redaction 与默认 content-off 基线** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
-  - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
+  - [x] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)；`verified`（change `2026-09-07-c13-memory-retrieval-bm25`，PR #5 merge `5b140fe`，证据 [evidence/c13-memory-retrieval-bm25](evidence/c13-memory-retrieval-bm25/)：A 基线可复现评测 + 消融矩阵 + 回归/pyright 对齐基线）
 - [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（C5 认证后端已于 `0753628` 合并；WebChat **通道层身份派生与握手凭据门禁已由 change `2026-09-21-webchat-auth-wiring` 接通**（16/21→20/21，evidence `evidence/webchat-auth-wiring/`）；仍待：真实 PG 上的 exchange→handshake→hello 端到端与部署）
   - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；精确字段/版本/错误码/close code 已由 C4 change 冻结并前后端双向执行：后端 49 项 + 前端 31 项）
   - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py`；C4 补真实入口 e2e：收发/流式/重连无重复/`replay_required`→REST 重建/断线不取消 turn/空闲回收，共 6 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
