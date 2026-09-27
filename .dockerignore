@@ -35,6 +35,9 @@ _handbook/Untitled
 node_modules/
 frontend/dashboard/static/
 static/dashboard/
+# WebChat 前端同样是构建产物（Dockerfile 会现构建并 COPY 进镜像）；
+# 若宿主机存在 static/chat/，末尾的 `COPY . .` 会盖掉刚构建的版本。
+static/chat/
 
 # Local config (not committed)
 config.toml
