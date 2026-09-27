@@ -22,6 +22,7 @@ from bootstrap.auth.identity import (
     resolve_webchat_identity,
 )
 from bootstrap.chat_api import build_chat_server
+from agent.config import load_config
 from bus.event_bus import EventBus
 from bus.queue import MessageBus
 from infra.channels.contract import ChannelContext
@@ -243,3 +244,92 @@ def test_gate_allows_auth_without_dev(monkeypatch: pytest.MonkeyPatch) -> None:
         auth_runtime=object(),  # type: ignore[arg-type]
     )
     assert server is not None
+
+
+# ── 任务 3.2：非回环绑定的显式许可（C4 语义在 auth 模式下不变） ──────
+
+
+def test_gate_rejects_non_loopback_host_without_allow_public_bind() -> None:
+    with pytest.raises(RuntimeError, match="allow_public_bind"):
+        build_chat_server(
+            workspace=Path("."),
+            channel=_make_channel(),
+            dev_mode=True,
+            host="0.0.0.0",
+        )
+
+
+def test_gate_allows_non_loopback_host_with_explicit_permission() -> None:
+    """容器部署依赖此路径：容器内绑 0.0.0.0 + 显式允许，宿主机只发布到回环。"""
+    server = build_chat_server(
+        workspace=Path("."),
+        channel=_make_channel(),
+        dev_mode=True,
+        host="0.0.0.0",
+        allow_public_bind=True,
+    )
+    assert server is not None
+
+
+def test_gate_auth_mode_also_requires_explicit_public_bind() -> None:
+    """启用认证不豁免非回环绑定许可（认证 ≠ 可以随便绑）。"""
+    with pytest.raises(RuntimeError, match="allow_public_bind"):
+        build_chat_server(
+            workspace=Path("."),
+            channel=_make_channel(),
+            dev_mode=False,
+            host="0.0.0.0",
+            auth_runtime=object(),  # type: ignore[arg-type]
+        )
+
+
+# ── 任务 3.4：认证模式不得以打开 dev_mode 为代价 ──────────────────
+
+
+def test_auth_enabled_does_not_imply_dev_mode(tmp_path: Path) -> None:
+    """只开 `[auth]`、不开 `agent.dev_mode` 的配置：dev_mode 必须保持 False。
+
+    `bootstrap/providers.py` 用 `dev_mode` 决定是否把 LLM 全量 payload 落盘，
+    因此用 `dev_mode` 当放行后门会汄漏式把请求/响应正文写进日志（design ADR-3）。
+    """
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                'provider = "openai"',
+                "",
+                "[llm.main]",
+                'model = "test-model"',
+                'api_key = "test-key"',
+                "",
+                "[channels.chat]",
+                "enabled = true",
+                "",
+                "[auth]",
+                "enabled = true",
+                "cookie_secure = true",
+                'origin_allowlist = ["https://nexus.example.com"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(cfg_path)
+
+    assert config.auth.enabled is True
+    assert config.channels.chat.enabled is True
+    assert config.dev_mode is False
+
+
+def test_auth_defaults_require_explicit_deployment_config() -> None:
+    """`AuthConfig` 默认：关闭 + 空 allowlist。
+
+    空 allowlist 意味着登录（exchange）会被 Origin 校验全部拒绝，
+    所以部署时必须显式填入实际来源（公网域名）。
+    """
+    from bootstrap.auth.service import AuthConfig as _AuthConfig
+
+    default = _AuthConfig()
+    assert default.enabled is False
+    assert default.origin_allowlist == []
+    assert default.cookie_secure is True
