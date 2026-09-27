@@ -229,6 +229,18 @@ class AdmissionConfig:
 
 
 @dataclass
+class PluginRuntimeConfig:
+    """C8 hook failure 分层的有界 timeout（§5.9.16，task-08）。
+
+    gate/interceptor（pre-tool、phase module）超时按 fail-closed 处置；
+    fanout/telemetry（post-tool、EventBus 观察者）超时记录失败、不改终态。
+    """
+
+    hook_timeout_seconds: float = 5.0
+    observer_timeout_seconds: float = 5.0
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -274,6 +286,7 @@ class Config:
     app_server: AppServerConfig = field(default_factory=AppServerConfig)
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -296,6 +309,7 @@ __all__ = [
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",
     "PersonaConfig",
+    "PluginRuntimeConfig",
     "QQChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",
