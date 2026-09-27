@@ -169,6 +169,8 @@ class RemindTool(Tool):
                 message=msg,
                 name=job_name,
                 timezone=tz,
+                # C7 task 6.2（ADR-7）：所有者 = 调用方租户（context 注入）。
+                owner_tenant_id=kwargs.get("tenant_id") or None,
             )
             self._service.add_job(job)
             created.append({"offset": offset, "fire_at": fire_at})

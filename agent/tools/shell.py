@@ -123,6 +123,8 @@ class _BackgroundTask:
     timeout_s: int | None = None
     timeout_handle: asyncio.TimerHandle | None = None
     finish_reason: str = "natural"
+    # C7 task 6.2（ADR-7）：创建方租户归属；task_output/task_stop 的租户隔离依据。
+    owner_tenant_id: str | None = None
 
 
 # 模块级单例：跨 ShellTool 实例共享
@@ -350,6 +352,8 @@ class ShellTool(Tool):
     async def _execute_admitted(self, **kwargs: Any) -> str:
         command: str = kwargs.get("command", "").strip()
         description: str = kwargs.get("description", "")
+        # C7 task 6.2（ADR-7）：后台任务归属 = 调用方租户（context 注入）。
+        owner_tenant_id = kwargs.get("tenant_id") or None
         timeout_specified = "timeout" in kwargs and kwargs.get("timeout") is not None
         run_in_background: bool = bool(kwargs.get("run_in_background", False))
         auto_promote: bool = bool(kwargs.get("auto_promote", True))
@@ -409,7 +413,7 @@ class ShellTool(Tool):
         if run_in_background:
             bg_timeout = timeout if timeout_specified else None
             return await self._execute_background(
-                command, description, cwd, env, bg_timeout
+                command, description, cwd, env, bg_timeout, owner_tenant_id
             )
 
         # ── 前台路径（默认 15s 未完成自动转后台）──────────────────────
@@ -425,6 +429,7 @@ class ShellTool(Tool):
             timeout_specified,
             data_callback,
             auto_promote,
+            owner_tenant_id,
         )
 
     async def _execute_background(
@@ -434,6 +439,7 @@ class ShellTool(Tool):
         cwd: Path | None,
         env: dict[str, str],
         timeout_s: int | None,
+        owner_tenant_id: str | None = None,
     ) -> str:
         task_id = f"shell_{uuid4().hex[:12]}"
         log_fd, log_path = tempfile.mkstemp(
@@ -456,6 +462,8 @@ class ShellTool(Tool):
             command=command,
             description=description,
             timeout_s=timeout_s,
+            # C7 task 6.2（ADR-7）：后台 shell 任务归属 = 调用方租户。
+            owner_tenant_id=owner_tenant_id,
         )
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg))
         pump.add_done_callback(lambda _: _on_background_task_done(task_id, bg))
@@ -488,6 +496,7 @@ class ShellTool(Tool):
         timeout_specified: bool,
         on_data: Callable[[str], None] | None,
         auto_promote: bool,
+        owner_tenant_id: str | None = None,
     ) -> str:
         """前台执行；允许按需关闭自动转后台，直接等待完整结果。"""
         task_id = f"shell_{uuid4().hex[:12]}"
@@ -513,6 +522,8 @@ class ShellTool(Tool):
             command=command,
             description=description,
             timeout_s=hard_timeout_s,
+            # C7 task 6.2（ADR-7）：自动转后台同样归属 = 调用方租户。
+            owner_tenant_id=owner_tenant_id,
         )
         pump = asyncio.create_task(_bg_pump(proc, log_path, bg, on_data))
         bg.pump_task = pump
@@ -724,6 +735,11 @@ class ShellTaskOutputTool(Tool):
         task = _BG_REGISTRY.get(task_id)
         if task is None:
             return _err(f"任务 {task_id!r} 不存在或已清理")
+        # C7 task 6.2（ADR-7）：跨租户后台任务不可见/不可操作。
+        if _ownership_violation(task, kwargs):
+            return _err(
+                f"任务 {task_id!r} 不属于当前租户（code=task_foreign_tenant）"
+            )
 
         pump_task = task.pump_task
         if pump_task is None:
@@ -834,9 +850,16 @@ class ShellTaskStopTool(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         task_id: str = kwargs.get("task_id", "")
-        if task_id not in _BG_REGISTRY:
-            return json.dumps(
-                {"task_id": task_id, "status": "not_found"}, ensure_ascii=False
+        task = _BG_REGISTRY.get(task_id)
+        if task is None or _ownership_violation(task, kwargs):
+            # 跨租户任务对外表现为不存在（不泄露存在性）；同时在任务存在但
+            # 归属不符时给出显式错误码（C7 task 6.2/ADR-7 显式拒绝风格）。
+            if task is None:
+                return json.dumps(
+                    {"task_id": task_id, "status": "not_found"}, ensure_ascii=False
+                )
+            return _err(
+                f"任务 {task_id!r} 不属于当前租户（code=task_foreign_tenant）"
             )
         _bg_kill(task_id)
         return json.dumps({"task_id": task_id, "status": "stopped"}, ensure_ascii=False)
@@ -847,6 +870,18 @@ class ShellTaskStopTool(Tool):
 
 def _err(msg: str) -> str:
     return json.dumps({"error": msg}, ensure_ascii=False)
+
+
+def _ownership_violation(task: _BackgroundTask, kwargs: dict[str, Any]) -> bool:
+    """C7 task 6.2（ADR-7）：普通账号只能操作自己租户的后台任务。
+
+    dev/owner（及无上下文的直调）不受限；user principal 下无主任务（旧数据）
+    fail-closed 拒绝。
+    """
+    if kwargs.get("principal_type") != "user":
+        return False
+    owner = task.owner_tenant_id
+    return not owner or owner != kwargs.get("tenant_id")
 
 
 def _arm_background_timeout(task_id: str, task: _BackgroundTask) -> None:

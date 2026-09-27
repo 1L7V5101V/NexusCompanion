@@ -1,0 +1,37 @@
+C7 task 6.2 —— spawn/scheduler/task_output/task_stop owner 归属与跨租户重校验
+================================================================================
+
+结论（前沿基线在 main）：
+- `agent/scheduler.py`：
+  - `ScheduledJob.owner_tenant_id`（ADR-7 归属字段；旧数据/直调为 None=无主）。
+  - `list_jobs/cancel_job/cancel_job_by_name` 增 `tenant_id=` 可选租户过滤
+    （无主任务对普通账号不可见，fail-closed）。
+  - `_execute` 触发即执行前重校验：优先按 owner 租户（缺失退渠道推导），
+    `RevocationRejected` 原样上抛（C8 契约保持，由 `_execute_and_reschedule`
+    记录）；soft 路径补齐该重校验（此前只有 instant 直推有）。
+- `agent/tools/schedule.py`：`schedule` 创建任务打 owner（context 注入 tenant_id，
+  模型不可覆盖）；`list_schedules` user principal 只列本租户任务（dev/owner 全量）；
+  `cancel_schedule` 跨租户任务显式拒绝（`code=task_foreign_tenant`，不静默改删）。
+- `agent/tools/remind.py`：三条提醒任务同样打 owner。
+- `agent/tools/shell.py`：`_BackgroundTask.owner_tenant_id`；后台/自动转后台两处
+  创建点经方法链透传调用方租户；`task_output`/`task_stop` 增加归属校验
+  （user principal 跨租户 → `code=task_foreign_tenant`；task_stop 对跨租户任务
+  不 kill、不删除）。
+- 关闭面确认（task 4.2 闸门，本任务未改）：`shell`/`task_stop`/`spawn`/`spawn_manage`
+  均注册 `effect=PROCESS_EXEC`，普通租户一律拒绝；`task_output` 为 read-only
+  （可达），其跨租户防护由 owner 校验承担。
+
+行为核对：
+- C8 `test_scheduler_instant_push_rejected_before_push` 断言 RevocationRejected
+  从 `_execute` 上抛——本任务保持该契约（不吞异常），副作用仍在受检前拒绝。
+- schedule/remind 的目标限定（channel/chat_id）由 task 2.2/3.3 路由精化覆盖，
+  本任务补的是 owner 归属与 list/cancel 的跨租户校验。
+
+验证
+----
+- `pytest tests/test_tool_scheduler_ownership.py -q`：14 passed
+  （create 打 owner×2、list 租户隔离×2、cancel 跨租户拒绝×2、own-tenant 取消、
+  fire 前重校验拒绝/放行×2、task_output/task_stop 跨租户×3、关闭面矩阵、
+  task_output 可达性）。
+- `pytest -q -W error tests/`：1709 passed, 0 failed（task 6.2 新增 14 项）。
+- pyright：本任务文件零新增 error。

@@ -50,7 +50,8 @@
 
 - [x] 6.1 封禁事件 → active tool_call 按 tenant 取消传播（复用 C8 revocation recheck + 连接注册表机制）。验证：封禁时执行中调用收束、其他租户不受影响的集成测试
   → 完成（2026-09-28）：`agent/admission/tool_cancellation.py`（进程级租户取消注册表，`register/unregister/cancel_tenant/active_count`）；`registry._execute_managed` 执行中工具挂入注册表——租户取消转结构化取消结果（`tool_cancelled_account_status`，turn 继续收束）、外层 turn 取消原样上抛；admin suspend/revoke 端点经 `_cancel_tenant_tools` 传播（C1 canonical conversation → tenant_id，fail-safe 不阻断封禁，响应增 `cancelled_tool_calls`）。**3.12 行为核对**：`Task.cancel()` 会把取消转发给被 await 的子任务（外层取消也会让工具任务收到 CancelledError）——仅凭 `task.cancelled()` 无法区分来源，改为 cancel_tenant 对 handle 打标 + 一次性消费判别。测试 `tests/test_tool_cancellation.py` 7 项全绿；全量回归 **1695 passed, 0 failed**；pyright 零新增
-- [ ] 6.2 spawn/scheduler/task_output/task_stop 保存 owner 并执行前重校验；普通账号只能操作自己租户任务。验证：跨租户 task_stop 被拒的负向测试（spawn 保持关闭面，重点在 scheduler/reminder 路径）
+- [x] 6.2 spawn/scheduler/task_output/task_stop 保存 owner 并执行前重校验；普通账号只能操作自己租户任务。验证：跨租户 task_stop 被拒的负向测试（spawn 保持关闭面，重点在 scheduler/reminder 路径）
+  → 完成（2026-09-28）：`ScheduledJob.owner_tenant_id` + `list_jobs/cancel_job/cancel_job_by_name(tenant_id=)` 租户过滤；schedule/remind 创建时打 owner（context 注入）；list_schedules 只列本租户（user principal）、cancel_schedule 跨租户显式拒绝（`task_foreign_tenant`）；`_execute` 触发即按 owner 重校验（soft 路径补齐，RevocationRejected 上抛保 C8 契约）；`_BackgroundTask.owner_tenant_id` + 两处创建点透传，task_output/task_stop 归属校验（跨租户不 kill/不删）。关闭面确认：shell/task_stop/spawn/spawn_manage 均为 process-exec（4.2 闸门），task_output read-only 靠 owner 校验防护。测试 `tests/test_tool_scheduler_ownership.py` 14 项全绿；全量回归 **1709 passed, 0 failed**；pyright 零新增
 
 ## 7. 审计与 C12 §8.2 承接（ADR-6）
 

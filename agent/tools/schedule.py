@@ -168,6 +168,8 @@ class ScheduleTool(Tool):
             prompt=prompt,
             name=name,
             timezone=tz,
+            # C7 task 6.2（ADR-7）：所有者 = 调用方租户（context 注入，模型不可覆盖）。
+            owner_tenant_id=kwargs.get("tenant_id") or None,
         )
         self._service.add_job(job)
 
@@ -195,14 +197,21 @@ class ScheduleTool(Tool):
 
 class ListSchedulesTool(Tool):
     name = "list_schedules"
-    description = "列出所有待执行的定时任务"
+    description = "列出所有待执行的定时任务（仅当前租户）"
     parameters = {"type": "object", "properties": {}}
 
     def __init__(self, service: SchedulerService) -> None:
         self._service = service
 
     async def execute(self, **kwargs: Any) -> str:
-        jobs = self._service.list_jobs()
+        # C7 task 6.2（ADR-7）：普通账号只能查看自己租户的任务；
+        # dev/owner（及无上下文的直调）保持全量可见。
+        scope = (
+            kwargs.get("tenant_id") or None
+            if kwargs.get("principal_type") == "user"
+            else None
+        )
+        jobs = self._service.list_jobs(tenant_id=scope)
         if not jobs:
             return "当前没有待执行的定时任务"
 
@@ -252,6 +261,13 @@ class CancelScheduleTool(Tool):
     async def execute(self, **kwargs: Any) -> str:
         job_id = kwargs.get("id", "")
         name = kwargs.get("name", "")
+        # C7 task 6.2（ADR-7）：普通账号只能取消自己租户的任务；
+        # dev/owner（及无上下文的直调）不受限。
+        scope = (
+            kwargs.get("tenant_id") or None
+            if kwargs.get("principal_type") == "user"
+            else None
+        )
 
         if not job_id and not name:
             return "错误：id 或 name 至少提供一个"
@@ -263,12 +279,31 @@ class CancelScheduleTool(Tool):
             ]
             if not matches:
                 return f"未找到 ID 为 {job_id!r} 的任务"
+            if scope is not None and any(
+                self._service._jobs[jid].owner_tenant_id != scope for jid in matches
+            ):
+                return (
+                    "错误：存在不属于当前租户的任务，已拒绝取消"
+                    "（code=task_foreign_tenant）"
+                )
             for jid in matches:
                 self._service.cancel_job(jid)
             return f"已取消 {len(matches)} 个任务"
 
         if name:
-            cancelled = self._service.cancel_job_by_name(name)
+            if scope is not None:
+                all_matching = [
+                    jid for jid, j in self._service._jobs.items() if j.name == name
+                ]
+                if all_matching and any(
+                    self._service._jobs[jid].owner_tenant_id != scope
+                    for jid in all_matching
+                ):
+                    return (
+                        "错误：存在不属于当前租户的任务，已拒绝取消"
+                        "（code=task_foreign_tenant）"
+                    )
+            cancelled = self._service.cancel_job_by_name(name, tenant_id=scope)
             if not cancelled:
                 return f"未找到名称为 {name!r} 的任务"
             return f"已取消 {len(cancelled)} 个名为 {name!r} 的任务"

@@ -275,6 +275,10 @@ class ScheduledJob:
     name: str | None = None
     timezone: str = "UTC"
 
+    # C7 task 6.2（ADR-7）：创建方租户归属。list/cancel 的租户隔离与触发前重校验
+    # 的依据；旧数据/直调无上下文的任务为 None（视为无主，普通账号不可见）。
+    owner_tenant_id: str | None = None
+
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     run_count: int = 0
     enabled: bool = True
@@ -386,23 +390,40 @@ class SchedulerService:
             f"fire_at={job.fire_at.isoformat()}"
         )
 
-    def cancel_job(self, job_id: str) -> bool:
-        if job_id not in self._jobs:
+    def cancel_job(self, job_id: str, *, tenant_id: str | None = None) -> bool:
+        """取消任务。
+
+        ``tenant_id`` 非空时仅可取消该租户拥有的任务（无主任务视为不可见），
+        用于普通账号只能操作自己租户任务的隔离（ADR-7）。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return False
+        if tenant_id is not None and job.owner_tenant_id != tenant_id:
             return False
         del self._jobs[job_id]
         self.store.save(self._jobs)
         return True
 
-    def cancel_job_by_name(self, name: str) -> list[str]:
-        cancelled = [jid for jid, j in self._jobs.items() if j.name == name]
+    def cancel_job_by_name(self, name: str, *, tenant_id: str | None = None) -> list[str]:
+        cancelled = [
+            jid
+            for jid, j in self._jobs.items()
+            if j.name == name
+            and (tenant_id is None or j.owner_tenant_id == tenant_id)
+        ]
         for jid in cancelled:
             del self._jobs[jid]
         if cancelled:
             self.store.save(self._jobs)
         return cancelled
 
-    def list_jobs(self) -> list[ScheduledJob]:
-        return list(self._jobs.values())
+    def list_jobs(self, *, tenant_id: str | None = None) -> list[ScheduledJob]:
+        """列任务；``tenant_id`` 非空时仅返回该租户拥有的任务。"""
+        jobs = list(self._jobs.values())
+        if tenant_id is not None:
+            jobs = [j for j in jobs if j.owner_tenant_id == tenant_id]
+        return jobs
 
     def load_and_recover(self) -> None:
         """启动时加载持久化 jobs，处理 misfire。"""
@@ -478,13 +499,16 @@ class SchedulerService:
 
     async def _execute(self, job: ScheduledJob) -> None:
         label = job.name or job.id[:8]
+        # C7 task 6.2（ADR-7）：触发即「真正执行前重校验」——任务创建后账号被封禁，
+        # 到达执行时机必须在副作用前拒绝（RevocationRejected 原样上抛，由
+        # _execute_and_reschedule 记录），不产生任何副作用。
+        # 优先用 owner 租户（ADR-7 归属），旧数据缺失时退回渠道推导。
+        tenant_id = job.owner_tenant_id or tenant_id_for_channel(
+            job.channel, job.chat_id
+        )
+        if self._revocation_gate is not None:
+            await self._revocation_gate.check(tenant_id, action="scheduler_execute")
         if job.tier == "instant":
-            # C8 §5.9.16：外部副作用 + outbound delivery 前 revocation recheck。
-            if self._revocation_gate is not None:
-                await self._revocation_gate.check(
-                    tenant_id_for_channel(job.channel, job.chat_id),
-                    action="scheduler_instant_push",
-                )
             result = await self.push_tool.execute(
                 channel=job.channel,
                 chat_id=job.chat_id,
@@ -492,6 +516,11 @@ class SchedulerService:
             )
             logger.info(f"[scheduler] instant 推送完成 {label!r}: {result}")
         else:
+            # soft 路径同样执行前重校验（第 2 道，owner 或渠道推导租户）。
+            if self._revocation_gate is not None:
+                await self._revocation_gate.check(
+                    tenant_id, action="scheduler_soft_execute"
+                )
             loop = self._get_agent_loop()
             t0 = time.monotonic()
             content = await loop.process_direct(
