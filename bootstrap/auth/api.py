@@ -43,6 +43,9 @@ from bootstrap.db.repository.provisioning_repo import ProvisioningStateError
 __all__ = [
     "CreateAccountRequest",
     "ExchangeRequest",
+    "LoginRequest",
+    "RegisterRequest",
+    "TenantInviteRequest",
     "build_admin_api",
     "build_auth_api",
 ]
@@ -59,8 +62,31 @@ class ExchangeRequest(BaseModel):
     token: str = Field(min_length=1, max_length=300)
 
 
+class RegisterRequest(BaseModel):
+    """租户自助注册（D4）：邀请码 + 邮箱 + 密码。
+
+    邮箱约束只做基础格式（service 层负责完整校验 + 统一错误语义）；
+    密码长度由 [auth].password_min_length 策略校验，此处仅限长度上限。
+    """
+
+    invite_token: str = Field(min_length=1, max_length=300)
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=256)
+
+
 class CreateAccountRequest(BaseModel):
     display_name: str = Field(default="", max_length=200)
+
+
+class TenantInviteRequest(BaseModel):
+    """管理员签发租户邀请码（D1：仅租户名，不建号）。"""
+
+    tenant_name: str = Field(min_length=1, max_length=255)
 
 
 def build_auth_api(runtime: AuthRuntime) -> APIRouter:
@@ -98,6 +124,68 @@ def build_auth_api(runtime: AuthRuntime) -> APIRouter:
         try:
             session, raw_cookie = await runtime.auth.exchange_invitation(
                 body.token,
+                user_agent=request.headers.get("user-agent", "")[:255],
+            )
+        except CredentialExchangeError:
+            raise HTTPException(401, detail=_HTTP_401_INVALID) from None
+        resp = JSONResponse(
+            status_code=200,
+            content={
+                "session_id": str(session["id"]),
+                "account_id": str(session["account_id"]),
+            },
+        )
+        _set_cookie(
+            resp,
+            user_cookie,
+            raw_cookie,
+            secure=secure,
+            max_age=cfg.session_absolute_s,
+        )
+        return resp
+
+    @router.post("/api/auth/register")
+    async def register(body: RegisterRequest, request: Request) -> JSONResponse:
+        """租户自助注册（D4）：消费邀请码 + 建号 + provisioning 收束 + 会话。
+
+        会话前无 session-bound CSRF 可 bind，仅 Origin 校验（与 exchange 相同，
+        防 login CSRF）；成功 Set-Cookie HttpOnly。失败统一 401（不区分 token
+        无效 / email 重复 / provisioning 未收敛）。
+        """
+        _require_origin(runtime, request)
+        try:
+            session, raw_cookie = await runtime.auth.register_tenant(
+                body.invite_token,
+                body.email,
+                body.password,
+                user_agent=request.headers.get("user-agent", "")[:255],
+            )
+        except CredentialExchangeError:
+            raise HTTPException(401, detail=_HTTP_401_INVALID) from None
+        resp = JSONResponse(
+            status_code=200,
+            content={
+                "session_id": str(session["id"]),
+                "account_id": str(session["account_id"]),
+            },
+        )
+        _set_cookie(
+            resp,
+            user_cookie,
+            raw_cookie,
+            secure=secure,
+            max_age=cfg.session_absolute_s,
+        )
+        return resp
+
+    @router.post("/api/auth/login")
+    async def login(body: LoginRequest, request: Request) -> JSONResponse:
+        """邮箱+密码登录（D4）：会话前仅 Origin 校验；失败 401 统一文案。"""
+        _require_origin(runtime, request)
+        try:
+            session, raw_cookie = await runtime.auth.login(
+                body.email,
+                body.password,
                 user_agent=request.headers.get("user-agent", "")[:255],
             )
         except CredentialExchangeError:
@@ -215,6 +303,24 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
             return {"account": account, "job": {"status": "ready"}, "token": raw_token}
         job = await runtime.provisioning.get_job(job_id)
         return {"account": account or created["account"], "job": job}
+
+    @router.post("/api/admin/tenant-invites")
+    async def issue_tenant_invite(
+        body: TenantInviteRequest, ctx: _AdminSession = Depends(_admin_mutation)
+    ) -> dict[str, Any]:
+        """签发租户邀请码（D1：仅租户名，不建号、不触发 provisioning）。
+
+        返回一次性明文邀请码 + token 行（不含 digest）；明文只在本次响应中出现。
+        """
+        row, raw_token = await runtime.auth.issue_tenant_invitation(
+            body.tenant_name, issued_by="admin:api"
+        )
+        return {
+            "token": raw_token,
+            "token_id": str(row["id"]),
+            "tenant_name": row["tenant_name"],
+            "expires_at": row["expires_at"].isoformat() if row["expires_at"] else None,
+        }
 
     @router.get("/api/admin/test-accounts")
     async def list_accounts(_: _AdminSession = Depends(_admin_session)) -> dict[str, Any]:

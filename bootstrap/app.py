@@ -484,12 +484,22 @@ class AppRuntime:
                         event_bus=event_bus,
                         llm=llm,
                         jobs=plugin_jobs,
+                        # C8 §5.9.16：job 已随 snapshot 编译/取 lease，另接副作用方
+                        # revocation recheck（接缝真实存在，Pilot dev-open）。
+                        snapshot_store=plugin_manager.snapshot_store,
+                        revocation_gate=getattr(self.core, "revocation_gate", None),
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
                 memory_store=self.memory_runtime.markdown.store,
+                # C8 §5.9.16：optimizer work-start lease 复用插件 snapshot store。
+                runtime_snapshot_store=(
+                    plugin_manager.snapshot_store
+                    if plugin_manager is not None
+                    else None
+                ),
             )
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()
@@ -557,6 +567,14 @@ class AppRuntime:
                 ),
                 turn_logger=self.core.turn_logger if self.core else None,
                 provisioning=self.provisioning_service,
+                # C8 §5.9.16：生产 proactive 从静态回退切到 lease 绑定路径，
+                # tick 副作用方 revocation recheck。
+                runtime_snapshot_store=(
+                    plugin_manager.snapshot_store
+                    if plugin_manager is not None
+                    else None
+                ),
+                revocation_gate=getattr(self.core, "revocation_gate", None),
             )
             self.tasks.extend(proactive_tasks)
             if self.proactive_loop is not None:

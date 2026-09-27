@@ -328,3 +328,208 @@ async def test_admin_create_account_reports_failed_job(c5_pg_url, c5_reset, tmp_
         assert foreign.json() == {"detail": "forbidden"}
     finally:
         await runtime.aclose()
+
+
+# ── invite-code-tenant-registration: HTTP 层注册/登录契约 ────────────────
+
+
+async def _issue_tenant_invite_http(runtime, client, *, tenant_name: str) -> str:
+    """admin 签发租户邀请码（不经 create-account，test_accounts 无新行）。
+
+    每次调用复用既定 admin（bootstrap 单行幂等），避免重复 bootstrap 抛
+    AdminBootstrapError（共享 scratch DB 跨用例）。
+    """
+    cached = getattr(runtime, "_admin_http_auth", None)
+    if cached is None:
+        session, cookies = await admin_authed(client, runtime)
+        cached = (
+            jar(nexus_admin=cookies["nexus_admin"]),
+            runtime.auth.csrf_token(session["session_id"]),
+        )
+        object.__setattr__(runtime, "_admin_http_auth", cached)
+    cookie, csrf = cached
+    resp = client.post(
+        "/api/admin/tenant-invites",
+        json={"tenant_name": tenant_name},
+        headers={"cookie": cookie, "origin": DEV_ORIGIN, "x-csrf-token": csrf},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["token"].startswith("nxt_")
+    assert payload["tenant_name"] == tenant_name
+    return payload["token"]
+
+
+async def test_admin_tenant_invite_does_not_create_account(c5_pg_url, c5_reset, tmp_path):
+    """admin 签发租户邀请码不建号（D1：签发即不触发 provisioning）。"""
+    c5_reset()
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-inv")
+    client = make_client(runtime)
+    try:
+        await _issue_tenant_invite_http(runtime, client, tenant_name="Acme HTTP")
+        # 校验服务层：签发路径不产生任何账号/job。
+        assert await runtime.provisioning.list_accounts() == []
+        assert await runtime.provisioning.list_jobs() == []
+    finally:
+        await runtime.aclose()
+
+
+async def test_register_http_flow(c5_pg_url, c5_reset, tmp_path):
+    """注册 → Set-Cookie → /me 可用 → logout → 邮箱密码登录 → /me 一致。
+
+    覆盖 ADDED 场景「登录成功建立会话」在 HTTP 层的完整闭环。
+    """
+    c5_reset()
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-reg")
+    client = make_client(runtime)
+    try:
+        raw = await _issue_tenant_invite_http(runtime, client, tenant_name="HTTP Reg")
+
+        # 注册：Origin 校验（缺 Origin → 403 且不建号）。
+        no_origin = client.post(
+            "/api/auth/register",
+            json={
+                "invite_token": raw,
+                "email": "http@example.com",
+                "password": "pw-123456",
+            },
+        )
+        assert no_origin.status_code == 403
+        assert await runtime.provisioning.list_accounts() == []
+
+        ok = client.post(
+            "/api/auth/register",
+            json={
+                "invite_token": raw,
+                "email": "http@example.com",
+                "password": "pw-123456",
+            },
+            headers={"origin": DEV_ORIGIN},
+        )
+        assert ok.status_code == 200, ok.text
+        account_id = ok.json()["account_id"]
+        cookies = parse_cookies(ok.headers.get_list("set-cookie"))
+        assert set(cookies) == {"nexus_session"}
+        assert cookies["nexus_session"].startswith("ns_")
+        cookie = jar(nexus_session=cookies["nexus_session"])
+
+        me = client.get("/api/auth/me", headers={"cookie": cookie})
+        assert me.status_code == 200
+        assert me.json()["account_id"] == account_id
+        assert me.json()["display_name"] == "http"  # email 前缀
+
+        # 重复邮箱以新邀请码注册：401 统一文案。
+        raw2 = await _issue_tenant_invite_http(runtime, client, tenant_name="HTTP Reg 2")
+        dup = client.post(
+            "/api/auth/register",
+            json={
+                "invite_token": raw2,
+                "email": "http@example.com",
+                "password": "pw-123456",
+            },
+            headers={"origin": DEV_ORIGIN},
+        )
+        assert dup.status_code == 401
+        assert dup.json() == {"detail": "invalid credentials"}
+
+        # logout（Origin + CSRF）→ /me 401。
+        csrf = runtime.auth.csrf_token(ok.json()["session_id"])
+        logout = client.post(
+            "/api/auth/logout",
+            headers={"cookie": cookie, "origin": DEV_ORIGIN, "x-csrf-token": csrf},
+        )
+        assert logout.status_code == 200
+        assert client.get("/api/auth/me", headers={"cookie": cookie}).status_code == 401
+
+        # 邮箱密码登录 → /me 一致。
+        login_resp = client.post(
+            "/api/auth/login",
+            json={"email": "http@example.com", "password": "pw-123456"},
+            headers={"origin": DEV_ORIGIN},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        login_cookies = parse_cookies(login_resp.headers.get_list("set-cookie"))
+        me2 = client.get(
+            "/api/auth/me", headers={"cookie": jar(nexus_session=login_cookies["nexus_session"])}
+        )
+        assert me2.status_code == 200
+        assert me2.json()["account_id"] == account_id
+    finally:
+        await runtime.aclose()
+
+
+async def test_login_and_register_error_semantics_uniform(c5_pg_url, c5_reset, tmp_path):
+    """登录/注册失败响应统一：401 ``invalid credentials``，不区分原因。
+
+    邮箱不存在 / 密码错 / 账号被 suspend + 注册邀请码无效 → 完全一致 body。
+    """
+    c5_reset()
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-err")
+    client = make_client(runtime)
+    try:
+        raw = await _issue_tenant_invite_http(runtime, client, tenant_name="Err")
+        ok = client.post(
+            "/api/auth/register",
+            json={"invite_token": raw, "email": "u@example.com", "password": "pw-123456"},
+            headers={"origin": DEV_ORIGIN},
+        )
+        assert ok.status_code == 200
+        account_id = ok.json()["account_id"]
+        await runtime.provisioning.suspend_account(account_id, reason="t")
+
+        login_headers = {"origin": DEV_ORIGIN}
+        responses = [
+            client.post(
+                "/api/auth/login",
+                json={"email": "missing@example.com", "password": "pw-123456"},
+                headers=login_headers,
+            ),  # 邮箱不存在
+            client.post(
+                "/api/auth/login",
+                json={"email": "u@example.com", "password": "wrong-pass"},
+                headers=login_headers,
+            ),  # 密码错
+            client.post(
+                "/api/auth/login",
+                json={"email": "u@example.com", "password": "pw-123456"},
+                headers=login_headers,
+            ),  # 已 suspended
+            client.post(
+                "/api/auth/register",
+                json={
+                    "invite_token": "nxt_forged-token",
+                    "email": "who@example.com",
+                    "password": "pw-123456",
+                },
+                headers=login_headers,
+            ),  # 无效邀请码
+        ]
+        for resp in responses:
+            assert resp.status_code == 401
+            assert resp.json() == {"detail": "invalid credentials"}
+    finally:
+        await runtime.aclose()
+
+
+async def test_register_requires_origin_allowlist(c5_pg_url, c5_reset, tmp_path):
+    """register/login 是 mutation：Origin 不命中 allowlist → 403 且不消费邀请码。"""
+    c5_reset()
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-reg-origin")
+    client = make_client(runtime)
+    try:
+        raw = await _issue_tenant_invite_http(runtime, client, tenant_name="Origin")
+        foreign = client.post(
+            "/api/auth/register",
+            json={"invite_token": raw, "email": "o@example.com", "password": "pw-123456"},
+            headers={"origin": FOREIGN_ORIGIN},
+        )
+        assert foreign.status_code == 403
+        # 未消费（虽然前端不会自动重试，但 token 必须保持可用）。
+        ok = client.post(
+            "/api/auth/register",
+            json={"invite_token": raw, "email": "o@example.com", "password": "pw-123456"},
+            headers={"origin": DEV_ORIGIN},
+        )
+        assert ok.status_code == 200
+    finally:
+        await runtime.aclose()

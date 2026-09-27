@@ -99,3 +99,5 @@ stdout*.log
 /start.sh
 run_stdout.log
 run_stderr.log
+AGENTS - 副本.md
+.zcodeignore

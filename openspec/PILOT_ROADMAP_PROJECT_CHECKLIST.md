@@ -85,11 +85,11 @@
 - [ ] **P0 Pilot 基础运行基线** — 单机 FastAPI/Uvicorn、PostgreSQL + pgvector、有界进程内队列、HTTPS/WSS 入口；`planned`
   - [ ] **单机长期运行与重启恢复基线** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
   - [ ] **当前 persistence map、backup manifest、健康检查与基础指标** → outcome 见 [PILOT_ROADMAP §3.4](PILOT_ROADMAP.md) 与 [§5.9.12](PILOT_ROADMAP.md)
-  - [ ] **RuntimeSnapshot 全入口 lease coverage audit** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
+  - [x] **RuntimeSnapshot 全入口 lease coverage audit** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)；C8 P0 段（全入口 work-start lease + revocation recheck fail-closed + 热更新不切 snapshot）`verified`（change `c8-runtimesnapshot-secrets`，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit；revocation 真实账号源接线归 C5）
   - [ ] **结构化日志 redaction 与默认 content-off 基线** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
-  - [ ] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)
+  - [x] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)；`verified`（change `2026-09-07-c13-memory-retrieval-bm25`，PR #5 merge `5b140fe`，证据 [evidence/c13-memory-retrieval-bm25](evidence/c13-memory-retrieval-bm25/)：A 基线可复现评测 + 消融矩阵 + 回归/pyright 对齐基线）
 - [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（C5 认证后端已于 `0753628` 合并；WebChat **通道层身份派生与握手凭据门禁已由 change `2026-09-21-webchat-auth-wiring` 接通**（16/21→20/21，evidence `evidence/webchat-auth-wiring/`）；仍待：真实 PG 上的 exchange→handshake→hello 端到端与部署）
   - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；精确字段/版本/错误码/close code 已由 C4 change 冻结并前后端双向执行：后端 49 项 + 前端 31 项）
   - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py`；C4 补真实入口 e2e：收发/流式/重连无重复/`replay_required`→REST 重建/断线不取消 turn/空闲回收，共 6 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
@@ -106,6 +106,7 @@
   - [x] **服务端 principal/tenant 派生与越权测试** → outcome 见 [PILOT_ROADMAP §5.9.1](PILOT_ROADMAP.md)；C1 规范身份链已 `verified`；**WebChat 入口的 principal→tenant 派生已接线并测试**（change `2026-09-21-webchat-auth-wiring`：`resolve_webchat_identity` 经 C1 解析 `account_id → tenant_id → canonical conversation_id`，fail-closed 不回落 `DEFAULT_TENANT`；`tests/auth_provisioning/test_webchat_identity.py` 覆盖跨账号隔离与 fail-closed），证据 [evidence/webchat-auth-wiring](evidence/webchat-auth-wiring/)
   - [ ] **PersonaProfile / RelationshipState PostgreSQL 当前值存储、tenant 串行更新与最小审计** → outcome 见 [PILOT_ROADMAP §5.9.8](PILOT_ROADMAP.md)
   - [ ] **Telegram Bot 用户私聊身份绑定 + cross-channel 去重/同步** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)
+  - [x] **邀请码租户注册 + 邮箱密码登录**（invite-code-tenant-registration change）— 一次性租户邀请码（签发不要求预存账号，携带租户名）+ 邮箱/密码自助注册 + 登录；argon2 密码哈希；`POST /api/auth/register` / `POST /api/auth/login` / admin `POST /api/admin/tenant-invites`；注册即消费邀请码 + provisioning 收束 + 会话；存量 exchange 路径兼容。migration `c9d7e3a5f2b1`（test_accounts.email/password_digest、access_tokens.account_id nullable + tenant_name、账号状态枚举 + failed）。测试：82/82（tests/auth_provisioning）全绿 + 前端 `npm run build:chat`。change 未归档时以 `openspec/changes/invite-code-tenant-registration/` 为准
   - [ ] **PostgreSQL inbox/turn/tool/work/outbox/delivery/schedule/provisioning durable source of truth**（公网前移除 Pilot 多规范源） → outcome 见 [PILOT_ROADMAP §5.9.6](PILOT_ROADMAP.md)
 - [ ] **P2 账号控制与长期试用** — Dashboard/CLI 发放、查询、过期、撤销、封禁和 tenant 下钻；`planned`
   - [ ] **账号 `suspended`/`revoked` 状态 + active WebSocket/tenant lane/tool 取消传播** → outcome 见 [PILOT_ROADMAP §5.3](PILOT_ROADMAP.md)
@@ -114,7 +115,7 @@
   - [ ] **工具资源与副作用隔离**（path resolver、target binding、owner、幂等、typed outcome） → outcome 见 [PILOT_ROADMAP §5.8.5](PILOT_ROADMAP.md)
   - [ ] **跨租户工具负向测试和并发交错测试** → outcome 见 [PILOT_ROADMAP §5.8.8](PILOT_ROADMAP.md)
   - [ ] **显式用户 schedule tenant ownership + server-resolved delivery binding** → outcome 见 [PILOT_ROADMAP §5.9.14](PILOT_ROADMAP.md)
-  - [ ] **RuntimeSnapshot/per-task tenant context + hook failure/revocation gate** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
+  - [x] **RuntimeSnapshot/per-task tenant context + hook failure/revocation gate** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)；C8 P2 段（TenantRuntimePlan/Resolver/PluginInvocationContext 接缝 + contribution 元数据 + hook failure 分层 + secret 静态加密/rotation + 发布失败回退 + dormant 安装）`verified`（change `c8-runtimesnapshot-secrets`，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit；TenantToolCatalog 消费归 C7、tenant plugin catalog/engine slot 归 C14、tenant binding durable 化归 C14/C5）
   - [ ] **用户 MCP tenant namespace**（不随 Token 登录自动开放；独立 binding/runtime/catalog/secret/audit 与负向测试完成后再单独开放） → outcome 见 [PILOT_ROADMAP §5.8.4](PILOT_ROADMAP.md)
 - [ ] **P3 稳定性与备份** — 恢复演练、崩溃重启、运行指标和维护 runbook；`planned`
   - [ ] **PostgreSQL / workspace / attachment 备份恢复演练，并独立保存 legacy SQLite/workspace** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)

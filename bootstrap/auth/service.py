@@ -16,11 +16,15 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
 from agent.config_models import AuthConfig
 
@@ -71,18 +75,51 @@ def cookie_name(admin: bool, *, secure: bool) -> str:
     return USER_COOKIE_NAME if secure else "nexus_session"
 
 
+# ── 密码哈希（D3：argon2，仅存哈希，不落明文） ──────────────────────
+
+_PASSWORD_HASHER = PasswordHasher()
+"""argon2id 默认参数（memory=64MiB, time=3, parallelism=4）。"""
+
+# 用于邮箱不存在时的常量时间 burn（D3：杜绝 timing oracle 枚举邮箱）。
+_DUMMY_PASSWORD_DIGEST = _PASSWORD_HASHER.hash("dummy-timing-burn")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def hash_password(password: str) -> str:
+    """argon2id 哈希（自含 salt/参数）。临时对象用于区分测试可替换。"""
+    return _PASSWORD_HASHER.hash(password)
+
+
+def verify_password(password: str, digest: str) -> bool:
+    """校验密码与 argon2 digest 是否匹配；digest 非法返回 False（不抛，统一语义）。"""
+    try:
+        return _PASSWORD_HASHER.verify(digest, password)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
+
+
+def _valid_email(email: str) -> bool:
+    return bool(_EMAIL_RE.match((email or "").strip().lower()))
+
+
+def _valid_password(password: str, *, min_length: int) -> bool:
+    return isinstance(password, str) and len(password) >= max(1, int(min_length))
+
+
 class AuthService:
-    """普通用户凭据面（邀请 Token / 登录会话 / CSRF）。"""
+    """普通用户凭据面（邀请 Token / 邮箱密码 / 登录会话 / CSRF）。"""
 
     def __init__(
         self,
         repo: CredentialRepository,
         pepper: PepperProvider,
         config: AuthConfig,
+        provisioning: ProvisioningService | None = None,
     ):
         self._repo = repo
         self._pepper = pepper
         self._config = config
+        self._provisioning = provisioning
 
     @property
     def config(self) -> AuthConfig:
@@ -109,6 +146,30 @@ class AuthService:
         )
         return row, raw
 
+    async def issue_tenant_invitation(
+        self,
+        tenant_name: str,
+        *,
+        display_note: str = "",
+        issued_by: str = "admin",
+    ) -> tuple[dict, str]:
+        """签发租户邀请码（D1：不要求预存账号）；返回 (token 行, 明文)。
+
+        明文只允许在响应中出现一次；调用方（HTTP/CLI）负责展示且不得写日志。
+        """
+        raw = new_token(TOKEN_PREFIX_INVITATION)
+        expires = datetime.now(UTC) + timedelta(
+            hours=self._config.invitation_token_ttl_hours
+        )
+        row = await self._repo.issue_tenant_invite(
+            tenant_name=tenant_name,
+            token_digest=digest_value(raw, self._pepper.get()),
+            display_note=display_note,
+            issued_by=issued_by,
+            expires_at=expires,
+        )
+        return row, raw
+
     async def exchange_invitation(
         self, raw_token: str, *, user_agent: str = ""
     ) -> tuple[dict, str]:
@@ -116,6 +177,94 @@ class AuthService:
         raw_session = new_token(SESSION_COOKIE_VALUE_PREFIX)
         session = await self._repo.consume_token_for_session(
             token_digest=digest_value(raw_token, self._pepper.get()),
+            session_digest=digest_value(raw_session, self._pepper.get()),
+            idle_timeout_s=self._config.session_idle_s,
+            absolute_timeout_s=self._config.session_absolute_s,
+            user_agent=user_agent,
+        )
+        return session, raw_session
+
+    async def register_tenant(
+        self,
+        raw_invite_token: str,
+        email: str,
+        password: str,
+        *,
+        user_agent: str = "",
+    ) -> tuple[dict, str]:
+        """租户自助注册（D2）：消费邀请码 + 建号 + provisioning 收束 + 会话。
+
+        成功返回 ``(session 行, session Cookie 原值)``；失败统一抛
+        :class:`CredentialExchangeError`（token 无效 / email 重复 / 密码过短
+        / provisioning 未收敛均走同一认证错误语义，不泄露具体原因）。
+        """
+        email = (email or "").strip().lower()
+        if not _valid_email(email) or not _valid_password(
+            password, min_length=self._config.password_min_length
+        ):
+            raise CredentialExchangeError("invalid registration payload")
+        # 步骤 1：单事务消费邀请码 + 开户 + 持久 provisioning job（D2）。
+        registered = await self._repo.register_from_invite(
+            token_digest=digest_value(raw_invite_token, self._pepper.get()),
+            email=email,
+            password_digest=hash_password(password),
+        )
+        account = registered["account"]
+        # 步骤 2：事务外同步收束 provisioning（与 admin create-account 同 seam）。
+        if self._provisioning is None:
+            raise CredentialExchangeError("provisioning unavailable")
+        await self._provisioning.run_pending(max_jobs=16)
+        refreshed = await self._provisioning.get_account(account["id"])
+        if refreshed is None or refreshed["status"] != "active":
+            # Provisioning 失败：账号进入 failed（spec：失败即消费邀请码 + 账号
+            # failed，原因对管理员可见于 job.last_error；同一 job 可幂等 retry）。
+            # 面向用户返回认证错误（统一语义，不泄露具体原因）。
+            try:
+                await self._provisioning.mark_account_failed(account["id"])
+            except Exception:  # 状态机竞争等极端场景：以原有错误为准，仅告警。
+                logger.warning(
+                    "register_tenant: 账号 %s 标记 failed 失败", account["id"],
+                    exc_info=True,
+                )
+            raise CredentialExchangeError("account provisioning pending")
+        # 步骤 3：账号 active 后创建登录会话（§5.9.3 timeout 契约）。
+        return await self._create_user_session(
+            account_id=account["id"], user_agent=user_agent
+        )
+
+    async def login(
+        self, email: str, password: str, *, user_agent: str = ""
+    ) -> tuple[dict, str]:
+        """邮箱+密码登录 → (会话行, 会话 Cookie 原值)。
+
+        邮箱不存在 / 密码错误 / 账号 suspended·revoked → 同一个
+        :class:`CredentialExchangeError`（不泄露存在性，D4/§AD）。邮箱不存在时
+        也执行一次 verify（burn，恒定时间，杜绝 timing oracle）。
+        """
+        email = (email or "").strip().lower()
+        account = await self._repo.find_account_by_email(email)
+        if account is None:
+            verify_password(password, _DUMMY_PASSWORD_DIGEST)  # burn: 恒定时间
+            raise CredentialExchangeError("invalid credentials")
+        if not verify_password(password, account["password_digest"] or ""):
+            raise CredentialExchangeError("invalid credentials")
+        if account["status"] != "active":
+            # suspended/revoked（及理论上的 provisioning 残余）→ 同一语义。
+            raise CredentialExchangeError("invalid credentials")
+        return await self._create_user_session(
+            account_id=account["id"], user_agent=user_agent
+        )
+
+    async def _create_user_session(
+        self, *, account_id: UUID | str, user_agent: str = ""
+    ) -> tuple[dict, str]:
+        """登录会话创建 seam（D4）：register / login / exchange 共用。
+
+        时间参数在创建时固化（design §1）；明文 session 只返回一次。
+        """
+        raw_session = new_token(SESSION_COOKIE_VALUE_PREFIX)
+        session = await self._repo.create_user_session(
+            account_id=account_id,
             session_digest=digest_value(raw_session, self._pepper.get()),
             idle_timeout_s=self._config.session_idle_s,
             absolute_timeout_s=self._config.session_absolute_s,
@@ -376,6 +525,16 @@ class ProvisioningService:
         返回 job 状态与失败原因。
         """
         return await self._repo.get_job(job_id)
+
+    async def mark_account_failed(
+        self, account_id: UUID | str, *, reason: str = "provisioning failed"
+    ) -> dict:
+        """注册流程失败收束：账号 provisioning → failed（spec 场景）。
+
+        `failed` 非终态：管理员对同一 job 幂等 retry 时 ``mark_ready`` 允许从
+        failed 恢复 active（invite-code-tenant-registration）。
+        """
+        return await self._repo.mark_account_failed(account_id, reason=reason)
 
     async def _audit(
         self,
