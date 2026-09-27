@@ -7,12 +7,14 @@ import { PulseCorePipeline, type PulseCoreState } from './PulseCorePipeline';
 export interface PulseCoreProps {
     state?: PulseCoreState;
     audioEnergy?: number;
-    /** 内部渲染分辨率系数（0.5 默认；低端设备可 0.35） */
+    /** 内部渲染分辨率系数（默认 0.4；低端设备可 0.3） */
     scale?: number;
+    /** 黑洞基础尺寸倍率：1.0=原作默认，范围 0.2–1.3（>1.3 相机会进吸积盘） */
+    holeSize?: number;
     className?: string;
 }
 
-export function PulseCore({ state = 'idle', audioEnergy = 0, scale, className }: PulseCoreProps) {
+export function PulseCore({ state = 'idle', audioEnergy = 0, scale, holeSize, className }: PulseCoreProps) {
     const hostRef = useRef<HTMLDivElement>(null);
     const pipelineRef = useRef<PulseCorePipeline | null>(null);
 
@@ -26,6 +28,7 @@ export function PulseCore({ state = 'idle', audioEnergy = 0, scale, className }:
         let pipeline: PulseCorePipeline | null = null;
         try {
             pipeline = new PulseCorePipeline(canvas, scale !== undefined ? { scale } : undefined);
+            if (holeSize !== undefined) pipeline.setHoleSize(holeSize);
             pipeline.start();
             pipelineRef.current = pipeline;
         } catch (e) {
@@ -43,6 +46,7 @@ export function PulseCore({ state = 'idle', audioEnergy = 0, scale, className }:
 
     useEffect(() => { pipelineRef.current?.setState(state); }, [state]);
     useEffect(() => { pipelineRef.current?.setAudioEnergy(audioEnergy); }, [audioEnergy]);
+    useEffect(() => { if (holeSize !== undefined) pipelineRef.current?.setHoleSize(holeSize); }, [holeSize]);
 
     return <div ref={hostRef} className={className} style={{ position: 'absolute', inset: 0, overflow: 'hidden' }} aria-hidden="true" />;
 }

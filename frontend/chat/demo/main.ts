@@ -45,6 +45,15 @@ setInterval(() => {
     pipeline.setAudioEnergy(active === 'streaming' ? 0.5 + 0.5 * Math.sin(performance.now() / 700) : 0);
 }, 100);
 
+// 黑洞基础大小滑杆
+const sizeInput = document.getElementById('size') as HTMLInputElement;
+const sizeVal = document.getElementById('sizeVal')!;
+sizeInput.addEventListener('input', () => {
+    const v = parseFloat(sizeInput.value);
+    pipeline.setHoleSize(v);
+    sizeVal.textContent = v.toFixed(2);
+});
+
 // 供自动化验收截图用
 import * as THREE from 'three';
 (window as unknown as Record<string, unknown>).__pulsecore = pipeline;

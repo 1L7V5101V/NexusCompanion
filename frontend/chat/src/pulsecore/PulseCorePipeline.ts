@@ -74,6 +74,7 @@ export class PulseCorePipeline {
     private canvas: HTMLCanvasElement;
     private scale: number;
     private fpsCap: number;
+    private baseMass = 0.5;      // 黑洞基础尺寸倍率（1.0 = 原作默认；整个引力系统等比缩放）
     private resizeObserver: ResizeObserver;
 
     constructor(canvas: HTMLCanvasElement, opts?: { scale?: number; fpsCap?: number; hideTopologyMap?: boolean }) {
@@ -209,6 +210,8 @@ export class PulseCorePipeline {
 
     setState(s: PulseCoreState) { this.state = s; }
     setAudioEnergy(e: number) { this.audioEnergy = Math.max(0, Math.min(1, e)); }
+    /** 黑洞基础尺寸倍率：1.0=原作默认。>1.3 时相机(距离~22)会进入吸积盘外缘，不建议 */
+    setHoleSize(v: number) { this.baseMass = 0.5 * Math.max(0.2, Math.min(1.3, v)); }
 
     start() {
         this.lastNow = performance.now();
@@ -269,7 +272,7 @@ export class PulseCorePipeline {
         // ---- Pass A: GR 渲染（读 B 上帧 + A 上帧历史 + 键盘） ----
         const m = this.passes.A;
         setRes(m);
-        m.uniforms.uCONST_M.value = 0.5 * (1 + holePulse);
+        m.uniforms.uCONST_M.value = this.baseMass * (1 + holePulse);
         m.uniforms.iChannel0.value = this.keyboardTex;
         m.uniforms.iChannel1.value = null;
         m.uniforms.iChannel2.value = this.rtB[this.flip].rt.texture;         // 上帧 B
