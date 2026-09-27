@@ -1,0 +1,1 @@
+pyright 全仓：36 errors, 4911 warnings（main 基线 36 errors，零新增；2026-09-27，feature/c13-memory-retrieval-bm25）
