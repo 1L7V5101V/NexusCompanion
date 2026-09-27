@@ -166,6 +166,7 @@ function MagicIndicator(props: { containerRef: React.RefObject<HTMLElement | nul
 
 function App(): React.ReactElement {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [plugins, setPlugins] = useState<PluginConfig[]>([]);
   const [pluginState, setPluginState] = useState<Record<string, PluginState>>({});
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -577,6 +578,7 @@ function App(): React.ReactElement {
         />
         <div className="topbar-view">
           <div className="view-chip"><span>{viewLabel(viewMode, currentPlugin)}</span></div>
+          <button type="button" className="primary" onClick={() => setInviteOpen(true)}>签发邀请码</button>
           {viewMode.startsWith("plugin:") && currentPlugin?.renderTopbarAction && currentPluginState && currentDispatch && (
             <PluginTopbarAction
               plugin={currentPlugin}
@@ -855,6 +857,7 @@ function App(): React.ReactElement {
         )}
       </main>
       {error && <div className="modal-backdrop" onClick={() => setError(null)}><div className="modal"><div className="modal-title">请求失败</div><p>{error}</p><div className="modal-actions"><button className="primary" type="button" onClick={() => setError(null)}>关闭</button></div></div></div>}
+      {inviteOpen && <InviteModal onClose={() => setInviteOpen(false)} />}
     </div>
   );
 }
@@ -1382,6 +1385,110 @@ function MetricsView(props: {
           记录点写入存储 / 迁移指标后，这里会展示实时值。
         </div>
       )}
+    </div>
+  );
+}
+
+interface InviteResult {
+  token: string;
+  token_id: string;
+  tenant_name: string;
+  expires_at: string | null;
+}
+
+/** 签发租户邀请码（管理台）：POST /api/dashboard/tenant-invites。
+ *  明文邀请码只展示一次，立即复制保存；安全边界由 admin 域名 Caddy 门禁负责。 */
+function InviteModal(props: { onClose(): void }): React.ReactElement {
+  const [tenantName, setTenantName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<InviteResult | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const generate = async (): Promise<void> => {
+    const name = tenantName.trim();
+    if (!name) return;
+    setBusy(true);
+    setError("");
+    setCopied(false);
+    try {
+      const row = await api<InviteResult>("/api/dashboard/tenant-invites", {
+        method: "POST",
+        body: JSON.stringify({ tenant_name: name }),
+      });
+      setResult(row);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = (): void => {
+    setTenantName("");
+    setResult(null);
+    setError("");
+    setCopied(false);
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={props.onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-title">签发租户邀请码</div>
+        <div className="modal-sub">
+          {result
+            ? "邀请码已生成（一次性，只显示这一次，请立即复制保存）。受邀用户凭「邀请码 + 邮箱 + 密码」在 WebChat 自助注册，注册时不再填写租户名。"
+            : "为新的租户签发一次性邀请码：请输入要预指定的租户名（受邀用户注册时只会填邮箱和密码）。"}
+        </div>
+        {!result ? (
+          <>
+            <div className="form-grid">
+              <label className="form-label">
+                租户名
+                <input
+                  type="text"
+                  value={tenantName}
+                  placeholder="例如 pilot-team-alpha"
+                  autoFocus
+                  onChange={(e) => setTenantName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && tenantName.trim() && !busy) void generate();
+                  }}
+                />
+              </label>
+            </div>
+            {error && <p className="modal-sub" style={{ color: "var(--danger, #e5484d)" }}>{error}</p>}
+            <div className="modal-actions">
+              <button className="ghost" type="button" onClick={props.onClose}>取消</button>
+              <button className="primary" type="button" disabled={busy || !tenantName.trim()} onClick={() => void generate()}>
+                {busy ? "签发中…" : "生成"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="form-grid">
+              <label className="form-label">
+                租户名
+                <input type="text" readOnly value={result.tenant_name} />
+              </label>
+              <label className="form-label">
+                邀请码（仅展示一次）
+                <textarea readOnly rows={3} value={result.token} onFocus={(e) => e.currentTarget.select()} />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button className="ghost" type="button" onClick={() => {
+                void navigator.clipboard?.writeText(result.token).then(() => setCopied(true)).catch(() => undefined);
+              }}>
+                {copied ? "已复制 ✓" : "复制邀请码"}
+              </button>
+              <button className="ghost" type="button" onClick={reset}>再签发一个</button>
+              <button className="primary" type="button" onClick={props.onClose}>完成</button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
