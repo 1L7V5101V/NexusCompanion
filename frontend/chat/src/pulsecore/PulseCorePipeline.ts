@@ -8,11 +8,11 @@
 //   A/B 各配一对 ping-pong 目标。
 //
 // 相机固定：iMouse 恒为未拖拽、无按键 → Buffer B 保持初始机位 (-2,-3.6,22)。
-// 心跳：双峰(lub-dub)包络同时驱动 ①整体亮度 ②围绕洞心的径向扩张收缩
-// （被引力透镜扭曲的线条随画面一起泵动，即用户要的"星云心跳"）。
+// 心跳：质量尺度（CONST_M）连续正弦振荡，黑洞+光子环+吸积盘整体平滑胀缩；
+// 亮度同步微调。AI 状态只改振荡频率/幅度/亮度/闪烁。
 
 import * as THREE from 'three';
-import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, heartbeatPulse } from './shadertoy';
+import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, massOscillation } from './shadertoy';
 import bufferASrc from './shaders/bufferA.glsl?raw';
 import bufferBSrc from './shaders/bufferB.glsl?raw';
 import bufferCSrc from './shaders/bufferC.glsl?raw';
@@ -28,12 +28,12 @@ interface StateProfile {
     flicker: number;     // 闪烁强度 (error)
 }
 
-// 色彩一律不动（用户要求保留原作配色），状态只调制亮度/心跳节奏
+// 色彩一律不动（用户要求保留原作配色），状态只调制亮度/节奏
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    idle:      { bpm: 42,  holeAmp: 0.030, gain: 1.00, flicker: 0.0 },
-    thinking:  { bpm: 84,  holeAmp: 0.055, gain: 1.06, flicker: 0.0 },
-    streaming: { bpm: 96,  holeAmp: 0.075, gain: 1.10, flicker: 0.0 },
-    error:     { bpm: 110, holeAmp: 0.095, gain: 0.90, flicker: 0.20 },
+    idle:      { bpm: 42,  holeAmp: 0.012, gain: 1.00, flicker: 0.0 },
+    thinking:  { bpm: 84,  holeAmp: 0.022, gain: 1.06, flicker: 0.0 },
+    streaming: { bpm: 96,  holeAmp: 0.030, gain: 1.10, flicker: 0.0 },
+    error:     { bpm: 110, holeAmp: 0.040, gain: 0.90, flicker: 0.20 },
 };
 
 interface RT {
@@ -244,13 +244,13 @@ export class PulseCorePipeline {
         // 音频能量包络（attack 快 / release 慢）
         this.energySmooth += (this.audioEnergy - this.energySmooth) * (1 - Math.exp(-dt * (this.audioEnergy > this.energySmooth ? 12 : 3)));
 
-        // lub-dub 双峰心跳
+        // 质量连续振荡：整拍内平滑起伏，无静息期
         this.heartPhase += dt * this.cur.bpm / 60;
-        const beat = heartbeatPulse(this.heartPhase);
+        const osc = massOscillation(this.heartPhase);
         const flick = 1 - this.cur.flicker * Math.max(0, Math.sin(this.time * 23.0) * Math.sin(this.time * 7.3));
-        const gain = this.cur.gain * (1 + 0.10 * beat + this.energySmooth * 0.12) * flick;
-        // 黑洞本体缩放：质量尺度随心跳泵动（洞+光子环+盘 Rs 一起缩放）
-        const holePulse = this.cur.holeAmp * beat + this.energySmooth * 0.010;
+        const gain = this.cur.gain * (1 + 0.05 * osc + this.energySmooth * 0.12) * flick;
+        // 黑洞本体缩放：质量尺度连续振荡（洞+光子环+盘 Rs 一起缩放）
+        const holePulse = this.cur.holeAmp * osc + this.energySmooth * 0.006;
 
         const w = this.rtImage.w, h = this.rtImage.h;
         const aspect = w / h;
