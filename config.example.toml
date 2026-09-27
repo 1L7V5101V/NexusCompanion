@@ -112,6 +112,13 @@ search_enabled = true
 # [agent.wiring]
 # toolsets = ["meta_common", "spawn", "schedule", "mcp"]
 
+# 可选：C8 hook 有界 timeout（§5.9.16 hook failure 分层；默认 5.0 秒）。
+# pre-tool（gate）超时按 fail-closed 拒绝；post-tool 与事件观察者（fanout）
+# 超时记录失败、不改写已提交终态。
+# [agent.plugins]
+# hook_timeout_seconds = 5.0
+# observer_timeout_seconds = 5.0
+
 # =============================================================================
 # 必填：至少配置一个频道（Telegram 或 QQ 选其一）
 # token / bot_uin 为空时该频道自动跳过，不会报错。
