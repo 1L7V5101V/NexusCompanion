@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
  * 原生 WebGL 零依赖（单个全屏 quad；shader 可原样平移到 three）。
  */
 
-const MARGIN = 88;
+const MARGIN = 120;
 
 const VERT = `
 attribute vec2 a_pos;
@@ -84,9 +84,9 @@ vec3 closestBorder(vec2 pc, vec2 h, float r) {
     } else if (sgn.y > 0.0) {
       s = 2.0 * ax + arc + 2.0 * ay + phi * r;
     } else if (sgn.x < 0.0 && sgn.y > 0.0) {
-      s = 3.0 * ax + 2.0 * arc + 2.0 * ay + (phi - 1.5707963) * r;
+      s = 4.0 * ax + 2.0 * arc + 2.0 * ay + (phi - 1.5707963) * r;
     } else {
-      s = 3.0 * ax + 3.0 * arc + 3.0 * ay + (phi + 3.14159265) * r;
+      s = 4.0 * ax + 3.0 * arc + 4.0 * ay + (phi + 3.14159265) * r;
     }
   } else if (aq.y > 0.0) {
     // 上/下直边
@@ -102,7 +102,7 @@ vec3 closestBorder(vec2 pc, vec2 h, float r) {
     if (sgn.x > 0.0) {
       s = 2.0 * ax + arc + (bp.y + ay);
     } else {
-      s = 3.0 * ax + 2.0 * arc + 3.0 * ay + (ay - bp.y);
+      s = 4.0 * ax + 3.0 * arc + 2.0 * ay + (ay - bp.y);
     }
   }
   float total = 4.0 * (ax + ay) + 2.0 * 3.14159265 * r;
@@ -126,15 +126,16 @@ void main() {
   // 环向圆域坐标：噪声沿周长首尾连续
   vec2 sc = vec2(cos(s * 6.2831853), sin(s * 6.2831853));
 
-  // 连续光带：厚度与振幅沿边框平滑起伏（忽粗忽细、忽明忽暗），无离散光点
-  float thick = 9.0 + 24.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
-  float amp = 0.32 + 0.62 * fbn(sc * 3.4 + vec2(-u_time * 0.06, u_time * 0.16));
-  vec3 col = palette(s + u_time * 0.02 + 0.18 * (amp - 0.32));
-  vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 58.0);
+  // 连续光带：厚度与振幅沿边框平滑起伏，噪声谷底归零——
+  // 有的段完全无光，亮段连续流入暗段，无接缝
+  float thick = 11.0 + 26.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
+  float amp = 1.15 * smoothstep(0.30, 0.78, fbn(sc * 3.4 + vec2(-u_time * 0.06, u_time * 0.16)));
+  vec3 col = palette(s + u_time * 0.02 + 0.18 * amp);
+  vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 45.0);
 
-  // 细边线：1.5px 活线，明暗沿边框流动
+  // 细边线：1.5px 活线，跟随振幅——暗段里细线同样熄灭，无固定颜色
   float rimN = fbn(sc * 1.8 + vec2(u_time * 0.31, -u_time * 0.23));
-  c += palette(s + 0.5 + u_time * 0.02) * exp(-abs(d) / 1.4) * (0.30 + 0.55 * rimN);
+  c += palette(s + 0.5 + u_time * 0.02) * exp(-abs(d) / 1.4) * (0.42 + 0.48 * rimN) * smoothstep(0.02, 0.35, amp);
 
   // 只保留边框外圈与 2px 内衬
   c *= smoothstep(-3.0, 1.5, d);
