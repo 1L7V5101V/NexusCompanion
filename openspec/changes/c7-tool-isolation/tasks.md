@@ -26,10 +26,10 @@
 
 ## 3. 三层目录与白名单执行（ADR-3）
 
-- [ ] 3.1 TenantToolCatalog 消费 C8 `TenantRuntimePlan`：per-tenant view = 白名单 ∩ 已启用 ∩ binding 有效；AdminCatalog 保持现状。验证：PG 集成测试——双租户各自目录互异且不含关闭工具
-  → 主体完成（2026-09-27）：目录层 `agent/tools/catalog.py` + 两个消费点（schema 过滤 task 2.3、pre-hook 重查 task 3.2）已落地并有单测；PG 双租户集成验证并入 task 8.2 跨租户负向测试（同需 PG 双账号环境），完成后一并勾选
-- [ ] 3.2 pre-tool hook 执行前重查（账号状态/binding/白名单/capability），结构化拒绝错误码冻结。验证：suspended 账号调用被拒的负向测试；错误码进协议 fixture（如涉及）
-  → 完成（2026-09-27）：`agent/tool_hooks/tenant_gate.py::TenantToolGateHook`（账号状态委托 C8 `RevocationGate` fail-closed；白名单仅对 user principal 重查；错误码冻结 `tool_denied_account_status`/`tool_denied_tenant_scope`）；`ToolExecutionRequest` 增 `tool_context` 字段（passive 两处构造点传入）；bootstrap 在插件 hook 之前注册 gate。binding/capability 重查归 C14（引擎绑定）与后续 capability 系统，design 已注明。测试 `tests/test_tenant_tool_gate.py` 8 项全绿；全量回归 **1659 passed, 0 failed**
+- [x] 3.1 TenantToolCatalog 消费 C8 `TenantRuntimePlan`：per-tenant view = 白名单 ∩ 已启用 ∩ binding 有效；AdminCatalog 保持现状。验证：PG 集成测试——双租户各自目录互异且不含关闭工具
+  → 完成（2026-09-28）：目录层 `agent/tools/catalog.py` + 两个消费点（schema 过滤 task 2.3、pre-hook 重查 task 3.2）已落地；PG 双租户验证随 task 8.2 一并勾选（`tests/c7/test_tool_isolation_pg.py::test_per_tenant_catalog_excludes_closed_tools`——真实 provisioning 双账号，两租户目录均不含 shell/task_output/task_stop/spawn/mcp_add/mcp_remove，白名单工具在列）。「互异」维度依赖 engine binding（C14 落地后目录随 binding 微分），本 change 锁定关闭面与白名单基线
+- [x] 3.2 pre-tool hook 执行前重查（账号状态/binding/白名单/capability），结构化拒绝错误码冻结。验证：suspended 账号调用被拒的负向测试；错误码进协议 fixture（如涉及）
+  → 完成（2026-09-28）：`agent/tool_hooks/tenant_gate.py::TenantToolGateHook`（账号状态委托 C8 `RevocationGate` fail-closed；白名单仅对 user principal 重查；错误码冻结 `tool_denied_account_status`/`tool_denied_tenant_scope`）；`ToolExecutionRequest` 增 `tool_context` 字段（passive 两处构造点传入）；bootstrap 在插件 hook 之前注册 gate；drift 管线亦已穿线（task 7.2）。binding/capability 重查归 C14。测试 `tests/test_tenant_tool_gate.py` 8 项全绿（suspended 负向经可注入 provider 锁定）；PG 双账号验证并入 task 8.2；全量回归见 8.3
 - [x] 3.3 `message_push` 服务端绑定目标校验 + `web_search`/`web_fetch` 限流与 SSRF 基线（内网/loopback/metadata 拒绝）。验证：负向测试（任意目标、内网地址被拒）
   → 完成（2026-09-27）：registry 路由字段精化（`ROUTING_ARGUMENT_FIELDS` 仅 user principal 剥离并打标 `_routing_overridden`；dev/owner 保留合法跨目标推送）+ `message_push` 显式拒绝（`push_target_not_allowed`，不静默改址）；SSRF 基线已有实现确认覆盖（loopback/private/link-local/reserved + .local/.localhost 含云 metadata 169.254）；新增 `agent/tools/rate_limit.py` 租户级滑动窗口限流（web 两件接入，仅 user principal）。测试 `tests/test_tool_routing_and_limits.py` 12 项全绿；全量回归 **1688 passed, 0 failed**
 
@@ -65,6 +65,7 @@
 
 - [x] 8.1 **§5.8.8 十二条闸门逐条对账**：每条映射到测试或 evidence 文件，产出对照表。验证：对照表 12/12 有落点
   → 完成（2026-09-28）：对照表 `openspec/evidence/c7-tool-isolation/task-8.1-gate-reconciliation.md`——12/12 闸门全部有测试/evidence 落点（#3 由 C8/C5 承接、工具侧 C7 锁定；#6/#12 由「Pilot 用户 MCP 整体关闭」定案满足，关闭面负向测试锁定）；全部 C7 测试文件按门逐一登记（10 个测试文件的精确用例名）
-- [ ] 8.2 跨租户并发交错测试（共享 registry 无串租户）。验证：交错测试在 CI/本地稳定通过（≥3 次重跑）
+- [x] 8.2 跨租户并发交错测试（共享 registry 无串租户）。验证：交错测试在 CI/本地稳定通过（≥3 次重跑）
+  → 完成（2026-09-28）：`tests/c7/test_tool_isolation_pg.py`（PG scratch DB `nexus_c7test`，真实 C5 provisioning 双账号双租户）——持久化目录互不可达 + 共享 registry 24 轮交错写/读/列目录交叉断言零跨租户泄漏 + per-tenant 目录不含关闭工具；交错测试本地 3/3 重跑稳定通过；同时为 3.1/5.2 的 PG 双租户验证完成勾选
 - [ ] 8.3 回归与基线：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` + `pyright --level error`（project + tests 两配置）对齐 main 基线。验证：evidence 回归记录
 - [ ] 8.4 checklist 回填：webchat-auth-wiring 运维边界解除说明 + C7 状态更新（仅在有 evidence 时）；公网 blocker 更新为「存储切换」
