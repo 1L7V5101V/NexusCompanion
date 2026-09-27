@@ -1,0 +1,30 @@
+C7 task 7.2 —— drift/插件工具走同一 context/effect 校验（design ADR-8）
+================================================================================
+
+结论（前沿基线在 main）：
+- `plugins/drift_flow/runtime.py`（**live drift pipeline**）：`_drift_tool_context`
+  按 tick 构造 dev 回退身份 `ToolExecutionContext`（tenant 派生自 session_key
+  ``channel:chat``，与 spawn 完成链路同哲学；dev principal 不受 effect 闸门限制
+  ——与租户白名单同哲学）；`_execute_loop` 与 `_wrap_up` 两处工具调用改为：
+  ``tools.execute(name, args, context=...)`` + ``ToolExecutionRequest.tool_context``
+  （pre-hook gate / 审计 / 取消注册 / 路由字段处理与主链路一致）。
+- `plugins/drift_flow/tools.py`：`DriftPathResolver.resolve` 增加逃逸面规约
+  （与 `TenantPathResolver` 同语义：绝对路径越界 / ``..`` / 空段 / 符号链接逃逸 /
+  ``skills/<name>`` 只落到该 skill 目录内）；四个文件工具（read/list/write/edit）
+  越界返回结构化拒绝 ``code=drift_path_forbidden``（不再回退读原始路径）。
+- 插件工具：与普通工具同一 `ToolRegistry` 注册源 → 同一 effect 闸门与 catalog
+  过滤（ADR-8「不另立旁路」）；`test_tool_drift_plugin_flow.py` 以
+  ``source_type="plugin"`` 注册验证 effect 闸门一致。
+
+历史说明：曾误改 `agent/core/drift_turn.py`（legacy 死代码，import 基线已坏、
+运行时零引用）——已 revert，仅改 live 实现 `plugins/drift_flow/`。
+
+验证
+----
+- `pytest tests/test_tool_drift_plugin_flow.py -q`：9 passed
+  （逃逸矩阵：绝对/`..`/深度/symlink/skills 越界全拒、skills 域内解析、
+  read/list 越界结构化拒绝、drift 上下文 dev 身份与 tenant 派生、
+  插件工具 effect 闸门一致 ×2）。
+- `pytest -q -W error tests/`：1735 passed, 0 failed（task 7.2 新增 9 项）。
+- pyright：drift_flow/tools.py:935 为既有基线项（ToolRegistry 构造参数，
+  非本任务新增）。

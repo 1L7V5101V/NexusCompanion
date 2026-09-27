@@ -32,6 +32,7 @@ from agent.prompting import (
 )
 from agent.tool_hooks import ToolExecutionRequest, ToolExecutor
 from agent.tool_hooks.base import ToolHook
+from agent.tools.context import ToolExecutionContext
 from bus.events_lifecycle import DriftFinished
 from plugins.default_proactive.context import AgentTickContext
 from plugins.drift_flow.state import DriftStateStore, SkillMeta
@@ -82,6 +83,28 @@ class DriftTurnPipelineDeps:
 # │     └─ 4. Finish（收尾）── _finish
 # │        └─ 记录退出状态日志
 # └─ 完成
+
+def _drift_tool_context(ctx: AgentTickContext) -> ToolExecutionContext:
+    """C7 task 7.2（ADR-8）：drift 工具调用与主链路同一 ToolExecutionContext。
+
+    drift 是 dev/单机后台路径（无 auth binding），采用 dev 回退身份（与 spawn
+    完成链路同哲学）；tenant 派生自 session_key（``channel:chat`` 形态，见
+    proactive_v2.sensor）。dev principal 不受 effect 闸门限制（与租户白名单同
+    哲学），但审计/取消注册/路由字段处理与主链路一致。
+    """
+    channel, _, chat_id = ctx.session_key.partition(":")
+    return ToolExecutionContext(
+        request_id=f"drift-{ctx.tick_id}",
+        account_id="",
+        tenant_id=ctx.session_key or "dev",
+        session_id=ctx.session_key,
+        turn_id=f"drift-{ctx.tick_id}",
+        channel=channel,
+        chat_id=chat_id,
+        principal_type="dev",
+        current_timestamp=ctx.now_utc.isoformat(),
+    )
+
 
 class DriftTurnPipeline:
 
@@ -218,6 +241,13 @@ class DriftTurnPipeline:
 
         steps = 0
         constraint_rejections = 0
+        # C7 task 7.2（ADR-8）：drift 工具走同一 ToolExecutionContext。
+        tool_context = _drift_tool_context(ctx)
+
+        def _invoker(
+            name: str, arguments: dict[str, Any]
+        ) -> Awaitable[Any]:
+            return tools.execute(name, arguments, context=tool_context)
 
         while steps < self._max_steps and not ctx.drift_finished:
             tool_choice: str | dict = "required"
@@ -322,8 +352,9 @@ class DriftTurnPipeline:
                     arguments=tool_args,
                     source="proactive",
                     session_key=ctx.session_key,
+                    tool_context=tool_context,
                 ),
-                tools.execute,
+                _invoker,
             )
 
             # 3.4 错误处理。
@@ -397,6 +428,12 @@ class DriftTurnPipeline:
             for schema in tools.get_schemas()
             if schema["function"]["name"] == "finish_drift"
         ]
+        # C7 task 7.2（ADR-8）：wrap-up 同样带同一 ToolExecutionContext。
+        tool_context = _drift_tool_context(ctx)
+
+        def _invoker(name: str, arguments: dict[str, Any]) -> Awaitable[Any]:
+            return tools.execute(name, arguments, context=tool_context)
+
         if not finish_schemas:
             logger.warning("[drift] wrap-up skipped: finish_drift schema missing")
             return
@@ -463,8 +500,9 @@ class DriftTurnPipeline:
                     arguments=tool_args,
                     source="proactive",
                     session_key=ctx.session_key,
+                    tool_context=tool_context,
                 ),
-                tools.execute,
+                _invoker,
             )
             self._store.append_step(
                 step_index=ctx.steps_taken + attempt,

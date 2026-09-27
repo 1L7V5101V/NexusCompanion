@@ -57,7 +57,8 @@
 
 - [x] 7.1 `tool_audit_events` 写入接线（双 adapter）+ 参数脱敏（secret 键只存 hash、内容截断）+ 指标 label 进 C12 白名单。验证：调用后审计行存在且无法还原敏感原文；C12 change §8.2 对应条目可勾选（同步更新 c12-observability-backup/tasks.md）
   → 完成（2026-09-28）：`agent/admission/tool_audit.py`（ToolAuditEvent + redact_arguments：secret 键只存 sha256/长内容截断/arguments_hash 摘要 + ToolAuditSink Protocol + LogAuditSink 单机 NDJSON 兑底）；registry `set_audit_sink` + execute 收束写终态行（rejected 含 error_code= 解析、执行异常 failed、租户取消 cancelled、外层取消先写后抛；审计失败不阻断调用）；`bootstrap/audit.py` 双 adapter（多租户 PG INSERT / 单机日志兑底）接线 + `ToolAuditEventModel`/`ToolAuditRepository`（与迁移 b3f7a1c5d9e2 同 schema）；C12 白名单新增 `effect_class`（label_policy.py + fixture 双向一致）+ c12 tasks.md §8.1 登记落地。pre-hook 拦截（tool_denied_account_status 等）不入审计行（hook 层，trace 观测）；C2 tool_calls 终态流仍为 C2 侧剩余。测试 `tests/test_tool_audit.py` 17 项全绿；全量回归 **1726 passed, 0 failed**；pyright 零新增
-- [ ] 7.2 drift flow 与插件工具走同一 context/effect 校验（ADR-8），插件工具 catalog 接到同一 catalog 源。验证：插件工具与 drift 文件工具的越界负向测试
+- [x] 7.2 drift flow 与插件工具走同一 context/effect 校验（ADR-8），插件工具 catalog 接到同一 catalog 源。验证：插件工具与 drift 文件工具的越界负向测试
+  → 完成（2026-09-28）：live drift 管线（`plugins/drift_flow/runtime.py`）两处工具调用带同一 `ToolExecutionContext`（dev 回退身份 + tenant 派生 session_key，`tool_context` 穿入 request 使 pre-hook gate/审计/取消注册生效）；`DriftPathResolver` 接逃逸面规约（绝对路径/`..`/symlink/空段/skills 目录越界全拒，与 TenantPathResolver 同语义），四个文件工具越界结构化拒绝（`drift_path_forbidden`，不回退原始路径）；插件工具验证 = 与普通工具同一 registry 注册源 → 同一 effect 闸门（`source_type="plugin"` 负向测试）。曾误改 legacy `agent/core/drift_turn.py`（死代码，import 基线已坏）已 revert。测试 `tests/test_tool_drift_plugin_flow.py` 9 项全绿；全量回归 **1735 passed, 0 failed**；pyright 零新增
 
 ## 8. 测试闸门与证据
 

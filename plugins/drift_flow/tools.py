@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -770,18 +771,49 @@ class DriftPathResolver:
         self._store = store
 
     def resolve(self, path: str) -> Path | None:
+        """把逻辑路径规约进允许 root；越界返回 None（ADR-8 逃逸面）。
+
+        与 TenantPathResolver 同语义（agent/tools/path_resolver.py）：拒绝
+        绝对路径逃逸 / ``..`` / 符号链接逃逸；``skills/<name>/...`` 只解析到
+        该 skill 目录内。
+        """
         raw = str(path or "").strip()
         if not raw:
             return None
-        raw_path = Path(raw).expanduser()
-        if raw_path.is_absolute():
-            return raw_path
         parts = PurePosixPath(raw).parts
         if len(parts) >= 2 and parts[0] == "skills":
             skill_dir = self._store.skill_dir_for(parts[1])
-            if skill_dir is not None:
-                return skill_dir.joinpath(*parts[2:])
-        return self._drift_dir / raw
+            if skill_dir is None:
+                return None
+            return _confine(skill_dir, Path(*parts[2:]))
+        return _confine(self._drift_dir, Path(raw))
+
+
+def _confine(root: Path, candidate: Path) -> Path | None:
+    """把 candidate 规约到 root 内；任何逃逸形态返回 None。
+
+    - ``..`` / 空段 → None；
+    - 规范化（含符号链接跟随）后不在 root 内 → None；
+    - 其余返回规范化后的绝对物理路径。
+    """
+    try:
+        parts = [p for p in candidate.parts if p not in (".", "")]
+        if any(p == ".." for p in parts):
+            return None
+        root_resolved = root.resolve(strict=False)
+        resolved = (root_resolved / Path(*parts)).resolve(strict=False)
+        try:
+            common = os.path.commonpath([str(root_resolved), str(resolved)])
+        except ValueError:
+            return None
+        if common != str(root_resolved):
+            return None
+        return resolved
+    except (OSError, ValueError):
+        return None
+
+
+_DRIFT_PATH_FORBIDDEN = "错误：路径越界或无效，已拒绝（code=drift_path_forbidden）"
 
 
 class DriftReadFileTool(Tool):
@@ -804,7 +836,7 @@ class DriftReadFileTool(Tool):
     async def execute(self, path: str, **kwargs: Any) -> Any:
         resolved = self._resolver.resolve(path)
         if resolved is None:
-            return await self._reader.execute(path=path, **kwargs)
+            return _DRIFT_PATH_FORBIDDEN
         return await self._reader.execute(path=str(resolved), **kwargs)
 
 
@@ -828,7 +860,7 @@ class DriftListDirTool(Tool):
     async def execute(self, path: str, **kwargs: Any) -> Any:
         resolved = self._resolver.resolve(path)
         if resolved is None:
-            return await self._lister.execute(path=path, **kwargs)
+            return _DRIFT_PATH_FORBIDDEN
         return await self._lister.execute(path=str(resolved), **kwargs)
 
 
@@ -852,7 +884,7 @@ class DriftWriteFileTool(Tool):
     async def execute(self, path: str, content: str, **kwargs: Any) -> Any:
         resolved = self._resolver.resolve(path)
         if resolved is None:
-            return await self._writer.execute(path=path, content=content, **kwargs)
+            return _DRIFT_PATH_FORBIDDEN
         return await self._writer.execute(
             path=str(resolved),
             content=content,
@@ -886,12 +918,7 @@ class DriftEditFileTool(Tool):
     ) -> Any:
         resolved = self._resolver.resolve(path)
         if resolved is None:
-            return await self._editor.execute(
-                path=path,
-                old_text=old_text,
-                new_text=new_text,
-                **kwargs,
-            )
+            return _DRIFT_PATH_FORBIDDEN
         return await self._editor.execute(
             path=str(resolved),
             old_text=old_text,
