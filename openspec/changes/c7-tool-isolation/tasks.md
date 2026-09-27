@@ -6,8 +6,8 @@
 
 ## 1. 前置核对与契约冻结
 
-- [ ] 1.1 **程序化工具清单**：脚本导出当前实际注册的全部 tool id + toolsets 归属 + 现有 risk 标签，与 design ADR-3 白名单逐项核对（发现清单外工具回到 design 补决策）。验证：清单文件入 evidence，diff 无未决项
-- [ ] 1.2 **effect 等级逐工具映射表**：按 ADR-4 为每个白名单内工具定 effect 初值与 `requires_compensation`，白名单外工具默认关闭；产出映射表入 evidence 并在 PR 描述中列全（第二双眼睛核对）。验证：映射表评审通过
+- [ ] 1.1 **程序化工具清单**：脚本导出当前实际注册的全部 tool id + toolsets 归属 + 现有 risk 标签（**含 memory engine tool_profile 经壳类动态注入的工具，按注册来源归类**，如 rachael 的 `reinforce_memory`），与 design ADR-3 白名单逐项核对（发现清单外工具回到 design 补决策）。验证：清单文件入 evidence，diff 无未决项
+- [ ] 1.2 **effect 等级逐工具映射表**：按 ADR-4 为每个白名单内工具定 effect 初值与 `requires_compensation`，白名单外工具默认关闭（**覆盖 memory engine tool_profile 动态注入工具，按引擎声明 risk 映射，见 ADR-3 类别规则**）；产出映射表入 evidence 并在 PR 描述中列全（第二双眼睛核对）。验证：映射表评审通过
 - [ ] 1.3 **`tool_audit_events` 迁移设计**：alembic 迁移（控制面 PG）+ SQLite 单机等价落点定案（复用 control-plane 双 adapter 模式或显式日志兜底，二选一并写入 design 附录）。验证：迁移在 scratch 库 `upgrade head` 通过
 
 ## 2. ToolExecutionContext 与 registry 语义反转（ADR-1/2）

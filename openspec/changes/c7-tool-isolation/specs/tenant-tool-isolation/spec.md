@@ -22,12 +22,17 @@
 
 ### Requirement: 三层工具目录与租户白名单
 
-系统 SHALL 将工具组织为全局只读定义、租户可见目录与管理员目录三层：全局层只承载所有租户共用的只读定义（名称、描述、输入 schema），用户权限、凭据、目录与 binding SHALL NOT 存于其中。普通 tenant 的可见工具 SHALL 由服务端白名单精确到 tool id 冻结，未列入白名单的工具 SHALL 对该租户不可见且执行时拒绝；模型每轮 SHALL 只收到当前上下文对应目录的 schema，且 schema 可见性 SHALL NOT 被当作唯一防线（执行前 SHALL 重新校验账号状态、binding、启用状态、capability 与确认/配额）。P1 白名单范围 SHALL 覆盖：租户内记忆读写（`recall_memory`/`memorize`/`forget_memory`）、本账号消息查询、租户文件读写与图片读取、服务端绑定目标的 `message_push`、租户自有 schedule/reminder、经限流与 SSRF 防护的 web search/fetch。
+系统 SHALL 将工具组织为全局只读定义、租户可见目录与管理员目录三层：全局层只承载所有租户共用的只读定义（名称、描述、输入 schema），用户权限、凭据、目录与 binding SHALL NOT 存于其中。普通 tenant 的可见工具 SHALL 由服务端白名单精确到 tool id 冻结，未列入白名单的工具 SHALL 对该租户不可见且执行时拒绝；模型每轮 SHALL 只收到当前上下文对应目录的 schema，且 schema 可见性 SHALL NOT 被当作唯一防线（执行前 SHALL 重新校验账号状态、binding、启用状态、capability 与确认/配额）。P1 白名单范围 SHALL 覆盖：租户内记忆读写（`recall_memory`/`memorize`/`forget_memory`）、本账号消息查询、租户文件读写与图片读取、服务端绑定目标的 `message_push`、租户自有 schedule/reminder、经限流与 SSRF 防护的 web search/fetch。白名单 SHALL 由静态精确 tool id 与**租户 active memory engine 经 tool_profile 注入的工具**两部分组成：后者按注册来源归类为记忆工具同类，对启用该引擎的租户按记忆工具策略放行（effect 按引擎声明的等级如实映射），未启用该引擎的租户对该类工具不可见。
 
 #### Scenario: 白名单外工具不可见且不可执行
 
 - **WHEN** 普通 tenant 的会话请求执行未列入租户白名单的工具（如 `shell`、`spawn`、`peer_agent`、plugin 管理工具）
 - **THEN** 该工具不出现在模型 schema 中，直接调用时被结构化拒绝，不产生副作用
+
+#### Scenario: 引擎注入工具按租户引擎绑定可见
+
+- **WHEN** 启用某 memory engine 的租户会话与未启用该引擎的租户会话分别发起该引擎 tool_profile 注入的工具调用（如 rachael 的 `reinforce_memory`）
+- **THEN** 前者的 schema 含该工具且调用被放行（effect 按引擎声明等级映射，审计照常记录），后者 schema 中不可见且直接调用被结构化拒绝
 
 #### Scenario: schema 可见不等于可执行
 
