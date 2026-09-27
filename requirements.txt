@@ -43,6 +43,7 @@ schedule>=1.2.0
 scikit-learn>=1.8.0
 scipy>=1.17.0
 SQLAlchemy>=2.0.0
+alembic>=1.13.0  # migration 工具链（alembic.ini / scripts/migrate/alembic_util.py / 测试 conftest 必需）
 greenlet>=3.0.0  # SQLAlchemy[asyncio] 依赖（auth runtime / async engine 必需）
 starlette>=0.52.0
 telegramify-markdown
