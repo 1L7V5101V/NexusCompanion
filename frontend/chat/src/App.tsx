@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useChatRuntime } from "./store";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
+import { AuroraCanvas } from "./AuroraCanvas";
 import { LoginPanel } from "./LoginPanel";
 
 function ConnectionBadge({ status }: { status: ConnectionStatus }) {
@@ -123,13 +124,7 @@ function ChatView({ onSignOut }: { onSignOut: () => void }) {
               data-running={isRunning ? "true" : undefined}
               className="composer relative rounded-[28px] p-[2px]"
             >
-              <div className="composer-halo" aria-hidden="true">
-                <span className="composer-blob composer-blob-blue" />
-                <span className="composer-blob composer-blob-violet" />
-                <span className="composer-blob composer-blob-pink" />
-                <span className="composer-blob composer-blob-amber" />
-              </div>
-              <div className="composer-ring" aria-hidden="true" />
+              <AuroraCanvas active={isRunning} />
               <div className="relative rounded-[26px] bg-surface-3 ring-1 ring-inset ring-border">
                 <ComposerPrimitive.Input
                   auto-focus
