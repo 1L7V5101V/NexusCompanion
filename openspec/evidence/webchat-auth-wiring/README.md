@@ -26,6 +26,8 @@
 |---|---|
 | `pytest-webchat-auth.txt` | 定向集（auth_provisioning + webchat 通道/API/协议契约/门禁）：**98 passed, 28 skipped** |
 | `pytest-regression.txt` | 全量 `tests/`：**1244 passed, 195 skipped**（改动前基线 1222 passed） |
+| `real-pg-e2e.txt` | **真实 PG e2e（2026-09-27）**：`tests/auth_provisioning/test_webchat_e2e_auth_pg.py` — 真实 uvicorn + 真实 WebSocket + 真实 Cookie + 真实 PG（`nexus_c5test` scratch 库）：exchange → 负向握手×2 → hello 三元组与 PG 派生一致 → 收发一轮（流式 delta + 终态帧）；同轮 auth_provisioning 全组 + C4 回归 **136 passed**（PG 就绪后原 skip 集全部实跑） |
+| `deploy-e2e.txt` | **部署后服务器实跑 e2e（2026-09-27）**：生产容器内 `scripts/e2e_deploy_webchat_auth.py` — canary 账号 provisioning → exchange（`__Host-nexus_session`）→ 负向握手×2 → hello 与 PG 派生一致 → 经真实 AgentLoop 收发一轮（`turn.completed`，模型实答）→ canary 撤销；E2E PASS |
 
 跳过的 28 + 195 项均为 `postgres` marker（本地无 PG，按设计 skip）。
 
@@ -85,6 +87,17 @@ Caddy 按 Host 分流（`/etc/caddy/Caddyfile`）：
   （Docker DNAT 下容器内 loopback 不可达；真正的闸门是 `[auth]` + 宿主侧 Caddy）
 
 已知缺口（本次未修）：`alembic` 未列入 `requirements.txt`，迁移时在一次性容器内临时安装。
+
+### 3.6 部署后实跑 e2e（2026-09-27，任务 5.2 最终闭环）
+
+当日重建镜像（`76bbf48d4012`）后于生产容器内实跑完整链（详见
+[`deploy-e2e.txt`](deploy-e2e.txt)）：真实 PG canary 账号 → exchange →
+负向握手×2 → hello 三元组与 PG 派生一致 → **经真实 AgentLoop 收发一轮**
+（`message.accepted(seq=1)` → `turn.completed(seq=2)`，模型实答 `OK`）→
+canary 撤销。`E2E PASS`。生产 LLM 该轮未产生分段 delta（provider 流式配置，
+非 auth 接线范围）；流式帧链路由本地真实 PG e2e（`real-pg-e2e.txt`）与 C4
+dev e2e 覆盖。本地同一测试（真实 uvicorn + 真实 PG scratch 库）同日全绿，
+证据 `real-pg-e2e.txt`（136 passed 含 auth_provisioning 全组）。
 
 ## 4. 未完成 / 明确边界
 

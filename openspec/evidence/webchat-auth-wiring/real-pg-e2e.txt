@@ -1,0 +1,11 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: D:\.Projects\NexusCompanion
+configfile: pytest.ini
+plugins: anyio-4.15.1, platformdirs-4.12.0, asyncio-1.4.0, cov-7.1.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
+collected 1 item
+
+tests\auth_provisioning\test_webchat_e2e_auth_pg.py .                    [100%]
+
+============================== 1 passed in 4.72s ==============================

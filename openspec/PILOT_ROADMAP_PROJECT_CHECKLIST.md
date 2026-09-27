@@ -14,10 +14,10 @@
 
 ## 当前进度（来自 PILOT_ROADMAP §6）
 
-- **当前阶段**（2026-09-27 刷新）：P-1 设计门禁基本收口、进入实现推进期。verified 合入：C1 canonical identity（+ account→N tenant 扩展）、C2 durable control plane、C3 admission/queue、C4 WebChat dev 协议闭环、C5 auth/provisioning、C8 RuntimeSnapshot/secrets（Complete，待归档回填）、C13 记忆召回、C15 work queue 消费层、invite-code-tenant-registration（均归档）；C12 观测/隐私/备份 P-1 契约层 verified（贯穿型，change 保持 active，§8 伴随落地进行中）；webchat-auth-wiring 通道层身份接线 20/21（Complete，待收尾）。尚未开工：C6 attachment、C7 工具隔离（结论已归档）、C9 Persona、C10 Telegram binding、C11 schedule、C14 memory catalog。
-- **current focus**：webchat-auth-wiring 收尾（真实 PG exchange→handshake→hello 端到端 + 部署）；C12 §8 伴随落地（8.2 内容审计接线、8.3 manifest 细化、8.4 retention 接线与总控台聚合、8.5 基线报告、8.6 P3 演练）；C6/C7/C9/C10/C11/C14 按 §5.9.10 依赖图排期开工。
-- **current blocker**：面向受邀用户的公网开放等 webchat-auth-wiring 的真实 PG 端到端验证与部署；C7/C9/C10/C11/C14 对应 5.9 设计门禁未收口前不开始实现（P-1 规则）。
-- **next decision**：C8 与 webchat-auth-wiring 归档回填 merge commit；为 C12 §8.2（内容审计接线）与 §8.4（总控台聚合 API）指定承载 change；首个 turn/tool_call/delivery 记录点承接 change（8.1 余留部分，属 C2 侧）。
+- **当前阶段**（2026-09-27 刷新）：P-1 设计门禁基本收口、进入实现推进期。verified 合入：C1 canonical identity（+ account→N tenant 扩展）、C2 durable control plane、C3 admission/queue、C4 WebChat dev 协议闭环、C5 auth/provisioning、C8 RuntimeSnapshot/secrets（Complete，待归档回填）、C13 记忆召回、C15 work queue 消费层、invite-code-tenant-registration（均归档）；C12 观测/隐私/备份 P-1 契约层 verified（贯穿型，change 保持 active，§8 伴随落地进行中）；webchat-auth-wiring 21/21 全部验收完成（真实 PG e2e + 部署后服务器实跑，2026-09-27，待归档回填）。尚未开工：C6 attachment、C7 工具隔离（结论已归档）、C9 Persona、C10 Telegram binding、C11 schedule、C14 memory catalog。
+- **current focus**：C12 §8 伴随落地（8.2 内容审计接线、8.3 manifest 细化、8.4 retention 接线与总控台聚合、8.5 基线报告、8.6 P3 演练）；webchat-auth-wiring 归档回填；C6/C7/C9/C10/C11/C14 按 §5.9.10 依赖图排期开工。
+- **current blocker**：面向受邀用户的公网开放等 C7 工具隔离与存储切换（webchat-auth-wiring 运维边界：拿到 session 的主体即拥有全实例工具能力）；C7/C9/C10/C11/C14 对应 5.9 设计门禁未收口前不开始实现（P-1 规则）。
+- **next decision**：webchat-auth-wiring 归档（回填 merge commit；C8 已完成）；为 C12 §8.2（内容审计接线）与 §8.4（总控台聚合 API）指定承载 change；首个 turn/tool_call/delivery 记录点承接 change（8.1 余留部分，属 C2 侧）。
 - 详见 [`PILOT_ROADMAP.md` §5.9](./PILOT_ROADMAP.md)。
 
 ## GOV 治理与文档基线
@@ -90,7 +90,7 @@
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [x] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)；`verified`（change `2026-09-07-c13-memory-retrieval-bm25`，PR #5 merge `5b140fe`，证据 [evidence/c13-memory-retrieval-bm25](evidence/c13-memory-retrieval-bm25/)：A 基线可复现评测 + 消融矩阵 + 回归/pyright 对齐基线）
-- [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（C5 认证后端已于 `0753628` 合并；WebChat **通道层身份派生与握手凭据门禁已由 change `2026-09-21-webchat-auth-wiring` 接通**（16/21→20/21，evidence `evidence/webchat-auth-wiring/`）；仍待：真实 PG 上的 exchange→handshake→hello 端到端与部署）
+- [ ] **P0.5 WebChat 最小可用闭环** — dev-only 闭环已按 task-04 验收标准收口（change `2026-09-20-c4-webchat-protocol-dev-loop`，证据 [evidence/c4-webchat-protocol-dev-loop](evidence/c4-webchat-protocol-dev-loop/)）；dev 闭环 `verified`，公网项仍 `planned`（C5 认证后端已于 `0753628` 合并；WebChat **通道层身份派生与握手凭据门禁已由 change `2026-09-21-webchat-auth-wiring` 接通（21/21 全部验收完成）**：真实 PG e2e（本地，`real-pg-e2e.txt`）与部署后服务器实跑（生产容器内 canary 全链，`deploy-e2e.txt`）均 E2E PASS，2026-09-27，evidence [evidence/webchat-auth-wiring](evidence/webchat-auth-wiring/)；change 待归档回填）
   - [x] **dev WebSocket hello/send/delta/tool/turn 终态/error/replay 帧协议**（`infra/channels/web_chat_protocol.py` + 共享 fixture `tests/fixtures/chat_protocol_frames.json`；精确字段/版本/错误码/close code 已由 C4 change 冻结并前后端双向执行：后端 49 项 + 前端 31 项）
   - [x] **client_message_id 幂等、重连补拉和慢消费者测试**（`tests/test_web_chat_channel.py`；C4 补真实入口 e2e：收发/流式/重连无重复/`replay_required`→REST 重建/断线不取消 turn/空闲回收，共 6 项；进程内重放 buffer 为 dev v0，PG durable sequence 未实现）
   - [ ] **canonical conversation/message stream 与 0-based per-conversation sequence** → outcome 见 [PILOT_ROADMAP §5.9.2](PILOT_ROADMAP.md)（当前仍为 `chat:local` session_key 存储，未迁移 canonical 模型）
