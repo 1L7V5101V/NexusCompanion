@@ -87,15 +87,17 @@ def test_tampered_nonce_or_ciphertext_rejected() -> None:
     sealed = box.encrypt("tamper-check")
     version, key_id, nonce_b64, ct_b64 = sealed.split(":")
 
-    def _flip_last_char(text: str) -> str:
-        assert text[-1] in "ABCDEFGHJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789-_"
-        replacement = "A" if text[-1] != "A" else "B"
-        return text[:-1] + replacement
+    def _flip_first_char(text: str) -> str:
+        # 翻转首字符：base64 尾字符的低比特可能只是 padding（翻转不解码出
+        # 不同的字节），首字符的 6 比特必然有效。urlsafe_b64 输出字母表为
+        # A-Za-z0-9-_，替换字符与原字符必不相同，解码字节必变化。
+        replacement = "A" if text[0] != "A" else "B"
+        return replacement + text[1:]
 
     with pytest.raises(SecretBoxError):
-        box.decrypt(":".join([version, key_id, _flip_last_char(nonce_b64), ct_b64]))
+        box.decrypt(":".join([version, key_id, _flip_first_char(nonce_b64), ct_b64]))
     with pytest.raises(SecretBoxError):
-        box.decrypt(":".join([version, key_id, nonce_b64, _flip_last_char(ct_b64)]))
+        box.decrypt(":".join([version, key_id, nonce_b64, _flip_first_char(ct_b64)]))
     with pytest.raises(SecretBoxError, match="格式非法"):
         box.decrypt("garbage")
     with pytest.raises(SecretBoxError, match="格式非法"):
