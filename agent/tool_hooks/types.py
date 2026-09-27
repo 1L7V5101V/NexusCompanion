@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from agent.tools.context import ToolExecutionContext
 
 HookEvent = Literal["pre_tool_use", "post_tool_use", "post_tool_error"]
 ToolSource = Literal["passive", "proactive", "subagent"]
@@ -21,6 +24,9 @@ class ToolExecutionRequest:
     request_text: str = ""
     tool_batch: tuple[dict[str, Any], ...] = field(default_factory=tuple)
     tool_batch_index: int = 0
+    # C7 task 3.2：本 turn 的执行上下文（由 pipeline 构造处随 request 传入），
+    # 供 pre-hook 做账号状态与租户白名单重查；dev/未接线路径为 None。
+    tool_context: "ToolExecutionContext | None" = None
 
 
 @dataclass

@@ -45,6 +45,7 @@ from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tool_hooks.executor import ToolExecutor
+from agent.tool_hooks.tenant_gate import TenantToolGateHook
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -198,11 +199,17 @@ class CoreRuntime:
             self.loop.add_after_turn_plugin_modules(
                 self.plugin_manager.after_turn_modules,
             )
-            if self.plugin_manager.tool_hooks:
-                self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
-                spawn_tool = self.tools.get_tool("spawn")
-                if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
-                    spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
+        # C7 task 3.2：pre-tool 执行前重查 hook（账号状态 revocation recheck ×
+        # 租户白名单），放在插件 hook 之前注册（gate 语义与 snapshot 无关，
+        # snapshot_managed=False → 恒在 hook 链头部区域执行）。
+        self.loop.add_tool_hooks(
+            [TenantToolGateHook(self.tools, self.revocation_gate)]
+        )
+        if self.plugin_manager.tool_hooks:
+            self.loop.add_tool_hooks(self.plugin_manager.tool_hooks)
+            spawn_tool = self.tools.get_tool("spawn")
+            if spawn_tool is not None and hasattr(spawn_tool, "add_tool_hooks"):
+                spawn_tool.add_tool_hooks(self.plugin_manager.tool_hooks)
 
         # 5. 首次启动全部成功后才启动容错热重载 watcher
         self.workspace_mcp_watcher_task = asyncio.create_task(

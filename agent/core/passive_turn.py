@@ -1332,6 +1332,7 @@ class DefaultReasoner(Reasoner):
                                 chat_id=tool_event_chat_id,
                                 tool_batch=tool_batch,
                                 tool_batch_index=tool_batch_index,
+                                tool_context=tool_context,
                             )
                         )
                         await self._observe_tool_call_started(
@@ -1492,6 +1493,7 @@ class DefaultReasoner(Reasoner):
                             chat_id=tool_event_chat_id,
                             tool_batch=tool_batch,
                             tool_batch_index=tool_batch_index,
+                            tool_context=tool_context,
                         ),
                         # hook 只负责拦截与记录，不替代 registry。
                         _execute_tool,
