@@ -51,4 +51,4 @@
 - [x] 8.1 `openspec/evidence/c13-memory-retrieval-bm25/`：A 基线评测 JSON+markdown、消融矩阵结果、pytest 输出、pyright 输出存档
 - [x] 8.2 全量回归：`pytest -q -W error tests/` 对齐 main 基线（1312 passed + 1 既有环境性失败）；`pyright` 对齐基线（36 既有错误）
 - [x] 8.3 diff 范围检查：变更文件不包含 WebChat/auth/tool/RuntimeSnapshot 路径（验收 5/7）
-- [ ] 8.4 merge 后按 §8 更新 task-13 状态与 `PILOT_ROADMAP_PROJECT_CHECKLIST.md`（仅 evidence 齐全时）
+- [x] 8.4 merge 后按 §8 更新 task-13 状态与 `PILOT_ROADMAP_PROJECT_CHECKLIST.md`（仅 evidence 齐全时）
