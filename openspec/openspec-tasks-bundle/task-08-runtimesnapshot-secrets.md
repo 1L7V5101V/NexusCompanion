@@ -7,7 +7,7 @@
 - **所属阶段**：P0 lease coverage audit → P2 per-task context + revocation gate 收尾
 - **§5.9 引用**：§5.9.16（RuntimeSnapshot/hooks/credentials/revocation 全节 + memory engine 插件固定表）、§5.9.7（per-task context）、§10 DECIDED（RuntimeSnapshot/hooks/revocation）
 - **§6 出口条件引用**：P0 出口「完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation」；P2 出口含 per-task tenant context + hook failure/revocation gate
-- **状态**：planned
+- **状态**：in_progress（change `c8-runtimesnapshot-secrets`：P0 段 verified + P2 段 verified，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](../evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit）
 
 ## 目标
 
@@ -32,17 +32,17 @@
 
 **P0 段（lease coverage audit）**
 
-- [ ] P0 audit 覆盖 Passive/Proactive/Drift/maintenance/plugin job 全入口且测试证明 lease 绑定 — 验证：audit 报告 + 全入口测试（`openspec/evidence/` 复现）
-- [ ] 进行中 work 不切 snapshot — 验证：执行中热更新测试
-- [ ] 旧 snapshot 无法绕过 suspension/revocation/secret rotation（副作用前 recheck） — 验证：revocation 负向测试
+- [x] P0 audit 覆盖 Passive/Proactive/Drift/maintenance/plugin job 全入口且测试证明 lease 绑定 — 验证：audit 报告（`openspec/evidence/c8-runtimesnapshot-secrets/lease-coverage-audit.md`）+ `tests/c8/test_lease_coverage.py` 全入口测试
+- [x] 进行中 work 不切 snapshot — 验证：`tests/c8/test_lease_coverage.py` 执行中热更新/abort 测试
+- [x] 旧 snapshot 无法绕过 suspension/revocation/secret rotation（副作用前 recheck） — 验证：`tests/c8/test_revocation_gate.py`（含 `test_old_snapshot_cannot_bypass_revocation`；secret rotation 边界另见 `tests/c8/test_secret_box.py`）
 
 **P2 段（per-task context + revocation gate 收尾）**
 
-- [ ] gate/interceptor 超时/异常/上下文缺失 fail-closed；fanout/telemetry 有界 timeout 且不反向改写已提交终态 — 验证：hook failure 测试矩阵
-- [ ] contribution_id 稳定 + 固定 hook/tool/job 类型 + `binding_policy=required|default_on|opt_in` + `tenant_configurable`；未在 plan 中的 contribution 不可见/不可调用/不可隐式触发 — 验证：元数据断言
-- [ ] tenant secret 静态加密；不进 tool schema/模型参数/普通日志/metrics label/错误字符串 — 验证：grep + 加密测试
-- [ ] snapshot compile/publish 失败保留旧 committed snapshot，不发布半成品，不清空当前可用 — 验证：失败回退测试
-- [ ] 插件安装只登记不执行代码；tenant 只能启停策略允许的 contribution，不能创造 AgentLoop 不存在的新 Hook — 验证：dormant 安装测试
+- [x] gate/interceptor 超时/异常/上下文缺失 fail-closed；fanout/telemetry 有界 timeout 且不反向改写已提交终态 — 验证：`tests/c8/test_hook_failure_policy.py` 测试矩阵（12 项）
+- [x] contribution_id 稳定 + 固定 hook/tool/job 类型 + `binding_policy=required|default_on|opt_in` + `tenant_configurable`；未在 plan 中的 contribution 不可见/不可调用/不可隐式触发 — 验证：`tests/c8/test_tenant_runtime_plan.py` 元数据断言（8 项）
+- [x] tenant secret 静态加密；不进 tool schema/模型参数/普通日志/metrics label/错误字符串 — 验证：`tests/c8/test_secret_box.py` 加密/rotation/篡改测试（10 项）；明文不泄漏断言在 `test_sealed_value_embeds_version_and_key_id_and_no_plaintext`；metrics label 白名单沿用 C12 `core/telemetry/label_policy.py`
+- [x] snapshot compile/publish 失败保留旧 committed snapshot，不发布半成品，不清空当前可用 — 验证：`tests/c8/test_snapshot_publish_fallback.py`（4 项）
+- [x] 插件安装只登记不执行代码；tenant 只能启停策略允许的 contribution，不能创造 AgentLoop 不存在的新 Hook — 验证：`tests/c8/test_dormant_install.py` dormant 安装测试（2 项）+ plan 过滤断言（`test_tenant_runtime_plan.py`；plan 接进执行路径归 C7/C14 消费时落地）
 
 > 判定「真正完成」而非「执行过」：lease coverage audit 以 **每类入口一条测试**为证据（不是「已审计」一句话）；revocation 负向测试必须证明旧 snapshot 持有时副作用被拒。
 

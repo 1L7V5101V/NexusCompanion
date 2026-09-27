@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent.config_models import Config
+from agent.admission.revocation import RevocationGate
 from agent.looping.core import AgentLoop
 from agent.memory import DEFAULT_SELF_MD
 from agent.persona import get_identity_name
@@ -22,6 +23,7 @@ from session.manager import SessionManager
 if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryStore
     from core.memory.runtime import MemoryRuntime
+    from agent.plugins.snapshot import RuntimeSnapshotStore
     from infra.storage.provisioning import TenantProvisioning
 
 
@@ -65,6 +67,9 @@ def build_proactive_runtime(
     plugin_mcp_servers: dict[str, dict[str, Any]] | None = None,
     turn_logger: Any | None = None,
     provisioning: "TenantProvisioning | None" = None,
+    # C8 §5.9.16：生产 proactive 从静态回退切到 lease 绑定路径；tick 副作用方 gate。
+    runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
+    revocation_gate: RevocationGate | None = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -122,6 +127,8 @@ def build_proactive_runtime(
         plugin_mcp_servers=plugin_mcp_servers,
         turn_logger=turn_logger,
         provisioning=provisioning,
+        runtime_snapshot_store=runtime_snapshot_store,
+        revocation_gate=revocation_gate,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
@@ -135,6 +142,7 @@ def build_memory_optimizer_task(
     *,
     provider: LLMProvider,
     memory_store: "MarkdownMemoryStore",
+    runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
 ) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
@@ -147,6 +155,7 @@ def build_memory_optimizer_task(
         model=config.model,
         default_self_md=persona.self_model or DEFAULT_SELF_MD,
         identity_name=get_identity_name(),
+        runtime_snapshot_store=runtime_snapshot_store,
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
