@@ -812,6 +812,7 @@ class AgentLoop:
         initial_messages: list[dict],
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
+        tool_context: Any | None = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         from agent.core.passive_turn import build_turn_injection_prompt
         from agent.prompting import (
@@ -853,6 +854,7 @@ class AgentLoop:
             request_time=request_time,
             preloaded_tools=preloaded_tools,
             preflight_injected=True,
+            tool_context=tool_context,
         )
         tools_used = list(result.metadata.get("tools_used") or [])
         tool_chain = list(result.metadata.get("tool_chain") or [])

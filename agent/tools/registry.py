@@ -7,12 +7,30 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from agent.tools.base import Tool, ToolResult
+from agent.tools.context import ToolExecutionContext
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
 
 logger = logging.getLogger(__name__)
 
 # 元工具（不参与搜索结果，也不出现在 deferred 工具目录里）
 _META_TOOLS: frozenset[str] = frozenset({"tool_search"})
+
+# C7（§5.9.7 / design ADR-2）：模型与客户端帧 SHALL NOT 提供或覆盖可信归属字段。
+# 这些 key 一律从 arguments 剥离；可信值只能经 ToolExecutionContext 注入
+# （tool_kwargs() 以最高优先级覆盖），共享可变 set_context() 不再参与授权。
+TRUST_ARGUMENT_FIELDS: frozenset[str] = frozenset(
+    {
+        "tenant_id",
+        "account_id",
+        "session_id",
+        "session_key",
+        "turn_id",
+        "request_id",
+        "principal_type",
+        "channel",
+        "chat_id",
+    }
+)
 _PROGRESS_DESCRIPTION_FIELD = "description"
 _PROGRESS_DESCRIPTION_SCHEMA: dict[str, str] = {
     "type": "string",
@@ -125,10 +143,24 @@ class ToolRegistry:
         self._backend: SearchBackend = backend or KeywordSearchBackend()
 
     def set_context(self, **kwargs: str) -> None:
-        """设置当前会话上下文（channel、chat_id 等），供工具按需读取。"""
-        self._context.update(kwargs)
+        """兼容 shim：仅承载非可信的每 turn 运行时键（current_timestamp 等）。
+
+        C7 语义反转后本方法**不再参与授权**：传入可信归属字段（tenant_id 等）
+        会被丢弃并告警——可信身份只能经 ``ToolExecutionContext`` 显式穿线
+        （design ADR-2）。全量调用点迁移完成后本方法将被移除（task 2.4）。
+        """
+        trust = {k: v for k, v in kwargs.items() if k in TRUST_ARGUMENT_FIELDS}
+        safe = {k: v for k, v in kwargs.items() if k not in TRUST_ARGUMENT_FIELDS}
+        if trust:
+            logger.warning(
+                "set_context 收到可信归属字段 %s，已忽略（C7：身份只能经 "
+                "ToolExecutionContext 派生）",
+                sorted(trust),
+            )
+        self._context.update(safe)
 
     def get_context(self) -> dict[str, str]:
+        """兼容读取（仅非可信键）。授权语义已移除，新代码不得依赖。"""
         return self._context
 
     def register(
@@ -271,14 +303,26 @@ class ToolRegistry:
             "mcp": {k: sorted(v) for k, v in sorted(mcp.items())},
         }
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> str | ToolResult:
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext | None = None,
+    ) -> str | ToolResult:
         tool = self._tools.get(name)
         if tool is None:
             return f"工具 '{name}' 不存在"
         try:
-            # 将会话上下文（channel、chat_id）作为低优先级默认值合并进 kwargs，
-            # 工具可按需读取，不感知此机制的工具会直接忽略多余的 key。
-            merged: dict[str, Any] = {**self._context, **arguments}
+            # C7 语义反转（design ADR-2）：
+            #   1. arguments 先剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
+            #   2. 兼容 _context（仅非可信键）作低优先级默认；
+            #   3. ToolExecutionContext 的可信 kwarg 最后覆盖——唯一授权依据。
+            safe_arguments = {
+                k: v for k, v in arguments.items() if k not in TRUST_ARGUMENT_FIELDS
+            }
+            merged: dict[str, Any] = {**self._context, **safe_arguments}
+            if context is not None:
+                merged.update(context.tool_kwargs())
             if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
                 merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
             return await tool.execute(**merged)

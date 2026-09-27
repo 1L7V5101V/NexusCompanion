@@ -5,9 +5,12 @@ import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, TYPE_CHECKING
 
 from agent.lifecycle.types import PromptRenderInput, PromptRenderResult
+
+if TYPE_CHECKING:
+    from agent.tools.context import ToolExecutionContext
 
 logger = logging.getLogger("agent.tool_discovery")
 
@@ -132,6 +135,7 @@ class AgentLoopRunner(Protocol):
         initial_messages: list[dict],
         request_time: datetime | None = None,
         preloaded_tools: set[str] | None = None,
+        tool_context: "ToolExecutionContext | None" = None,
     ) -> tuple[str, list[str], list[dict], set[str] | None, str | None]:
         ...
 

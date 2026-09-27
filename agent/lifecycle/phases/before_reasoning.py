@@ -51,10 +51,10 @@ class _SyncToolContextModule:
         before_turn = frame.input.before_turn
         if state.session is None:
             raise RuntimeError("BeforeReasoning requires TurnState.session")
+        # C7：可信归属字段（channel/chat_id/tenant_id）不再进共享 set_context，
+        # 由 DefaultReasoner.run_turn 构造的 ToolExecutionContext 显式注入
+        # （design ADR-1/2）；这里只保留非可信的每 turn 运行时提示键。
         self._tools.set_context(
-            channel=before_turn.channel,
-            chat_id=before_turn.chat_id,
-            tenant_id=state.tenant_id,
             current_timestamp=before_turn.timestamp.isoformat(),
             current_user_source_ref=predict_current_user_source_ref(
                 session_manager=self._session_manager,

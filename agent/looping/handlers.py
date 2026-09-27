@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
+from agent.tools.context import ToolExecutionContext
 from agent.lifecycle.types import PromptRenderInput
 from agent.looping.ports import SessionServices
 from bus.events import InboundMessage, OutboundMessage, SpawnCompletionItem
@@ -74,11 +75,21 @@ async def process_spawn_completion_event(
     )
 
     # 2. 再调用主模型生成用户可见回复。
-    tools.set_context(
+    # C7：可信归属经显式 ToolExecutionContext 穿线（design ADR-1/2），不再进共享
+    # set_context。spawn 完成链路当前是 dev-only 单用户路径（无 auth binding，
+    # task 6.2 落 owner 保存后切换为可信归属），此处显式采用 dev 回退身份。
+    tool_context = ToolExecutionContext(
+        request_id=f"spawn-completion-{event.job_id}",
+        account_id="",
+        tenant_id=tenant_id_for_channel(item.channel, item.chat_id),
+        session_id=key,
+        turn_id=f"spawn-completion-{event.job_id}",
         channel=item.channel,
         chat_id=item.chat_id,
-        current_timestamp=item.timestamp.isoformat(),
+        principal_type="dev",
     )
+    # 非可信运行时提示键仍走兼容 shim（行为与改动前一致）。
+    tools.set_context(current_timestamp=item.timestamp.isoformat())
     prompt_render = await prompt_render_fn(
         PromptRenderInput(
             session_key=key,
@@ -99,6 +110,7 @@ async def process_spawn_completion_event(
         initial_messages,
         request_time=item.timestamp,
         preloaded_tools=None,
+        tool_context=tool_context,
     )
     if final_content is None:
         if status == "completed":

@@ -29,6 +29,8 @@ def _msg():
         media=[],
         channel="cli",
         chat_id="1",
+        tenant_id="default",
+        metadata={},
         timestamp=datetime.now(timezone.utc),
     )
 

@@ -27,6 +27,7 @@ from agent.tool_runtime import (
     tool_call_batch_snapshot,
 )
 from agent.tools.base import normalize_tool_result
+from agent.tools.context import ToolExecutionContext
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
 from bus.events import InboundMessage, OutboundMessage
@@ -760,6 +761,7 @@ class Reasoner(ABC):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
+        tool_context: "ToolExecutionContext | None" = None,
     ) -> ReasonerResult:
         """执行多轮 tool loop，并返回本轮结果。"""
 
@@ -970,6 +972,21 @@ class DefaultReasoner(Reasoner):
             self._stream_sink_factory(msg) if self._stream_sink_factory is not None else None
         )
         disabled_tools = _disabled_tools_from_msg(msg)
+        # C7（design ADR-1）：每 turn 构造一次不可变工具执行上下文，随执行链显式
+        # 传递；account/principal 的真实派生随 C5 session 接线补全（task 3.2/6.1），
+        # 当前 dev-only 路径 account 留空、principal 记 "dev"。
+        turn_log_id = _turn_log_id(session.key, msg)
+        msg_metadata = getattr(msg, "metadata", None) or {}
+        tool_context = ToolExecutionContext(
+            request_id=turn_log_id,
+            account_id=str(msg_metadata.get("account_id") or ""),
+            tenant_id=assert_tenant_resolved(msg.tenant_id),
+            session_id=session.key,
+            turn_id=turn_log_id,
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            principal_type="user" if msg_metadata.get("account_id") else "dev",
+        )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
         attempts = self._build_attempt_plans(total_history)
@@ -1026,6 +1043,7 @@ class DefaultReasoner(Reasoner):
                     tool_event_channel=msg.channel,
                     tool_event_chat_id=msg.chat_id,
                     disabled_tools=disabled_tools,
+                    tool_context=tool_context,
                 )
                 tools_used = list(result.metadata.get("tools_used") or [])
                 tools_unlocked = list(result.metadata.get("tools_unlocked") or [])
@@ -1124,6 +1142,7 @@ class DefaultReasoner(Reasoner):
         tool_event_channel: str = "",
         tool_event_chat_id: str = "",
         disabled_tools: set[str] | None = None,
+        tool_context: ToolExecutionContext | None = None,
     ) -> ReasonerResult:
         # 1. 初始化消息上下文、本轮工具轨迹。
         messages = initial_messages
@@ -1425,7 +1444,7 @@ class DefaultReasoner(Reasoner):
                             }
                         if name == "message_push":
                             arguments = {**arguments, "_commit_role": "passive"}
-                        return await self._tools.execute(name, arguments)
+                        return await self._tools.execute(name, arguments, context=tool_context)
 
                     _args_preview = support.log_preview(tool_call.arguments, 120)
                     logger.info("[工具执行→] %s  args=%s", tool_call.name, _args_preview)
