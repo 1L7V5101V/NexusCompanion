@@ -1,0 +1,560 @@
+{
+  "entries": [
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\toolsets\\mcp.py:37",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<McpAddTool>",
+      "source": "register@bootstrap\\toolsets\\mcp.py:22",
+      "tool_class": "McpAddTool",
+      "risk_label": "external-side-effect",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<McpRemoveTool>",
+      "source": "register@bootstrap\\toolsets\\mcp.py:23",
+      "tool_class": "McpRemoveTool",
+      "risk_label": "write",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<McpListTool>",
+      "source": "register@bootstrap\\toolsets\\mcp.py:24",
+      "tool_class": "McpListTool",
+      "risk_label": "read-only",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\toolsets\\memory.py:61",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\toolsets\\meta.py:133",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\toolsets\\meta.py:154",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<LoadSkillTool>",
+      "source": "register@bootstrap\\toolsets\\meta.py:43",
+      "tool_class": "LoadSkillTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<ReadImageVisionTool>",
+      "source": "register@bootstrap\\toolsets\\meta.py:54",
+      "tool_class": "ReadImageVisionTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<SpawnTool>",
+      "source": "register@bootstrap\\toolsets\\meta.py:90",
+      "tool_class": "SpawnTool",
+      "risk_label": "write",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<SpawnManageTool>",
+      "source": "register@bootstrap\\toolsets\\meta.py:96",
+      "tool_class": "SpawnManageTool",
+      "risk_label": "external-side-effect",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\toolsets\\schedule.py:73",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<ScheduleTool>",
+      "source": "register@bootstrap\\toolsets\\schedule.py:24",
+      "tool_class": "ScheduleTool",
+      "risk_label": "write",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<ListSchedulesTool>",
+      "source": "register@bootstrap\\toolsets\\schedule.py:29",
+      "tool_class": "ListSchedulesTool",
+      "risk_label": "read-only",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<CancelScheduleTool>",
+      "source": "register@bootstrap\\toolsets\\schedule.py:34",
+      "tool_class": "CancelScheduleTool",
+      "risk_label": "write",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<RemindTool>",
+      "source": "register@bootstrap\\toolsets\\schedule.py:39",
+      "tool_class": "RemindTool",
+      "risk_label": "write",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\tools.py:432",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tools>>",
+      "source": "register@bootstrap\\tools.py:462",
+      "tool_class": "<indirect:tools>",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<AgentRestartTool>",
+      "source": "register@bootstrap\\tools.py:501",
+      "tool_class": "AgentRestartTool",
+      "risk_label": "external-side-effect",
+      "always_on": false,
+      "engine": ""
+    },
+    {
+      "name": "<WorkspaceMcpApplyTool>",
+      "source": "register@bootstrap\\tools.py:781",
+      "tool_class": "WorkspaceMcpApplyTool",
+      "risk_label": "external-side-effect",
+      "always_on": false,
+      "engine": ""
+    },
+    {
+      "name": "<WorkspaceMcpRemoveTool>",
+      "source": "register@bootstrap\\tools.py:789",
+      "tool_class": "WorkspaceMcpRemoveTool",
+      "risk_label": "external-side-effect",
+      "always_on": false,
+      "engine": ""
+    },
+    {
+      "name": "<WorkspaceMcpStatusTool>",
+      "source": "register@bootstrap\\tools.py:797",
+      "tool_class": "WorkspaceMcpStatusTool",
+      "risk_label": "read-only",
+      "always_on": false,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:t>>",
+      "source": "register@bootstrap\\tools.py:140",
+      "tool_class": "<indirect:t>",
+      "risk_label": "external-side-effect",
+      "always_on": false,
+      "engine": ""
+    },
+    {
+      "name": "<ToolSearchTool>",
+      "source": "register@agent\\tools\\meta\\register.py:60",
+      "tool_class": "ToolSearchTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<ShellTool>",
+      "source": "register@agent\\tools\\meta\\register.py:61",
+      "tool_class": "ShellTool",
+      "risk_label": "external-side-effect",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<ShellTaskOutputTool>",
+      "source": "register@agent\\tools\\meta\\register.py:67",
+      "tool_class": "ShellTaskOutputTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<ShellTaskStopTool>",
+      "source": "register@agent\\tools\\meta\\register.py:73",
+      "tool_class": "ShellTaskStopTool",
+      "risk_label": "external-side-effect",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<cast>",
+      "source": "register@agent\\tools\\meta\\register.py:79",
+      "tool_class": "cast",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<cast>",
+      "source": "register@agent\\tools\\meta\\register.py:85",
+      "tool_class": "cast",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<cast>",
+      "source": "register@agent\\tools\\meta\\register.py:91",
+      "tool_class": "cast",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<cast>",
+      "source": "register@agent\\tools\\meta\\register.py:96",
+      "tool_class": "cast",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<FetchMessagesTool>",
+      "source": "register@agent\\tools\\meta\\register.py:102",
+      "tool_class": "FetchMessagesTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<SearchMessagesTool>",
+      "source": "register@agent\\tools\\meta\\register.py:108",
+      "tool_class": "SearchMessagesTool",
+      "risk_label": "read-only",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:resolved_push_tool>>",
+      "source": "register@agent\\tools\\meta\\register.py:115",
+      "tool_class": "<indirect:resolved_push_tool>",
+      "risk_label": "external-side-effect",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<WriteFileTool>",
+      "source": "register@agent\\tools\\meta\\register.py:120",
+      "tool_class": "WriteFileTool",
+      "risk_label": "write",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<EditFileTool>",
+      "source": "register@agent\\tools\\meta\\register.py:125",
+      "tool_class": "EditFileTool",
+      "risk_label": "write",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "<<indirect:tool>>",
+      "source": "register@agent\\tools\\meta\\register.py:143",
+      "tool_class": "<indirect:tool>",
+      "risk_label": "",
+      "always_on": true,
+      "engine": ""
+    },
+    {
+      "name": "read_file",
+      "source": "class@agent.tools.filesystem",
+      "tool_class": "ReadFileTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "write_file",
+      "source": "class@agent.tools.filesystem",
+      "tool_class": "WriteFileTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "edit_file",
+      "source": "class@agent.tools.filesystem",
+      "tool_class": "EditFileTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "list_dir",
+      "source": "class@agent.tools.filesystem",
+      "tool_class": "ListDirTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "forget_memory",
+      "source": "class@agent.tools.forget_memory",
+      "tool_class": "ForgetMemoryTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "memorize",
+      "source": "class@agent.tools.memorize",
+      "tool_class": "MemorizeTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "fetch_messages",
+      "source": "class@agent.tools.message_lookup",
+      "tool_class": "FetchMessagesTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "search_messages",
+      "source": "class@agent.tools.message_lookup",
+      "tool_class": "SearchMessagesTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "message_push",
+      "source": "class@agent.tools.message_push",
+      "tool_class": "MessagePushTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "recall_memory",
+      "source": "class@agent.tools.recall_memory",
+      "tool_class": "RecallMemoryTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "shell",
+      "source": "class@agent.tools.shell",
+      "tool_class": "ShellTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "task_output",
+      "source": "class@agent.tools.shell",
+      "tool_class": "ShellTaskOutputTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "task_stop",
+      "source": "class@agent.tools.shell",
+      "tool_class": "ShellTaskStopTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "tool_search",
+      "source": "class@agent.tools.tool_search",
+      "tool_class": "ToolSearchTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "memory_signal",
+      "source": "class@agent.tools.meta.register",
+      "tool_class": "_MemorySignalTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "remind",
+      "source": "class@agent.tools.remind",
+      "tool_class": "RemindTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "schedule",
+      "source": "class@agent.tools.schedule",
+      "tool_class": "ScheduleTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "list_schedules",
+      "source": "class@agent.tools.schedule",
+      "tool_class": "ListSchedulesTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "cancel_schedule",
+      "source": "class@agent.tools.schedule",
+      "tool_class": "CancelScheduleTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "load_skill",
+      "source": "class@agent.tools.skill_loader",
+      "tool_class": "LoadSkillTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "spawn",
+      "source": "class@agent.tools.spawn",
+      "tool_class": "SpawnTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "spawn_manage",
+      "source": "class@agent.tools.spawn",
+      "tool_class": "SpawnManageTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "read_image_vision",
+      "source": "class@agent.tools.vision",
+      "tool_class": "ReadImageVisionTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "web_fetch",
+      "source": "class@agent.tools.web_fetch",
+      "tool_class": "WebFetchTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "web_search",
+      "source": "class@agent.tools.web_search",
+      "tool_class": "WebSearchTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<unreadable: 'McpToolWrapper' object has no attribute '_server_name'>",
+      "source": "class@agent.mcp.tool",
+      "tool_class": "McpToolWrapper",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "mcp_add",
+      "source": "class@agent.mcp.manage_tools",
+      "tool_class": "McpAddTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "mcp_remove",
+      "source": "class@agent.mcp.manage_tools",
+      "tool_class": "McpRemoveTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "mcp_list",
+      "source": "class@agent.mcp.manage_tools",
+      "tool_class": "McpListTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "<unreadable: 'PeerAgentTool' object has no attribute '_name'>",
+      "source": "class@agent.peer_agent.tool",
+      "tool_class": "PeerAgentTool",
+      "risk_label": "",
+      "always_on": null,
+      "engine": ""
+    },
+    {
+      "name": "reinforce_memory",
+      "source": "engine-profile:tools",
+      "tool_class": "",
+      "risk_label": "write",
+      "always_on": null,
+      "engine": "rachael"
+    }
+  ],
+  "reconciliation": {
+    "未决项（静态注册但不在 ADR-3 两个清单，需回 design 补决策）": [],
+    "engine 注入工具（按 ADR-3 类别规则放行，随引擎绑定）": [
+      "reinforce_memory"
+    ],
+    "壳类/动态名（由 ADR-3 类别规则覆盖）": [
+      "memory_signal",
+      "peer_agent"
+    ],
+    "ADR-3 允许但清单中未发现": [],
+    "ADR-3 关闭但清单中未发现（确认是否真实存在）": []
+  }
+}

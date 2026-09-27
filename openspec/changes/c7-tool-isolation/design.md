@@ -33,9 +33,10 @@
 
 **白名单冻结**（P1 初始，精确 tool id，依据 §5.9.7 第 4 条与 §5.8.3 表；实现时以 `tasks.md` T2 的程序化清单核对为准）：
 
-- 允许：`recall_memory`、`memorize`、`forget_memory`、`search_messages`、`fetch_messages`、`read_file`、`list_dir`、`write_file`、`edit_file`、`read_image_vision`、`message_push`（服务端绑定目标）、`schedule`、`remind`、`list_schedules`、`cancel_schedule`、`web_search`、`web_fetch`（限流 + SSRF 防护）
+- 允许：`recall_memory`、`memorize`、`forget_memory`、`search_messages`、`fetch_messages`、`read_file`、`list_dir`、`write_file`、`edit_file`、`read_image_vision`、`message_push`（服务端绑定目标）、`schedule`、`remind`、`list_schedules`、`cancel_schedule`、`web_search`、`web_fetch`（限流 + SSRF 防护）、`tool_search`（read-only 元工具，搜索范围 = 当前租户可见目录，不引入新能力）
 - **类别规则（memory engine 注入工具）**：memory engine `tool_profile()` 经壳类 `_MemorySignalTool`（`agent/tools/meta/register.py:21`，name/description/参数由 spec 注入）动态注册的工具，按**注册来源 = 租户 active engine 的 tool_profile** 归类处理，不按静态 id 枚举：视为标准记忆工具（`recall_memory`/`memorize`/`forget_memory`）的同类，对启用该引擎的租户按记忆工具策略放行，effect 按引擎声明的 `MemoryToolSpec.risk` 如实映射（`read-only` → `read-only`，`write` → `tenant-local-write`，`external-side-effect` → `external-write`，后者落入 ADR-4 高危默认拒绝语义），审计照走 tool_call 记录点；租户未启用该引擎时自然不可见。现实实例：rachael 引擎的 `reinforce_memory`（`plugins/rachael/engine.py:239`，`risk="write"`，用户纠正时的记忆信号强化）——屏蔽它会使 rachael 的纠正学习失效，属功能自残而非安全边界；default 引擎 tool_profile 为空，无此动态工具
-- 默认关闭（普通 tenant）：`shell`、`spawn`/`spawn_manage`、`task_output`/`task_stop`（随 spawn 关闭）、`peer_agent`、`load_skill`（插件/skill 管理面）、system MCP 管理
+- 默认关闭（普通 tenant）：`shell`、`spawn`/`spawn_manage`、`task_output`/`task_stop`（随 spawn 关闭）、`load_skill`（插件/skill 管理面）、**workspace 级 MCP 管理**（`mcp_add`/`mcp_remove`/`mcp_list`——操作全局 `mcp_servers.json`，属 system MCP 面；用户 MCP 未开放，见 ADR-8）、**peer 委托工具**（`delegate_*`，按 PeerAgentRegistry 动态注册，无静态 id）、`agent_restart` 与 workspace MCP apply/remove/status（注册点存在于 `bootstrap/tools.py` 但模块文件缺失，运行时不注册；若未来补齐则归 admin-only）
+- 壳类标注：`memory_signal` 是 `_MemorySignalTool` 的静态占位名（运行时被 spec.name 覆盖），不是独立工具，由上述类别规则覆盖
 - `text`/`stream_text` 为非注册执行面工具，不进目录决策
 
 ## ADR-4 effect policy 载体与 typed outcome
@@ -52,7 +53,15 @@
 
 ## ADR-6 审计落点（C12 §8.2 承接）
 
-**冻结**：新建控制面 PG 表 `tool_audit_events`（字段 = §5.8.6 的统一 schema：`request_id, account_id, tenant_id, session_id, turn_id, tool_binding_id, tool_name, effect_class, status, arguments_redacted/arguments_hash, duration_ms, error_code, created_at`），alembic 迁移随本 change；SQLite 单机模式写本地等价表（或显式声明不落库并日志兜底，tasks 定夺——倾向复用 control-plane 双 adapter 模式）。脱敏：secret/credential 形态参数（键名含 token/key/secret/password）只存 hash；文件内容类参数截断至定长摘要。C12 §8.2 勾选条件 = 本表接线 + redaction + 对应指标 label 进白名单。
+**冻结**：新建控制面 PG 表 `tool_audit_events`（字段 = §5.8.6 的统一 schema：`request_id, account_id, tenant_id, session_id, turn_id, tool_call_id, tool_binding_id, tool_name, effect_class, status, arguments_redacted/arguments_hash, duration_ms, error_code, created_at`），alembic 迁移 `b3f7a1c5d9e2`（expand-only，单 head 接 C15 `a7f2c9e4b1d8` 之后）。脱敏：secret/credential 形态参数（键名含 token/key/secret/password）只存 hash；文件内容类参数截断至定长摘要。C12 §8.2 勾选条件 = 本表接线 + redaction + 对应指标 label 进白名单。
+
+**与 C2 `tool_calls` 的边界**（已核实：`bootstrap/db/models/control_plane.py:262` 的 docstring 明示「audit/idempotency 键表归 C7，不在本表」）：`tool_calls` 保持 turn-bound 终态流（running→终态，RESTRICT 外键到 turns）；`tool_audit_events` 为**追加型审计流**，一行 = 一次调用收束（终态时 INSERT），`tool_call_id` 为**软引用（无 FK）**——审计流 SHALL NOT 因终态流生命周期而丢行；`status` 枚举 = C2 四态 + `rejected`（执行前拒绝，无终态流行）。
+
+**SQLite 单机模式（定案）**：不建表、不做双 adapter——单机模式无 auth/无多租户审计面，审计以**结构化 JSON 日志兜底**（与 PG 行同字段、同脱敏规则），写入 `workspace/logs/` 既有结构化日志通道。
+
+### ADR-6 附录：迁移验证
+
+- scratch 库（本地 Docker PG `nexus_c7test`）`upgrade head` 全链通过，head = `b3f7a1c5d9e2`，`tool_audit_events` 16 列，status CHECK 就位；验证命令与输出见 evidence `task-1.3-migration.txt`。
 
 ## ADR-7 封禁联动与取消传播
 

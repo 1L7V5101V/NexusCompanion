@@ -1,0 +1,14 @@
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 47460ba069a5, initial schema
+INFO  [alembic.runtime.migration] Running upgrade 47460ba069a5 -> d6e1cd9205cd, rachael graph engine tables + app configs
+INFO  [alembic.runtime.migration] Running upgrade d6e1cd9205cd -> a3d5c7e9f1b2, partition memory_items by tenant_id + native vector embedding
+INFO  [alembic.runtime.migration] Running upgrade a3d5c7e9f1b2 -> b6e9d2c4a8f1, session tables multi-tenant PK + pg_trgm full-text index
+INFO  [alembic.runtime.migration] Running upgrade b6e9d2c4a8f1 -> e2b4d6f8a0c2, C1 canonical identity tables
+INFO  [alembic.runtime.migration] Running upgrade e2b4d6f8a0c2 -> c4d8f2a6e9b3, C1 account→N tenant（account-multi-tenant 扩展）
+INFO  [alembic.runtime.migration] Running upgrade c4d8f2a6e9b3 -> f3c8a9d2e7b4, C2 durable control plane tables
+INFO  [alembic.runtime.migration] Running upgrade f3c8a9d2e7b4 -> b7e2f9a4c1d8, C5 auth/provisioning tables
+INFO  [alembic.runtime.migration] Running upgrade b7e2f9a4c1d8 -> c9d7e3a5f2b1, invite-code-tenant-registration: 邮箱密码凭据 + 租户邀请码列
+INFO  [alembic.runtime.migration] Running upgrade c9d7e3a5f2b1 -> a7f2c9e4b1d8, C15 work queue lease columns + work_attempts audit stream
+INFO  [alembic.runtime.migration] Running upgrade a7f2c9e4b1d8 -> b3f7a1c5d9e2, C7 tool_audit_events — tool call 审计流（追加型，§5.8.6 统一 schema）
+upgrade-head OK
