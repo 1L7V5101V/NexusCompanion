@@ -37,13 +37,8 @@ in vec2 position;
 void main() { gl_Position = vec4(position, 0.0, 1.0); }
 `;
 
-// 心跳包络：lub-dub 双峰（主峰 0.10，次峰 0.32），JS 传相位
-export const heartbeatPulse = (t: number): number => {
-    const x = t - Math.floor(t);
-    const a = (x - 0.10) / 0.05;
-    const b = (x - 0.32) / 0.075;
-    return Math.exp(-a * a) + 0.55 * Math.exp(-b * b);
-};
+// 质量连续振荡：0..1 平滑余弦（无静息期），JS 传相位（拍数）
+export const massOscillation = (phase: number): number => 0.5 - 0.5 * Math.cos(2 * Math.PI * phase);
 
 // Overlay：亮度增益上屏（黑洞本体的心跳缩放在 Pass A 里改质量尺度实现）
 export const OVERLAY_FRAG = /* glsl */ `
