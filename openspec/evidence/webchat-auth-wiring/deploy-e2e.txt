@@ -53,3 +53,34 @@ E2E PASS: exchange → handshake(负向×2) → hello → 收发一轮（流式+
   `auth/identity.py`、`auth/ws_guard.py`）与 main 逐字节一致。
 - **运维边界**（同 5.5）：本 change 只解决认证闭环；对外部用户开放 MUST 等
   C7 工具隔离 + 存储切换。
+
+---
+
+## 附：重部署至最新 main（2026-09-27 20:44 +0800，commit `57a0c80e`）
+
+e2e 验收完成后，同一日将服务器从 tarball 部署改为 **git clone 部署**
+（`/opt/NexusCompanion` = origin/main @ `57a0c80e`，旧目录整体保留于
+`/opt/NexusCompanion.bak-20260927-gitpull`），重建镜像 `fbb97639df06`，
+并应用 C15 迁移 `a7f2c9e4b1d8`（work queue lease 列 + work_attempts 审计流）。
+随后在同一镜像上**复跑上表 e2e 全链：E2E PASS**（canary 账号
+`526b4842-144d-424f-93ff-fca82e737531`，已撤销）。
+
+### C8「dormant 安装」存量部署适配（本次踩坑记录）
+
+C8 后插件包默认不启用，无 manifest 的存量部署会在启动时崩溃
+（`主动 Runtime provider 数量错误: default=0`）。适配步骤：
+
+1. `/root/.nexus-plugin/manifest.toml`（容器内 `~/.nexus-plugin/manifest.toml`）：
+   必须含 `[plugins]` 空节（`load_plugin_manifest` 强制要求），包启用写
+   `[packages."<id>"] enabled = true`；
+2. **`proactive.runtime` capability 只能归属一个包**：`default-proactive` 与
+   `wake-proactive` 都声明它，同时启用会在启动时
+   `ValueError: 插件包 capability 冲突`。生产使用 default lifecycle，故
+   `default-proactive=true`、`wake-proactive=false`；
+3. docker-compose.yml 为 nexus 服务补卷 `- ~/.nexus-plugin:/root/.nexus-plugin`
+   （否则 manifest 只存在于宿主机，容器内不可见——本次第二次踩坑）。
+
+适配后启动日志：5 个插件加载（default_memory/default_proactive/drift_flow/
+proactive_flow/rachael）、ProactiveLoop lifecycle=default 正常 tick、
+C8 revocation gate 生效（`revocation_gate=dev_open`）、Telegram 与 WebChat
+通道正常。最终版本运行零报错。
