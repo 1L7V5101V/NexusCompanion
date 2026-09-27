@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 E = TypeVar("E")
 Handler: TypeAlias = Callable[[E], Awaitable[E | None] | E | None]
 
+DEFAULT_OBSERVER_TIMEOUT_SECONDS = 5.0
+
 
 class EventSubscription(Generic[E]):
     """A registered event subscription that can be closed (unsubscribed)."""
@@ -36,13 +38,20 @@ class EventSubscription(Generic[E]):
 class EventBus:
     """Typed lifecycle hooks: observe + ordered intercept pipeline."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        observer_timeout_seconds: float = DEFAULT_OBSERVER_TIMEOUT_SECONDS,
+    ) -> None:
+        if observer_timeout_seconds <= 0:
+            raise ValueError("observer_timeout_seconds 必须为正")
         self._handlers: dict[type[object], list[Handler[object]]] = {}
         self._any_handlers: list[Handler[object]] = []
         self._observe_queue: asyncio.Queue[object] | None = None
         self._observe_task: asyncio.Task[None] | None = None
         self._closed = False
         self._snapshot_store: Any = None
+        self._observer_timeout = observer_timeout_seconds
 
     def bind_runtime_snapshot_store(self, store: Any) -> None:
         """绑定 PluginManager 的 RuntimeSnapshotStore 引用。"""
@@ -175,7 +184,18 @@ class EventBus:
         try:
             result = handler(event)
             if inspect.isawaitable(result):
-                await result
+                # telemetry/fanout 层有界 timeout（§5.9.16）：观察者挂起不拖垮
+                # 主链路，超时按单观察者失败记录，不影响其余观察者与事件本身。
+                try:
+                    await asyncio.wait_for(result, self._observer_timeout)
+                except TimeoutError:
+                    logger.warning(
+                        "observer timeout for %s handler=%s timeout=%ss",
+                        type(event).__name__,
+                        _handler_name(handler),
+                        self._observer_timeout,
+                    )
+                    return False
             return True
         except Exception:
             logger.exception(

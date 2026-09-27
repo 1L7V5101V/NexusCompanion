@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Any, Awaitable, Callable
 
@@ -13,6 +14,8 @@ from agent.tool_hooks.types import (
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
+DEFAULT_HOOK_TIMEOUT_SECONDS = 5.0
+
 
 class HookExecutionError(RuntimeError):
     def __init__(self, hook_name: str, event: str, cause: Exception) -> None:
@@ -23,8 +26,35 @@ class HookExecutionError(RuntimeError):
 
 
 class ToolExecutor:
-    def __init__(self, hooks: Sequence[ToolHook] | None = None) -> None:
+    _default_timeout = DEFAULT_HOOK_TIMEOUT_SECONDS
+
+    @classmethod
+    def set_default_hook_timeout(cls, seconds: float) -> None:
+        """进程级默认超时（bootstrap 从 [agent.plugins].hook_timeout_seconds 设置一次）。
+
+        显式传入 ``hook_timeout_seconds`` 的构造点优先；未接入 config 的深层
+        pipeline（passive/drift/proactive/subagent）经此统一生效，避免逐层
+        Deps 穿线。
+        """
+        if seconds <= 0:
+            raise ValueError("hook_timeout_seconds 必须为正")
+        cls._default_timeout = seconds
+
+    def __init__(
+        self,
+        hooks: Sequence[ToolHook] | None = None,
+        *,
+        hook_timeout_seconds: float | None = None,
+    ) -> None:
+        resolved = (
+            hook_timeout_seconds
+            if hook_timeout_seconds is not None
+            else type(self)._default_timeout
+        )
+        if resolved <= 0:
+            raise ValueError("hook_timeout_seconds 必须为正")
         self._hooks = list(hooks or [])
+        self._hook_timeout = resolved
 
     def add_hooks(self, hooks: Sequence[ToolHook]) -> None:
         self._hooks.extend(hooks)
@@ -41,6 +71,25 @@ class ToolExecutor:
             ]
             return [*fixed, *snapshot.tool_hooks]
         return self._hooks
+
+    async def _bounded_hook_run(
+        self,
+        hook: ToolHook,
+        ctx: HookContext,
+    ) -> object:
+        """带界执行 hook.run（§5.9.16 hook policy 分层的超时边界）。
+
+        超时统一转为 :class:`HookExecutionError`，由调用方按层级处置：
+        pre（gate）→ fail-closed 拒绝本次工具调用；post（fanout）→ 记录失败。
+        """
+        try:
+            return await asyncio.wait_for(hook.run(ctx), self._hook_timeout)
+        except TimeoutError as exc:
+            raise HookExecutionError(
+                hook.name,
+                hook.event,
+                TimeoutError(f"hook 超时（>{self._hook_timeout}s）"),
+            ) from exc
 
     async def execute(
         self,
@@ -97,6 +146,7 @@ class ToolExecutor:
             error_text = str(exc)
             try:
                 # 工具自身报错后，允许 post_tool_error 做记录型处理。
+                # fanout 层：hook 失败不得掩盖/改写工具本身的错误终态。
                 await self._run_post_hooks(
                     HookContext(
                         event="post_tool_error",
@@ -106,6 +156,7 @@ class ToolExecutor:
                     ),
                     extra_messages=extra_messages,
                     traces=post_trace,
+                    fail_open=True,
                 )
             except HookExecutionError as hook_exc:
                 return ToolExecutionResult(
@@ -224,7 +275,9 @@ class ToolExecutor:
                 )
                 continue
             try:
-                outcome = await hook.run(ctx)
+                outcome = await self._bounded_hook_run(hook, ctx)
+            except HookExecutionError:
+                raise
             except Exception as exc:
                 raise HookExecutionError(hook.name, hook.event, exc) from exc
             if outcome.updated_input is not None:
@@ -281,7 +334,21 @@ class ToolExecutor:
                 )
                 continue
             try:
-                outcome = await hook.run(ctx)
+                outcome = await self._bounded_hook_run(hook, ctx)
+            except HookExecutionError as exc:
+                # fanout 层（post_tool_use/post_tool_error）：超时/异常记录
+                # 失败后继续，不改写已提交的工具结果与终态。
+                if fail_open:
+                    traces.append(
+                        HookTraceItem(
+                            hook_name=hook.name,
+                            event=hook.event,
+                            matched=True,
+                            reason=f"hook failed: {exc}",
+                        )
+                    )
+                    continue
+                raise
             except Exception as exc:
                 if fail_open:
                     traces.append(

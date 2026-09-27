@@ -44,6 +44,7 @@ from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.scheduler import SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
+from agent.tool_hooks.executor import ToolExecutor
 from agent.turns.outbound import BusOutboundPort
 from bootstrap.toolsets.mcp import McpToolsetProvider
 from bootstrap.toolsets.memory import MemoryToolsetProvider
@@ -646,7 +647,11 @@ def build_core_runtime(
             )
         )
     )
-    event_bus = EventBus()
+    event_bus = EventBus(
+        observer_timeout_seconds=config.plugin_runtime.observer_timeout_seconds,
+    )
+    # C8 §5.9.16：hook 有界 timeout 进程级默认（深层 pipeline 构造点统一生效）。
+    ToolExecutor.set_default_hook_timeout(config.plugin_runtime.hook_timeout_seconds)
     # C8 §5.9.16：Pilot 未接账号库（C5），先以显式 dev-open gate 接线（provider=None 带日志），
     # 保证副作用前 recheck 接缝真实存在；C5 落地后替换为真实账号状态源即可全域 fail-closed。
     revocation_gate = RevocationGate(None, source="pilot")
