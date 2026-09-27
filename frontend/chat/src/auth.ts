@@ -34,6 +34,23 @@ export class ExchangeError extends Error {
   }
 }
 
+/** 邮箱密码登录/注册失败（401 = 凭据错误；403 = 来源不在 allowlist）。 */
+export class AuthError extends Error {
+  readonly status: number;
+
+  constructor(status: number) {
+    super(
+      status === 401
+        ? "邮箱或密码不正确。"
+        : status === 403
+          ? "来源校验未通过，请联系管理员确认访问地址。"
+          : "请求失败，请稍后重试。",
+    );
+    this.name = "AuthError";
+    this.status = status;
+  }
+}
+
 /** 读当前会话；未登录（401/403）返回 null。 */
 export async function fetchMe(): Promise<AuthUser | null> {
   const resp = await fetch("/api/auth/me", {
@@ -57,6 +74,43 @@ export async function exchangeInvitation(token: string): Promise<AuthUser | null
     body: JSON.stringify({ token: token.trim() }),
   });
   if (!resp.ok) throw new ExchangeError(resp.status);
+  return fetchMe();
+}
+
+/**
+ * 邮箱+密码登录。凭据只经请求体发送 → 服务端 Set-Cookie（HttpOnly）；
+ * 前端不持久化任何内容。
+ */
+export async function login(email: string, password: string): Promise<AuthUser | null> {
+  const resp = await fetch("/api/auth/login", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+  if (!resp.ok) throw new AuthError(resp.status);
+  return fetchMe();
+}
+
+/**
+ * 租户自助注册（邀请码 + 邮箱 + 密码）。成功后同样由服务端建立会话。
+ */
+export async function registerTenant(
+  inviteToken: string,
+  email: string,
+  password: string,
+): Promise<AuthUser | null> {
+  const resp = await fetch("/api/auth/register", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      invite_token: inviteToken.trim(),
+      email: email.trim(),
+      password,
+    }),
+  });
+  if (!resp.ok) throw new AuthError(resp.status);
   return fetchMe();
 }
 

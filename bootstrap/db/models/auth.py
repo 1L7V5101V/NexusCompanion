@@ -65,15 +65,18 @@ class AccessTokenModel(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, server_default=text("gen_random_uuid()")
     )
-    account_id: Mapped[uuid.UUID] = mapped_column(
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey(
             "test_accounts.id",
             ondelete="RESTRICT",
             name="fk_access_tokens_account_id",
         ),
-        nullable=False,
+        nullable=True,
     )
+    # 租户邀请码（invite-code-tenant-registration D1）：签发时未兑现（account_id
+    # 为 NULL）携带管理员预指定租户名；注册消费后回填 account_id。旧 token 此列为 NULL。
+    tenant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     token_digest: Mapped[str] = mapped_column(String(DIGEST_LENGTH), nullable=False)
     digest_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=1

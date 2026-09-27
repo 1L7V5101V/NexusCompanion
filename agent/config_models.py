@@ -200,6 +200,9 @@ class AuthConfig:
     admin_idle_minutes: int = 30
     admin_absolute_hours: int = 12
     invitation_token_ttl_hours: int = 168
+    """邀请 Token TTL；租户邀请码同样适用（签发时固化到行）。"""
+    password_min_length: int = 8
+    """邮箱密码注册/登录的最小密码长度策略（注册时校验，默认 8 位）。"""
 
     @property
     def session_idle_s(self) -> int:
@@ -261,6 +264,18 @@ class WorkQueueConfig:
 
 
 @dataclass
+class PluginRuntimeConfig:
+    """C8 hook failure 分层的有界 timeout（§5.9.16，task-08）。
+
+    gate/interceptor（pre-tool、phase module）超时按 fail-closed 处置；
+    fanout/telemetry（post-tool、EventBus 观察者）超时记录失败、不改终态。
+    """
+
+    hook_timeout_seconds: float = 5.0
+    observer_timeout_seconds: float = 5.0
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -307,6 +322,7 @@ class Config:
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     work_queue: WorkQueueConfig = field(default_factory=WorkQueueConfig)
+    plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -329,6 +345,7 @@ __all__ = [
     "MemoryEmbeddingConfig",
     "PeerAgentConfig",
     "PersonaConfig",
+    "PluginRuntimeConfig",
     "QQChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",

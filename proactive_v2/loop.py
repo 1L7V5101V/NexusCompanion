@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from infra.storage.provisioning import TenantProvisioning
 
 from core.error_context import current_session_key
+from agent.admission.revocation import RevocationGate
 from agent.looping.ports import SessionServices
 from agent.core.proactive_kernel import ProactiveKernel
 from agent.provider import LLMProvider
@@ -87,6 +88,8 @@ class ProactiveLoop:
         state_store_owned: bool = False,
         turn_logger: Any | None = None,
         provisioning: "TenantProvisioning | None" = None,
+        # C8 §5.9.16：tick 开始的副作用方 revocation recheck（provisioning gate 旁）。
+        revocation_gate: RevocationGate | None = None,
     ) -> None:
         self._turn_logger = turn_logger
         self._provisioning = provisioning
@@ -112,6 +115,7 @@ class ProactiveLoop:
         self._plugin_proactive_runtime_factories = proactive_runtime_factories or []
         self._plugin_proactive_sources = proactive_sources or []
         self._runtime_snapshot_store = runtime_snapshot_store
+        self._revocation_gate = revocation_gate
         self._plugin_mcp_servers = plugin_mcp_servers or {}
         self._active_snapshot_id: str | None = None
         self._kernel_started = False
@@ -514,6 +518,12 @@ class ProactiveLoop:
         session_key = self._target_session_key()
         session_token = current_session_key.set(session_key)
         try:
+            # C8 §5.9.16：tick 开始副作用方 revocation recheck（当前 recheck，不读
+            # snapshot 捕获状态；tenant 为空时无 outbound 目标，跳过）。
+            if self._revocation_gate is not None:
+                tenant = self._target_tenant()
+                if tenant:
+                    await self._revocation_gate.check(tenant, action="proactive_tick")
             # 0. 目标 tenant 分区 readiness gate：PENDING/UNKNOWN 跳过本轮，
             #    不触发 provisioning（被动 turn 才是 provisioning 触发点）。
             if self._provisioning is not None:

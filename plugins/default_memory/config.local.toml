@@ -18,3 +18,17 @@ forced = 3
 procedure_preference = 4
 event_profile = 4
 line_max = 600
+
+[retrieval.sparse]
+normalization_k = 4.0
+hotness_alpha = 0.2
+
+[retrieval.rrf]
+k = 60
+keyword_weight = 0.5
+hotness_beta = 0.05
+
+[retrieval.experimental]
+hyde_enabled = false
+query_rewrite_enabled = false
+reranker_enabled = false

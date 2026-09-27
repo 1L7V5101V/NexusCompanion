@@ -29,6 +29,7 @@ from agent.config_models import (
     MemoryEmbeddingConfig,
     PeerAgentConfig,
     PersonaConfig,
+    PluginRuntimeConfig,
     QQChannelConfig,
     QQGroupConfig,
     StorageConfig,
@@ -129,6 +130,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     admission_cfg = _load_admission_config(data)
     auth_cfg = _load_auth_config(data)
     work_queue_cfg = _load_work_queue_config(data)
+    plugin_runtime_cfg = _load_plugin_runtime_config(data)
 
     return Config(
         provider=provider,
@@ -211,6 +213,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         admission=admission_cfg,
         auth=auth_cfg,
         work_queue=work_queue_cfg,
+        plugin_runtime=plugin_runtime_cfg,
         logging=logging_cfg,
         router_mode=str(data.get("router_mode", "rule")),
     )
@@ -486,6 +489,10 @@ def _load_auth_config(data: dict) -> AuthConfig:
             "auth.invitation_token_ttl_hours",
             raw.get("invitation_token_ttl_hours", defaults.invitation_token_ttl_hours),
         ),
+        password_min_length=_parse_int_positive(
+            "auth.password_min_length",
+            raw.get("password_min_length", defaults.password_min_length),
+        ),
     )
 
 
@@ -566,6 +573,25 @@ def _load_work_queue_config(data: dict) -> WorkQueueConfig:
         release_delay_seconds=_float("release_delay_seconds"),
         error_backoff_seconds=error_backoff,
         max_error_backoff_seconds=max_error_backoff,
+    )
+
+
+def _load_plugin_runtime_config(data: dict) -> PluginRuntimeConfig:
+    """[agent.plugins] C8 hook 有界 timeout；未配置即 5s 默认。"""
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("plugins")) or {}
+    defaults = PluginRuntimeConfig()
+
+    def _float(name: str) -> float:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(f"agent.plugins.{name} 必须为正数，当前: {value!r}")
+        return parsed
+
+    return PluginRuntimeConfig(
+        hook_timeout_seconds=_float("hook_timeout_seconds"),
+        observer_timeout_seconds=_float("observer_timeout_seconds"),
     )
 
 

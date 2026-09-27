@@ -20,7 +20,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent.config_models import Config
 from agent.memory import MemoryStore
@@ -121,6 +121,12 @@ def _install_dashboard_access_log_filter() -> None:
     ):
         return
     access_logger.addFilter(_DashboardAccessLogFilter())
+
+
+class TenantInvitePayload(BaseModel):
+    """管理台签发租户邀请码（dashboard 管理面，Caddy admin 门禁）。"""
+
+    tenant_name: str = Field(min_length=1, max_length=255)
 
 
 class SessionUpdatePayload(BaseModel):
@@ -1580,6 +1586,32 @@ def create_dashboard_app(
         from bootstrap.auth import build_admin_api
 
         app.include_router(build_admin_api(auth_runtime))
+
+        # 租户邀请码签发（dashboard 管理面）：安全边界与既有 `/api/dashboard/*`
+        # mutation 一致 —— 依赖 Caddy 对 admin 主机的 basic auth/Bearer 门禁，
+        # 不再重复 admin session/CSRF（/api/admin/* 已保留完整四重门禁）。
+        #   1. 不暴露 token_digest（repo 字典本身不含 digest）；
+        #   2. 明文只出现在本次响应（明示管理员立即复制保存，不写日志）。
+
+        @app.post(
+            "/api/dashboard/tenant-invites",
+            summary="签发租户邀请码（管理台）",
+        )
+        async def issue_tenant_invite(body: TenantInvitePayload) -> dict[str, Any]:
+            tenant_name = body.tenant_name.strip()
+            if not tenant_name:
+                raise HTTPException(status_code=422, detail="tenant_name 不能为空")
+            row, raw = await auth_runtime.auth.issue_tenant_invitation(
+                tenant_name,
+                display_note="dashboard",
+                issued_by="admin:dashboard",
+            )
+            return {
+                "token": raw,
+                "token_id": row.get("id"),
+                "tenant_name": row.get("tenant_name"),
+                "expires_at": row.get("expires_at"),
+            }
 
     return app
 

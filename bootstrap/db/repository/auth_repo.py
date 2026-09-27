@@ -23,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from bootstrap.db.models.auth import (
@@ -30,6 +31,7 @@ from bootstrap.db.models.auth import (
     AdminAuditEventModel,
     AdminCredentialModel,
     AuthSessionModel,
+    TenantProvisioningJobModel,
 )
 from bootstrap.db.models.canonical import TestAccountModel
 from bootstrap.db.repository._ids import to_uuid
@@ -90,6 +92,7 @@ def _token_to_dict(row: AccessTokenModel) -> dict[str, Any]:
     return {
         "id": row.id,
         "account_id": row.account_id,
+        "tenant_name": row.tenant_name,
         "digest_version": row.digest_version,
         "display_note": row.display_note,
         "issued_by": row.issued_by,
@@ -138,6 +141,165 @@ class CredentialRepository:
             sess.add(row)
             await sess.flush()
             return _token_to_dict(row)
+
+    async def issue_tenant_invite(
+        self,
+        *,
+        tenant_name: str,
+        token_digest: str,
+        display_note: str = "",
+        issued_by: str = "admin",
+        expires_at: datetime | None = None,
+    ) -> dict:
+        """签发租户邀请码（invite-code-tenant-registration D1）。
+
+        不依赖预先存在的账号：``account_id`` 为 NULL，携带管理员预指定租户名；
+        注册消费后回填账号。`tenant_name` 非空（空白会被截断后拒绝）。
+        """
+        tenant_name = (tenant_name or "").strip()
+        if not tenant_name:
+            raise CredentialExchangeError("tenant name required")
+        async with self._sf() as sess, sess.begin():
+            row = AccessTokenModel(
+                account_id=None,
+                token_digest=token_digest,
+                tenant_name=tenant_name[:255],
+                display_note=display_note,
+                issued_by=issued_by,
+                expires_at=expires_at,
+            )
+            sess.add(row)
+            await sess.flush()
+            return _token_to_dict(row)
+
+    async def find_account_by_email(self, email: str) -> dict | None:
+        """按邮箱精确查找账号（登录校验用；内存态，永不进入 API 响应）。
+
+        ``password_digest`` 只在此内部 dict 中携带供 verify（argon2 哈希，
+        不落 API/审计）；邮箱不存在返回 None；状态（含 revoked）原样返回，
+        错误语义由 service 层统一合并（不泄露存在性）。
+        """
+        email = (email or "").strip().lower()
+        if not email:
+            return None
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    select(TestAccountModel).where(TestAccountModel.email == email)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row.id,
+                "status": row.status,
+                "display_name": row.display_name,
+                "email": row.email,
+                "password_digest": row.password_digest,
+            }
+
+    async def register_from_invite(
+        self,
+        *,
+        token_digest: str,
+        email: str,
+        password_digest: str,
+        display_name: str = "",
+    ) -> dict:
+        """租户自助注册（invite-code-tenant-registration D2）：单事务消费邀请码。
+
+        事务内容：
+
+        1. `FOR UPDATE` 锁定邀请码行 → 校验未消费/未撤销/未过期；
+        2. 校验邮箱全局唯一（`uq_test_accounts_email` 唯一索引兜底并发竞态，
+           IntegrityError → :class:`CredentialExchangeError`，事务回滚零写入）；
+        3. 创建 `provisioning` 账号（email/password_digest/display_name）；
+        4. 创建 pending provisioning job；
+        5. 回填 token.account_id + consumed_at（标记已消费）。
+
+        provision 执行（executor）不在本事务内（D2：事务外 run_pending 收束，
+        避免持有 token 行锁 + job 锁过长；失败时邀请码已消费但可幂等 retry）。
+
+        返回 ``{"account": ..., "job": ..., "token": token_row}``；任何失败
+        路径抛 :class:`CredentialExchangeError` 并整体回滚（不产生半消费 token /
+        孤儿账号）。
+        """
+        email = (email or "").strip().lower()
+        now = _UTC_NOW()
+        async with self._sf() as sess, sess.begin():
+            token = (
+                await sess.execute(
+                    select(AccessTokenModel)
+                    .where(AccessTokenModel.token_digest == token_digest)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if (
+                token is None
+                or token.consumed_at is not None
+                or token.revoked_at is not None
+                or (token.expires_at is not None and token.expires_at <= now)
+            ):
+                raise CredentialExchangeError("invitation token rejected")
+            if not token.tenant_name:
+                # 旧式绑定账号的 Token 不能用注册路径消费（无租户名）；
+                # 走 exchange。统一错误语义不泄露差异。
+                raise CredentialExchangeError("invitation token rejected")
+            # 邮箱唯一性：应用内先查一次（快路径），唯一索引兜底并发竞态。
+            existing = (
+                await sess.execute(
+                    select(TestAccountModel.id).where(TestAccountModel.email == email)
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                raise CredentialExchangeError("email already registered")
+            acc_id = uuid.uuid4()
+            default_name = (email.split("@")[0] if email and "@" in email else "") or (
+                token.tenant_name or ""
+            )
+            account = TestAccountModel(
+                id=acc_id,
+                status="provisioning",
+                display_name=display_name[:255] or default_name[:255],
+                email=email or None,
+                password_digest=password_digest,
+            )
+            job = TenantProvisioningJobModel(account_id=acc_id, status="pending")
+            # 先 flush account 再插 job：PG FK 顺序要求（同 provisioning_repo 注记）。
+            sess.add(account)
+            try:
+                await sess.flush()
+            except IntegrityError:
+                # 并发同邮箱注册：唯一索引冲突 → 统一认证错误（不泄露存在性）。
+                raise CredentialExchangeError(
+                    "email already registered"
+                ) from None
+            sess.add(job)
+            token.consumed_at = now
+            token.account_id = acc_id
+            await sess.flush()
+            return {
+                "account": {
+                    "id": account.id,
+                    "status": account.status,
+                    "display_name": account.display_name,
+                    "email": account.email,
+                    "created_at": account.created_at,
+                    "updated_at": account.updated_at,
+                },
+                "job": {
+                    "id": job.id,
+                    "account_id": job.account_id,
+                    "tenant_id": job.tenant_id,
+                    "operation": job.operation,
+                    "status": job.status,
+                    "attempt_count": job.attempt_count,
+                    "last_error": job.last_error,
+                    "started_at": job.started_at,
+                    "finished_at": job.finished_at,
+                },
+                "token": _token_to_dict(token),
+            }
 
     async def get_token(self, token_id: uuid.UUID | str) -> dict | None:
         async with self._sf() as sess:
@@ -220,6 +382,39 @@ class CredentialRepository:
             return _session_to_dict(session)
 
     # ── 登录会话 ─────────────────────────────────────────────────────
+
+    async def create_user_session(
+        self,
+        *,
+        account_id: uuid.UUID | str,
+        session_digest: str,
+        idle_timeout_s: int,
+        absolute_timeout_s: int,
+        user_agent: str = "",
+    ) -> dict:
+        """登录会话创建 seam（D4）：register / login / exchange 共用。
+
+        只接受已 active 的账号（主动调用方在 service 层已前置校验；此处
+        仍是 fail-closed 兜底：provisioning/suspended/revoked 拒绝建会话）。
+        """
+        acc_id = to_uuid(account_id)
+        now = _UTC_NOW()
+        async with self._sf() as sess, sess.begin():
+            account = await sess.get(TestAccountModel, acc_id, with_for_update=True)
+            if account is None or account.status != "active":
+                raise CredentialExchangeError("session issue rejected")
+            row = AuthSessionModel(
+                principal_type="user",
+                account_id=acc_id,
+                session_digest=session_digest,
+                idle_timeout_s=idle_timeout_s,
+                absolute_timeout_s=absolute_timeout_s,
+                user_agent=user_agent[:255],
+                expires_at=now + timedelta(seconds=absolute_timeout_s),
+            )
+            sess.add(row)
+            await sess.flush()
+            return _session_to_dict(row)
 
     async def validate_session(
         self,

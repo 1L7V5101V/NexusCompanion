@@ -17,6 +17,7 @@ def make_loop() -> ProactiveLoop:
     loop._sense = SimpleNamespace(target_session_key=lambda: "telegram:1")
     loop._proactive_kernel = SimpleNamespace(run_tick=AsyncMock(return_value=None))
     loop._runtime_snapshot_store = None
+    loop._revocation_gate = None  # C8：tick start revocation recheck 默认不接线
     loop._reload_lock = asyncio.Lock()
     loop._provisioning = None  # 未接 provisioning control seam（M4H-4 commit 5）
     return loop

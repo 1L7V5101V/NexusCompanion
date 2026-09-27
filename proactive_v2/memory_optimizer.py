@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryStore
+    from agent.plugins.snapshot import RuntimeSnapshotStore
 
 from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
@@ -212,6 +213,8 @@ class MemoryOptimizer:
         max_tokens: int = 16384,
         default_self_md: str = "",
         identity_name: str = "",
+        # C8 §5.9.16：optimizer work-start snapshot lease。
+        runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     ) -> None:
         self._memory = memory
         self._provider = provider
@@ -219,6 +222,7 @@ class MemoryOptimizer:
         self._max_tokens = max_tokens
         # C3 §5.9.5/§10 DECIDED：optimizer lock 按 tenant 隔离，不引入跨 tenant
         # global maintenance lock；单 tenant 一个 Markdown store 语义不变。
+        self._runtime_snapshot_store = runtime_snapshot_store
         self._locks: dict[str, asyncio.Lock] = {}
         self._default_self_md = default_self_md
         self._identity_name = identity_name
@@ -243,8 +247,12 @@ class MemoryOptimizer:
         lock = self._lock_for(tenant_id)
         if lock.locked():
             raise MemoryOptimizerBusy("memory optimizer 正在运行")
-        async with lock:
-            await self._optimize()
+        from agent.plugins.snapshot import work_runtime_lease
+
+        # C8 §5.9.16：optimizer work start 取一次 snapshot lease。
+        async with work_runtime_lease(self._runtime_snapshot_store):
+            async with lock:
+                await self._optimize()
 
     async def _optimize(self) -> None:
         """提交 pending 记忆合并，并随后更新自我认知。"""

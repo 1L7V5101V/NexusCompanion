@@ -65,13 +65,15 @@ class AuthRuntime:
         admin_repo = AdminRepository(session_factory)
         prov_repo = ProvisioningRepository(session_factory)
 
-        self.auth = AuthService(cred_repo, pepper, config)
-        self.admin = AdminAuthService(admin_repo, cred_repo, pepper, config)
         self.provisioning = ProvisioningService(
             prov_repo,
             executor=CanonicalAgentExecutor(canonical_repo, partition_step),
             admin_audit=admin_repo,
         )
+        self.auth = AuthService(
+            cred_repo, pepper, config, provisioning=self.provisioning
+        )
+        self.admin = AdminAuthService(admin_repo, cred_repo, pepper, config)
         # 供 WS 入口按 session 派生 tenant/conversation 归属（§5.9.1）。
         # check_ws_handshake 返回 session dict 正是为此预留（其 docstring）。
         self.canonical_repo = canonical_repo
