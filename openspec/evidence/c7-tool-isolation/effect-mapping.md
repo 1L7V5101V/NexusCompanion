@@ -35,15 +35,14 @@
 | tool id | 现状 risk 标签 | C7 effect（如 admin 误配/直调） | 备注 |
 | --- | --- | --- | --- |
 | `shell` | external-side-effect | `process-exec` | 普通 tenant 拒绝 |
-| `spawn` | write | `process-exec` | 同上 |
+| `spawn`（含 `delegate_*` 动态名） | write | `process-exec` | 同上（注册点 bootstrap/toolsets/meta.py:89） |
 | `spawn_manage` | external-side-effect | `process-exec` | 同上 |
-| `task_output` | read-only | `process-exec` | 随 spawn 关闭 |
+| `task_output` | read-only | `read-only`（catalog 关闭面 + owner 校验，6.2） | 随 spawn 关闭：closed 清单不可见 + 仅 own 租户任务；创建面（shell）本就 process-exec 关闭 |
 | `task_stop` | external-side-effect | `process-exec` | 同上 |
 | `load_skill` | read-only | `admin` | skill/插件管理面 |
 | `mcp_add` | external-side-effect | `admin` | workspace 级全局 MCP 管理 |
 | `mcp_remove` | write | `admin` | 同上 |
 | `mcp_list` | read-only | `admin` | 同上 |
-| `delegate_*` | （动态名） | `external-write` | peer 委托；无补偿登记 → 默认拒绝（ADR-4） |
 
 ## 运行时不注册（诚实清单）
 
@@ -56,5 +55,8 @@
 - 每行「现状 risk 标签」可由 `tool-inventory.json` 的 entries 交叉核对。
 - 本表为 ADR-4 的落地初值；实现时若发现工具行为与 effect 不符（如某工具实际外呼），
   回 design 修 ADR-4 而不是就地改表。
-- 第二双眼睛：提交后由用户审阅本表（评审点：`message_push`/web 三件的 `network`
-  归类与 `requires_compensation=否`）。
+- 第二双眼睛：2026-09-28 提交后复核已执行——修正两处表格初值与实现漂移：
+  `task_output` 实现为 read-only（catalog 关闭面 + owner 校验，6.2）非 process-exec；
+  `spawn`/`spawn_manage`（含 delegate_* 动态名）注册点为 process-exec 非 external-write。
+  评审点 `message_push`/web 三件的 `network` 归类 + `requires_compensation=否` 确认无漂移
+  （与注册点显式覆盖一致，4.1/3.3 测试锁定）。

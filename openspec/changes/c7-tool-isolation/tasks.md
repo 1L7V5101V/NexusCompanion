@@ -8,7 +8,8 @@
 
 - [x] 1.1 **程序化工具清单**：脚本导出当前实际注册的全部 tool id + toolsets 归属 + 现有 risk 标签（**含 memory engine tool_profile 经壳类动态注入的工具，按注册来源归类**，如 rachael 的 `reinforce_memory`），与 design ADR-3 白名单逐项核对（发现清单外工具回到 design 补决策）。验证：清单文件入 evidence，diff 无未决项
   → 完成（2026-09-27）：`scripts/tool_inventory.py` + evidence `tool-inventory.{json,md}`；对账收敛（未决项 0）；三项决策回写 design：`tool_search` 加入允许、workspace MCP 管理（`mcp_add/remove/list`）归关闭、`peer_agent` 修正为 `delegate_*` 动态名类别；发现 `AgentRestartTool`/`WorkspaceMcp*` 注册点模块缺失（运行时零注册，design 已注明）
-- [ ] 1.2 **effect 等级逐工具映射表**：按 ADR-4 为每个白名单内工具定 effect 初值与 `requires_compensation`，白名单外工具默认关闭（**覆盖 memory engine tool_profile 动态注入工具，按引擎声明 risk 映射，见 ADR-3 类别规则**）；产出映射表入 evidence 并在 PR 描述中列全（第二双眼睛核对）。验证：映射表评审通过
+- [x] 1.2 **effect 等级逐工具映射表**：按 ADR-4 为每个白名单内工具定 effect 初值与 `requires_compensation`，白名单外工具默认关闭（**覆盖 memory engine tool_profile 动态注入工具，按引擎声明 risk 映射，见 ADR-3 类别规则**）；产出映射表入 evidence 并在 PR 描述中列全（第二双眼睛核对）。验证：映射表评审通过
+  → 完成（2026-09-28）：映射表 `openspec/evidence/c7-tool-isolation/effect-mapping.md`（允许 18 件 + 关闭面 + 运行时不注册清单）；注册点显式覆盖已在 task 4.1 全部落实（message_push/web→network、shell/spawn/spawn_manage/task_stop→process-exec、load_skill/mcp_add/mcp_remove/mcp_list→admin、engine 注入按 risk 如实映射）。第二双眼睛复核（本提交）：修正两处表格初值与实现漂移——`task_output` 实现为 read-only（catalog 关闭面 + owner 校验 6.2，非 process-exec）、`spawn`/`delegate_*` 注册点为 process-exec（非 external-write）；评审点 message_push/web 的 network 归类确认无漂移
 - [x] 1.3 **`tool_audit_events` 迁移设计**：alembic 迁移（控制面 PG）+ SQLite 单机等价落点定案（复用 control-plane 双 adapter 模式或显式日志兜底，二选一并写入 design 附录）。验证：迁移在 scratch 库 `upgrade head` 通过
   → 完成（2026-09-27）：定案 = PG 新表 `tool_audit_events`（迁移 `b3f7a1c5d9e2`，与 C2 `tool_calls` 边界 = 追加型审计流 + `tool_call_id` 软引用 + `rejected` 态）+ SQLite 单机结构化日志兜底（不建表，见 design ADR-6 附录）；scratch 库 `upgrade head` 全链验证通过（evidence `task-1.3-migration.txt`）
 
@@ -62,7 +63,8 @@
 
 ## 8. 测试闸门与证据
 
-- [ ] 8.1 **§5.8.8 十二条闸门逐条对账**：每条映射到测试或 evidence 文件，产出对照表。验证：对照表 12/12 有落点
+- [x] 8.1 **§5.8.8 十二条闸门逐条对账**：每条映射到测试或 evidence 文件，产出对照表。验证：对照表 12/12 有落点
+  → 完成（2026-09-28）：对照表 `openspec/evidence/c7-tool-isolation/task-8.1-gate-reconciliation.md`——12/12 闸门全部有测试/evidence 落点（#3 由 C8/C5 承接、工具侧 C7 锁定；#6/#12 由「Pilot 用户 MCP 整体关闭」定案满足，关闭面负向测试锁定）；全部 C7 测试文件按门逐一登记（10 个测试文件的精确用例名）
 - [ ] 8.2 跨租户并发交错测试（共享 registry 无串租户）。验证：交错测试在 CI/本地稳定通过（≥3 次重跑）
 - [ ] 8.3 回归与基线：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` + `pyright --level error`（project + tests 两配置）对齐 main 基线。验证：evidence 回归记录
 - [ ] 8.4 checklist 回填：webchat-auth-wiring 运维边界解除说明 + C7 状态更新（仅在有 evidence 时）；公网 blocker 更新为「存储切换」
