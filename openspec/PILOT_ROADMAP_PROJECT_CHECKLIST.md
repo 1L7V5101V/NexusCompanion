@@ -14,10 +14,10 @@
 
 ## 当前进度（来自 PILOT_ROADMAP §6）
 
-- **当前阶段**：P-1 编码前决策冻结；现有 PostgreSQL + pgvector 存储基础、迁移和可观测性已有 verified 证据，P0.5 WebChat dev 模式闭环已实现（commit `4e40e510`，仅本地 dev 单用户，不含 durable control plane），其余 Pilot 目标能力尚未实现。
-- **current focus**：把 canonical identity、durable ingress/outbox/delivery、Auth/provisioning/browser security、WebSocket 契约冻结、bounded admission、persistence/backup ownership、ToolExecutionContext、RuntimeSnapshot/hooks/secrets、Persona、schedule、attachment、observability/privacy 和 DB initial rollout/schema evolution 固化为 ADR/design/spec。
-- **current blocker**：在 5.9 对应设计门禁完成前，不开始认证/provisioning、Telegram binding、durable delivery、tenant tool/runtime snapshot、schedule/attachment 或相关 migration 的实现；WebChat dev 闭环（P0.5）已按 roadmap 阶段落地，但其面向受邀用户的公网开放仍被这些门禁阻塞。
-- **next decision**：按 [`PILOT_ROADMAP.md` §5.9.10](./PILOT_ROADMAP.md) 拆分首批 OpenSpec changes，并先完成 canonical identity/control-plane change。
+- **当前阶段**（2026-09-27 刷新）：P-1 设计门禁基本收口、进入实现推进期。verified 合入：C1 canonical identity（+ account→N tenant 扩展）、C2 durable control plane、C3 admission/queue、C4 WebChat dev 协议闭环、C5 auth/provisioning、C8 RuntimeSnapshot/secrets（Complete，待归档回填）、C13 记忆召回、C15 work queue 消费层、invite-code-tenant-registration（均归档）；C12 观测/隐私/备份 P-1 契约层 verified（贯穿型，change 保持 active，§8 伴随落地进行中）；webchat-auth-wiring 通道层身份接线 20/21（Complete，待收尾）。尚未开工：C6 attachment、C7 工具隔离（结论已归档）、C9 Persona、C10 Telegram binding、C11 schedule、C14 memory catalog。
+- **current focus**：webchat-auth-wiring 收尾（真实 PG exchange→handshake→hello 端到端 + 部署）；C12 §8 伴随落地（8.2 内容审计接线、8.3 manifest 细化、8.4 retention 接线与总控台聚合、8.5 基线报告、8.6 P3 演练）；C6/C7/C9/C10/C11/C14 按 §5.9.10 依赖图排期开工。
+- **current blocker**：面向受邀用户的公网开放等 webchat-auth-wiring 的真实 PG 端到端验证与部署；C7/C9/C10/C11/C14 对应 5.9 设计门禁未收口前不开始实现（P-1 规则）。
+- **next decision**：C8 与 webchat-auth-wiring 归档回填 merge commit；为 C12 §8.2（内容审计接线）与 §8.4（总控台聚合 API）指定承载 change；首个 turn/tool_call/delivery 记录点承接 change（8.1 余留部分，属 C2 侧）。
 - 详见 [`PILOT_ROADMAP.md` §5.9](./PILOT_ROADMAP.md)。
 
 ## GOV 治理与文档基线
@@ -80,13 +80,13 @@
   - [ ] **显式用户 schedule owner、misfire、幂等与恢复** → outcome 见 [PILOT_ROADMAP §5.9.14](PILOT_ROADMAP.md)
   - [ ] **Attachment/media ownership、MIME/size、retention 与 backup** → outcome 见 [PILOT_ROADMAP §5.9.15](PILOT_ROADMAP.md)
   - [ ] **RuntimeSnapshot lease、hooks、tenant secrets 与 revocation** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)
-  - [ ] **Observability/privacy/redaction 与 retention 默认值** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)；P-1 契约层（content-off gate + redaction、metrics label 白名单、retention 三档 30/180/7、backup manifest 模板+校验器、§7.1 事件 schema fixture、SLO DEFERRED 负向测试）`verified`（change `c12-observability-backup`，branch head `a402d32a`，2026-09-06，证据 [evidence/c12-observability-backup](evidence/c12-observability-backup/)）；总控台聚合（C2/C3 id 落地后）、config 接线与基线报告、恢复演练仍 `in_progress`（伴随落地协议，change 保持 active 不归档）
+  - [ ] **Observability/privacy/redaction 与 retention 默认值** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)；P-1 契约层（content-off gate + redaction、metrics label 白名单、retention 三档 30/180/7、backup manifest 模板+校验器、§7.1 事件 schema fixture、SLO DEFERRED 负向测试）`verified`（change `c12-observability-backup`，merge tip `83d54bc8`，2026-09-06，证据 [evidence/c12-observability-backup](evidence/c12-observability-backup/)）；§8.1（E10 指标记录点）已由 C15 首个落地（`background_work_items`，PR #7，2026-09-27）；总控台聚合（C2/C3 id 落地后）、config 接线与基线报告、恢复演练仍 `in_progress`（伴随落地协议，change 保持 active 不归档）
     - **2026-09-20 清点（伴随落地协议未执行）**：C2/C3/C4 的 change checklist 均未按 task-12「伴随落地协议」带「§7.1 指标字段 + redaction + backup manifest 条目」（三者 `tasks.md` 对 `§7.1|指标|redaction|manifest|AdminAccess` 均 0 命中），导致 C12 §8.1（E10 指标记录点）成为**无 owner 的滞留项**；§8.2–8.6 逐条 owner 已登记在 change `c12-observability-backup/tasks.md` §8。后续每个 Cxx change 必须在其 checklist 内带该条目，否则同一遗漏会复现。
 - [ ] **P0 Pilot 基础运行基线** — 单机 FastAPI/Uvicorn、PostgreSQL + pgvector、有界进程内队列、HTTPS/WSS 入口；`planned`
   - [ ] **单机长期运行与重启恢复基线** → outcome 见 [PILOT_ROADMAP §6](PILOT_ROADMAP.md)
-  - [ ] **当前 persistence map、backup manifest、健康检查与基础指标** → outcome 见 [PILOT_ROADMAP §3.4](PILOT_ROADMAP.md) 与 [§5.9.12](PILOT_ROADMAP.md)
+  - [ ] **当前 persistence map、backup manifest、健康检查与基础指标** → outcome 见 [PILOT_ROADMAP §3.4](PILOT_ROADMAP.md) 与 [§5.9.12](PILOT_ROADMAP.md)；backup manifest 模板+校验器契约已交付（C12：`tests/fixtures/backup_manifest_template.json` + `core/backup/manifest.py`），待接线运行与基线产出
   - [x] **RuntimeSnapshot 全入口 lease coverage audit** → outcome 见 [PILOT_ROADMAP §5.9.16](PILOT_ROADMAP.md)；C8 P0 段（全入口 work-start lease + revocation recheck fail-closed + 热更新不切 snapshot）`verified`（change `c8-runtimesnapshot-secrets`，branch head `0eddfceb`，2026-09-27，证据 [evidence/c8-runtimesnapshot-secrets](evidence/c8-runtimesnapshot-secrets/)；merge 后回填 merge commit；revocation 真实账号源接线归 C5）
-  - [ ] **结构化日志 redaction 与默认 content-off 基线** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)
+  - [ ] **结构化日志 redaction 与默认 content-off 基线** → outcome 见 [PILOT_ROADMAP §5.9.17](PILOT_ROADMAP.md)；redaction/ContentCaptureGate/metrics label 白名单/retention sweep 契约原语已 verified（C12），config 接线与进程内定时执行归 C12 §8.4
   - [ ] **tenant-scoped admission + interactive/maintenance overload** → outcome 见 [PILOT_ROADMAP §5.9.5](PILOT_ROADMAP.md)
   - [ ] **工具 scope/effect 基线**（普通 tenant 关闭宿主机 shell/全局能力） → outcome 见 [PILOT_ROADMAP §5.8](PILOT_ROADMAP.md)
   - [x] **记忆召回改造保持独立 change**（BM25/hotness/RRF，不阻塞安全 WebChat/Auth 闭环） → outcome 见 [PILOT_ROADMAP §5.9.10](PILOT_ROADMAP.md)；`verified`（change `2026-09-07-c13-memory-retrieval-bm25`，PR #5 merge `5b140fe`，证据 [evidence/c13-memory-retrieval-bm25](evidence/c13-memory-retrieval-bm25/)：A 基线可复现评测 + 消融矩阵 + 回归/pyright 对齐基线）
