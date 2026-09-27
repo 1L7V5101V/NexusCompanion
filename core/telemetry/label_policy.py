@@ -45,6 +45,7 @@ ALLOWED_METRIC_LABELS: frozenset[str] = frozenset(
         "trigger",
         "channel",
         "tool_name",
+        "effect_class",
         "model",
         "provider",
         "backend",

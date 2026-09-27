@@ -42,6 +42,7 @@ from bootstrap.db.models.control_plane import (
     InboxRecordModel,
     MessageDeduplicationKeyModel,
     OutboundDeliveryIntentModel,
+    ToolAuditEventModel,
     ToolCallModel,
     TurnModel,
     WorkAttemptModel,
@@ -539,6 +540,22 @@ class IngressRepository:
             if row is None or row.tenant_id != tenant_id:
                 return None
             return _inbox_to_dict(row)
+
+
+class ToolAuditRepository:
+    """tool_audit_events 追加型审计流（C7 ADR-6）。
+
+    一行 = 一次工具调用的收束记录；写入失败由调用方 fail-open 兜底。
+    """
+
+    def __init__(self, session_factory: async_sessionmaker):
+        self._sf = session_factory
+
+    async def record_event(self, event: Any) -> None:
+        """追加一条审计行（终态时调用；``ToolAuditEvent`` 形状入参）。"""
+        row = event.to_row() if hasattr(event, "to_row") else dict(event)
+        async with self._sf() as sess, sess.begin():
+            sess.add(ToolAuditEventModel(**row))
 
 
 class TurnControlRepository:

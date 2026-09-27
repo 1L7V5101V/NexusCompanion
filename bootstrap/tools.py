@@ -24,6 +24,7 @@ from agent.admission.resources import (
 from agent.admission.resources import set_default as set_resource_semaphores
 from agent.config_models import Config, WiringConfig
 from agent.context import ContextBuilder
+from sqlalchemy.ext.asyncio import AsyncEngine
 from agent.peer_agent.process_manager import PeerProcessManager
 from agent.peer_agent.poller import PeerAgentPoller
 from agent.peer_agent.registry import PeerAgentRegistry
@@ -115,6 +116,8 @@ class CoreRuntime:
     turn_logger: RoutingTurnLogger | None = None
     storage_runtime: StorageRuntime | None = None
     revocation_gate: RevocationGate | None = None
+    tool_audit_sink: Any | None = None
+    tool_audit_engine: AsyncEngine | None = None
 
     async def start(self) -> None:
         """启动外部连接、peer 资源和插件扩展。"""
@@ -362,10 +365,16 @@ class CoreRuntime:
         async def _shutdown_mcp_registry() -> None:
             await self.mcp_registry.shutdown()
 
+        async def _close_tool_audit_engine() -> None:
+            engine = self.tool_audit_engine
+            if engine is not None:
+                await engine.dispose()
+
         # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
             ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("mcp_registry.shutdown", _shutdown_mcp_registry),
+            ("tool_audit_engine.dispose", _close_tool_audit_engine),
             ("spawn.shutdown", _stop_spawn),
             ("event_bus.aclose", self.event_bus.aclose),
             (
@@ -709,6 +718,21 @@ def build_core_runtime(
             revocation_gate=revocation_gate,
         )
     )
+    # C7 task 7.1（ADR-6）：审计双 adapter 装配（多租户 PG → control-plane 表
+    # INSERT；否则单机结构化日志兜底），开关与 path_resolver 同源。
+    from bootstrap.audit import resolve_tool_audit_sink
+
+    storage_cfg = getattr(config, "storage", None)
+    audit_sink, audit_engine = resolve_tool_audit_sink(
+        multi_tenant=(
+            getattr(getattr(config, "auth", None), "enabled", False)
+            and getattr(storage_cfg, "backend", "sqlite") == "postgres"
+        ),
+        backend=getattr(storage_cfg, "backend", "sqlite"),
+        postgres_url=getattr(storage_cfg, "postgres_url", ""),
+        workspace=workspace,
+    )
+    tools.set_audit_sink(audit_sink)
     presence = PresenceStore(lambda ctx: storage_runtime.for_tenant(ctx).sessions)
     processing_state = ProcessingState()
 
@@ -846,6 +870,8 @@ def build_core_runtime(
         turn_logger=turn_logger,
         storage_runtime=storage_runtime,
         revocation_gate=revocation_gate,
+        tool_audit_sink=audit_sink,
+        tool_audit_engine=audit_engine,
     )
 
 

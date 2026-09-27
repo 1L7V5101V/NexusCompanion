@@ -293,6 +293,45 @@ class ToolCallModel(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ToolAuditEventModel(Base):
+    """tool audit 追加型审计流（C7 ADR-6，alembic b3f7a1c5d9e2）。
+
+    ``tool_call_id`` 为软引用（无 FK）：审计流 SHALL NOT 因终态流生命周期丢行；
+    status 含 ``rejected``（执行前拒绝，无终态流行）。
+    """
+
+    __tablename__ = "tool_audit_events"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('succeeded', 'failed', 'cancelled', 'unknown', 'rejected')",
+            name="ck_tool_audit_events_status",
+        ),
+        Index("ix_tool_audit_events_tenant", "tenant_id", "created_at"),
+        Index("ix_tool_audit_events_account", "account_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    request_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(String(128))
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    tool_binding_id: Mapped[str | None] = mapped_column(String(128))
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    effect_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    arguments_redacted: Mapped[str | None] = mapped_column(Text)
+    arguments_hash: Mapped[str | None] = mapped_column(String(64))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class BackgroundWorkItemModel(Base):
     """后台工作项：由 durable 消费者以 lease 认领并执行（C15）。
 

@@ -1,0 +1,46 @@
+C7 task 7.1 —— tool_audit_events 写入接线 + 参数脱敏（design ADR-6）
+================================================================================
+
+结论（前沿基线在 main）：
+- `agent/admission/tool_audit.py`：`ToolAuditEvent`（终态枚举 = C2 四态 +
+  `rejected`，构造即校验）、`redact_arguments`（secret 键只存 sha256、长内容
+  截断、嵌套深度/元素上限、`arguments_hash` = 原始参数规范化 JSON 摘要）、
+  `ToolAuditSink` Protocol + `LogAuditSink`（单机结构化 JSON 行兜底
+  `workspace/logs/tool_audit.ndjson`）+ `NullAuditSink`。
+- `agent/tools/registry.py`：`set_audit_sink`（未接线不产生审计，行为不变）；
+  `execute` 收束时写一行审计：结构化判定 succeeded / failed /
+  cancelled / rejected（error_code 取自返回串 `code=`；执行异常转 failed；
+  租户取消结构化结果 cancelled；外层 turn 取消先写 cancelled 再原样上抛）；
+  审计基于剥离 trust 字段后的模型可见参数；写入失败告警不阻断调用。
+- `bootstrap/audit.py`：双 adapter 装配 `resolve_tool_audit_sink`——多租户 PG
+  （auth.enabled ∧ backend=postgres）→ `PgToolAuditSink`（追加 INSERT）；其余
+  → `LogAuditSink`。注册于 `bootstrap/tools.py::build_core_runtime`
+  （`tools.set_audit_sink`，engine 随 CoreRuntime.stop dispose）。
+- `bootstrap/db/models/control_plane.py` + `control_plane_repo.py`：
+  `ToolAuditEventModel` + `ToolAuditRepository.record_event`（与迁移
+  `b3f7a1c5d9e2` 同 schema）。
+- C12 白名单：新维度 `effect_class` 入 `ALLOWED_METRIC_LABELS` +
+  `tests/fixtures/metric_label_policy.json`（契约测试双向一致）。
+- C12 tasks.md §8.1 追加 2026-09-28 注释登记 C7 落地（未翻转 8.1 checkbox：
+  turn/delivery 记录点仍属 C2 侧）。
+
+脱敏契约（无法还原敏感原文）：api_key/token/password 等 secret 键 → 值只存
+`{"__hash__": sha256}`；长内容截断；`arguments_hash` 为摘要不可还原。
+
+已知边界（evidence 记录，非缺陷）：
+- pre-tool hook（TenantToolGateHook）在 registry 之前拦截的拒绝（
+  `tool_denied_account_status`/`tool_denied_tenant_scope`）不产生审计行
+  （hook 拦截层，原因经 hook trace 与 C8 revocation_gate 日志观测）；
+  registry 内执行前拒绝（`tool_denied_effect`/`tool_not_found` 等）均落
+  `rejected` 行。
+- C2 `tool_calls` 终态流（running→终态 CAS，FK 到 turns）为 C2 侧剩余，
+  本任务未接线（其 `tool_call_id` 语义已由 register 分配 = request_id）。
+
+验证
+----
+- `pytest tests/test_tool_audit.py -q`：17 passed（脱敏 5、审计流 8、
+  secret 不入行、无 sink/context 行为不变、sink 失败不阻断、Log/Pg sink）。
+- `pytest -q -W error tests/`：1726 passed, 0 failed（task 7.1 新增 17 项）。
+- `pytest tests/observability_privacy/ -q`：44 passed（label 白名单契约含
+  effect_class 双向一致）。
+- pyright：38 errors 与基线持平，本任务文件零新增。

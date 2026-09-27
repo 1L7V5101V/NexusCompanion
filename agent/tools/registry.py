@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Iterable, Set as AbstractSet
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, cast
 
+from agent.admission.tool_audit import ToolAuditEvent, redact_arguments
 from agent.tools.base import Tool, ToolEffect, ToolResult, RISK_TO_EFFECT
 from agent.tools.context import ToolExecutionContext
 from agent.tools.search_backend import KeywordSearchBackend, SearchBackend
@@ -15,6 +17,24 @@ logger = logging.getLogger(__name__)
 
 # 元工具（不参与搜索结果，也不出现在 deferred 工具目录里）
 _META_TOOLS: frozenset[str] = frozenset({"tool_search"})
+
+
+def _classify_tool_result(result: str) -> tuple[str, str | None]:
+    """从工具返回串判定审计终态（C7 task 7.1/ADR-6）。
+
+    - 租户取消结构化结果 → cancelled；
+    - 其它 ``code=`` 拒绝消息 → rejected（带 error_code，执行前拒绝）；
+    - 其余字符串结果视为成功输出。
+    """
+    if "tool_cancelled_account_status" in result:
+        return "cancelled", "tool_cancelled_account_status"
+    if "code=" in result:
+        code = (
+            result.split("code=", 1)[1].split("）", 1)[0].split("，", 1)[0].strip()
+        )
+        if code:
+            return "rejected", code
+    return "succeeded", None
 
 # C7（§5.9.7 / design ADR-2）：模型与客户端帧 SHALL NOT 提供或覆盖可信归属字段。
 # 这些 key 一律从 arguments 剥离；可信值只能经 ToolExecutionContext 注入
@@ -156,9 +176,17 @@ class ToolRegistry:
         # C7 task 5.1：租户路径解析器（进程级无状态配置对象，bootstrap 设置一次；
         # 每次执行时注入 kwargs，文件工具据此按租户解析 root）。
         self._path_resolver: Any | None = None
+        self._audit_sink: Any | None = None
 
     def set_path_resolver(self, resolver: Any) -> None:
         self._path_resolver = resolver
+
+    def set_audit_sink(self, sink: Any) -> None:
+        """C7 task 7.1（ADR-6）：接入审计写入接缝（PG INSERT / 单机日志兜底）。
+
+        未接线（None）时行为与历史一致：不产生审计行。
+        """
+        self._audit_sink = sink
 
     def register(
         self,
@@ -312,55 +340,132 @@ class ToolRegistry:
         arguments: dict[str, Any],
         context: ToolExecutionContext | None = None,
     ) -> str | ToolResult:
+        """执行工具调用并写审计终态行（C7 task 7.1/ADR-6）。
+
+        status 判定：执行前拒绝（rejected，error_code 取自返回串 ``code=``）；
+        执行异常 → failed；租户取消结构化结果 → cancelled；外层 turn 取消→
+        先写 cancelled 审计再原样上抛（不吞取消）；其余成功 → succeeded。
+        """
+        started_at = time.monotonic()
+        audit_args: dict[str, Any] = {}
+        try:
+            result = await self._execute_inner(name, arguments, context, audit_args)
+            if isinstance(result, str):
+                status, error_code = _classify_tool_result(result)
+            else:
+                status, error_code = "succeeded", None
+        except asyncio.CancelledError:
+            await self._emit_audit(
+                name, context, audit_args, started_at, "cancelled", None
+            )
+            raise
+        except Exception as exc:
+            logger.error(f"工具 {name} 执行出错: {exc}", exc_info=True)
+            result = f"工具执行出错: {exc}"
+            status, error_code = "failed", None
+        await self._emit_audit(name, context, audit_args, started_at, status, error_code)
+        return result
+
+    async def _execute_inner(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext | None,
+        audit_args: dict[str, Any],
+    ) -> str | ToolResult:
+        """执行体：剥离信任字段 → 注入 context → effect 闸门 → 执行/取消管理。
+
+        执行异常向上一级（execute）传播，由审计包装层判定 failed（C7 task 7.1）；
+        执行前拒绝以带 ``code=`` 的结构化串返回（rejected）。
+        """
         tool = self._tools.get(name)
         if tool is None:
-            return f"工具 '{name}' 不存在"
+            return f"工具 '{name}' 不存在（code=tool_not_found）"
+        # C7 语义反转（design ADR-2）：
+        #   1. arguments 剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
+        #   2. ToolExecutionContext 注入身份与 per-turn 提示键——唯一授权依据。
+        strip_fields = TRUST_ARGUMENT_FIELDS
+        if context is not None and context.principal_type != "user":
+            # dev/owner：路由目标允许由模型指定（合法跨目标推送）。
+            strip_fields = strip_fields - ROUTING_ARGUMENT_FIELDS
+        safe_arguments = {
+            k: v for k, v in arguments.items() if k not in strip_fields
+        }
+        # C7 task 7.1：审计基于模型可见参数（trust 字段已剥离）。
+        audit_args["arguments"] = dict(safe_arguments)
+        merged: dict[str, Any] = dict(safe_arguments)
+        if context is not None:
+            merged.update(context.tool_kwargs())
+            if (
+                context.principal_type == "user"
+                and set(arguments) & ROUTING_ARGUMENT_FIELDS
+            ):
+                # user 试图指定任意推送目标 → 剥离并打标，工具侧结构化拒绝。
+                merged["_routing_overridden"] = True
+            # C7 task 4.1（ADR-4）：effect 等级执行面强制（仅 user principal；
+            # owner/dev 路径不受限，与租户白名单同哲学）。
+            meta = self._metadata.get(name)
+            if (
+                meta is not None
+                and context.principal_type == "user"
+                and not self._effect_allowed(meta)
+            ):
+                return (
+                    f"错误：工具作用等级不允许在当前会话执行"
+                    f"（code=tool_denied_effect，effect={meta.effect.value}）"
+                )
+        if self._path_resolver is not None:
+            merged.setdefault("path_resolver", self._path_resolver)
+        if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
+            merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
+        if context is not None:
+            result = await self._execute_managed(tool, merged, context)
+        else:
+            result = await tool.execute(**merged)
+        if isinstance(result, ToolResult) and context is not None:
+            result.tool_call_id = context.request_id
+        return result
+
+    async def _emit_audit(
+        self,
+        name: str,
+        context: ToolExecutionContext | None,
+        audit_args: dict[str, Any],
+        started_at: float,
+        status: str,
+        error_code: str | None,
+    ) -> None:
+        """C7 task 7.1（ADR-6）：写审计终态行；未接线/失败均不阻断工具调用。"""
+        sink = self._audit_sink
+        if sink is None or context is None:
+            return
         try:
-            # C7 语义反转（design ADR-2）：
-            #   1. arguments 剥离可信归属字段（模型/客户端 SHALL NOT 覆盖身份）；
-            #   2. ToolExecutionContext 注入身份与 per-turn 提示键——唯一授权依据。
-            strip_fields = TRUST_ARGUMENT_FIELDS
-            if context is not None and context.principal_type != "user":
-                # dev/owner：路由目标允许由模型指定（合法跨目标推送）。
-                strip_fields = strip_fields - ROUTING_ARGUMENT_FIELDS
-            safe_arguments = {
-                k: v for k, v in arguments.items() if k not in strip_fields
-            }
-            merged: dict[str, Any] = dict(safe_arguments)
-            if context is not None:
-                merged.update(context.tool_kwargs())
-                if (
-                    context.principal_type == "user"
-                    and set(arguments) & ROUTING_ARGUMENT_FIELDS
-                ):
-                    # user 试图指定任意推送目标 → 剥离并打标，工具侧结构化拒绝。
-                    merged["_routing_overridden"] = True
-                # C7 task 4.1（ADR-4）：effect 等级执行面强制（仅 user principal；
-                # owner/dev 路径不受限，与租户白名单同哲学）。
-                meta = self._metadata.get(name)
-                if (
-                    meta is not None
-                    and context.principal_type == "user"
-                    and not self._effect_allowed(meta)
-                ):
-                    return (
-                        f"错误：工具作用等级不允许在当前会话执行"
-                        f"（code=tool_denied_effect，effect={meta.effect.value}）"
-                    )
-            if self._path_resolver is not None:
-                merged.setdefault("path_resolver", self._path_resolver)
-            if not _tool_defines_parameter(tool, _PROGRESS_DESCRIPTION_FIELD):
-                merged.pop(_PROGRESS_DESCRIPTION_FIELD, None)
-            if context is not None:
-                result = await self._execute_managed(tool, merged, context)
-            else:
-                result = await tool.execute(**merged)
-            if isinstance(result, ToolResult) and context is not None:
-                result.tool_call_id = context.request_id
-            return result
-        except Exception as e:
-            logger.error(f"工具 {name} 执行出错: {e}", exc_info=True)
-            return f"工具执行出错: {e}"
+            meta = self._metadata.get(name)
+            effect_class = (
+                meta.effect.value
+                if meta is not None and meta.effect is not None
+                else "unknown"
+            )
+            redacted, digest = redact_arguments(audit_args.get("arguments", {}))
+            event = ToolAuditEvent(
+                tenant_id=context.tenant_id,
+                account_id=context.account_id,
+                request_id=context.request_id,
+                session_id=context.session_id,
+                turn_id=context.turn_id,
+                # registry 的 tool_call_id 分配语义（task 4.1）：等于 request_id。
+                tool_call_id=context.request_id,
+                tool_name=name,
+                effect_class=effect_class,
+                status=status,
+                arguments_redacted=redacted,
+                arguments_hash=digest,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+                error_code=error_code,
+            )
+            await sink.write(event)
+        except Exception:  # noqa: BLE001 —— 审计失败不阻断工具调用
+            logger.warning("tool_audit 写入失败 name=%s", name, exc_info=True)
 
     @staticmethod
     async def _execute_managed(
