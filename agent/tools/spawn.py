@@ -122,6 +122,8 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
         profile: str = "research",
         run_in_background: bool = False,
         retry_count: int = 0,
+        channel: str = "",
+        chat_id: str = "",
         **_: Any,
     ) -> str:
         retry_count = max(0, int(retry_count))
@@ -144,9 +146,10 @@ subagent 没有看过当前会话。像给刚进房间的同事写交接文档�
             return f"任务被拦截：{decision.block_reason}"
 
         if run_in_background:
-            ctx = self._tool_registry.get_context()
-            channel = str(ctx.get("channel", "") or "").strip()
-            chat_id = str(ctx.get("chat_id", "") or "").strip()
+            # C7：channel/chat_id 由 ToolExecutionContext 以最高优先级注入本方法
+            # （不再读共享 registry context——授权语义已移除，design ADR-2）。
+            channel = str(channel or "").strip()
+            chat_id = str(chat_id or "").strip()
             if not channel or not chat_id:
                 return "错误：当前会话上下文缺失，无法创建后台任务"
             return await self._manager.spawn(

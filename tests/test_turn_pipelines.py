@@ -186,6 +186,7 @@ async def test_process_direct_waits_for_passive_runtime_admission():
         sender="u",
         chat_id="1",
         content="hello",
+        tenant_id="cli:1",
     )
     passive_task = asyncio.create_task(
         AgentLoop._process_with_runtime_admission(loop, passive_msg)
@@ -228,6 +229,7 @@ async def test_process_uses_busy_session_key_for_processing_state(tmp_path: Path
         sender="user",
         chat_id="123",
         content="天气",
+        tenant_id="telegram:123",
     )
 
     outbound = await loop._process(
@@ -440,7 +442,9 @@ async def test_agent_loop_afterstep_fires_with_turn_lifecycle_wiring(tmp_path: P
         lifecycle=TurnLifecycle(loop._event_bus),
         active_turn_states=loop.active_turn_states,
     )
-    msg = InboundMessage(channel="cli", sender="u", chat_id="123", content="你好")
+    msg = InboundMessage(
+        channel="cli", sender="u", chat_id="123", content="你好", tenant_id="cli:123"
+    )
     session = SimpleNamespace(
         key=session_key,
         messages=[],

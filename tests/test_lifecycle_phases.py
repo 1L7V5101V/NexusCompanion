@@ -838,8 +838,11 @@ async def test_before_reasoning_setup_calls_tools_set_context():
 
     tools.set_context.assert_called_once()
     call_kwargs = tools.set_context.call_args[1]
-    assert call_kwargs["channel"] == "telegram"
-    assert call_kwargs["chat_id"] == "123"
+    # C7：可信归属字段（channel/chat_id/tenant_id）不再进共享 set_context，
+    # 由 ToolExecutionContext 显式注入；这里只允许非可信运行时提示键。
+    assert "channel" not in call_kwargs
+    assert "chat_id" not in call_kwargs
+    assert "tenant_id" not in call_kwargs
     assert "current_user_source_ref" in call_kwargs
 
     assert ctx.skill_names == ["search"]

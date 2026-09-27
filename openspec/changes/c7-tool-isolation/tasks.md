@@ -14,8 +14,10 @@
 
 ## 2. ToolExecutionContext 与 registry 语义反转（ADR-1/2）
 
-- [ ] 2.1 新增 frozen `ToolExecutionContext`（`infra/` 或 `agent/tools/`，含 `path_resolver` 引用）+ 工厂（从 turn/channel 派生）。验证：单元测试覆盖字段不可变与派生来源
-- [ ] 2.2 `ToolRegistry.execute` 支持 `context=` 必填路径：合并语义反转为 context 优先，arguments 归属字段丢弃；`set_context()` 降级为非授权兼容 shim。验证：新增单测——模型参数携带 `tenant_id`/`session_key` 被忽略；全量工具调用点改造后 `pytest -q -W error tests/` 全绿
+- [x] 2.1 新增 frozen `ToolExecutionContext`（`infra/` 或 `agent/tools/`，含 `path_resolver` 引用）+ 工厂（从 turn/channel 派生）。验证：单元测试覆盖字段不可变与派生来源
+  → 完成（2026-09-27）：`agent/tools/context.py`（frozen dataclass + `ResourceScope` + `TenantPathResolver` Protocol + `tool_kwargs()` 注入面）；`tests/test_tool_execution_context.py` 5 项单测（不可变/空 tenant fail-closed/空 turn 拒绝/kwarg 只暴露三身份键/scope 判定）全绿
+- [x] 2.2 `ToolRegistry.execute` 支持 `context=` 必填路径：合并语义反转为 context 优先，arguments 归属字段丢弃；`set_context()` 降级为非授权兼容 shim。验证：新增单测——模型参数携带 `tenant_id`/`session_key` 被忽略；全量工具调用点改造后 `pytest -q -W error tests/` 全绿
+  → 完成（2026-09-27）：registry `execute(name, arguments, context=)` 三层合并（arguments 剥离 `TRUST_ARGUMENT_FIELDS` → 兼容 `_context` 仅非可信键 → `context.tool_kwargs()` 最高优先级）；`set_context()` 丢弃 trust 键并告警。穿线：`DefaultReasoner.run_turn` 构造 context（msg/session/turn 派生；account/principal 真实值随 task 3.2/6.1 接 C5 补全）→ `Reasoner.run(tool_context=)` → `_execute_tool` 闭包；`looping/core._run_agent_loop` + `AgentLoopRunner` 协议同步加参；`looping/handlers.py` spawn 完成链路改显式构造（dev 回退身份）；`before_reasoning` 停止写 trust 键；`spawn.py` 改读注入 kwargs。新负向测试 `tests/test_tool_registry_context.py` 4 项（参数覆盖无效/context 压过 stale/set_context 丢 trust/无 context 宁空不串）；全量回归 **1647 passed, 0 failed**；pyright 37 errors 全部为未触碰文件的既有项（基线计数差异源于 C8/C15 新文件），本改动零新增
 - [ ] 2.3 reasoning schema 注入按 context 对应 catalog 过滤（`agent/lifecycle/phases/*` 切换）。验证：白名单外工具不出现在 schema 的集成测试
 - [ ] 2.4 删除 `_context` 授权语义残留（全量迁移完成后移除兼容路径，不留悬置）。验证：代码 grep 无 `set_context` 授权调用点；pyright 对齐基线
 

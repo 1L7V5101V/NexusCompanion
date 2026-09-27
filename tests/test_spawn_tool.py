@@ -19,13 +19,22 @@ def _make_manager(spawn_return="started", spawn_sync_return="sync-result"):
 
 @pytest.mark.asyncio
 async def test_spawn_tool_uses_registry_context():
-    """Background mode (run_in_background=True) routes through manager.spawn with context."""
+    """Background mode (run_in_background=True) routes through manager.spawn with context.
+
+    C7：channel/chat_id 由 ToolExecutionContext 注入 execute kwargs（不再读共享
+    registry context），这里直接以 kwargs 模拟注入结果。
+    """
     registry = ToolRegistry()
     manager = _make_manager()
     tool = SpawnTool(manager, registry)
-    registry.set_context(channel="telegram", chat_id="123")
 
-    result = await tool.execute(task="do work", label="job", run_in_background=True)
+    result = await tool.execute(
+        task="do work",
+        label="job",
+        run_in_background=True,
+        channel="telegram",
+        chat_id="123",
+    )
 
     assert result == "started"
     manager.spawn.assert_awaited_once_with(
@@ -85,10 +94,12 @@ async def test_spawn_tool_keeps_spawning_even_when_policy_prefers_inline():
     registry = ToolRegistry()
     manager = _make_manager()
     tool = SpawnTool(manager, registry)
-    registry.set_context(channel="telegram", chat_id="123")
-
     result = await tool.execute(
-        task="帮我看一下这个函数名是不是合适", label="small", run_in_background=True
+        task="帮我看一下这个函数名是不是合适",
+        label="small",
+        run_in_background=True,
+        channel="telegram",
+        chat_id="123",
     )
 
     assert result == "started"
@@ -133,13 +144,13 @@ async def test_spawn_tool_forwards_retry_count_in_background_mode():
     registry = ToolRegistry()
     manager = _make_manager()
     tool = SpawnTool(manager, registry)
-    registry.set_context(channel="telegram", chat_id="123")
-
     await tool.execute(
         task="retry task auto_promote=false",
         label="job",
         run_in_background=True,
         retry_count=1,
+        channel="telegram",
+        chat_id="123",
     )
 
     kwargs = manager.spawn.await_args.kwargs

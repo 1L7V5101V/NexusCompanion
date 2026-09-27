@@ -426,6 +426,8 @@ def test_default_reasoner_observes_tool_lifecycle_events():
         media=[],
         channel="telegram",
         chat_id="123",
+        tenant_id="default",
+        metadata={},
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
@@ -677,6 +679,8 @@ def test_default_reasoner_run_turn_uses_context_render():
         media=[],
         channel="cli",
         chat_id="1",
+        tenant_id="default",
+        metadata={},
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
@@ -714,6 +718,8 @@ def test_default_reasoner_run_turn_reports_llm_timeout():
         media=[],
         channel="cli",
         chat_id="1",
+        tenant_id="default",
+        metadata={},
         timestamp=datetime(2026, 4, 5, 12, 0, 0),
     )
 
