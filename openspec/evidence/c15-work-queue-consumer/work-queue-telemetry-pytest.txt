@@ -1,0 +1,59 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- D:\Project\NexusCompanion-worktrees\wt-c15\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Project\NexusCompanion-worktrees\wt-c15
+configfile: pytest.ini
+plugins: anyio-4.13.0, asyncio-1.4.0, timeout-2.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=session
+collecting ... collected 48 items
+
+tests/test_work_queue_worker.py::test_config_frozen_defaults PASSED      [  2%]
+tests/test_work_queue_worker.py::test_config_invariants PASSED           [  4%]
+tests/test_work_queue_worker.py::test_same_tenant_is_serialized PASSED   [  6%]
+tests/test_work_queue_worker.py::test_cross_tenant_runs_concurrently PASSED [  8%]
+tests/test_work_queue_worker.py::test_maintenance_deferred_releases_without_failing PASSED [ 10%]
+tests/test_work_queue_worker.py::test_unregistered_flow_fails_loudly PASSED [ 12%]
+tests/test_work_queue_worker.py::test_handler_execute_outside_persist_inside_transaction PASSED [ 14%]
+tests/test_work_queue_worker.py::test_execute_failure_counts_as_business_failure PASSED [ 16%]
+tests/test_work_queue_worker.py::test_persist_failure_counts_as_business_failure PASSED [ 18%]
+tests/test_work_queue_worker.py::test_lease_lost_abandons_terminal_writes PASSED [ 20%]
+tests/test_work_queue_worker.py::test_lease_lost_on_failure_abandons_state PASSED [ 22%]
+tests/test_work_queue_worker.py::test_stop_closes_lane_and_stops_claiming PASSED [ 25%]
+tests/test_work_queue_worker.py::test_batch_size_is_passed_as_backpressure_bound PASSED [ 27%]
+tests/test_work_queue_worker.py::test_config_error_backoff_invariants PASSED [ 29%]
+tests/test_work_queue_worker.py::test_polling_error_does_not_escape_run PASSED [ 31%]
+tests/test_work_queue_worker.py::test_polling_error_recovers_and_resumes_consuming PASSED [ 33%]
+tests/test_work_queue_worker.py::test_claim_and_finish_events_recorded_on_success PASSED [ 35%]
+tests/test_work_queue_worker.py::test_finish_event_records_retryable_failure PASSED [ 37%]
+tests/test_work_queue_worker.py::test_finish_event_records_dead_letter_as_not_retryable PASSED [ 39%]
+tests/test_work_queue_worker.py::test_maintenance_deferral_finishes_as_interrupted PASSED [ 41%]
+tests/test_work_queue_worker.py::test_recover_stale_emits_recovery_events PASSED [ 43%]
+tests/test_work_queue_worker.py::test_run_sweeps_before_polling PASSED   [ 45%]
+tests/test_work_queue_wiring.py::test_async_pg_url_converts_driver[postgresql+psycopg://nexus:pw@localhost:5433/nexus-postgresql+asyncpg://nexus:pw@localhost:5433/nexus] PASSED [ 47%]
+tests/test_work_queue_wiring.py::test_async_pg_url_converts_driver[postgresql://nexus:pw@db:5432/nexus-postgresql+asyncpg://nexus:pw@db:5432/nexus] PASSED [ 50%]
+tests/test_work_queue_wiring.py::test_async_pg_url_converts_driver[postgresql+psycopg2://nexus:pw@db/nexus-postgresql+asyncpg://nexus:pw@db/nexus] PASSED [ 52%]
+tests/test_work_queue_wiring.py::test_async_pg_url_converts_driver[postgresql+asyncpg://nexus:pw@db/nexus-postgresql+asyncpg://nexus:pw@db/nexus] PASSED [ 54%]
+tests/test_work_queue_wiring.py::test_disabled_returns_none_without_touching_db PASSED [ 56%]
+tests/test_work_queue_wiring.py::test_non_postgres_backend_skips PASSED  [ 58%]
+tests/test_work_queue_wiring.py::test_enabled_without_handlers_fails_fast PASSED [ 60%]
+tests/test_work_queue_wiring.py::test_enabled_with_handlers_builds_async_engine_and_worker PASSED [ 62%]
+tests/test_work_queue_wiring.py::test_load_work_queue_defaults_when_absent PASSED [ 64%]
+tests/test_work_queue_wiring.py::test_load_work_queue_overrides PASSED   [ 66%]
+tests/test_work_queue_wiring.py::test_load_work_queue_rejects_invalid_values PASSED [ 68%]
+tests/test_work_queue_wiring.py::test_config_default_has_work_queue_section PASSED [ 70%]
+tests/test_work_queue_telemetry.py::test_allowed_event_fields_equal_fixture PASSED [ 72%]
+tests/test_work_queue_telemetry.py::test_emitted_events_are_subset_of_fixture PASSED [ 75%]
+tests/test_work_queue_telemetry.py::test_no_forbidden_content_field_can_appear PASSED [ 77%]
+tests/test_work_queue_telemetry.py::test_non_whitelisted_field_is_dropped_not_passed_through PASSED [ 79%]
+tests/test_work_queue_telemetry.py::test_claim_derives_queue_wait_ms PASSED [ 81%]
+tests/test_work_queue_telemetry.py::test_finish_derives_execution_ms PASSED [ 83%]
+tests/test_work_queue_telemetry.py::test_recovery_derives_restart_to_recovered_ms PASSED [ 85%]
+tests/test_work_queue_telemetry.py::test_error_text_is_redacted PASSED   [ 87%]
+tests/test_work_queue_telemetry.py::test_missing_error_is_omitted PASSED [ 89%]
+tests/test_work_queue_telemetry.py::test_register_metrics_is_idempotent PASSED [ 91%]
+tests/test_work_queue_telemetry.py::test_register_metrics_passes_policy_checked_registry PASSED [ 93%]
+tests/test_work_queue_telemetry.py::test_high_cardinality_identity_labels_are_rejected_by_policy PASSED [ 95%]
+tests/test_work_queue_telemetry.py::test_content_labels_are_rejected_by_policy PASSED [ 97%]
+tests/test_work_queue_telemetry.py::test_metrics_record_with_whitelisted_labels PASSED [100%]
+
+============================= 48 passed in 2.44s ==============================

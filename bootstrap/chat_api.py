@@ -61,7 +61,11 @@ class _DevOnlyGuardMiddleware:
             return
         if scope["type"] == "websocket":
             await send(
-                {"type": "websocket.close", "code": CLOSE_DEV_ONLY, "reason": "dev-only"}
+                {
+                    "type": "websocket.close",
+                    "code": CLOSE_DEV_ONLY,
+                    "reason": "dev-only",
+                }
             )
             return
         payload = b'{"detail":"WebChat is dev-only; non-loopback client rejected"}'
@@ -129,11 +133,14 @@ def create_chat_app(
             raise HTTPException(401, detail="authentication required") from None
         except SessionForbiddenError:
             raise HTTPException(403, detail="forbidden") from None
+
     # 生产从仓库根的 static/chat 提供（镜像里 /app/static/chat）；测试可传
     # static_root 隔离，避免被本地已构建的 bundle 影响（否则 / 会返回 HTML
     # 而非无 bundle 时的 JSON 回退）。
     project_root = Path(__file__).resolve().parent.parent
-    static_dir = static_root if static_root is not None else project_root / "static" / "chat"
+    static_dir = (
+        static_root if static_root is not None else project_root / "static" / "chat"
+    )
     index_file = static_dir / "index.html"
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount(
@@ -149,7 +156,9 @@ def create_chat_app(
         return {"status": "ok", "channel": channel.name}
 
     @app.get("/api/chat/sessions", dependencies=[Depends(_require_user_session)])
-    def list_sessions(page: int = Query(1), page_size: int = Query(50)) -> dict[str, Any]:
+    def list_sessions(
+        page: int = Query(1), page_size: int = Query(50)
+    ) -> dict[str, Any]:
         ctx = channel._require_ctx()
         items, total = ctx.session_manager._store.list_sessions_for_dashboard(
             channel=channel.name,
@@ -163,7 +172,10 @@ def create_chat_app(
         ]
         return {"items": visible, "total": len(visible)}
 
-    @app.get("/api/chat/sessions/{session_key:path}/messages", dependencies=[Depends(_require_user_session)])
+    @app.get(
+        "/api/chat/sessions/{session_key:path}/messages",
+        dependencies=[Depends(_require_user_session)],
+    )
     def list_messages(
         session_key: str,
         page: int = Query(1),

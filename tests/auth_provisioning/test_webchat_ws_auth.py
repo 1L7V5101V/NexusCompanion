@@ -36,7 +36,9 @@ CLOSE_NO_IDENTITY = 4403
 
 
 class _AuthStub:
-    def __init__(self, *, error: Exception | None = None, session: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self, *, error: Exception | None = None, session: dict[str, Any] | None = None
+    ) -> None:
         self._error = error
         self._session = session
 
@@ -50,7 +52,9 @@ class _CanonicalRepoStub:
     def __init__(self, conversations: list[dict[str, Any]]) -> None:
         self._conversations = conversations
 
-    async def list_conversations_by_account(self, account_id: Any) -> list[dict[str, Any]]:
+    async def list_conversations_by_account(
+        self, account_id: Any
+    ) -> list[dict[str, Any]]:
         return list(self._conversations)
 
 
@@ -67,7 +71,9 @@ class _RuntimeStub:
         self.config = AuthConfig(
             enabled=True,
             cookie_secure=True,
-            origin_allowlist=origin_allowlist if origin_allowlist is not None else [ORIGIN],
+            origin_allowlist=(
+                origin_allowlist if origin_allowlist is not None else [ORIGIN]
+            ),
         )
         self.auth = auth
         self.canonical_repo = _CanonicalRepoStub(conversations or [])
@@ -127,11 +133,20 @@ async def _invoke(
     return channel, ws
 
 
-def _runtime(error: Exception | None = None, conversations: list[dict[str, Any]] | None = None) -> _RuntimeStub:
+def _runtime(
+    error: Exception | None = None, conversations: list[dict[str, Any]] | None = None
+) -> _RuntimeStub:
     return _RuntimeStub(auth=_AuthStub(error=error), conversations=conversations)
 
 
-_CONV = [{"id": "conv-a", "tenant_id": "tenant-a", "account_id": "acct-a", "status": "active"}]
+_CONV = [
+    {
+        "id": "conv-a",
+        "tenant_id": "tenant-a",
+        "account_id": "acct-a",
+        "status": "active",
+    }
+]
 
 
 # ── 任务 1.1 / 1.3：凭据与来源拒绝 + 零入队 ──────────────────────
@@ -139,7 +154,9 @@ _CONV = [{"id": "conv-a", "tenant_id": "tenant-a", "account_id": "acct-a", "stat
 
 @pytest.mark.asyncio
 async def test_handshake_rejects_when_cookie_missing(tmp_path: Path) -> None:
-    channel, ws = await _invoke(tmp_path, _runtime(conversations=_CONV), {"origin": ORIGIN})
+    channel, ws = await _invoke(
+        tmp_path, _runtime(conversations=_CONV), {"origin": ORIGIN}
+    )
 
     assert ws.closed is not None and ws.closed[0] == CLOSE_UNAUTHORIZED
     assert channel.identities == []  # 零入队：从未进入通道
@@ -147,8 +164,13 @@ async def test_handshake_rejects_when_cookie_missing(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_handshake_rejects_invalid_session(tmp_path: Path) -> None:
-    runtime = _RuntimeStub(auth=_AuthStub(error=SessionInvalidError("authentication required")), conversations=_CONV)
-    channel, ws = await _invoke(tmp_path, runtime, {"cookie": _cookie_header(), "origin": ORIGIN})
+    runtime = _RuntimeStub(
+        auth=_AuthStub(error=SessionInvalidError("authentication required")),
+        conversations=_CONV,
+    )
+    channel, ws = await _invoke(
+        tmp_path, runtime, {"cookie": _cookie_header(), "origin": ORIGIN}
+    )
 
     assert ws.closed is not None and ws.closed[0] == CLOSE_UNAUTHORIZED
     assert channel.identities == []
@@ -157,8 +179,12 @@ async def test_handshake_rejects_invalid_session(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_handshake_rejects_suspended_account(tmp_path: Path) -> None:
     """账号 suspended 走 403 语义，但 WS 侧与其余凭据失败**不可区分**。"""
-    runtime = _RuntimeStub(auth=_AuthStub(error=SessionForbiddenError("forbidden")), conversations=_CONV)
-    channel, ws = await _invoke(tmp_path, runtime, {"cookie": _cookie_header(), "origin": ORIGIN})
+    runtime = _RuntimeStub(
+        auth=_AuthStub(error=SessionForbiddenError("forbidden")), conversations=_CONV
+    )
+    channel, ws = await _invoke(
+        tmp_path, runtime, {"cookie": _cookie_header(), "origin": ORIGIN}
+    )
 
     assert ws.closed is not None and ws.closed[0] == CLOSE_UNAUTHORIZED
     assert channel.identities == []
@@ -182,11 +208,16 @@ async def test_rejections_do_not_leak_which_check_failed(tmp_path: Path) -> None
     cases = [
         {"origin": ORIGIN},  # 无 Cookie
         {"cookie": _cookie_header(), "origin": ORIGIN},  # 会话无效
-        {"cookie": _cookie_header(), "origin": "https://evil.example.com"},  # 来源不匹配
+        {
+            "cookie": _cookie_header(),
+            "origin": "https://evil.example.com",
+        },  # 来源不匹配
     ]
     runtimes = [
         _runtime(conversations=_CONV),
-        _RuntimeStub(auth=_AuthStub(error=SessionInvalidError("x")), conversations=_CONV),
+        _RuntimeStub(
+            auth=_AuthStub(error=SessionInvalidError("x")), conversations=_CONV
+        ),
         _runtime(conversations=_CONV),
     ]
     observed: list[tuple[int, str]] = []

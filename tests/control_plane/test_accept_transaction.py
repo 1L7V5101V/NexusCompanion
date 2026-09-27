@@ -17,11 +17,20 @@ from bootstrap.db.repository.control_plane_repo import (
     TurnControlRepository,
 )
 
-from tests.control_plane.conftest import DEV_ACCOUNT_ID, DEV_CONVERSATION_ID, DEV_TENANT_ID
+from tests.control_plane.conftest import (
+    DEV_ACCOUNT_ID,
+    DEV_CONVERSATION_ID,
+    DEV_TENANT_ID,
+)
 
 pytestmark = pytest.mark.postgres
 
-FIXTURE_PATH = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "control_plane_idempotency.json"
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "tests"
+    / "fixtures"
+    / "control_plane_idempotency.json"
+)
 
 
 @pytest.fixture
@@ -75,7 +84,13 @@ async def test_accept_commits_all_in_one_transaction(
         source_message_id="m-1",
         content="你好",
         metadata={"origin": "test"},
-        work_items=[{"work_kind": "consolidation", "idempotency_key": "cons-1"}],
+        work_items=[
+            {
+                "work_kind": "maintenance",
+                "flow": "consolidation",
+                "idempotency_key": "cons-1",
+            }
+        ],
     )
     assert not work.duplicate
     assert work.sequence == 0
@@ -87,7 +102,9 @@ async def test_accept_commits_all_in_one_transaction(
     assert inbox["status"] == "accepted"
     assert inbox["canonical_message_id"] == work.message_id
 
-    stream = await messages.fetch_messages(tenant["tenant_id"], tenant["conversation_id"])
+    stream = await messages.fetch_messages(
+        tenant["tenant_id"], tenant["conversation_id"]
+    )
     assert [m["sequence"] for m in stream] == [0]
     assert stream[0]["role"] == "user"
     assert stream[0]["content"] == "你好"
@@ -140,7 +157,8 @@ async def test_accept_rollback_no_half_writes(
     control = TurnControlRepository(c2_factory)
     await control.create_work_item(
         tenant_a["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant_a["conversation_id"],
         idempotency_key="collide-key",
     )
@@ -153,7 +171,13 @@ async def test_accept_rollback_no_half_writes(
             account_id=tenant_b["account_id"],
             client_message_id="cm-rollback",
             content="hello",
-            work_items=[{"work_kind": "consolidation", "idempotency_key": "collide-key"}],
+            work_items=[
+                {
+                    "work_kind": "maintenance",
+                    "flow": "consolidation",
+                    "idempotency_key": "collide-key",
+                }
+            ],
         )
     after = _counts(c2_pg_url)
     assert after["message_deduplication_keys"] == before["message_deduplication_keys"]
@@ -164,9 +188,7 @@ async def test_accept_rollback_no_half_writes(
     assert _next_sequence(c2_pg_url, tenant_b["conversation_id"]) == 0
 
 
-async def test_accept_key_validation(
-    make_tenant, ingress: IngressRepository
-) -> None:
+async def test_accept_key_validation(make_tenant, ingress: IngressRepository) -> None:
     """幂等键二选一：两类同给 / 都不给 / 键不完整 → ValueError，不触库。"""
     tenant = await make_tenant()
     with pytest.raises(ValueError):
@@ -315,7 +337,10 @@ async def test_webchat_key_scoped_by_account(
 
 
 async def test_dev_seed_identity_acceptable(
-    c2_factory, c2_reset, ingress: IngressRepository, messages: CanonicalMessageRepository
+    c2_factory,
+    c2_reset,
+    ingress: IngressRepository,
+    messages: CanonicalMessageRepository,
 ) -> None:
     """C1 dev seed 身份可直接走 T1（P0.5 dev 闭环 seam）。"""
     c2_reset()

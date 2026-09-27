@@ -8,6 +8,9 @@ client_message_id)`——两类键同一行只持有一类，唯一性由**部�
 （PG 对含 NULL 的普通唯一索引不生效）。delivery 状态机
 `pending/attempting/sent/failed/dead_letter`：`sent` 只能由 provider ack 推进。
 本模块不承担旧单体 `channel:chat_id` 数据的导入或回退（§10 DECIDED）。
+
+C15 追加（openspec/changes/2026-09-20-c15-work-queue-consumer/design.md ADR-2）：
+`background_work_items` 的 lease/`flow` 列与 `work_attempts` 生命周期审计流。
 """
 
 from __future__ import annotations
@@ -36,7 +39,14 @@ INBOX_STATUSES = ("accepted", "processed")
 """inbox 收束枚举：processed = durable acceptance/terminal processing 已收束
 （`complete_inbound` 等价语义），不表示 channel 已成功展示。"""
 
-TURN_STATUSES = ("queued", "in_progress", "completed", "interrupted", "failed", "cancelled")
+TURN_STATUSES = (
+    "queued",
+    "in_progress",
+    "completed",
+    "interrupted",
+    "failed",
+    "cancelled",
+)
 """turn 状态枚举：沿用 ConversationRuntime 冻结终态集（PILOT_ROADMAP §3.1）。"""
 
 TOOL_CALL_STATUSES = ("running", "succeeded", "failed", "cancelled", "unknown")
@@ -45,11 +55,30 @@ TOOL_CALL_STATUSES = ("running", "succeeded", "failed", "cancelled", "unknown")
 WORK_ITEM_STATUSES = ("queued", "in_progress", "succeeded", "failed", "cancelled")
 """后台工作项状态枚举。"""
 
+WORK_ITEM_KINDS = ("interactive", "maintenance")
+"""任务类型枚举（PILOT_ROADMAP §7.1）：**决定调度优先级/lane**（C15 ADR-5）。
+
+注意：`consolidation` 一类是 `flow` 的值，不得出现在本字段（C15 spec
+「工作类型词汇与分派」）。"""
+
+WORK_FLOWS = ("passive", "proactive", "drift", "consolidation", "optimizer")
+"""业务链路枚举（PILOT_ROADMAP §7.1）：**决定 handler**（C15 ADR-2/ADR-5）。
+
+与 `tests/fixtures/observability_event_schema.json` 的 `flow` 枚举同源；
+不加 DB CHECK（可扩展），由本常量 + 代码校验承担。"""
+
 DELIVERY_INTENT_STATUSES = ("pending", "attempting", "sent", "failed", "dead_letter")
 """delivery 状态机枚举（§5.9.11）；dead_letter 仅管理员 redrive 可回到 pending。"""
 
 DELIVERY_ATTEMPT_OUTCOMES = ("sent", "failed", "redrive")
 """attempt 记录结果枚举：redrive 是管理员处置追加行（ADR-6），非真实投递。"""
+
+WORK_ATTEMPT_OUTCOMES = ("succeeded", "failed", "released", "recovered", "redrive")
+"""work item 生命周期审计流结果枚举（C15 ADR-2）：
+- `succeeded` / `failed`：handler 真实结果（`failed` 达到上限时即死信终态）；
+- `released`：维护类被延后释放（ADR-5，不是失败）；
+- `recovered`：崩溃后被清扫复位（ADR-3，不是失败）；
+- `redrive`：管理员人工重投处置行（非真实执行）。"""
 
 
 class MessageDeduplicationKeyModel(Base):
@@ -117,7 +146,9 @@ class InboxRecordModel(Base):
     __tablename__ = "inbox_records"
     __table_args__ = (
         UniqueConstraint("dedup_key_id", name="uq_inbox_records_dedup_key_id"),
-        CheckConstraint("status IN ('accepted', 'processed')", name="ck_inbox_records_status"),
+        CheckConstraint(
+            "status IN ('accepted', 'processed')", name="ck_inbox_records_status"
+        ),
         Index(
             "ix_inbox_records_conversation",
             "tenant_id",
@@ -263,7 +294,15 @@ class ToolCallModel(Base):
 
 
 class BackgroundWorkItemModel(Base):
-    """后台工作项（consolidation 等以 work id 归 C12）；幂等 work 重算归 C3/C12 调度。"""
+    """后台工作项：由 durable 消费者以 lease 认领并执行（C15）。
+
+    `attempt_count` / `lease_owner` / `lease_expires_at` / `next_attempt_at` /
+    `last_error` 与 `outbound_delivery_intents` **同名同语义**（C15 design ADR-2），
+    但 lease 语义有一处关键差异：`attempt_count` **只由 `record_work_failed`（业务
+    失败）递增**，认领与崩溃清扫复位**均不**递增（ADR-3）——否则反复崩溃会在
+    没有任何业务失败的情况下退避耗尽成 `failed`。状态词汇沿用
+    queued/in_progress/succeeded/failed/cancelled（ADR-1）。
+    """
 
     __tablename__ = "background_work_items"
     __table_args__ = (
@@ -278,6 +317,11 @@ class BackgroundWorkItemModel(Base):
             "ix_background_work_items_tenant_status",
             "tenant_id",
             "status",
+        ),
+        Index(
+            "ix_background_work_items_claim",
+            "status",
+            "next_attempt_at",
         ),
     )
 
@@ -294,9 +338,17 @@ class BackgroundWorkItemModel(Base):
         ),
     )
     work_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    flow: Mapped[str | None] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
     payload_json: Mapped[str | None] = mapped_column(Text)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(128))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -305,6 +357,44 @@ class BackgroundWorkItemModel(Base):
         nullable=False,
         server_default=func.now(),
         onupdate=func.now(),
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkAttemptModel(Base):
+    """work item 生命周期审计流（只追加）：C15 ADR-2 定案 (ii)。
+
+    承载 `succeeded` / `failed` / `released` / `recovered` / `redrive` 五类留痕。
+    命名为 attempt 是对齐 `delivery_attempts`，但语义上是**生命周期审计流**：
+    `released`（维护类延后）与 `recovered`（崩溃清扫复位）并非狭义「尝试」，
+    却也必须留痕。redrive 只追加、不删不改既有行——死信（`failed`）必须可事后复盘。
+    """
+
+    __tablename__ = "work_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('succeeded', 'failed', 'released', 'recovered', 'redrive')",
+            name="ck_work_attempts_outcome",
+        ),
+        Index("ix_work_attempts_item", "work_item_id", "started_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    work_item_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "background_work_items.id",
+            ondelete="RESTRICT",
+            name="fk_work_attempts_work_item_id",
+        ),
+        nullable=False,
+    )
+    outcome: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -427,6 +517,9 @@ __all__ = [
     "INBOX_STATUSES",
     "TOOL_CALL_STATUSES",
     "TURN_STATUSES",
+    "WORK_ATTEMPT_OUTCOMES",
+    "WORK_FLOWS",
+    "WORK_ITEM_KINDS",
     "WORK_ITEM_STATUSES",
     "BackgroundWorkItemModel",
     "DeliveryAttemptModel",
@@ -435,4 +528,5 @@ __all__ = [
     "OutboundDeliveryIntentModel",
     "ToolCallModel",
     "TurnModel",
+    "WorkAttemptModel",
 ]

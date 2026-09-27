@@ -154,11 +154,17 @@ async def test_turn_cas_transitions(make_tenant, repos: dict[str, Any]) -> None:
     assert in_progress["status"] == "in_progress"
     with pytest.raises(TransitionError):
         await control.transition_turn(
-            tenant["tenant_id"], turn_id, expected_status="queued", new_status="in_progress"
+            tenant["tenant_id"],
+            turn_id,
+            expected_status="queued",
+            new_status="in_progress",
         )
     with pytest.raises(TurnNotFoundError):
         await control.transition_turn(
-            tenant["tenant_id"], uuid.uuid4(), expected_status="queued", new_status="failed"
+            tenant["tenant_id"],
+            uuid.uuid4(),
+            expected_status="queued",
+            new_status="failed",
         )
 
 
@@ -196,7 +202,9 @@ async def test_tool_call_lifecycle(make_tenant, repos: dict[str, Any]) -> None:
     assert finished["finished_at"]
     with pytest.raises(TransitionError):
         await control.finish_tool_call(tenant["tenant_id"], call["id"], status="failed")
-    orphan = await control.record_tool_call(tenant["tenant_id"], turn_id, "search_messages")
+    orphan = await control.record_tool_call(
+        tenant["tenant_id"], turn_id, "search_messages"
+    )
     unknown = await control.finish_tool_call(
         tenant["tenant_id"], orphan["id"], status="unknown", outcome={"reason": "crash"}
     )
@@ -211,26 +219,35 @@ async def test_background_work_item_lifecycle(
     control: TurnControlRepository = repos["control"]
     first = await control.create_work_item(
         tenant["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant["conversation_id"],
         idempotency_key="work-1",
         payload={"window": 30},
     )
     second = await control.create_work_item(
         tenant["tenant_id"],
-        "consolidation",
+        "maintenance",
+        flow="consolidation",
         conversation_id=tenant["conversation_id"],
         idempotency_key="work-1",
     )
     assert first["id"] == second["id"]
     assert first["status"] == "queued"
+    assert first["flow"] == "consolidation"
 
     await control.transition_work_item(
-        tenant["tenant_id"], first["id"], expected_status="queued", new_status="in_progress"
+        tenant["tenant_id"],
+        first["id"],
+        expected_status="queued",
+        new_status="in_progress",
     )
     with pytest.raises(TransitionError):
         await control.transition_work_item(
-            tenant["tenant_id"], first["id"], expected_status="queued", new_status="succeeded"
+            tenant["tenant_id"],
+            first["id"],
+            expected_status="queued",
+            new_status="succeeded",
         )
     done = await control.transition_work_item(
         tenant["tenant_id"],

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from agent.config_models import (
     AdmissionConfig,
+    WorkQueueConfig,
     AppServerConfig,
     AuthConfig,
     CacheConfig,
@@ -35,6 +36,8 @@ from agent.config_models import (
     TelegramChannelConfig,
     WiringConfig,
 )
+from bootstrap.work_queue_defaults import DEFAULT_BACKOFF_SECONDS
+
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
 
@@ -63,6 +66,7 @@ def _normalize_cli_socket_endpoint(value: str | None) -> str:
             pass
     port_seed = zlib.crc32(text.encode("utf-8")) % 20000
     return f"127.0.0.1:{20000 + port_seed}"
+
 
 def _validated_timezone(tz_name: str, *, enabled: bool) -> str:
     """仅当 anyaction_enabled=True 时校验时区合法性，无效则启动时 fail-fast。"""
@@ -94,7 +98,9 @@ def load_config(path: str | Path = "config.toml") -> Config:
 
     def _protocol_value(slot: dict) -> str:
         """协议槽位值: [llm.<slot>] protocol > [llm] protocol > "openai"。"""
-        raw = str(slot.get("protocol") or llm.get("protocol") or "openai").strip().lower()
+        raw = (
+            str(slot.get("protocol") or llm.get("protocol") or "openai").strip().lower()
+        )
         if raw not in {"openai", "chat", "codex", "responses"}:
             raise ValueError(f"llm protocol 无效: {raw!r}（可选 openai/codex）")
         return raw
@@ -118,10 +124,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
     )
 
     from agent.persona import apply_persona_config
+
     apply_persona_config(persona)
 
     admission_cfg = _load_admission_config(data)
     auth_cfg = _load_auth_config(data)
+    work_queue_cfg = _load_work_queue_config(data)
     plugin_runtime_cfg = _load_plugin_runtime_config(data)
 
     return Config(
@@ -139,7 +147,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         memory_window=int(
             agent_context.get("memory_window", data.get("memory_window", 40))
         ),
-        base_url=str(llm_main.get("base_url") or data.get("base_url") or _PRESETS.get(provider) or ""),
+        base_url=str(
+            llm_main.get("base_url")
+            or data.get("base_url")
+            or _PRESETS.get(provider)
+            or ""
+        ),
         protocol=_protocol_value(llm_main),
         light_protocol=_protocol_value(llm_fast),
         agent_protocol=_protocol_value(llm_agent),
@@ -163,16 +176,12 @@ def load_config(path: str | Path = "config.toml") -> Config:
         light_api_key=_resolve(
             str(llm_fast.get("api_key") or data.get("light_api_key", ""))
         ),
-        light_base_url=str(
-            llm_fast.get("base_url") or data.get("light_base_url", "")
-        ),
+        light_base_url=str(llm_fast.get("base_url") or data.get("light_base_url", "")),
         agent_model=str(llm_agent.get("model") or data.get("agent_model", "")),
         agent_api_key=_resolve(
             str(llm_agent.get("api_key") or data.get("agent_api_key", ""))
         ),
-        agent_base_url=str(
-            llm_agent.get("base_url") or data.get("agent_base_url", "")
-        ),
+        agent_base_url=str(llm_agent.get("base_url") or data.get("agent_base_url", "")),
         memory=memory,
         fitbit=fitbit,
         storage=storage,
@@ -203,11 +212,10 @@ def load_config(path: str | Path = "config.toml") -> Config:
         app_server=app_server,
         admission=admission_cfg,
         auth=auth_cfg,
+        work_queue=work_queue_cfg,
         plugin_runtime=plugin_runtime_cfg,
         logging=logging_cfg,
-        router_mode=str(
-            data.get("router_mode", "rule")
-        ),
+        router_mode=str(data.get("router_mode", "rule")),
     )
 
 
@@ -226,7 +234,8 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                 channel_name=str(tg.get("channel_name", "telegram")),
                 api_base_url=_normalize_optional_config_text(
                     str(tg.get("api_base_url", ""))
-                ) or None,
+                )
+                or None,
             )
 
     qq = None
@@ -235,12 +244,9 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
         if bool(qq_data.get("enabled", True)) and bot_uin:
             groups = [
                 QQGroupConfig(
-                    group_id=str(
-                        g["group_id"] if "group_id" in g else g["groupId"]
-                    ),
+                    group_id=str(g["group_id"] if "group_id" in g else g["groupId"]),
                     allow_from=[
-                        str(u)
-                        for u in g.get("allow_from", g.get("allowFrom", []))
+                        str(u) for u in g.get("allow_from", g.get("allowFrom", []))
                     ],
                     require_at=g.get("require_at", g.get("requireAt", True)),
                 )
@@ -259,9 +265,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
             )
 
     cli_data = _as_dict(channels_data.get("cli"))
-    socket_value = channels_data.get("socket") or cli_data.get(
-        "socket", DEFAULT_SOCKET
-    )
+    socket_value = channels_data.get("socket") or cli_data.get("socket", DEFAULT_SOCKET)
     cli_session_key = str(cli_data.get("session_key") or "").strip()
     cli_channel = str(cli_data.get("channel") or "").strip()
     cli_chat_id = str(cli_data.get("chat_id") or "").strip()
@@ -325,9 +329,7 @@ def _load_storage_config(data: dict) -> StorageConfig:
     default = StorageConfig()
     return StorageConfig(
         backend=str(storage.get("backend") or default.backend),
-        postgres_url=_resolve(
-            str(storage.get("postgres_url") or default.postgres_url)
-        ),
+        postgres_url=_resolve(str(storage.get("postgres_url") or default.postgres_url)),
         pool_size=int(storage.get("pool_size", default.pool_size)),
     )
 
@@ -436,10 +438,7 @@ def _load_admission_config(data: dict) -> AdmissionConfig:
             raise ValueError(f"agent.admission.{name} 必须为正整数，当前: {value!r}")
         return parsed
 
-    if (
-        _int("ws_outbound_soft_limit")
-        >= _int("ws_outbound_hard_limit")
-    ):
+    if _int("ws_outbound_soft_limit") >= _int("ws_outbound_hard_limit"):
         raise ValueError(
             "agent.admission.ws_outbound_soft_limit 必须小于 ws_outbound_hard_limit"
         )
@@ -512,6 +511,69 @@ def _parse_int_positive(name: str, value: object) -> int:
     if parsed < 1:
         raise ValueError(f"{name} 必须为正整数，当前: {value!r}")
     return parsed
+
+
+_WORK_QUEUE_BACKOFF_STAGES = len(DEFAULT_BACKOFF_SECONDS)
+"""[agent.work_queue] `max_attempts` 上限 = 退避表档数（与 `WorkQueueWorkerConfig`
+冻结默认 1m/5m/30m/2h/6h 一致，字面量单一来源 = `bootstrap/work_queue_defaults.py`）。"""
+
+
+def _load_work_queue_config(data: dict) -> WorkQueueConfig:
+    """[agent.work_queue] C15 消费层参数；未配置即冻结默认（`enabled` 默认 False）。
+
+    与 `WorkQueueWorkerConfig.__post_init__` 的不变量同源，但**在配置加载期就报错**，
+    而不是等 worker 构造时才失败。
+    """
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("work_queue")) or {}
+    defaults = WorkQueueConfig()
+
+    def _float(name: str) -> float:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(f"agent.work_queue.{name} 必须为正，当前: {value!r}")
+        return parsed
+
+    def _int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError(f"agent.work_queue.{name} 必须为正整数，当前: {value!r}")
+        return parsed
+
+    lease_ttl = _float("lease_ttl_seconds")
+    heartbeat = _float("heartbeat_interval_seconds")
+    if lease_ttl <= heartbeat:
+        raise ValueError(
+            "agent.work_queue.lease_ttl_seconds 必须大于 heartbeat_interval_seconds"
+        )
+    max_attempts = _int("max_attempts")
+    if max_attempts > _WORK_QUEUE_BACKOFF_STAGES:
+        raise ValueError(
+            f"agent.work_queue.max_attempts 最多 {_WORK_QUEUE_BACKOFF_STAGES}"
+            "（退避表档数 1m/5m/30m/2h/6h；需要更多档位请先扩退避表）"
+        )
+    error_backoff = _float("error_backoff_seconds")
+    max_error_backoff = _float("max_error_backoff_seconds")
+    if max_error_backoff < error_backoff:
+        raise ValueError(
+            "agent.work_queue.max_error_backoff_seconds 必须 >= error_backoff_seconds"
+        )
+    return WorkQueueConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        lease_ttl_seconds=lease_ttl,
+        heartbeat_interval_seconds=heartbeat,
+        max_attempts=max_attempts,
+        poll_interval_seconds=_float("poll_interval_seconds"),
+        batch_size=_int("batch_size"),
+        maintenance_acquire_timeout_seconds=_float(
+            "maintenance_acquire_timeout_seconds"
+        ),
+        release_delay_seconds=_float("release_delay_seconds"),
+        error_backoff_seconds=error_backoff,
+        max_error_backoff_seconds=max_error_backoff,
+    )
 
 
 def _load_plugin_runtime_config(data: dict) -> PluginRuntimeConfig:
