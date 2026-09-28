@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PulseCore Demo — Kerr-Newman Black Hole</title>
+  <title>PulseCore Demo — Abstract Blackhole / Kerr-Newman</title>
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
     #host { position: fixed; inset: 0; }
@@ -19,6 +19,7 @@
     }
     #panel button:hover { background: rgba(255,255,255,0.14); }
     #panel button.active { background: #3b5bd6; color: #fff; border-color: #5b7bf0; }
+    #panel button[data-variant].active { background: #8a5bd6; border-color: #a97bf0; }
     #hint { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
       color: rgba(255,255,255,0.45); font-size: 12px; z-index: 10; }
     #fps { position: fixed; top: 16px; left: 16px; color: rgba(255,255,255,0.5); font-size: 12px;
@@ -28,17 +29,20 @@
 <body>
   <div id="host"></div>
   <div id="panel">
+    <button data-variant="abstract" class="active">Abstract（新）</button>
+    <button data-variant="kerr">Kerr-Newman（旧）</button>
+    <span style="width:1px;background:rgba(255,255,255,.15);margin:0 2px;"></span>
     <button data-state="idle" class="active">idle</button>
     <button data-state="thinking">thinking</button>
     <button data-state="streaming">streaming</button>
     <button data-state="error">error</button>
     <label style="display:flex;align-items:center;gap:6px;color:#cfd6e4;font-size:12px;margin-left:8px;">
-      大小 <input id="size" type="range" min="0.4" max="1.3" step="0.05" value="1" style="width:110px;">
+      大小 <input id="size" type="range" min="0.4" max="1.5" step="0.05" value="1" style="width:110px;">
       <span id="sizeVal" style="font-variant-numeric:tabular-nums;width:34px;">1.00</span>
     </label>
   </div>
   <div id="fps"></div>
-  <div id="hint">黑洞质量连续振荡 · 幅度随 AI 状态变化 · 切换上方按钮体验四种状态</div>
+  <div id="hint">鼠标靠近中心：光线偏移 + 能量增强 · 心跳=洞与盘整体呼吸缩放 · 切换按钮体验四种状态</div>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>
