@@ -246,10 +246,12 @@ export function AuroraCanvas({ active }: { active: boolean }) {
 
     let running = false;
     let raf = 0;
+    let lastTick = 0;
     let prevActive = activeRef.current;
     let turnAt = -1e9;
 
     const drawFrame = (now: number) => {
+      lastTick = now;
       const act = activeRef.current;
       if (act !== prevActive) {
         prevActive = act;
@@ -264,6 +266,14 @@ export function AuroraCanvas({ active }: { active: boolean }) {
       }
       raf = requestAnimationFrame(drawFrame);
     };
+
+    // 安全网：标签页进后台后 rAF 停摆，光段会冻在半路（看似另一块静止光斑）；
+    // rAF 停摆超 400ms 时用低速定时器续命（约 4fps 爬行），回前台自动交还 rAF。
+    const safety = setInterval(() => {
+      if (!running) return;
+      const now = performance.now();
+      if (now - lastTick > 400) drawFrame(now);
+    }, 250);
 
     kickRef.current = () => {
       if (running) return;
@@ -282,6 +292,7 @@ export function AuroraCanvas({ active }: { active: boolean }) {
     return () => {
       running = false;
       cancelAnimationFrame(raf);
+      clearInterval(safety);
       ro.disconnect();
       kickRef.current = null;
       // 不主动 loseContext：StrictMode 的卸载重挂会复用同一 canvas，
