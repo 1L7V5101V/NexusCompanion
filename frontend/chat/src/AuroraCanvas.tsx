@@ -158,12 +158,13 @@ void main() {
 
   c *= u_active;
   c = 1.0 - exp(-c * 1.35);
-  // ?aurora-debug=1：R=s 灰度（沿边框应为连续渐变，硬跳变=参数化断点），G=分段编号
+  // 预乘 alpha：无光处透明，光晕按亮度与下方内容合成
+  float alpha = clamp(max(c.r, max(c.g, c.b)), 0.0, 1.0);
   if (u_debug > 0.5) {
     gl_FragColor = vec4(border.z, border.w, 0.0, 1.0);
     return;
   }
-  gl_FragColor = vec4(c, 1.0);
+  gl_FragColor = vec4(c * alpha, alpha);
 }
 `;
 
@@ -194,7 +195,9 @@ export function AuroraCanvas({ active }: { active: boolean }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const opts = { alpha: false, antialias: false, powerPreference: "low-power" } as const;
+    // alpha:true + 亮度作 alpha：无光处全透明，不遮挡画布上方叠着的内容
+    // （画布向上伸 150px，opaque 上下文会把消息列表底部盖成黑块）
+    const opts = { alpha: true, antialias: false, powerPreference: "low-power" } as const;
     const gl = (canvas.getContext("webgl2", opts) ??
       canvas.getContext("webgl", opts)) as WebGLRenderingContext | null;
     if (!gl) {
@@ -248,6 +251,8 @@ export function AuroraCanvas({ active }: { active: boolean }) {
       canvas.width = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
       gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
       const cw = w - 2 * MARGIN;
       const ch = h - 2 * MARGIN;
       const radius = Math.min(28, cw / 2, ch / 2);
