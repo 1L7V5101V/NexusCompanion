@@ -28,6 +28,8 @@ uniform vec4 u_rect;      // center.xy, half.xy（css px，canvas 局部）
 uniform float u_radius;
 uniform float u_active;
 uniform float u_debug;    // ?aurora-debug=1：输出 s 灰度(R)与分支编号(G)
+uniform float u_pulse;    // 脉冲包络（入场→一圈→出场）
+uniform float u_prog;     // 光段沿周长的进度 0..1
 
 float hash(vec2 q) {
   return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453123);
@@ -54,10 +56,10 @@ float fbn(vec2 q) {
 }
 vec3 palette(float t) {
   t = fract(t);
-  vec3 c1 = vec3(0.26, 0.52, 0.96);
-  vec3 c2 = vec3(0.61, 0.45, 0.80);
-  vec3 c3 = vec3(0.86, 0.40, 0.45);
-  vec3 c4 = vec3(0.95, 0.66, 0.24);
+  vec3 c1 = vec3(0.30, 0.58, 1.00);
+  vec3 c2 = vec3(0.68, 0.44, 0.90);
+  vec3 c3 = vec3(1.00, 0.38, 0.52);
+  vec3 c4 = vec3(1.00, 0.64, 0.16);
   float s = t * 4.0;
   vec3 col = mix(c1, c2, clamp(s, 0.0, 1.0));
   col = mix(col, c3, clamp(s - 1.0, 0.0, 1.0));
@@ -137,16 +139,15 @@ void main() {
   // 环向圆域坐标：噪声沿周长首尾连续
   vec2 sc = vec2(cos(s * 6.2831853), sin(s * 6.2831853));
 
-  // 单段短流光：长度≈输入框横向宽度的一半，绕边框流动（约 37s 一圈）。
-  // 头部锐利、尾部弥散（Gemini 渐变解剖），长度轻微呼吸；其余部分全暗。
-  float cPos = fract(0.12 + u_time * 0.027 + 0.05 * sin(u_time * 0.11));
+  // 单段短流光：位置由 u_prog 驱动（一次发送 = 一圈脉冲），头锐尾散
+  float cPos = u_prog;
   float x = s - cPos;
   x = x - floor(x + 0.5);
   float w = 0.105 * (1.0 + 0.18 * sin(u_time * 0.23 + 1.7));
   float prof = smoothstep(-1.25 * w, -0.12 * w, x) * smoothstep(1.05 * w, 0.30 * w, x);
   float thick = 13.0 + 30.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
-  float amp = 1.25 * prof * (0.62 + 0.50 * fbn(sc * 3.0 + vec2(-u_time * 0.06, u_time * 0.16)));
-  vec3 col = palette(s + u_time * 0.02 + 0.18 * amp);
+  float amp = 1.55 * prof * (0.62 + 0.50 * fbn(sc * 3.0 + vec2(-u_time * 0.06, u_time * 0.16)));
+  vec3 col = palette(s + 0.18 * amp);
   vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 50.0);
 
   // 细边线：1.5px 活线，跟随振幅——暗段里细线同样熄灭，无固定颜色
@@ -156,8 +157,8 @@ void main() {
   // 只保留边框外圈与 2px 内衬
   c *= smoothstep(-3.0, 1.5, d);
 
-  c *= u_active;
-  c = 1.0 - exp(-c * 1.35);
+  c *= u_pulse * u_active;
+  c = 1.0 - exp(-c * 1.55);
   // 预乘 alpha：无光处透明，光晕按亮度与下方内容合成
   float alpha = clamp(max(c.r, max(c.g, c.b)), 0.0, 1.0);
   if (u_debug > 0.5) {
@@ -190,6 +191,7 @@ export function AuroraCanvas({ active }: { active: boolean }) {
   const activeRef = useRef(active);
   activeRef.current = active;
   const kickRef = useRef<(() => void) | null>(null);
+  const pulseStartRef = useRef(-1e9);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -241,6 +243,8 @@ export function AuroraCanvas({ active }: { active: boolean }) {
     const uRadius = gl.getUniformLocation(program, "u_radius");
     const uActive = gl.getUniformLocation(program, "u_active");
     const uDebug = gl.getUniformLocation(program, "u_debug");
+    const uPulse = gl.getUniformLocation(program, "u_pulse");
+    const uProg = gl.getUniformLocation(program, "u_prog");
     const debugMode = new URLSearchParams(window.location.search).get("aurora-debug") === "1" ? 1 : 0;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
@@ -268,9 +272,14 @@ export function AuroraCanvas({ active }: { active: boolean }) {
 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    // 脉冲模型：一次发送触发一次「入场 → 绕框一圈 → 出场」，结束后熄灭，
+    // 直到下一次发送（isRunning 上升沿）再触发。
+    const PULSE = { in: 450, lap: 5000, out: 600 };
+
     let running = false;
     let raf = 0;
     let lastTick = 0;
+    let pulseStart = -1e9;
     let prevActive = activeRef.current;
     let turnAt = -1e9;
 
@@ -281,17 +290,30 @@ export function AuroraCanvas({ active }: { active: boolean }) {
         prevActive = act;
         turnAt = now;
       }
+      const t = now - pulseStart;
+      // 包络：入场淡入 → 恒定 → 出场淡出
+      let pulse = 1;
+      if (t < PULSE.in) {
+        pulse = Math.max(0, t / PULSE.in);
+      } else if (t > PULSE.in + PULSE.lap) {
+        pulse = Math.max(0, 1 - (t - PULSE.in - PULSE.lap) / PULSE.out);
+      }
+      const prog = Math.min(1, Math.max(0, (t - PULSE.in) / PULSE.lap));
+      const activeFade = act ? 1 : Math.max(0, 1 - (now - turnAt) / 600);
       gl.uniform1f(uTime, now / 1000);
-      gl.uniform1f(uActive, act ? 1 : Math.max(0, 1 - (now - turnAt) / 600));
+      gl.uniform1f(uPulse, pulse);
+      gl.uniform1f(uProg, prog);
+      gl.uniform1f(uActive, activeFade);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      if (!act && now - turnAt > 700) {
+      const pulseDone = t > PULSE.in + PULSE.lap + PULSE.out;
+      if (pulseDone || (!act && now - turnAt > 700)) {
         running = false;
         return;
       }
       raf = requestAnimationFrame(drawFrame);
     };
 
-    // 安全网：标签页进后台后 rAF 停摆，光段会冻在半路（看似另一块静止光斑）；
+    // 安全网：标签页进后台后 rAF 停摆，脉冲会冻在半路；
     // rAF 停摆超 400ms 时用低速定时器续命（约 4fps 爬行），回前台自动交还 rAF。
     const safety = setInterval(() => {
       if (!running) return;
@@ -302,12 +324,10 @@ export function AuroraCanvas({ active }: { active: boolean }) {
     kickRef.current = () => {
       if (running) return;
       if (reduced) {
-        // 降级：静止单帧，不进 rAF 循环。
-        gl.uniform1f(uTime, 4.2);
-        gl.uniform1f(uActive, 1);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        // 降级：脉冲是纯动效，reduced-motion 下不绘制
         return;
       }
+      pulseStart = performance.now();
       running = true;
       raf = requestAnimationFrame(drawFrame);
     };
@@ -325,7 +345,10 @@ export function AuroraCanvas({ active }: { active: boolean }) {
   }, []);
 
   useEffect(() => {
-    if (!failed && active) kickRef.current?.();
+    if (!failed && active) {
+      pulseStartRef.current = performance.now(); // 上升沿：重置脉冲起点
+      kickRef.current?.();
+    }
   }, [active, failed]);
 
   if (failed) {
