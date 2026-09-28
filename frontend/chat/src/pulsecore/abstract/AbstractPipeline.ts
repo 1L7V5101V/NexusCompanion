@@ -66,6 +66,8 @@ uniform int   uWave;        // 波形 0 连续正弦 / 1 双峰 lub-dub / 2 快�
 uniform float uGain;        // 曝光增益（tonemap 前）
 uniform vec2  uMouseOff;    // 鼠标视差偏移（P 空间）
 uniform float uSwirlTime;   // 吸积盘旋转时间（JS 积分）
+uniform float uFeedback;    // 时间累积混合（0=无残影，0.9=原作 TAA）
+uniform float uJitter;      // 亚像素抖动开关（累积关掉时一并关，防边缘爬行）
 
 float envWave(float ph) {
   ph-=floor(ph);
@@ -147,6 +149,7 @@ export class AbstractPipeline {
     private mouseBoost = 0.35;    // 鼠标→能量增强
     private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
     private proxFar = 0.7;        // 接近半径外缘
+    private feedback = 0.55;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
 
     // 鼠标
     private hasPointer = false;
@@ -165,7 +168,9 @@ export class AbstractPipeline {
         this.canvas = canvas;
         this.profiles = structuredClone(STATE_PROFILES);
         this.scale = opts?.scale ?? 0.5;
-        this.fpsCap = opts?.fpsCap ?? 60;
+        // 120 上限：shader 很便宜，跟垂直同步走（100Hz 屏=100fps）——
+        // 残影时长=时间常数/帧率，帧率越高运动越干净
+        this.fpsCap = opts?.fpsCap ?? 120;
 
         this.renderer = new THREE.WebGLRenderer({
             canvas,
@@ -203,6 +208,10 @@ export class AbstractPipeline {
             .replace('iTime/', 'uSwirlTime/')
             // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
+            // 时间累积可调：0.9 是原作的 TAA（静止抗锯齿，运动=残影）；
+            // uJitter 与之联动——没有累积时抖动只剩噪声
+            .replace('C+=jitter(iFrame);', 'C+=jitter(iFrame)*uJitter;')
+            .replace('.xyz,.9);', '.xyz,uFeedback);')
             // 原作依赖未初始化局部量归零，显式化（驱动差异防御）
             .replace('vec4 O;', 'vec4 O;\n  o=vec3(0);')
             // 步进预算随洞尺寸缩放：光弧来自贴洞绕行的长路径光线，洞变大后
@@ -211,7 +220,7 @@ export class AbstractPipeline {
             // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
             // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
             .replace('i<99&&z<29.', 'i<130&&z<29.');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -235,6 +244,8 @@ export class AbstractPipeline {
             uGain: { value: 1 },
             uMouseOff: { value: new THREE.Vector2(0, 0) },
             uSwirlTime: { value: 0 },
+            uFeedback: { value: 0.55 },
+            uJitter: { value: 1 },
         });
 
         this.passes = {
@@ -347,6 +358,9 @@ export class AbstractPipeline {
         if (patch.lag !== undefined) this.pertLag = Math.max(0, Math.min(0.6, patch.lag));
     }
 
+    /** 时间累积混合：0=无运动残影（同时关亚像素抖动），0.9=原作 TAA 手感 */
+    setFeedback(v: number) { this.feedback = Math.max(0, Math.min(0.95, v)); }
+
     /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
     setMouseParams(patch: { offsetK?: number; boost?: number; near?: number; far?: number }) {
         if (patch.offsetK !== undefined) this.mouseOffsetK = Math.max(0, Math.min(0.5, patch.offsetK));
@@ -447,6 +461,8 @@ export class AbstractPipeline {
         m.uniforms.uGain.value = gain;
         m.uniforms.uMouseOff.value.copy(this.mouseOff);
         m.uniforms.uSwirlTime.value = this.swirlTime;
+        m.uniforms.uFeedback.value = this.feedback;
+        m.uniforms.uJitter.value = this.feedback > 0.03 ? 1 : 0;
         m.uniforms.iChannel0.value = this.rtA[this.flip].rt.texture;   // 上帧 Buffer A
         const dst = this.rtA[1 - this.flip];
         this.renderPass(m, dst);
