@@ -43,9 +43,36 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--color-bg);
   color: var(--color-fg);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+/* #root 必须透明：z -1 的脉冲背景画在根层叠上下文的负 z 带，
+   位于 #root 普通流背景之下——不透明会整体盖住背景层 */
+html,
+body {
+  background: var(--color-bg);
+}
+#root {
+  background: transparent;
+}
+
+/* ===== PulseCore 背景：黑洞脉冲核心（fixed 层，位于内容之下）=====
+   z -1：加入根层叠上下文、落在所有正常流内容之后；
+   自带纯黑底，WebGL 就绪前/失败回退时也是深空。 */
+.pulse-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: #000;
+}
+
+/* 登录卡：脉冲背景上的玻璃面板 */
+.login-card {
+  background: rgba(18, 18, 18, 0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
 }
 
 @supports (height: 100dvh) {
@@ -126,8 +153,8 @@ body,
   --msg-radius: 18px;
   --msg-bubble-max: min(44vw, 29rem);
   --msg-bubble-pad: 10px 16px;
-  --bubble-user-bg: var(--color-surface-2);
-  --bubble-assistant-bg: var(--color-surface-2);
+  --bubble-user-bg: rgba(20, 20, 20, 0.72);        /* 脉冲背景上玻璃化：半透明 + 毛玻璃 */
+  --bubble-assistant-bg: rgba(20, 20, 20, 0.72);
   --sweep-duration: 3.4s;          /* 流光扫过一轮的时长：缓慢、匀速 */
   --line-fade: 0.26s;              /* 思考行淡出让位给正文的时长 */
   --word-fade-in: 0.2s;            /* 状态词切换淡入 */
@@ -291,6 +318,8 @@ body,
   max-width: var(--msg-bubble-max);
   margin-left: auto;
   background: var(--bubble-user-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-radius: var(--msg-radius);
   padding: var(--msg-bubble-pad);
   width: fit-content;
@@ -300,6 +329,8 @@ body,
 .bubble-assistant {
   max-width: var(--msg-bubble-max);
   background: var(--bubble-assistant-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-radius: var(--msg-radius);
   padding: var(--msg-bubble-pad);
   width: fit-content;

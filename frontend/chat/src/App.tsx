@@ -11,6 +11,8 @@ import { useSmoothStream } from "./hooks/useSmoothStream";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
 import { LoginPanel } from "./LoginPanel";
+import { PulseBackground } from "./PulseBackground";
+import type { PulseCoreState } from "./pulsecore/PulseCorePipeline";
 
 const MOCK_MODE = new URLSearchParams(window.location.search).get("mock") === "1";
 
@@ -125,8 +127,28 @@ function AssistantMessageView({ message }: { message: ChatMessage }) {
   );
 }
 
+/**
+ * AI 状态 → PulseCore 背景状态：
+ * - 最近一条消息失败 → error（直到下一次发送）
+ * - 等待首 token → thinking；正文流式中 → streaming
+ * - 其余 → idle
+ */
+function deriveAiState(
+  messages: readonly ChatMessage[],
+  isRunning: boolean,
+  awaitingFirstToken: boolean,
+): PulseCoreState {
+  const last = messages[messages.length - 1];
+  if (last?.status === "error") return "error";
+  if (isRunning || awaitingFirstToken) {
+    return awaitingFirstToken ? "thinking" : "streaming";
+  }
+  return "idle";
+}
+
 function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => void }) {
   const { runtime, status, messages, isRunning, awaitingFirstToken } = chat;
+  const aiState = deriveAiState(messages, isRunning, awaitingFirstToken);
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -189,9 +211,10 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
     <AssistantRuntimeProvider runtime={runtime}>
       {/* app-root：overflow 用 clip（见 CSS）——裁掉流光画布向下出界的部分，
           同时不产生滚动容器（hidden 会让画布外伸计入 scrollHeight，
-          焦点滚动把整个界面推上去） */}
-      <div ref={rootRef} className="app-root relative flex h-full flex-col bg-bg text-fg">
-        <header className="flex items-center justify-between border-b border-border px-4 py-3">
+          焦点滚动把整个界面推上去）。背景为 PulseCore 脉冲核心（fixed 层）。 */}
+      <div ref={rootRef} className="app-root relative flex h-full flex-col text-fg">
+        <PulseBackground state={aiState} />
+        <header className="relative z-10 flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
           <div className="flex items-center gap-3">
             <ConnectionBadge status={status} />
@@ -317,11 +340,14 @@ function RealApp() {
   }
   if (auth.phase === "anonymous") {
     return (
-      <LoginPanel
-        onAuthenticated={(user) =>
-          setAuth(user ? { phase: "authenticated", user } : { phase: "anonymous" })
-        }
-      />
+      <>
+        <PulseBackground state="idle" />
+        <LoginPanel
+          onAuthenticated={(user) =>
+            setAuth(user ? { phase: "authenticated", user } : { phase: "anonymous" })
+          }
+        />
+      </>
     );
   }
   return (

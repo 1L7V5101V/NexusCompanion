@@ -43,10 +43,12 @@ export interface PulseCoreProps {
     scale?: number;
     /** 黑洞基础尺寸倍率：默认 0.6（用户定稿）；abstract 范围 0.3–2.0，kerr 0.2–1.3 */
     holeSize?: number;
+    /** 管线就绪/卸载回调（调试与命令式控制用） */
+    onInstance?: (p: PulseCoreInstance | null) => void;
     className?: string;
 }
 
-export function PulseCore({ variant = 'abstract', state = 'idle', audioEnergy = 0, scale, holeSize, className }: PulseCoreProps) {
+export function PulseCore({ variant = 'abstract', state = 'idle', audioEnergy = 0, scale, holeSize, onInstance, className }: PulseCoreProps) {
     const hostRef = useRef<HTMLDivElement>(null);
     const pipelineRef = useRef<PulseCoreInstance | null>(null);
 
@@ -66,6 +68,7 @@ export function PulseCore({ variant = 'abstract', state = 'idle', audioEnergy = 
             pipeline.setAudioEnergy(audioEnergy);
             pipeline.start();
             pipelineRef.current = pipeline;
+            onInstance?.(pipeline);
         } catch (e) {
             // WebGL2 不可用：保留纯色深空背景，不影响聊天功能
             canvas.style.background = 'radial-gradient(ellipse at center, #10121f 0%, #05060d 70%)';
@@ -75,6 +78,7 @@ export function PulseCore({ variant = 'abstract', state = 'idle', audioEnergy = 
         return () => {
             pipeline?.dispose();
             pipelineRef.current = null;
+            onInstance?.(null);
             canvas.remove();
         };
         // state/audioEnergy/holeSize 仅作初值，后续变化由下方 effect 增量应用
