@@ -1,0 +1,44 @@
+# pg-durable-sot-cutover — 实施任务
+
+> 依据 design.md ADR-1..7 与 specs/（webchat-durable-storage 新增 + webchat-protocol-dev-loop 修改）；证据统一落 `openspec/evidence/pg-durable-sot-cutover/`。
+> 管理闭环：任务 checkbox → `openspec status` → evidence → 仅在有 evidence 时更新 `PILOT_ROADMAP_PROJECT_CHECKLIST` / `SCALING_ROADMAP_PROJECT_CHECKLIST` 状态。
+> 约定：实现默认在 main 直接分任务提交（同 C7/C8 模式）；PG 集成测试跑 `NEXUS_REQUIRE_PG=1`（本地 Docker PG 5433）；scratch 库做迁移演练。
+
+## 1. 前置核对与迁移
+
+- [ ] 1.1 **控制面/canonical API 对账**：程序化核对 `accept_inbound`/`complete_turn_with_delivery`/`DeliveryRepository`/`canonical_repo` 的签名与参数覆盖本 change 需求面（双键去重、WebChat 键类型、queued turn 可选后台项、turn 置 `in_progress` 路径、重复注入返回既有身份字段）；缺口逐项回 design 补决策。验证：对账表入 evidence，未决项 0
+- [ ] 1.2 **重放帧记录表迁移**：alembic 迁移（per-conversation `(conversation_id, seq)` 唯一 + frame_json + created_at；事务内 seq 分配策略定案）。验证：scratch 库 `upgrade head` → `downgrade base` → `upgrade head` 全链通过，结果入 evidence `task-1.2-migration.txt`
+- [ ] 1.3 **spec 交叉核对**：本 change delta 与 `durable-control-plane`/`canonical-identity`/`webchat-protocol-dev-loop` 现行规格逐条对读，确认零冲突（尤其重放窗口、overload 时序、`sent` 语义）。验证：对读结论入 evidence
+
+## 2. durable 接受接线（ADR-1）
+
+- [ ] 2.1 `_handle_send` 接 `accept_inbound`：overload 检查后同步 T1，提交后才发 `message.accepted`（durable seq）；事务失败回结构化错误帧且不缓存幂等。验证：新增单测——提交失败零写入可重发；accepted 帧.seq = 持久层 seq
+- [ ] 2.2 幂等权威切换：重复 `client_message_id` 以数据库重复返回重放原 ack（同 seq）；`_accepted_frames`/`_deduper` 降级为缓存（命中路径保留、未命中回落 PG 查询）。验证：单测 + PG 集成——同 id 重发唯一消息行；重启进程后重发仍重放原 seq（对应 delta「重启后重复提交重放原 ack」场景）
+
+## 3. 执行与完成事务接线（ADR-2）
+
+- [ ] 3.1 turn 生命周期落控制面：执行起点置 `in_progress`（服务端派生 turn 身份贯穿）；失败/取消收束 `transition_turn` 记原因，不产 intent。验证：单测——失败 turn 终态有原因、delivery intent 表零行
+- [ ] 3.2 成功完成包 `complete_turn_with_delivery`（T2）：final canonical message + completed 终态 + pending intent 同事务；T2 后同步投影 `session_manager.append_messages`（失败记日志不阻断，ADR-5）。验证：PG 集成——T2 原子性（中途失败全回滚）；投影内容与 canonical 一致
+- [ ] 3.3 `_on_outbound` 拆分：final/failed 帧不再由 EventBus 直发（改由 T2/终态路径与 delivery worker），delta/tool 帧维持即时广播。验证：协议契约测试（`chat_protocol_frames.json`）全绿不变；帧序——delta 先于 final 的既有客户端预期不破坏
+
+## 4. delivery worker 接线（ADR-4）
+
+- [ ] 4.1 WebChat 投递适配器 + worker 装配进应用生命周期：按 conversation 找在线连接逐个投递，≥1 写成功推进 `sent`（record_attempt_sent），零连接/写失败走退避；T2 提交后事件唤醒 worker（轮询兜底）。验证：单测——在线投递 sent、无连接重试、唤醒触发即时投递
+- [ ] 4.2 `dead_letter` 与重试边界：按冻结参数（lease 60s/5 次/`1m–6h`）验证 attempt 链路收束，dead_letter 可查、final 消息不受影响。验证：PG 集成——退避参数下重试至 dead_letter 的状态轨迹（可注入缩短退避），结果入 evidence `task-4.2-delivery.txt`
+
+## 5. durable 重放、REST 重建与启动对账（ADR-3）
+
+- [ ] 5.1 重连补拉切持久层：`replay{after_seq}` 从重放帧表按序服务；窗口外/不可用回 `replay_required`；delta/tool 帧不入表。验证：协议契约测试补「重启后补拉」「游标超窗」场景（对应 delta 两 Scenario）
+- [ ] 5.2 REST 重建读 canonical：`/api/chat/sessions/{key}/messages` 与重建路径以 canonical 流为权威（会话映射：canonical conversation ↔ session_key）；序号连续无重复。验证：PG 集成——重建结果与实时推送内容一致（对应 spec「重建结果与实时会话一致」场景）
+- [ ] 5.3 启动对账模块：非终态 turn 收束 failed（原因 `restart_reconciled`、不产 intent）；派生视图与 canonical 分歧以 canonical 修复；对账结果出日志/指标。验证：PG 集成——执行中重启（kill 模拟）→ 启动后 turn=failed、无 intent、重建不出现半截 final（对应 spec 启动对账两场景）
+
+## 6. E10 记录点（ADR-7）
+
+- [ ] 6.1 turn/tool_call/delivery 记录点模块：fixture 白名单构造（字段超出丢弃并报错）+ `redact_text` + label 白名单 fail-fast；接线到 §3/§4 各收束点；记录点异常不阻断主流程。验证：契约测试——事件字段 ⊆ fixture 白名单（双向断言，模式同 `test_work_queue_telemetry.py::test_allowed_event_fields_equal_fixture`）；若发现 fixture 字段不足 → 停，回 design 补决策（不许顺手扩 fixture）
+- [ ] 6.2 C12 台账与 manifest 登记：`c12-observability-backup/tasks.md` §8.1 追加本 change 承接记录（turn/tool_call/delivery 三记录点落地，消除无 owner 滞留项）；重放帧表纳入 backup manifest 校验器 fixture/模板核对（有差异则补模板条目）。验证：C12 tasks 更新 + manifest fixture 核对结论入 evidence
+
+## 7. 验收与回归
+
+- [ ] 7.1 **PG 端到端**（`NEXUS_REQUIRE_PG=1`，真实 C5 provisioning 账号）：发消息 → accepted（durable seq）→ final 经 delivery worker 抵达 → 重启进程 → 重发同 id 重放原 ack + 补拉连续 + REST 重建一致 + delivery 意图不重生成。验证：`tests/pg_sot/`（或就近目录）e2e 全绿，输出入 evidence `task-7.1-pg-e2e.txt`
+- [ ] 7.2 **全量回归与基线对齐**：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` 全绿；`pyright --level error` 双配置（project + tests）对齐基线（既有错误数不新增）。验证：结果入 evidence `task-7.2-regression.txt`
+- [ ] 7.3 **管理闭环回填**：本 change tasks 全勾 + `openspec status` 收口；`PILOT_ROADMAP_PROJECT_CHECKLIST` 回填（P0.5「canonical stream/0-based seq」、P1「durable source of truth」两条目勾选带 evidence；current blocker 解除说明——公网开放存储前置完成，下一步为部署 canary 与运维放开决策）。验证：checklist diff 仅含 evidence 支撑的状态变更
