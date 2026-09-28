@@ -27,6 +27,7 @@ uniform float u_time;
 uniform vec4 u_rect;      // center.xy, half.xy（css px，canvas 局部）
 uniform float u_radius;
 uniform float u_active;
+uniform float u_debug;    // ?aurora-debug=1：输出 s 灰度(R)与分支编号(G)
 
 float hash(vec2 q) {
   return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453123);
@@ -65,8 +66,9 @@ vec3 palette(float t) {
   return col;
 }
 
-// 最近边框点 -> vec2(bp, s)（bp 相对 composer 中心，s 为周长参数 0..1）
-vec3 closestBorder(vec2 pc, vec2 h, float r) {
+// 最近边框点 -> vec4(bp.xy, s, br)（bp 相对 composer 中心；s 周长参数 0..1；
+// br 分段编号 1-8：TR/BR/BL/TL 角与上右下左边，用于 ?aurora-debug 诊断）
+vec4 closestBorder(vec2 pc, vec2 h, float r) {
   float ax = h.x - r;
   float ay = h.y - r;
   float arc = 1.5707963 * r;
@@ -74,6 +76,7 @@ vec3 closestBorder(vec2 pc, vec2 h, float r) {
   vec2 sgn = sign(pc);
   vec2 bp;
   float s;
+  float br;
   if (aq.x > 0.0 && aq.y > 0.0) {
     // 角区：最近点在四分之一圆弧上
     vec2 dir = sgn * aq / max(length(aq), 1e-4);
@@ -81,32 +84,40 @@ vec3 closestBorder(vec2 pc, vec2 h, float r) {
     bp = sgn * vec2(ax, ay) + r * dir;
     if (sgn.x > 0.0 && sgn.y < 0.0) {
       s = 2.0 * ax + (phi + 1.5707963) * r;
+      br = 1.0;
     } else if (sgn.x > 0.0 && sgn.y > 0.0) {
       s = 2.0 * ax + arc + 2.0 * ay + phi * r;
+      br = 2.0;
     } else if (sgn.x < 0.0 && sgn.y > 0.0) {
       s = 4.0 * ax + 2.0 * arc + 2.0 * ay + (phi - 1.5707963) * r;
+      br = 3.0;
     } else {
       s = 4.0 * ax + 3.0 * arc + 4.0 * ay + (phi + 3.14159265) * r;
+      br = 4.0;
     }
   } else if (aq.y > 0.0) {
     // 上/下直边
     bp = vec2(clamp(pc.x, -ax, ax), sgn.y * h.y);
     if (sgn.y < 0.0) {
       s = bp.x + ax;
+      br = 5.0;
     } else {
       s = 2.0 * ax + 2.0 * arc + 2.0 * ay + (ax - bp.x);
+      br = 6.0;
     }
   } else {
     // 左/右直边
     bp = vec2(sgn.x * h.x, clamp(pc.y, -ay, ay));
     if (sgn.x > 0.0) {
       s = 2.0 * ax + arc + (bp.y + ay);
+      br = 7.0;
     } else {
       s = 4.0 * ax + 3.0 * arc + 2.0 * ay + (ay - bp.y);
+      br = 8.0;
     }
   }
   float total = 4.0 * (ax + ay) + 2.0 * 3.14159265 * r;
-  return vec3(bp, s / total);
+  return vec4(bp, s / total, br / 8.0);
 }
 
 void main() {
@@ -120,7 +131,7 @@ void main() {
   vec2 clq = max(aq, 0.0);
   float d = length(clq) + min(max(aq.x, aq.y), 0.0) - r;
 
-  vec3 border = closestBorder(pc, h, r);
+  vec4 border = closestBorder(pc, h, r);
   float s = border.z;
 
   // 环向圆域坐标：噪声沿周长首尾连续
@@ -147,6 +158,11 @@ void main() {
 
   c *= u_active;
   c = 1.0 - exp(-c * 1.35);
+  // ?aurora-debug=1：R=s 灰度（沿边框应为连续渐变，硬跳变=参数化断点），G=分段编号
+  if (u_debug > 0.5) {
+    gl_FragColor = vec4(border.z, border.w, 0.0, 1.0);
+    return;
+  }
   gl_FragColor = vec4(c, 1.0);
 }
 `;
@@ -221,6 +237,8 @@ export function AuroraCanvas({ active }: { active: boolean }) {
     const uRect = gl.getUniformLocation(program, "u_rect");
     const uRadius = gl.getUniformLocation(program, "u_radius");
     const uActive = gl.getUniformLocation(program, "u_active");
+    const uDebug = gl.getUniformLocation(program, "u_debug");
+    const debugMode = new URLSearchParams(window.location.search).get("aurora-debug") === "1" ? 1 : 0;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
     const resize = () => {
@@ -237,6 +255,7 @@ export function AuroraCanvas({ active }: { active: boolean }) {
       gl.uniform4f(uRect, w / 2, h / 2, cw / 2, ch / 2);
       gl.uniform1f(uRadius, radius);
       gl.uniform1f(uDpr, dpr);
+      gl.uniform1f(uDebug, debugMode);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(canvas);
