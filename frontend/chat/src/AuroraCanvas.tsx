@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
  * 原生 WebGL 零依赖（单个全屏 quad；shader 可原样平移到 three）。
  */
 
-const MARGIN = 120;
+const MARGIN = 150;
 
 const VERT = `
 attribute vec2 a_pos;
@@ -126,12 +126,17 @@ void main() {
   // 环向圆域坐标：噪声沿周长首尾连续
   vec2 sc = vec2(cos(s * 6.2831853), sin(s * 6.2831853));
 
-  // 连续光带：厚度与振幅沿边框平滑起伏，噪声谷底归零——
-  // 有的段完全无光，亮段连续流入暗段，无接缝
-  float thick = 11.0 + 26.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
-  float amp = 1.15 * smoothstep(0.30, 0.78, fbn(sc * 3.4 + vec2(-u_time * 0.06, u_time * 0.16)));
+  // 单段短流光：长度≈输入框横向宽度的一半，绕边框流动（约 37s 一圈）。
+  // 头部锐利、尾部弥散（Gemini 渐变解剖），长度轻微呼吸；其余部分全暗。
+  float cPos = fract(0.12 + u_time * 0.027 + 0.05 * sin(u_time * 0.11));
+  float x = s - cPos;
+  x = x - floor(x + 0.5);
+  float w = 0.105 * (1.0 + 0.18 * sin(u_time * 0.23 + 1.7));
+  float prof = smoothstep(-1.25 * w, -0.12 * w, x) * smoothstep(1.05 * w, 0.30 * w, x);
+  float thick = 13.0 + 30.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
+  float amp = 1.25 * prof * (0.62 + 0.50 * fbn(sc * 3.0 + vec2(-u_time * 0.06, u_time * 0.16)));
   vec3 col = palette(s + u_time * 0.02 + 0.18 * amp);
-  vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 45.0);
+  vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 50.0);
 
   // 细边线：1.5px 活线，跟随振幅——暗段里细线同样熄灭，无固定颜色
   float rimN = fbn(sc * 1.8 + vec2(u_time * 0.31, -u_time * 0.23));
@@ -139,11 +144,6 @@ void main() {
 
   // 只保留边框外圈与 2px 内衬
   c *= smoothstep(-3.0, 1.5, d);
-
-  // 细胞纱幕：大尺度流体噪声贴着外圈呼吸
-  float veil = fbn(pc * 0.012 + vec2(u_time * 0.055, -u_time * 0.038));
-  vec3 veilCol = palette(0.15 + 0.7 * veil + u_time * 0.012);
-  c += veilCol * veil * 0.07 * exp(-max(d, 0.0) / 40.0);
 
   c *= u_active;
   c = 1.0 - exp(-c * 1.35);
