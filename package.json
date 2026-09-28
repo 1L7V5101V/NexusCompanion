@@ -36,11 +36,14 @@
   "dependencies": {
     "@assistant-ui/react": "^0.15.17",
     "@radix-ui/react-scroll-area": "^1.2.2",
+    "@react-three/fiber": "^9.8.1",
+    "@types/three": "^0.186.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.23.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
-    "tailwind-merge": "^2.6.0"
+    "tailwind-merge": "^2.6.0",
+    "three": "^0.186.1"
   }
 }
