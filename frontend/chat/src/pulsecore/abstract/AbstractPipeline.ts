@@ -33,9 +33,33 @@
 // demo 调参面板实时驱动；React 集成时可挑常用的提为 props。
 
 import * as THREE from 'three';
-import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, massOscillation } from '../shadertoy';
+import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, massOscillation } from '../shadertoy';
 import type { PulseCoreState } from '../PulseCorePipeline';
 import bufferASrc from './shaders/bufferA.glsl?raw';
+
+// 超采样 blit：scale>1 时对输出像素脚印做 4 tap 盒式降采样（空间抗锯齿，
+// 替代低时间累积下失效的 TAA）；scale≤1 时退化为单次线性采样（放大）。
+const SS_BLIT_FRAG = /* glsl */ `
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uOutRes;   // 输出（画布）分辨率
+uniform vec2 uSrcRes;   // 源 RT 分辨率
+uniform float uSS;      // 超采样倍率（=内部 scale，>1 生效）
+uniform float uGain;
+out vec4 fragColor;
+void main() {
+    vec2 uv = gl_FragCoord.xy / uOutRes;
+    vec3 col;
+    if (uSS > 1.0) {
+        vec2 o = 0.5 * uSS / uSrcRes;
+        col = 0.25 * (texture(uTex, uv + o).rgb + texture(uTex, uv - o).rgb
+                    + texture(uTex, uv + vec2(o.x, -o.y)).rgb + texture(uTex, uv + vec2(-o.x, o.y)).rgb);
+    } else {
+        col = texture(uTex, uv).rgb;
+    }
+    fragColor = vec4(col * uGain, 1.0);
+}
+`;
 
 export interface StateProfile {
     bpm: number;         // 脉搏（次/分）
@@ -172,7 +196,7 @@ export class AbstractPipeline {
     constructor(canvas: HTMLCanvasElement, opts?: { scale?: number; fpsCap?: number }) {
         this.canvas = canvas;
         this.profiles = structuredClone(STATE_PROFILES);
-        this.scale = opts?.scale ?? 0.85;
+        this.scale = opts?.scale ?? 1.25;
         // 120 上限：shader 很便宜，跟垂直同步走（100Hz 屏=100fps）——
         // 残影时长=时间常数/帧率，帧率越高运动越干净
         this.fpsCap = opts?.fpsCap ?? 120;
@@ -265,12 +289,14 @@ export class AbstractPipeline {
             blit: new THREE.RawShaderMaterial({
                 glslVersion: THREE.GLSL3,
                 vertexShader: FULLSCREEN_VERT,
-                fragmentShader: OVERLAY_FRAG,
+                fragmentShader: SS_BLIT_FRAG,
                 depthTest: false,
                 depthWrite: false,
                 uniforms: {
                     uTex: { value: null },
                     uOutRes: { value: new THREE.Vector2(1, 1) },
+                    uSrcRes: { value: new THREE.Vector2(1, 1) },
+                    uSS: { value: 0 },
                     uGain: { value: 1 },
                 },
             }),
@@ -374,9 +400,9 @@ export class AbstractPipeline {
         if (patch.far !== undefined) this.proxFar = Math.max(this.proxNear + 0.05, Math.min(2, patch.far));
     }
 
-    /** 内部渲染分辨率系数（重建渲染目标，反馈历史清零会闪一帧重新收敛） */
+    /** 内部渲染分辨率系数：>1 为超采样（空间抗锯齿，代价∝平方），重建渲染目标 */
     setScale(v: number) {
-        this.scale = Math.max(0.25, Math.min(0.85, v));
+        this.scale = Math.max(0.25, Math.min(1.5, v));
         this.resize();
     }
 
@@ -467,17 +493,21 @@ export class AbstractPipeline {
         m.uniforms.uMouseOff.value.copy(this.mouseOff);
         m.uniforms.uSwirlTime.value = this.swirlTime;
         m.uniforms.uFeedback.value = this.feedback;
-        m.uniforms.uJitter.value = this.feedback > 0.03 ? 1 : 0;
+        // 抖动只在有足够时间累积时才有意义（累积平均掉抖动=AA）；
+        // 低累积下抖动没有历史可平均，纯剩噪声——关掉
+        m.uniforms.uJitter.value = this.feedback > 0.3 ? 1 : 0;
         m.uniforms.iChannel0.value = this.rtA[this.flip].rt.texture;   // 上帧 Buffer A
         const dst = this.rtA[1 - this.flip];
         this.renderPass(m, dst);
         this.flip = 1 - this.flip;
 
-        // ---- Blit：线性放大上屏（原作 Image 直通的等价物）----
+        // ---- Blit：超采样盒式降采样 / 线性放大上屏 ----
         const mo = this.passes.blit;
         mo.uniforms.uTex.value = dst.rt.texture;
         const cw = this.renderer.domElement.width, ch = this.renderer.domElement.height;
         (mo.uniforms.uOutRes.value as THREE.Vector2).set(cw, ch);
+        (mo.uniforms.uSrcRes.value as THREE.Vector2).set(w, h);
+        mo.uniforms.uSS.value = this.scale > 1.05 ? this.scale : 0;
         this.renderPass(mo, null);
     }
 
