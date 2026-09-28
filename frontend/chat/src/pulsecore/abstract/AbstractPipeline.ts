@@ -7,9 +7,12 @@
 //   这里换成 OVERLAY 线性放大 blit 上屏（uGain=1，语义等价）。
 //
 // 相对原作的适配（原作 glsl 文件零修改，全部在加载层做字符串替换）：
-//   d=l-.7*uHoleBase*(1+uPulseAmp*envWave(uPhase))
+//   d=l-.7*uH + g=-p*uH/(l*L)
 //                                       心跳脉动：只有洞本体（视界/光子环）随包络胀缩，
-//                                       相机真正固定——不是整体缩放
+//                                       相机真正固定——不是整体缩放；引力弯折随瞬时
+//                                       质量 uH 同比缩放（光子球 ∝ 视界 ∝ M，GR 关系），
+//                                       弧始终贴着洞缘——只放大视界不放大会把光子球
+//                                       吞进视界，透镜弧消失
 //   N=floor(diskInv(Z)/STEP) + rw*diskF(rw)
 //                                       盘响应：径向翘曲场 diskF——内缘严格跟随洞
 //                                       （ISCO 随质量），扰动向外按 exp(-x/λ) 衰减、
@@ -20,6 +23,7 @@
 //   iTime/ → uSwirlTime/                吸积盘旋转时间由 JS 按状态积分（换挡无相位跳变）
 //   o/=5e3; 前插 o*=uGain               曝光增益（tonemap 前）：状态/音频/鼠标能量/闪烁
 //   vec4 O; 后补 o=vec3(0)              原作依赖未初始化局部量归零，显式化防驱动差异
+//   i<99&&z<29. → ×uHoleBase            步进预算随洞尺寸缩放（大洞的透镜弧路径更长）
 //
 // envWave（GLSL）与 oscOf（TS）是同一包络的两份实现，改波形公式必须两边同步。
 //
@@ -182,8 +186,12 @@ export class AbstractPipeline {
         // 加载层适配原作 Buffer A（正文零修改；替换点见文件头注释）
         const aSrc = bufferASrc
             .replace('float j,z=0.,d,D,L,l,s,N,a,H,A,Z;', 'float j,z=0.,d,D,L,l,s,N,a,H,A,Z,rw;')
-            // 洞本体脉动：只有视界随包络胀缩，相机固定
-            .replace('d=l-.7;', 'd=l-.7*uHoleBase*(1.+uPulseAmp*envWave(uPhase));')
+            // 洞本体脉动：只有视界随包络胀缩，相机固定。
+            // uH = 瞬时质量因子（基础尺寸 × 脉动包络），引力弯折必须同比例缩放——
+            // 否则光子球不随视界走，大洞会把绕行发光区整个吞进视界（上缘白弧消失）
+            .replace('d=l-.7;', 'float uH=uHoleBase*(1.+uPulseAmp*envWave(uPhase));d=l-.7*uH;')
+            // 引力随质量缩放：光子球 ∝ 视界 ∝ M（GR 关系），弧始终贴着洞缘
+            .replace('g=-p/(l*L);', 'g=-p*uH/(l*L);')
             // 盘响应：径向翘曲——内环随洞进出，扰动向外衰减+延迟传播
             .replace('N=clamp(floor(length(p.xz)/STEP+.5),1./STEP,6./STEP);',
                 'N=clamp(floor(diskInv(Z)/STEP+.5),1./STEP,6./STEP);')
@@ -196,8 +204,14 @@ export class AbstractPipeline {
             // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
             // 原作依赖未初始化局部量归零，显式化（驱动差异防御）
-            .replace('vec4 O;', 'vec4 O;\n  o=vec3(0);');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n']) {
+            .replace('vec4 O;', 'vec4 O;\n  o=vec3(0);')
+            // 步进预算随洞尺寸缩放：光弧来自贴洞绕行的长路径光线，洞变大后
+            // 99 步不够烧，上缘白弧会在绕行途中断掉（被"吞"）。
+            // 上界只放宽到 130（弧路径只多 ~1.2×：贴洞段随 h 变长，其余段不变）；
+            // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
+            // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
+            .replace('i<99&&z<29.', 'i<130&&z<29.');
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
