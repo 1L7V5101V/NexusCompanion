@@ -8,6 +8,7 @@ import { ThinkingDots } from "./components/ThinkingDots";
 import { ThinkingBlock } from "./components/ThinkingBlock";
 import { ToolCallCard } from "./components/ToolCallCard";
 import { StreamingMarkdown } from "./components/StreamingMarkdown";
+import { StatusLabel } from "./components/StatusLabel";
 import { useSmoothStream } from "./hooks/useSmoothStream";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
@@ -53,9 +54,12 @@ function UserMessageView({ message }: { message: ChatMessage }) {
   );
 }
 
-/** 正文 part：useSmoothStream 匀速放出 → StreamingMarkdown 渲染。 */
+/** 正文 part：useSmoothStream 匀速放出 → StreamingMarkdown 渲染。
+ *  正文起步的过渡窗口（目标文本 <20 字符）显示 writing 状态词。 */
 function StreamingTextPart({ text, streaming }: { text: string; streaming: boolean }) {
   const shown = useSmoothStream(text);
+  const writing = streaming && text.length < 20;
+  if (writing) return <StatusLabel category="writing" />;
   return <StreamingMarkdown text={shown} streaming={streaming} />;
 }
 
@@ -170,7 +174,7 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
                   ),
                 )
               )}
-              <ThinkingDots active={awaitingFirstToken} />
+              <ThinkingDots active={awaitingFirstToken} withStatus />
             </div>
           </div>
           {showJump ? (

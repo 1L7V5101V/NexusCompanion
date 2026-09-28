@@ -34,10 +34,12 @@ export const smooth = (tokens: string[]) => tokens.join("");
 
 function playScript(store: ChatStore, timers: number[]): void {
   const turnId = `mock-${Date.now()}`;
-  let t = 400;
-  const at = (delay: number, fn: () => void) => {
+  let t = 315;
+  // at(gapBefore, fn)：先推进时间轴 gapBefore 再触发 fn——gap 就是上一个
+  // 事件到本事件的真实间隔（工具运行时长 = started 到 completed 的间隔）。
+  const at = (gapBefore: number, fn: () => void) => {
+    t += gapBefore;
     timers.push(window.setTimeout(fn, t));
-    t += delay;
   };
 
   // 1) 思考流式
@@ -47,7 +49,7 @@ function playScript(store: ChatStore, timers: number[]): void {
       store.handleFrame({ type: "message.delta", turn_id: turnId, thinking_delta: chunk, content_delta: "" }),
     );
   }
-  // 2) 工具 1：成功
+  // 2) 工具 1：成功（运行 1.5s）
   at(250, () => store.handleFrame({ type: "tool.started", turn_id: turnId, call_id: "call-1", tool_name: "web_search" }));
   at(1500, () =>
     store.handleFrame({
@@ -60,7 +62,7 @@ function playScript(store: ChatStore, timers: number[]): void {
         '检索到 3 条相关资料：\n1. "流式 UI 渲染最佳实践" —— 建议按块渲染、增量追加\n2. "Chat 交互动效指南" —— 光标与匀速输出\n3. "Reduced Motion 清单" —— 跳动/扫光需可降级',
     }),
   );
-  // 3) 工具 2：失败
+  // 3) 工具 2：失败（运行 1.3s）
   at(300, () => store.handleFrame({ type: "tool.started", turn_id: turnId, call_id: "call-2", tool_name: "run_code" }));
   at(1300, () =>
     store.handleFrame({
@@ -80,6 +82,8 @@ function playScript(store: ChatStore, timers: number[]): void {
     );
   }
   // 5) 正文流式（每帧一小段，末尾与 turn.completed 的终态完全一致）
+  //    先留 800ms 过渡：writing 状态词在正文起步前可见
+  at(800, () => {});
   const chunks: string[] = [];
   for (let i = 0; i < ANSWER.length; i += 7) chunks.push(ANSWER.slice(i, i + 7));
   for (const chunk of chunks) {
@@ -88,7 +92,7 @@ function playScript(store: ChatStore, timers: number[]): void {
     );
   }
   // 6) 终态（source of truth，与流式累积一致）
-  at(200, () =>
+  at(250, () =>
     store.handleFrame({
       type: "turn.completed",
       turn_id: turnId,
