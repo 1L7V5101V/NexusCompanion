@@ -35,9 +35,10 @@
 // demo 调参面板实时驱动；React 集成时可挑常用的提为 props。
 
 import * as THREE from 'three';
-import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, massOscillation } from '../shadertoy';
+import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, envelopeOf, type WaveShape } from '../shadertoy';
 import type { PulseCoreState } from '../PulseCorePipeline';
 import bufferASrc from './shaders/bufferA.glsl?raw';
+export type { WaveShape };
 
 // 超采样 blit：scale>1 时对输出像素脚印做 4 tap 盒式降采样（空间抗锯齿，
 // 替代低时间累积下失效的 TAA）；scale≤1 时退化为单次线性采样（放大）。
@@ -65,14 +66,14 @@ void main() {
 
 export interface StateProfile {
     bpm: number;         // 脉搏（次/分）
-    holeAmp: number;     // 盘/云径向脉动幅度（心跳驱动，本体不随动）；0.03 = 峰值外扩 3%
+    holeAmp: number;     // 盘/云径向脉动幅度（心跳驱动，本体不随动）；0.038 = 峰值外扩 3.8%
     gain: number;        // 基准曝光增益
     swirl: number;       // 吸积盘旋转速度倍率
     flicker: number;     // 闪烁强度（error）
     wobble: number;      // 心律不齐强度（error：每拍随机化频率与幅度）
 }
 
-export type WaveShape = 'continuous' | 'lubdub' | 'pulse';
+export type { WaveShape };
 
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
     // 四状态剖面均为用户定稿值（2026-09-28 调参面板验收，idle 为基准）
@@ -484,19 +485,6 @@ export class AbstractPipeline {
 
     setFpsCap(v: number) { this.fpsCap = Math.max(10, Math.min(120, v)); }
 
-    private oscOf(phase: number): number {
-        if (this.waveShape === 'lubdub') {
-            const f = phase % 1;
-            const g = (c: number, w: number) => Math.exp(-((f - c) ** 2) / (2 * w * w));
-            return Math.min(1, g(0.18, 0.055) + 0.55 * g(0.42, 0.045));
-        }
-        if (this.waveShape === 'pulse') {
-            const f = phase % 1;
-            return Math.exp(-f * 5);
-        }
-        return massOscillation(phase);
-    }
-
     start() {
         this.lastNow = performance.now();
         const loop = (now: number) => {
@@ -540,7 +528,7 @@ export class AbstractPipeline {
             this.ampJitter = 1 + (Math.random() - 0.5) * 0.6 * this.cur.wobble;
         }
         this.heartPhase += dt * this.cur.bpm * this.rateJitter / 60;
-        const osc = this.oscOf(this.heartPhase);
+        const osc = envelopeOf(this.heartPhase, this.waveShape);
 
         // 鼠标：靠近核心程度 → 视差偏移 + 能量增强
         const proxT = this.hasPointer ? 1 - smoothStep(this.proxNear, this.proxFar, Math.hypot(this.pointerP.x, this.pointerP.y)) : 0;

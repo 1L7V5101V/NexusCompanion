@@ -27,44 +27,43 @@ const adj = {
     fpsCap: 85,
     feedback: 0.05,
     starGain: 1,
-    starLens: 0,
+    starLens: 1,
     wave: 'lubdub' as WaveShape,
 };
 const profileOverrides: Record<PulseCoreState, Partial<StateProfile>> = {
     idle: {}, thinking: {}, streaming: {}, error: {},
 };
 
-const abstractOrNull = (): AbstractPipeline | null =>
-    variant === 'abstract' && pipeline instanceof AbstractPipeline ? pipeline : null;
-
 function createPipeline(v: PulseCoreVariant) {
     pipeline?.dispose();
-    pipeline = v === 'kerr' ? new PulseCorePipeline(canvas, { scale: 0.5 }) : new AbstractPipeline(canvas, { scale: adj.scale, fpsCap: adj.fpsCap });
-    const a = abstractOrNull();
-    if (a) {
-        (['idle', 'thinking', 'streaming', 'error'] as const).forEach(s => {
-            if (Object.keys(profileOverrides[s]).length) a.setProfile(s, profileOverrides[s]);
-        });
-        a.setWaveShape(adj.wave);
-        a.setDynamics(adj.dynamics);
-        a.setPert({ lam: adj.pert.lam, lag: adj.pert.lag });
-        a.setHorizonAmp(adj.pert.horizonAmp);
-        a.setGlowK(adj.pert.glowK);
-        a.setMouseParams(adj.mouse);
-        a.setFeedback(adj.feedback);
-        a.setStarGain(adj.starGain);
-        a.setStarLens(adj.starLens);
-    }
+    // kerr 为 5-pass GR 体渲染：分辨率钳到 0.85（超采样代价不可承受）
+    const scale = v === 'kerr' ? Math.min(adj.scale, 0.85) : adj.scale;
+    pipeline = v === 'kerr'
+        ? new PulseCorePipeline(canvas, { scale, fpsCap: adj.fpsCap })
+        : new AbstractPipeline(canvas, { scale: adj.scale, fpsCap: adj.fpsCap });
+    (['idle', 'thinking', 'streaming', 'error'] as const).forEach(s => {
+        if (Object.keys(profileOverrides[s]).length) pipeline.setProfile(s, profileOverrides[s]);
+    });
+    pipeline.setWaveShape(adj.wave);
+    pipeline.setDynamics(adj.dynamics);
+    pipeline.setPert({ lam: adj.pert.lam, lag: adj.pert.lag });
+    pipeline.setHorizonAmp(adj.pert.horizonAmp);
+    pipeline.setGlowK(adj.pert.glowK);
+    pipeline.setMouseParams(adj.mouse);
+    pipeline.setFeedback(adj.feedback);
+    pipeline.setStarGain(adj.starGain);
+    pipeline.setStarLens(adj.starLens);
     pipeline.setState(curState);
     pipeline.setAudioEnergy(audio);
     pipeline.setHoleSize(holeSize);
     pipeline.start();
+    (window as unknown as Record<string, unknown>).__pulsecore = pipeline;
     updateFpsLabel();
 }
 
 function updateFpsLabel() {
-    const prefix = variant === 'kerr' ? 'kerr' : 'abstract';
-    fpsEl.dataset.prefix = `${prefix} · scale ${variant === 'kerr' ? 0.5 : adj.scale.toFixed(2)} · ${variant === 'kerr' ? 30 : adj.fpsCap}fps cap`;
+    const shownScale = variant === 'kerr' ? Math.min(adj.scale, 0.85) : adj.scale;
+    fpsEl.dataset.prefix = `${variant} · scale ${shownScale.toFixed(2)} · ${adj.fpsCap}fps cap`;
 }
 fpsEl.textContent = '';
 
@@ -186,13 +185,12 @@ for (const key of profileRowKeys) {
     const spec = profileRowSpec[key];
     profileRows[key] = mkRow(advEl, spec.label, spec.min, spec.max, spec.step, 0, x => {
         profileOverrides[curState][key] = x;
-        abstractOrNull()?.setProfile(curState, { [key]: x } as Partial<StateProfile>);
+        pipeline.setProfile(curState, { [key]: x } as Partial<StateProfile>);
     });
 }
 function refreshProfileRows() {
-    const a = abstractOrNull();
-    if (!a) return;
-    const prof = a.getProfile(curState);
+    if (!pipeline) return;
+    const prof = pipeline.getProfile(curState);
     for (const key of profileRowKeys) {
         const row = profileRows[key];
         row.input.value = String(prof[key]);
@@ -212,38 +210,38 @@ for (const [value, text] of [['continuous', '连续正弦（默认）'], ['lubdu
 }
 waveSel.addEventListener('change', () => {
     adj.wave = waveSel.value as WaveShape;
-    abstractOrNull()?.setWaveShape(adj.wave);
+    pipeline.setWaveShape(adj.wave);
 });
 waveSel.value = adj.wave;
 advEl.appendChild(waveSel);
 
 // —— 耦合强度 ——
 mkH4(advEl, '耦合强度');
-mkRow(advEl, '心跳→亮度', 0, 0.2, 0.005, adj.dynamics.oscGainK, x => { adj.dynamics.oscGainK = x; abstractOrNull()?.setDynamics({ oscGainK: x }); });
-mkRow(advEl, '音频→亮度', 0, 0.5, 0.01, adj.dynamics.audioGainK, x => { adj.dynamics.audioGainK = x; abstractOrNull()?.setDynamics({ audioGainK: x }); });
-mkRow(advEl, '音频→脉动', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => { adj.dynamics.audioScaleK = x; abstractOrNull()?.setDynamics({ audioScaleK: x }); });
+mkRow(advEl, '心跳→亮度', 0, 0.2, 0.005, adj.dynamics.oscGainK, x => { adj.dynamics.oscGainK = x; pipeline.setDynamics({ oscGainK: x }); });
+mkRow(advEl, '音频→亮度', 0, 0.5, 0.01, adj.dynamics.audioGainK, x => { adj.dynamics.audioGainK = x; pipeline.setDynamics({ audioGainK: x }); });
+mkRow(advEl, '音频→脉动', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => { adj.dynamics.audioScaleK = x; pipeline.setDynamics({ audioScaleK: x }); });
 
 // —— 盘响应（心跳涟漪如何向外传播）——
 mkH4(advEl, '盘响应', '· 只影响心跳，不影响大小');
-mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; abstractOrNull()?.setPert({ lam: x }); });
-mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; abstractOrNull()?.setPert({ lag: x }); });
-mkRow(advEl, '本体脉动', 0, 1, 0.05, adj.pert.horizonAmp, x => { adj.pert.horizonAmp = x; abstractOrNull()?.setHorizonAmp(x); });
-mkRow(advEl, '辉光脉动', 0, 20, 0.5, adj.pert.glowK, x => { adj.pert.glowK = x; abstractOrNull()?.setGlowK(x); });
+mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; pipeline.setPert({ lam: x }); });
+mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; pipeline.setPert({ lag: x }); });
+mkRow(advEl, '本体脉动', 0, 1, 0.05, adj.pert.horizonAmp, x => { adj.pert.horizonAmp = x; pipeline.setHorizonAmp(x); });
+mkRow(advEl, '辉光脉动', 0, 20, 0.5, adj.pert.glowK, x => { adj.pert.glowK = x; pipeline.setGlowK(x); });
 
 // —— 鼠标交互 ——
 mkH4(advEl, '鼠标交互');
-mkRow(advEl, '视差幅度', 0, 0.4, 0.01, adj.mouse.offsetK, x => { adj.mouse.offsetK = x; abstractOrNull()?.setMouseParams({ offsetK: x }); });
-mkRow(advEl, '能量增强', 0, 1, 0.05, adj.mouse.boost, x => { adj.mouse.boost = x; abstractOrNull()?.setMouseParams({ boost: x }); });
-mkRow(advEl, '近距半径', 0, 0.4, 0.02, adj.mouse.near, x => { adj.mouse.near = x; abstractOrNull()?.setMouseParams({ near: x }); });
-mkRow(advEl, '远距半径', 0.2, 1.5, 0.05, adj.mouse.far, x => { adj.mouse.far = x; abstractOrNull()?.setMouseParams({ far: x }); });
+mkRow(advEl, '视差幅度', 0, 0.4, 0.01, adj.mouse.offsetK, x => { adj.mouse.offsetK = x; pipeline.setMouseParams({ offsetK: x }); });
+mkRow(advEl, '能量增强', 0, 1, 0.05, adj.mouse.boost, x => { adj.mouse.boost = x; pipeline.setMouseParams({ boost: x }); });
+mkRow(advEl, '近距半径', 0, 0.4, 0.02, adj.mouse.near, x => { adj.mouse.near = x; pipeline.setMouseParams({ near: x }); });
+mkRow(advEl, '远距半径', 0.2, 1.5, 0.05, adj.mouse.far, x => { adj.mouse.far = x; pipeline.setMouseParams({ far: x }); });
 
 // —— 渲染 ——
 mkH4(advEl, '渲染', '· >1 超采样抗锯齿 · scale 改动会重收敛一瞬');
-mkRow(advEl, '分辨率系数', 0.25, 1.5, 0.05, adj.scale, x => { adj.scale = x; abstractOrNull()?.setScale(x); updateFpsLabel(); });
-mkRow(advEl, 'FPS 上限', 15, 120, 5, adj.fpsCap, x => { adj.fpsCap = x; abstractOrNull()?.setFpsCap(x); updateFpsLabel(); });
-mkRow(advEl, '时间累积', 0, 0.95, 0.05, adj.feedback, x => { adj.feedback = x; abstractOrNull()?.setFeedback(x); });
-mkRow(advEl, '星空亮度', 0, 2, 0.05, adj.starGain, x => { adj.starGain = x; abstractOrNull()?.setStarGain(x); });
-mkRow(advEl, '星空透镜', 0, 1, 0.05, adj.starLens, x => { adj.starLens = x; abstractOrNull()?.setStarLens(x); });
+mkRow(advEl, '分辨率系数', 0.25, 1.5, 0.05, adj.scale, x => { adj.scale = x; pipeline.setScale(x); updateFpsLabel(); });
+mkRow(advEl, 'FPS 上限', 15, 120, 5, adj.fpsCap, x => { adj.fpsCap = x; pipeline.setFpsCap(x); updateFpsLabel(); });
+mkRow(advEl, '时间累积', 0, 0.95, 0.05, adj.feedback, x => { adj.feedback = x; pipeline.setFeedback(x); });
+mkRow(advEl, '星空亮度', 0, 2, 0.05, adj.starGain, x => { adj.starGain = x; pipeline.setStarGain(x); });
+mkRow(advEl, '星空透镜', 0, 1, 0.05, adj.starLens, x => { adj.starLens = x; pipeline.setStarLens(x); });
 
 // —— 音频能量 ——
 mkH4(advEl, '音频能量');

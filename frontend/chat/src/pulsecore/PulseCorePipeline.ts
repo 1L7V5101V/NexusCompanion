@@ -12,7 +12,7 @@
 // 亮度同步微调。AI 状态只改振荡频率/幅度/亮度/闪烁。
 
 import * as THREE from 'three';
-import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, massOscillation } from './shadertoy';
+import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, envelopeOf, type WaveShape } from './shadertoy';
 import bufferASrc from './shaders/bufferA.glsl?raw';
 import bufferBSrc from './shaders/bufferB.glsl?raw';
 import bufferCSrc from './shaders/bufferC.glsl?raw';
@@ -23,17 +23,19 @@ export type PulseCoreState = 'idle' | 'thinking' | 'streaming' | 'error';
 
 interface StateProfile {
     bpm: number;         // 心率（次/分）
-    holeAmp: number;     // 黑洞本体心跳缩放幅度（0.06 = 峰值放大 6%）
-    gain: number;        // 基准亮度增益
+    holeAmp: number;     // 盘内缘呼吸幅度（本体恒定语义；0.038 = 内缘峰值外扩 3.8%）
+    gain: number;        // 基准曝光增益
+    swirl: number;       // 盘演化时间速率倍率
     flicker: number;     // 闪烁强度 (error)
+    wobble: number;      // 心律不齐强度（每拍随机化频率与幅度）
 }
 
-// 色彩一律不动（用户要求保留原作配色），状态只调制亮度/节奏
+// 与 abstract 变体共用同一套用户定稿剖面（2026-09-28）
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    idle:      { bpm: 42,  holeAmp: 0.012, gain: 1.00, flicker: 0.0 },
-    thinking:  { bpm: 84,  holeAmp: 0.022, gain: 1.06, flicker: 0.0 },
-    streaming: { bpm: 96,  holeAmp: 0.030, gain: 1.10, flicker: 0.0 },
-    error:     { bpm: 110, holeAmp: 0.040, gain: 0.90, flicker: 0.20 },
+    idle:      { bpm: 20,  holeAmp: 0.038, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    thinking:  { bpm: 20,  holeAmp: 0.056, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
+    streaming: { bpm: 30,  holeAmp: 0.076, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    error:     { bpm: 8,   holeAmp: 0.038, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
 };
 
 interface RT {
@@ -68,8 +70,22 @@ export class PulseCorePipeline {
     // 状态机
     private state: PulseCoreState = 'idle';
     private cur: StateProfile = { ...STATE_PROFILES.idle };
+    private profiles: Record<PulseCoreState, StateProfile>;  // 可调状态剖面（实例级）
     private audioEnergy = 0;
     private energySmooth = 0;
+
+    // 心跳语义（与 abstract 对齐）：本体恒定（horizonAmp=0）+ 盘呼吸/辉光
+    private waveShape: WaveShape = 'lubdub';
+    private glowK = 8;            // 辉光脉动系数（盘亮度 flare）
+    private starGain = 1;         // 背景/星空亮度（iBackgroundBrightmut）
+    private horizonAmp = 0;       // 本体脉动：1=CONST_M 随心跳（旧行为），0=本体恒定
+    private oscGainK = 0.2;       // 心跳→亮度
+    private audioGainK = 0.15;    // 音频→亮度
+    private audioScaleK = 0.012;  // 音频→盘脉动幅度
+    private bhTime = 0;           // 盘演化时间（swirl 积分，替代 2·iTime）
+    private beatIndex = 0;
+    private rateJitter = 1;       // 心律不齐：本拍频率/幅度抖动
+    private ampJitter = 1;
 
     private canvas: HTMLCanvasElement;
     private scale: number;
@@ -79,6 +95,7 @@ export class PulseCorePipeline {
 
     constructor(canvas: HTMLCanvasElement, opts?: { scale?: number; fpsCap?: number; hideTopologyMap?: boolean }) {
         this.canvas = canvas;
+        this.profiles = structuredClone(STATE_PROFILES);
         this.scale = opts?.scale ?? 0.4;
         this.fpsCap = opts?.fpsCap ?? 30;
 
@@ -120,7 +137,11 @@ export class PulseCorePipeline {
                     iChannel1: { value: null },
                     iChannel2: { value: null },
                     iChannel3: { value: null },
-                    uCONST_M: { value: 0.5 },   // 仅 Pass A 使用：心跳缩放的几何质量
+                    uCONST_M: { value: 0.5 },   // 仅 Pass A 使用：几何质量（本体，默认恒定）
+                    iInterRadiusRs: { value: 2.0 },  // 盘内半径 (Rs)——JS 注入（盘呼吸）
+                    iBrightmut: { value: 1.0 },      // 盘亮度乘数——JS 注入（辉光脉动）
+                    iBackgroundBrightmut: { value: 1.0 }, // 背景亮度乘数——JS 注入（星空亮度）
+                    uBHTime: { value: 0 },           // 盘演化时间——JS 按 swirl 积分
                 },
         });
 
@@ -134,7 +155,13 @@ export class PulseCorePipeline {
         // 换成 uniform，由 JS 每帧按心跳包络设值——洞、光子环、吸积盘整体缩放
         const aSrc = aSrc0
             .replace(/const float CONST_M\s*=\s*0\.5;/, 'uniform float uCONST_M;')
-            .replace(/\bCONST_M\b/g, 'uCONST_M');
+            .replace(/\bCONST_M\b/g, 'uCONST_M')
+            // 盘呼吸/辉光/星空/演化时间：原 #define 常量 → uniform，JS 每帧注入
+            .replace(/#define iInterRadiusRs.*$/m, 'uniform float iInterRadiusRs; // 吸积盘内半径(Rs)——JS 注入（盘呼吸）')
+            .replace(/#define iBrightmut.*$/m, 'uniform float iBrightmut; // 吸积盘亮度乘数——JS 注入（辉光脉动）')
+            .replace(/#define iBackgroundBrightmut.*$/m, 'uniform float iBackgroundBrightmut; // 背景亮度乘数——JS 注入（星空亮度）')
+            .replace(/#define iBlackHoleTime\s*\(2\.0\*iTime\)/, 'uniform float uBHTime; // 盘演化时间——JS 按 swirl 积分')
+            .replace(/\biBlackHoleTime\b/g, 'uBHTime');
 
         this.passes = {
             A: mkPass(aSrc),
@@ -213,6 +240,41 @@ export class PulseCorePipeline {
     /** 黑洞基础尺寸倍率：1.0=原作默认。>1.3 时相机(距离~22)会进入吸积盘外缘，不建议 */
     setHoleSize(v: number) { this.baseMass = 0.5 * Math.max(0.2, Math.min(1.3, v)); }
 
+    // ---- 调参 API（与 abstract 对齐；kerr 不支持的项为 no-op）----
+
+    private static PROFILE_CLAMP: Record<keyof StateProfile, [number, number]> = {
+        bpm: [0, 200], holeAmp: [0, 0.15], gain: [0.2, 2], swirl: [0, 4], flicker: [0, 1], wobble: [0, 1],
+    };
+
+    setProfile(s: PulseCoreState, patch: Partial<StateProfile>) {
+        for (const [k, v] of Object.entries(patch)) {
+            if (v === undefined) continue;
+            const key = k as keyof StateProfile;
+            const [lo, hi] = PulseCorePipeline.PROFILE_CLAMP[key];
+            this.profiles[s][key] = Math.max(lo, Math.min(hi, v));
+        }
+    }
+    getProfile(s: PulseCoreState): StateProfile { return { ...this.profiles[s] }; }
+    setWaveShape(w: WaveShape) { this.waveShape = w; }
+    setGlowK(v: number) { this.glowK = Math.max(0, Math.min(20, v)); }
+    setStarGain(v: number) { this.starGain = Math.max(0, Math.min(3, v)); }
+    /** 本体脉动：1 = CONST_M 随心跳（旧行为，星空随之动），0 = 本体恒定（默认） */
+    setHorizonAmp(v: number) { this.horizonAmp = Math.max(0, Math.min(1, v)); }
+    setDynamics(p: { oscGainK?: number; audioGainK?: number; audioScaleK?: number }) {
+        if (p.oscGainK !== undefined) this.oscGainK = Math.max(0, Math.min(0.3, p.oscGainK));
+        if (p.audioGainK !== undefined) this.audioGainK = Math.max(0, Math.min(0.8, p.audioGainK));
+        if (p.audioScaleK !== undefined) this.audioScaleK = Math.max(0, Math.min(0.05, p.audioScaleK));
+    }
+    /** kerr 的盘为 GR 体渲染，abstract 式波纹参数不适用——no-op */
+    setPert(_p: { lam?: number; lag?: number }) { /* no-op */ }
+    /** kerr 星空的透镜由 GR 光线追踪内生——no-op（恒定开启） */
+    setStarLens(_v: number) { /* no-op */ }
+    setMouseParams(_p: { offsetK?: number; boost?: number; near?: number; far?: number }) { /* no-op：相机由 iMouse 驱动 */ }
+    /** kerr 无独立时间累积开关（TAA 内建于 Buffer A）——no-op */
+    setFeedback(_v: number) { /* no-op */ }
+    setScale(v: number) { this.scale = Math.max(0.25, Math.min(0.85, v)); this.resize(); }
+    setFpsCap(v: number) { this.fpsCap = Math.max(10, Math.min(120, v)); }
+
     start() {
         this.lastNow = performance.now();
         const loop = (now: number) => {
@@ -235,25 +297,42 @@ export class PulseCorePipeline {
     private frame(dt: number) {
         this.frameNo++;
         this.time += dt;
-        const p = STATE_PROFILES[this.state];
+        const p = this.profiles[this.state];
 
         // 状态参数平滑过渡
         const k = 1 - Math.exp(-dt * 3);
         this.cur.bpm += (p.bpm - this.cur.bpm) * k;
         this.cur.holeAmp += (p.holeAmp - this.cur.holeAmp) * k;
         this.cur.gain += (p.gain - this.cur.gain) * k;
+        this.cur.swirl += (p.swirl - this.cur.swirl) * k;
         this.cur.flicker += (p.flicker - this.cur.flicker) * k;
+        this.cur.wobble += (p.wobble - this.cur.wobble) * k;
 
         // 音频能量包络（attack 快 / release 慢）
         this.energySmooth += (this.audioEnergy - this.energySmooth) * (1 - Math.exp(-dt * (this.audioEnergy > this.energySmooth ? 12 : 3)));
 
-        // 质量连续振荡：整拍内平滑起伏，无静息期
-        this.heartPhase += dt * this.cur.bpm / 60;
-        const osc = massOscillation(this.heartPhase);
+        // 心跳机械（与 abstract 一致）：连续振荡 + error 每拍随机化
+        const beat = Math.floor(this.heartPhase);
+        if (beat !== this.beatIndex) {
+            this.beatIndex = beat;
+            this.rateJitter = 1 + (Math.random() - 0.5) * 0.9 * this.cur.wobble;
+            this.ampJitter = 1 + (Math.random() - 0.5) * 0.6 * this.cur.wobble;
+        }
+        this.heartPhase += dt * this.cur.bpm * this.rateJitter / 60;
+        const osc = envelopeOf(this.heartPhase, this.waveShape);
         const flick = 1 - this.cur.flicker * Math.max(0, Math.sin(this.time * 23.0) * Math.sin(this.time * 7.3));
-        const gain = this.cur.gain * (1 + 0.05 * osc + this.energySmooth * 0.12) * flick;
-        // 黑洞本体缩放：质量尺度连续振荡（洞+光子环+盘 Rs 一起缩放）
-        const holePulse = this.cur.holeAmp * osc + this.energySmooth * 0.006;
+        const gain = this.cur.gain * (1 + this.oscGainK * osc + this.energySmooth * this.audioGainK) * flick;
+
+        // 心跳语义（与 abstract 对齐）：pulseFrac = 盘呼吸/辉光的公共分数
+        const pulseFrac = this.cur.holeAmp * this.ampJitter * osc + this.energySmooth * this.audioScaleK;
+        // 本体脉动（horizonAmp>0 = 旧行为）：CONST_M 随心跳——影子/透镜/星空随之动
+        const holePulse = this.horizonAmp * pulseFrac;
+        // 盘呼吸（horizonAmp=0 时的全部脉动）：盘内缘随心跳外扩/收缩，外缘固定
+        const diskPulse = (1 - this.horizonAmp) * pulseFrac;
+        // 辉光脉动：盘亮度随心跳 flare
+        const glow = this.glowK * pulseFrac;
+        this.bhTime += dt * 2 * this.cur.swirl;
+        this.bhTime -= Math.floor(this.bhTime / 1000) * 1000;   // 防大数精度（原 hazeTime mod 1000 同款）
 
         const w = this.rtImage.w, h = this.rtImage.h;
         const aspect = w / h;
@@ -273,6 +352,10 @@ export class PulseCorePipeline {
         const m = this.passes.A;
         setRes(m);
         m.uniforms.uCONST_M.value = this.baseMass * (1 + holePulse);
+        m.uniforms.iInterRadiusRs.value = 2.0 * (1 + diskPulse);
+        m.uniforms.iBrightmut.value = 1 + glow;
+        m.uniforms.iBackgroundBrightmut.value = this.starGain;
+        m.uniforms.uBHTime.value = this.bhTime;
         m.uniforms.iChannel0.value = this.keyboardTex;
         m.uniforms.iChannel1.value = null;
         m.uniforms.iChannel2.value = this.rtB[this.flip].rt.texture;         // 上帧 B
