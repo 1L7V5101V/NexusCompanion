@@ -21,6 +21,7 @@ let pipeline: PulseCoreInstance;
 // ---- 调参面板状态：全局参数默认值 + 每状态剖面覆盖（跨变体切换保留）----
 const adj = {
     dynamics: { oscGainK: 0.06, audioGainK: 0.15, audioScaleK: 0.012 },
+    pert: { lam: 1.2, lag: 0.12 },
     mouse: { offsetK: 0.12, boost: 0.35, near: 0.12, far: 0.7 },
     scale: 0.5,
     fpsCap: 60,
@@ -43,6 +44,7 @@ function createPipeline(v: PulseCoreVariant) {
         });
         a.setWaveShape(adj.wave);
         a.setDynamics(adj.dynamics);
+        a.setPert(adj.pert);
         a.setMouseParams(adj.mouse);
     }
     pipeline.setState(curState);
@@ -210,7 +212,12 @@ advEl.appendChild(waveSel);
 mkH4(advEl, '耦合强度');
 mkRow(advEl, '心跳→亮度', 0, 0.2, 0.005, adj.dynamics.oscGainK, x => { adj.dynamics.oscGainK = x; abstractOrNull()?.setDynamics({ oscGainK: x }); });
 mkRow(advEl, '音频→亮度', 0, 0.5, 0.01, adj.dynamics.audioGainK, x => { adj.dynamics.audioGainK = x; abstractOrNull()?.setDynamics({ audioGainK: x }); });
-mkRow(advEl, '音频→尺寸', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => { adj.dynamics.audioScaleK = x; abstractOrNull()?.setDynamics({ audioScaleK: x }); });
+mkRow(advEl, '音频→脉动', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => { adj.dynamics.audioScaleK = x; abstractOrNull()?.setDynamics({ audioScaleK: x }); });
+
+// —— 盘响应（扰动如何向外传播）——
+mkH4(advEl, '盘响应', '· 内缘随洞，外缘稳住');
+mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; abstractOrNull()?.setPert({ lam: x }); });
+mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; abstractOrNull()?.setPert({ lag: x }); });
 
 // —— 鼠标交互 ——
 mkH4(advEl, '鼠标交互');

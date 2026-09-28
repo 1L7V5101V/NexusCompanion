@@ -7,15 +7,23 @@
 //   这里换成 OVERLAY 线性放大 blit 上屏（uGain=1，语义等价）。
 //
 // 相对原作的适配（原作 glsl 文件零修改，全部在加载层做字符串替换）：
-//   p=(z*crd+ro)/uScale + z+=s*uScale   心跳呼吸：相机与引力系统同一把尺子，
-//                                       洞+光晕+吸积盘连贯泵动（非 2D 整画面缩放）
+//   d=l-.7*uHoleBase*(1+uPulseAmp*envWave(uPhase))
+//                                       心跳脉动：只有洞本体（视界/光子环）随包络胀缩，
+//                                       相机真正固定——不是整体缩放
+//   N=floor(Z/diskF(Z)/STEP) + rw*diskF(rw)
+//                                       盘响应：径向翘曲场 diskF——内缘严格跟随洞
+//                                       （ISCO 随质量），扰动向外按 exp(-x/λ) 衰减、
+//                                       按 uPertLag（拍/单位半径）相位延迟传播，
+//                                       外缘基本不动（简化的轨道周期 r^1.5 响应）
 //   P=.../R.y+uMouseOff                 鼠标视差：靠近核心时初始光线轻微偏移
 //   iTime/ → uSwirlTime/                吸积盘旋转时间由 JS 按状态积分（换挡无相位跳变）
 //   o/=5e3; 前插 o*=uGain               曝光增益（tonemap 前）：状态/音频/鼠标能量/闪烁
 //   vec4 O; 后补 o=vec3(0)              原作依赖未初始化局部量归零，显式化防驱动差异
 //
+// envWave（GLSL）与 oscOf（TS）是同一包络的两份实现，改波形公式必须两边同步。
+//
 // AI 状态只调制节奏/亮度/旋转/闪烁，不改原作配色（沿用 Kerr-Newman 版的定案）。
-// 所有动力学参数（状态剖面/心跳波形/耦合强度/鼠标交互/渲染）都暴露 setter，
+// 所有动力学参数（状态剖面/心跳波形/耦合强度/鼠标交互/盘响应/渲染）都暴露 setter，
 // demo 调参面板实时驱动；React 集成时可挑常用的提为 props。
 
 import * as THREE from 'three';
@@ -41,12 +49,35 @@ const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
     error:     { bpm: 104, holeAmp: 0.050, gain: 0.88, swirl: 0.75, flicker: 0.28, wobble: 1 },
 };
 
-// 注入的 uniform 声明（shim 之后、原作代码之前）
+// 注入的 uniform 声明与脉动/盘响应函数（shim 之后、原作代码之前）。
+// envWave 必须与 TS 侧 oscOf() 公式一致（波形三态），两边同步改。
 const UNIFORM_DECLS = /* glsl */ `
-uniform float uScale;       // 心跳整体缩放（1 = 原作默认构图）
+uniform float uHoleBase;    // 洞基础尺寸（holeSize，1 = 原作默认构图）
+uniform float uPulseAmp;    // 洞脉动幅度（分数，含每拍抖动 + 音频耦合）
+uniform float uPhase;       // 心跳相位（拍，已 mod 1）
+uniform float uPertLam;     // 盘扰动衰减长度（世界单位）
+uniform float uPertLag;     // 盘扰动传播延迟（拍/单位半径）
+uniform int   uWave;        // 波形 0 连续正弦 / 1 双峰 lub-dub / 2 快脉冲
 uniform float uGain;        // 曝光增益（tonemap 前）
 uniform vec2  uMouseOff;    // 鼠标视差偏移（P 空间）
 uniform float uSwirlTime;   // 吸积盘旋转时间（JS 积分）
+
+float envWave(float ph) {
+  ph-=floor(ph);
+  if(uWave==1){
+    float t1=(ph-.18)/.055;
+    float t2=(ph-.42)/.045;
+    return min(1., exp(-t1*t1*.5)+.55*exp(-t2*t2*.5));
+  }
+  if(uWave==2)return exp(-ph*5.);
+  return .5-.5*cos(6.283185307*ph);
+}
+// 盘径向翘曲场：r 为 u 空间（等距环）半径，返回物理半径倍率。
+// x=0（内缘 u=1.0）处严格等于洞因子（内缘拴在 ISCO 上），向外衰减到 1（外盘不动）。
+float diskF(float r) {
+  float x=max(0., r-1.);
+  return 1.+((uHoleBase-1.)+uHoleBase*uPulseAmp*envWave(uPhase-uPertLag*x))*exp(-x/uPertLam);
+}
 `;
 
 const smoothStep = (a: number, b: number, x: number): number => {
@@ -92,7 +123,9 @@ export class AbstractPipeline {
     // 耦合与交互参数（demo 调参面板实时改）
     private oscGainK = 0.06;      // 心跳→亮度
     private audioGainK = 0.15;    // 音频→亮度
-    private audioScaleK = 0.012;  // 音频→尺寸
+    private audioScaleK = 0.012;  // 音频→脉动幅度
+    private pertLam = 1.2;        // 盘扰动衰减长度（世界单位）：越大盘跟随越多
+    private pertLag = 0.12;       // 盘扰动传播延迟（拍/单位半径）：涟漪外传速度
     private mouseOffsetK = 0.12;  // 鼠标视差幅度
     private mouseBoost = 0.35;    // 鼠标→能量增强
     private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
@@ -135,13 +168,23 @@ export class AbstractPipeline {
 
         // 加载层适配原作 Buffer A（正文零修改；替换点见文件头注释）
         const aSrc = bufferASrc
-            .replace('p=z*crd+ro;', 'p=(z*crd+ro)/uScale;')
-            .replace('z+=s;', 'z+=s*uScale;')
+            .replace('float j,z=0.,d,D,L,l,s,N,a,H,A,Z;', 'float j,z=0.,d,D,L,l,s,N,a,H,A,Z,rw;')
+            // 洞本体脉动：只有视界随包络胀缩，相机固定
+            .replace('d=l-.7;', 'd=l-.7*uHoleBase*(1.+uPulseAmp*envWave(uPhase));')
+            // 盘响应：径向翘曲——内环随洞进出，扰动向外衰减+延迟传播
+            .replace('N=clamp(floor(length(p.xz)/STEP+.5),1./STEP,6./STEP);',
+                'N=clamp(floor(Z/diskF(Z)/STEP+.5),1./STEP,6./STEP);')
+            .replace('w=vec2(abs(Z-STEP*(N+j/(2.*REPS+1.))), ',
+                'rw=STEP*(N+j/(2.*REPS+1.));w=vec2(abs(Z-rw*diskF(rw)), ')
+            // 鼠标视差：P 空间偏移初始光线
             .replace('P=(C+C-R)/R.y', 'P=(C+C-R)/R.y+uMouseOff')
+            // 状态化旋转：吸积盘角速度由 JS 积分（状态切换无相位跳变）
             .replace('iTime/', 'uSwirlTime/')
+            // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
+            // 原作依赖未初始化局部量归零，显式化（驱动差异防御）
             .replace('vec4 O;', 'vec4 O;\n  o=vec3(0);');
-        for (const marker of ['uScale;', 'uMouseOff', 'uSwirlTime/', 'uGain;\n']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'uSwirlTime/', 'uGain;\n']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -156,7 +199,12 @@ export class AbstractPipeline {
             iChannel1: { value: null },
             iChannel2: { value: null },
             iChannel3: { value: null },
-            uScale: { value: 1 },
+            uHoleBase: { value: 1 },
+            uPulseAmp: { value: 0 },
+            uPhase: { value: 0 },
+            uPertLam: { value: 1.2 },
+            uPertLag: { value: 0.12 },
+            uWave: { value: 0 },
             uGain: { value: 1 },
             uMouseOff: { value: new THREE.Vector2(0, 0) },
             uSwirlTime: { value: 0 },
@@ -236,8 +284,8 @@ export class AbstractPipeline {
 
     setState(s: PulseCoreState) { this.state = s; }
     setAudioEnergy(e: number) { this.audioEnergy = Math.max(0, Math.min(1, e)); }
-    /** 基础尺寸倍率：1.0 = 原作默认构图。相机距 8、盘外缘 6×size，>1.5 会贴到盘外缘 */
-    setHoleSize(v: number) { this.holeSize = Math.max(0.3, Math.min(1.5, v)); }
+    /** 洞基础尺寸倍率：1.0 = 原作默认构图。只缩洞与盘内缘（ISCO），外盘不动，范围可放宽 */
+    setHoleSize(v: number) { this.holeSize = Math.max(0.3, Math.min(2, v)); }
 
     // ---- 调参 API（demo 调参面板实时驱动）----
 
@@ -259,11 +307,17 @@ export class AbstractPipeline {
     /** 心跳波形：continuous 连续正弦（默认）/ lubdub 双峰 / pulse 快脉冲 */
     setWaveShape(w: WaveShape) { this.waveShape = w; }
 
-    /** 耦合强度：心跳→亮度 / 音频→亮度 / 音频→尺寸 */
+    /** 耦合强度：心跳→亮度 / 音频→亮度 / 音频→脉动幅度 */
     setDynamics(patch: { oscGainK?: number; audioGainK?: number; audioScaleK?: number }) {
         if (patch.oscGainK !== undefined) this.oscGainK = Math.max(0, Math.min(0.3, patch.oscGainK));
         if (patch.audioGainK !== undefined) this.audioGainK = Math.max(0, Math.min(0.8, patch.audioGainK));
         if (patch.audioScaleK !== undefined) this.audioScaleK = Math.max(0, Math.min(0.05, patch.audioScaleK));
+    }
+
+    /** 盘响应：扰动衰减长度 λ（世界单位）/ 传播延迟（拍/单位半径） */
+    setPert(patch: { lam?: number; lag?: number }) {
+        if (patch.lam !== undefined) this.pertLam = Math.max(0.2, Math.min(4, patch.lam));
+        if (patch.lag !== undefined) this.pertLag = Math.max(0, Math.min(0.6, patch.lag));
     }
 
     /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
@@ -357,7 +411,12 @@ export class AbstractPipeline {
         m.uniforms.iTime.value = this.time;
         m.uniforms.iTimeDelta.value = dt;
         m.uniforms.iFrame.value = this.frameNo;
-        m.uniforms.uScale.value = this.holeSize * (1 + this.cur.holeAmp * this.ampJitter * osc + this.energySmooth * this.audioScaleK);
+        m.uniforms.uHoleBase.value = this.holeSize;
+        m.uniforms.uPulseAmp.value = this.cur.holeAmp * this.ampJitter + this.energySmooth * this.audioScaleK;
+        m.uniforms.uPhase.value = this.heartPhase - Math.floor(this.heartPhase);
+        m.uniforms.uPertLam.value = this.pertLam;
+        m.uniforms.uPertLag.value = this.pertLag;
+        m.uniforms.uWave.value = this.waveShape === 'lubdub' ? 1 : this.waveShape === 'pulse' ? 2 : 0;
         m.uniforms.uGain.value = gain;
         m.uniforms.uMouseOff.value.copy(this.mouseOff);
         m.uniforms.uSwirlTime.value = this.swirlTime;
