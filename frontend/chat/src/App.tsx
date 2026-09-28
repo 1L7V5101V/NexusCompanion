@@ -4,11 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useChatRuntime, type ChatMessage } from "./store";
 import { useMockChatRuntime } from "./mock";
 import { AuroraCanvas } from "./AuroraCanvas";
-import { ThinkingDots } from "./components/ThinkingDots";
-import { ThinkingBlock } from "./components/ThinkingBlock";
-import { ToolCallCard } from "./components/ToolCallCard";
+import { ThinkingLine } from "./components/ThinkingLine";
+import { ProcessEntry } from "./components/ProcessEntry";
 import { StreamingMarkdown } from "./components/StreamingMarkdown";
-import { StatusLabel } from "./components/StatusLabel";
 import { useSmoothStream } from "./hooks/useSmoothStream";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
@@ -47,52 +45,81 @@ function UserMessageView({ message }: { message: ChatMessage }) {
     .join("");
   return (
     <div className="flex justify-end">
-      <div className="max-w-[80%] rounded-2xl bg-surface-3 px-4 py-2">
+      <div className="bubble-user">
         <span className="whitespace-pre-wrap text-sm">{text}</span>
       </div>
     </div>
   );
 }
 
-/** 正文 part：useSmoothStream 匀速放出 → StreamingMarkdown 渲染。
- *  正文起步的过渡窗口（目标文本 <20 字符）显示 writing 状态词。 */
+/** 正文 part：useSmoothStream 匀速放出 → 气泡内 StreamingMarkdown 渲染。 */
 function StreamingTextPart({ text, streaming }: { text: string; streaming: boolean }) {
   const shown = useSmoothStream(text);
-  const writing = streaming && text.length < 20;
-  if (writing) return <StatusLabel category="writing" />;
-  return <StreamingMarkdown text={shown} streaming={streaming} />;
+  return (
+    <div className="bubble-assistant">
+      <StreamingMarkdown text={shown} streaming={streaming} />
+    </div>
+  );
 }
 
+/**
+ * 助手消息三态：
+ * - 思考/工具进行中：一行流光状态文字（无气泡），词库随末位 part 类型切换
+ * - 正文起步（<20 字符）：流光行切到 writing 词，随后淡出让位
+ * - 正文：左对齐气泡；过程信息折叠为一行「已思考 · 调用了工具」文字入口
+ */
 function AssistantMessageView({ message }: { message: ChatMessage }) {
   const parts = message.parts;
-  const last = parts.length - 1;
+  let textIdx = -1;
+  parts.forEach((p, i) => {
+    if (p.kind === "text") textIdx = i;
+  });
+  type TextPart = Extract<ChatMessage["parts"][number], { kind: "text" }>;
+  const textPart = textIdx >= 0 ? (parts[textIdx] as TextPart) : null;
+  const processParts = parts.filter((p) => p.kind !== "text");
+  const lastProcess = processParts[processParts.length - 1];
+  const lastTool = lastProcess?.kind === "tool" ? lastProcess : null;
+
+  // 正文起步过渡：目标文本 <20 字符时流光行切到 writing 词，暂不出气泡
+  const writingPhase =
+    message.status === "running" && !!textPart && textPart.text.length < 20;
+  const thinkingLine = message.status === "running" && (!textPart || writingPhase);
+
+  // 流光行淡出让位：正文可见后延迟卸载（transition 走完再摘除）
+  const [lineVisible, setLineVisible] = useState(thinkingLine);
+  useEffect(() => {
+    if (thinkingLine) {
+      setLineVisible(true);
+      return;
+    }
+    const timer = setTimeout(() => setLineVisible(false), 320);
+    return () => clearTimeout(timer);
+  }, [thinkingLine]);
+
+  const bodyVisible = !!textPart && !writingPhase;
+  const lineCategory: "thinking" | "tool_running" | "writing" = writingPhase
+    ? "writing"
+    : lastProcess?.kind === "tool"
+      ? "tool_running"
+      : "thinking";
+
   return (
     <div className="flex flex-col gap-2">
-      {parts.map((part, i) => {
-        if (part.kind === "reasoning") {
-          return (
-            <ThinkingBlock
-              key={i}
-              text={part.text}
-              active={message.status === "running" && i === last}
-            />
-          );
-        }
-        if (part.kind === "tool") {
-          return (
-            <ToolCallCard key={i} name={part.toolName} state={part.state} result={part.result} />
-          );
-        }
-        return (
-          <StreamingTextPart
-            key={i}
-            text={part.text}
-            streaming={message.status === "running" && i === last}
-          />
-        );
-      })}
-      {message.status === "error" && message.error ? (
+      {lineVisible ? (
+        <ThinkingLine
+          category={lineCategory}
+          toolName={lastTool?.toolName}
+          hide={!thinkingLine}
+        />
+      ) : null}
+      {bodyVisible ? (
+        <StreamingTextPart text={textPart.text} streaming={message.status === "running"} />
+      ) : null}
+      {!bodyVisible && message.status === "error" && message.error ? (
         <div className="msg-error">请求失败：{message.error}</div>
+      ) : null}
+      {processParts.length > 0 && bodyVisible ? (
+        <ProcessEntry parts={processParts} />
       ) : null}
     </div>
   );
@@ -136,7 +163,8 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="flex h-full flex-col bg-bg text-fg">
+      {/* overflow-hidden：裁掉流光画布向下出界的部分，避免撑出 body 滚动 */}
+      <div className="flex h-full flex-col overflow-hidden bg-bg text-fg">
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
           <div className="flex items-center gap-3">
@@ -174,7 +202,7 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
                   ),
                 )
               )}
-              <ThinkingDots active={awaitingFirstToken} withStatus />
+              {awaitingFirstToken ? <ThinkingLine category="thinking" /> : null}
             </div>
           </div>
           {showJump ? (

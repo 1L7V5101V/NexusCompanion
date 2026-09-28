@@ -3,10 +3,9 @@ import { useRotatingStatus } from "../hooks/useRotatingStatus";
 import { STATUS_WORDS, UI_LANG, type StatusCategory, type StatusLang } from "../statusWords";
 
 /**
- * 状态词标签：随机轮换词 + shimmer 扫光 + 词尾三点依次闪烁。
+ * 状态词标签：随机轮换词 + shimmer 流光 + 词尾省略号轻微呼吸。
  * 固定高度 overflow:hidden 容器 + 按词库最长词估算 min-width——
- * 切换时旧词上移淡出（150ms）、新词自下 6px 淡入上移（200ms），
- * transform/opacity 实现，不引起相邻元素抖动。
+ * 切换只做交叉淡入淡出（无位移），不引起布局抖动。
  * specific 提供时显示固定具体文案（如工具名映射），不轮换。
  */
 export function StatusLabel({
@@ -45,10 +44,8 @@ export function StatusLabel({
       <span key={cls + w} className={`status-word ${cls}`}>
         <span className="thinking-shimmer">
           {clean}
-          <span className="status-dots" aria-hidden="true">
-            <span>.</span>
-            <span>.</span>
-            <span>.</span>
+          <span className="status-ellipsis" aria-hidden="true">
+            …
           </span>
         </span>
       </span>
