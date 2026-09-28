@@ -47,12 +47,13 @@ body,
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
-/* #root 必须透明：z -1 的脉冲背景画在根层叠上下文的负 z 带，
-   位于 #root 普通流背景之下——不透明会整体盖住背景层 */
-html,
-body {
+/* 底色只放 html：html 背景作为画布背景最先绘制（在一切之下）；
+   body/#root 必须透明——它们的背景属于普通流内容层，绘制在
+   负 z-index 的脉冲背景之上，不透明会整体盖住黑洞 */
+html {
   background: var(--color-bg);
 }
+body,
 #root {
   background: transparent;
 }

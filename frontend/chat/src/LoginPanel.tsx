@@ -62,7 +62,7 @@ export function LoginPanel({ onAuthenticated }: { onAuthenticated: (user: AuthUs
   const regReady = inviteToken.trim().length > 0 && regEmail.trim().length > 0 && regPassword.length > 0;
 
   return (
-    <div className="relative flex h-full items-center justify-center px-4 text-fg">
+    <div className="relative flex h-full items-center justify-center px-4 text-fg md:justify-start md:pl-[8vw]">
       <div className="login-card w-full max-w-sm rounded-xl border border-border px-5 py-6">
         <h1 className="text-base font-semibold tracking-tight">Nexus Chat</h1>
         <p className="mt-1 text-xs text-muted">
