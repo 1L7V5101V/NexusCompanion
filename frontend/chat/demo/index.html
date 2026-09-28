@@ -24,6 +24,27 @@
       color: rgba(255,255,255,0.45); font-size: 12px; z-index: 10; }
     #fps { position: fixed; top: 16px; left: 16px; color: rgba(255,255,255,0.5); font-size: 12px;
       font-variant-numeric: tabular-nums; z-index: 10; }
+    #adv {
+      position: fixed; top: 70px; right: 16px; width: 280px; max-height: calc(100vh - 96px);
+      overflow-y: auto; z-index: 10; display: none;
+      background: rgba(10, 12, 20, 0.8); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(8px);
+      color: #cfd6e4; font-size: 12px;
+    }
+    #adv.open { display: block; }
+    #adv h4 { margin: 10px 0 6px; font-size: 12px; color: #9fb2d8; font-weight: 600; }
+    #adv h4:first-child { margin-top: 2px; }
+    #adv h4 .tag { color: #6d7f9f; font-weight: 400; }
+    #adv .row { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+    #adv .row .k { width: 88px; flex: none; }
+    #adv .row input[type="range"] { flex: 1; min-width: 0; accent-color: #8a5bd6; }
+    #adv .row .v { width: 46px; flex: none; text-align: right; font-variant-numeric: tabular-nums; color: #e8edf7; }
+    #adv select {
+      width: 100%; background: rgba(255,255,255,0.06); color: #cfd6e4;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 7px; padding: 4px 6px; font-size: 12px;
+    }
+    #adv .chk { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+    #adv .chk input { accent-color: #8a5bd6; }
   </style>
 </head>
 <body>
@@ -40,9 +61,11 @@
       大小 <input id="size" type="range" min="0.4" max="1.5" step="0.05" value="1" style="width:110px;">
       <span id="sizeVal" style="font-variant-numeric:tabular-nums;width:34px;">1.00</span>
     </label>
+    <button id="advToggle" title="实时调参面板（仅 Abstract 变体）">调参</button>
   </div>
+  <div id="adv"></div>
   <div id="fps"></div>
-  <div id="hint">鼠标靠近中心：光线偏移 + 能量增强 · 心跳=洞与盘整体呼吸缩放 · 切换按钮体验四种状态</div>
+  <div id="hint">鼠标靠近中心：光线偏移 + 能量增强 · 心跳=洞与盘整体呼吸缩放 · 右侧「调参」面板可实时试所有参数</div>
   <script type="module" src="./main.ts"></script>
 </body>
 </html>

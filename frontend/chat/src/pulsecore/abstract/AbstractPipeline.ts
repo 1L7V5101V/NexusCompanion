@@ -15,13 +15,15 @@
 //   vec4 O; 后补 o=vec3(0)              原作依赖未初始化局部量归零，显式化防驱动差异
 //
 // AI 状态只调制节奏/亮度/旋转/闪烁，不改原作配色（沿用 Kerr-Newman 版的定案）。
+// 所有动力学参数（状态剖面/心跳波形/耦合强度/鼠标交互/渲染）都暴露 setter，
+// demo 调参面板实时驱动；React 集成时可挑常用的提为 props。
 
 import * as THREE from 'three';
 import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, OVERLAY_FRAG, massOscillation } from '../shadertoy';
 import type { PulseCoreState } from '../PulseCorePipeline';
 import bufferASrc from './shaders/bufferA.glsl?raw';
 
-interface StateProfile {
+export interface StateProfile {
     bpm: number;         // 脉搏（次/分）
     holeAmp: number;     // 整体呼吸缩放幅度（0.03 = 峰值放大 3%）
     gain: number;        // 基准曝光增益
@@ -29,6 +31,8 @@ interface StateProfile {
     flicker: number;     // 闪烁强度（error）
     wobble: number;      // 心律不齐强度（error：每拍随机化频率与幅度）
 }
+
+export type WaveShape = 'continuous' | 'lubdub' | 'pulse';
 
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
     idle:      { bpm: 36,  holeAmp: 0.016, gain: 0.92, swirl: 0.55, flicker: 0.0,  wobble: 0 },
@@ -80,8 +84,19 @@ export class AbstractPipeline {
     // 状态机
     private state: PulseCoreState = 'idle';
     private cur: StateProfile = { ...STATE_PROFILES.idle };
+    private profiles: Record<PulseCoreState, StateProfile>;  // 可调状态剖面（实例级）
+    private waveShape: WaveShape = 'continuous';
     private audioEnergy = 0;
     private energySmooth = 0;
+
+    // 耦合与交互参数（demo 调参面板实时改）
+    private oscGainK = 0.06;      // 心跳→亮度
+    private audioGainK = 0.15;    // 音频→亮度
+    private audioScaleK = 0.012;  // 音频→尺寸
+    private mouseOffsetK = 0.12;  // 鼠标视差幅度
+    private mouseBoost = 0.35;    // 鼠标→能量增强
+    private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
+    private proxFar = 0.7;        // 接近半径外缘
 
     // 鼠标
     private hasPointer = false;
@@ -98,6 +113,7 @@ export class AbstractPipeline {
 
     constructor(canvas: HTMLCanvasElement, opts?: { scale?: number; fpsCap?: number }) {
         this.canvas = canvas;
+        this.profiles = structuredClone(STATE_PROFILES);
         this.scale = opts?.scale ?? 0.5;
         this.fpsCap = opts?.fpsCap ?? 60;
 
@@ -223,6 +239,62 @@ export class AbstractPipeline {
     /** 基础尺寸倍率：1.0 = 原作默认构图。相机距 8、盘外缘 6×size，>1.5 会贴到盘外缘 */
     setHoleSize(v: number) { this.holeSize = Math.max(0.3, Math.min(1.5, v)); }
 
+    // ---- 调参 API（demo 调参面板实时驱动）----
+
+    /** 覆盖某状态的剖面字段（bpm/holeAmp/gain/swirl/flicker/wobble） */
+    setProfile(s: PulseCoreState, patch: Partial<StateProfile>) {
+        const clamps: Record<keyof StateProfile, [number, number]> = {
+            bpm: [0, 200], holeAmp: [0, 0.15], gain: [0.2, 2], swirl: [0, 4], flicker: [0, 1], wobble: [0, 1],
+        };
+        for (const [k, v] of Object.entries(patch)) {
+            if (v === undefined) continue;
+            const key = k as keyof StateProfile;
+            const [lo, hi] = clamps[key];
+            this.profiles[s][key] = Math.max(lo, Math.min(hi, v));
+        }
+    }
+
+    getProfile(s: PulseCoreState): StateProfile { return { ...this.profiles[s] }; }
+
+    /** 心跳波形：continuous 连续正弦（默认）/ lubdub 双峰 / pulse 快脉冲 */
+    setWaveShape(w: WaveShape) { this.waveShape = w; }
+
+    /** 耦合强度：心跳→亮度 / 音频→亮度 / 音频→尺寸 */
+    setDynamics(patch: { oscGainK?: number; audioGainK?: number; audioScaleK?: number }) {
+        if (patch.oscGainK !== undefined) this.oscGainK = Math.max(0, Math.min(0.3, patch.oscGainK));
+        if (patch.audioGainK !== undefined) this.audioGainK = Math.max(0, Math.min(0.8, patch.audioGainK));
+        if (patch.audioScaleK !== undefined) this.audioScaleK = Math.max(0, Math.min(0.05, patch.audioScaleK));
+    }
+
+    /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
+    setMouseParams(patch: { offsetK?: number; boost?: number; near?: number; far?: number }) {
+        if (patch.offsetK !== undefined) this.mouseOffsetK = Math.max(0, Math.min(0.5, patch.offsetK));
+        if (patch.boost !== undefined) this.mouseBoost = Math.max(0, Math.min(1.5, patch.boost));
+        if (patch.near !== undefined) this.proxNear = Math.max(0, Math.min(this.proxFar, patch.near));
+        if (patch.far !== undefined) this.proxFar = Math.max(this.proxNear + 0.05, Math.min(2, patch.far));
+    }
+
+    /** 内部渲染分辨率系数（重建渲染目标，反馈历史清零会闪一帧重新收敛） */
+    setScale(v: number) {
+        this.scale = Math.max(0.25, Math.min(0.85, v));
+        this.resize();
+    }
+
+    setFpsCap(v: number) { this.fpsCap = Math.max(10, Math.min(120, v)); }
+
+    private oscOf(phase: number): number {
+        if (this.waveShape === 'lubdub') {
+            const f = phase % 1;
+            const g = (c: number, w: number) => Math.exp(-((f - c) ** 2) / (2 * w * w));
+            return Math.min(1, g(0.18, 0.055) + 0.55 * g(0.42, 0.045));
+        }
+        if (this.waveShape === 'pulse') {
+            const f = phase % 1;
+            return Math.exp(-f * 5);
+        }
+        return massOscillation(phase);
+    }
+
     start() {
         this.lastNow = performance.now();
         const loop = (now: number) => {
@@ -244,7 +316,7 @@ export class AbstractPipeline {
     private frame(dt: number) {
         this.frameNo++;
         this.time += dt;
-        const p = STATE_PROFILES[this.state];
+        const p = this.profiles[this.state];
 
         // 状态参数平滑过渡
         const k = 1 - Math.exp(-dt * 3);
@@ -266,16 +338,16 @@ export class AbstractPipeline {
             this.ampJitter = 1 + (Math.random() - 0.5) * 0.6 * this.cur.wobble;
         }
         this.heartPhase += dt * this.cur.bpm * this.rateJitter / 60;
-        const osc = massOscillation(this.heartPhase);
+        const osc = this.oscOf(this.heartPhase);
 
         // 鼠标：靠近核心程度 → 视差偏移 + 能量增强
-        const proxT = this.hasPointer ? 1 - smoothStep(0.12, 0.7, Math.hypot(this.pointerP.x, this.pointerP.y)) : 0;
+        const proxT = this.hasPointer ? 1 - smoothStep(this.proxNear, this.proxFar, Math.hypot(this.pointerP.x, this.pointerP.y)) : 0;
         this.proxSmooth += (proxT - this.proxSmooth) * (1 - Math.exp(-dt * (proxT > this.proxSmooth ? 10 : 3)));
-        this.mouseOffTarget.set(this.pointerP.x * 0.12 * this.proxSmooth, this.pointerP.y * 0.12 * this.proxSmooth);
+        this.mouseOffTarget.set(this.pointerP.x * this.mouseOffsetK * this.proxSmooth, this.pointerP.y * this.mouseOffsetK * this.proxSmooth);
         this.mouseOff.lerp(this.mouseOffTarget, 1 - Math.exp(-dt * 6));
 
         const flick = 1 - this.cur.flicker * Math.max(0, Math.sin(this.time * 23.0) * Math.sin(this.time * 7.3));
-        const gain = this.cur.gain * (1 + 0.06 * osc + this.energySmooth * 0.15) * (1 + this.proxSmooth * 0.35) * flick;
+        const gain = this.cur.gain * (1 + this.oscGainK * osc + this.energySmooth * this.audioGainK) * (1 + this.proxSmooth * this.mouseBoost) * flick;
         this.swirlTime += dt * this.cur.swirl;
 
         const w = this.rtA[0].w, h = this.rtA[0].h;
@@ -285,7 +357,7 @@ export class AbstractPipeline {
         m.uniforms.iTime.value = this.time;
         m.uniforms.iTimeDelta.value = dt;
         m.uniforms.iFrame.value = this.frameNo;
-        m.uniforms.uScale.value = this.holeSize * (1 + this.cur.holeAmp * this.ampJitter * osc + this.energySmooth * 0.012);
+        m.uniforms.uScale.value = this.holeSize * (1 + this.cur.holeAmp * this.ampJitter * osc + this.energySmooth * this.audioScaleK);
         m.uniforms.uGain.value = gain;
         m.uniforms.uMouseOff.value.copy(this.mouseOff);
         m.uniforms.uSwirlTime.value = this.swirlTime;
