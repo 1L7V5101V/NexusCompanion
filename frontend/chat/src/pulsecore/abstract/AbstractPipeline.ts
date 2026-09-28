@@ -20,7 +20,9 @@
 //                                       静态大小项用固定锥度（λ 只属于心跳扰动），
 //                                       外缘基本不动（简化的轨道周期 r^1.5 响应）；
 //                                       diskInv 数值逆解 u·F(u)=Z（牛顿×2）
-//   P=.../R.y+uMouseOff                 鼠标视差：靠近核心时初始光线轻微偏移
+//   camO=ro+4·(uMouseOff·基底)          鼠标视差=相机平移（非旋转）：光线方向不变、
+//                                       起点横移——洞+盘随视差摆动，无穷远星空静止，
+//                                       透镜扭曲跟随洞走（×4 补偿洞距 8 的位移差）
 //   iTime/ → uSwirlTime/                吸积盘旋转时间由 JS 按状态积分（换挡无相位跳变）
 //   o/=5e3; 前插 o*=uGain               曝光增益（tonemap 前）：状态/音频/鼠标能量/闪烁
 //   vec4 O; 后补 o=vec3(0)              原作依赖未初始化局部量归零，显式化防驱动差异
@@ -220,7 +222,7 @@ export class AbstractPipeline {
     private proxFar = 0.4;        // 接近半径外缘
     private feedback = 0.05;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
     private starGain = 1;         // 背景星空亮度
-    private starLens = 0;         // 星空采样方向（0=初始 rd 静止，1=弯折 crd 随盘脉动漂）
+    private starLens = 1;         // 星空采样方向（1=弯折 crd：透镜扭曲跟随洞，平移下远天静止；0=初始 rd 无扭曲）
     private horizonAmp = 0;       // 洞本体+引力随心跳脉动（0=恒定，星空不受扰；1=全随动）
     private glowK = 8;            // 辉光脉动系数：白弧/亮带随心跳 flare 的强度
 
@@ -278,8 +280,13 @@ export class AbstractPipeline {
             // 辉光脉动：内盘发射强度随心跳 flare（白弧/亮带胀缩），几何不动
             .replace('O=(160.*(1.-dot(crd,rd))+1.+sin(a-1.*(N*STEP)+2.5*H+vec4(7,2,9,7)))/(1.+N*STEP);',
                 'O=(160.*(1.-dot(crd,rd))+1.+sin(a-1.*(N*STEP)+2.5*H+vec4(7,2,9,7)))/(1.+N*STEP);O*=glowF(N*STEP);')
-            // 鼠标视差：P 空间偏移初始光线
-            .replace('P=(C+C-R)/R.y', 'P=(C+C-R)/R.y+uMouseOff')
+            // 鼠标视差=相机平移（非旋转）：光线方向不变、起点横移——黑洞系统
+            // （距离~8）随视差摆动，无穷远星空天然不动；透镜扭曲跟随洞走。
+            // ×4 补偿距离差：平移 Δ 在洞距 8 处的屏幕位移 ≈ Δ/4，与旧旋转式等效。
+            // 旧旋转式（P+=uMouseOff）会让整幅星空跟着转，用户不要。
+            .replace('float j,z=0.,d,D,L,l,s,N,a,H,A,Z,rw;',
+                'float j,z=0.,d,D,L,l,s,N,a,H,A,Z,rw;vec3 camO=ro+(uMouseOff.x*XX+uMouseOff.y*YY)*4.;')
+            .replace('p=z*crd+ro;', 'p=z*crd+camO;')
             // 状态化旋转：吸积盘角速度由 JS 积分（状态切换无相位跳变）
             .replace('iTime/', 'uSwirlTime/')
             // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
@@ -302,7 +309,7 @@ export class AbstractPipeline {
             // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
             // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
             .replace('i<99&&z<29.', 'i<130&&z<29.');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'uHorizonAmp', 'uGlowK', 'glowF(', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(mix(rd,crd', 'uStarGain', 'uStarLens']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'uHorizonAmp', 'uGlowK', 'glowF(', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(mix(rd,crd', 'uStarGain', 'uStarLens', 'camO=ro+']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -331,7 +338,7 @@ export class AbstractPipeline {
             uFeedback: { value: 0.05 },
             uJitter: { value: 1 },
             uStarGain: { value: 1 },
-            uStarLens: { value: 0 },
+            uStarLens: { value: 1 },
         });
 
         this.passes = {
@@ -455,7 +462,7 @@ export class AbstractPipeline {
     /** 洞本体+引力随心跳的脉动强度：0=洞大小恒定（默认，星空不受脉动影响），1=随心跳胀缩 */
     setHorizonAmp(v: number) { this.horizonAmp = Math.max(0, Math.min(1, v)); }
 
-    /** 星空采样方向：0=初始方向（完全静止，默认），1=弯折方向（被引力透镜拉弯，但随盘脉动漂移） */
+    /** 星空采样方向：1=弯折方向（透镜扭曲跟随洞；相机平移下远天静止，默认），0=初始方向（无扭曲） */
     setStarLens(v: number) { this.starLens = Math.max(0, Math.min(1, v)); }
 
     /** 辉光脉动系数：内盘发射（白弧/亮带）随心跳 flare 的强度，0=只余几何涟漪 */
