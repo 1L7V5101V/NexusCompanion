@@ -7,11 +7,29 @@ import { AbstractPipeline } from './abstract/AbstractPipeline';
 
 export type PulseCoreVariant = 'abstract' | 'kerr';
 
-/** 两种管线的公共接口（demo 与 React 组件都只依赖这一组方法） */
+export type PulseCoreStatePatch = {
+    bpm?: number; holeAmp?: number; gain?: number;
+    swirl?: number; flicker?: number; wobble?: number;
+};
+
+/** 两条管线对齐后的公共接口（demo 面板与 React 组件都只依赖它；kerr 不支持的项为 no-op） */
 export interface PulseCoreInstance {
     setState(s: PulseCoreState): void;
     setAudioEnergy(e: number): void;
     setHoleSize(v: number): void;
+    setProfile(s: PulseCoreState, patch: PulseCoreStatePatch): void;
+    getProfile(s: PulseCoreState): PulseCoreStatePatch;
+    setWaveShape(w: 'continuous' | 'lubdub' | 'pulse'): void;
+    setGlowK(v: number): void;
+    setStarGain(v: number): void;
+    setHorizonAmp(v: number): void;
+    setStarLens(v: number): void;
+    setPert(p: { lam?: number; lag?: number }): void;
+    setMouseParams(p: { offsetK?: number; boost?: number; near?: number; far?: number }): void;
+    setFeedback(v: number): void;
+    setDynamics(p: { oscGainK?: number; audioGainK?: number; audioScaleK?: number }): void;
+    setScale(v: number): void;
+    setFpsCap(v: number): void;
     start(): void;
     dispose(): void;
 }
