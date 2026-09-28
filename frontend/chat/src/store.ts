@@ -24,11 +24,13 @@ type Part =
       result?: string;
     };
 
-type ChatMessage = {
+export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   parts: Part[];
   status: "running" | "complete" | "error";
+  /** turn.failed 的错误信息（渲染层展示用）。 */
+  error?: string;
 };
 
 function toAssistantStatus(status: ChatMessage["status"]): ThreadMessageLike["status"] {
@@ -37,6 +39,18 @@ function toAssistantStatus(status: ChatMessage["status"]): ThreadMessageLike["st
     return { type: "incomplete", reason: "error" };
   }
   return { type: "complete", reason: "stop" };
+}
+
+/** snapshot 消息 → assistant-ui 消息（渲染与 runtime 共用）。 */
+export function toThreadMessageLike(message: ChatMessage): ThreadMessageLike {
+  return {
+    id: message.id,
+    role: message.role,
+    content: toContent(message.parts),
+    ...(message.role === "assistant"
+      ? { status: toAssistantStatus(message.status) }
+      : {}),
+  };
 }
 
 function toContent(parts: readonly Part[]): ThreadMessageLike["content"] {
@@ -168,22 +182,26 @@ export class ChatStore {
 
   private applyDelta(frame: MessageDeltaFrame): void {
     const message = this.ensureRunningAssistant(frame.turn_id);
-    let reasoning = "";
-    let text = "";
-    for (const part of message.parts) {
-      if (part.kind === "reasoning") reasoning += part.text;
-      else if (part.kind === "text") text += part.text;
+    if (!frame.thinking_delta && !frame.content_delta) return;
+    // 按到达顺序追加：思考接在末位 reasoning 之后（或新开），正文同理——
+    // 思考 → 工具 → 再思考 → 正文 的交错结构不合并。
+    const parts = [...message.parts];
+    if (frame.thinking_delta) {
+      const last = parts[parts.length - 1];
+      if (last && last.kind === "reasoning") {
+        parts[parts.length - 1] = { ...last, text: last.text + frame.thinking_delta };
+      } else {
+        parts.push({ kind: "reasoning", text: frame.thinking_delta });
+      }
     }
-    reasoning += frame.thinking_delta;
-    text += frame.content_delta;
-
-    const parts: Part[] = [];
-    if (reasoning) parts.push({ kind: "reasoning", text: reasoning });
-    if (text) parts.push({ kind: "text", text });
-    for (const part of message.parts) {
-      if (part.kind === "tool") parts.push(part);
+    if (frame.content_delta) {
+      const last = parts[parts.length - 1];
+      if (last && last.kind === "text") {
+        parts[parts.length - 1] = { ...last, text: last.text + frame.content_delta };
+      } else {
+        parts.push({ kind: "text", text: frame.content_delta });
+      }
     }
-
     this.replaceMessage(message.id, { ...message, parts, status: "running" });
   }
 
@@ -228,20 +246,36 @@ export class ChatStore {
       (this.currentAssistantId ? this.findMessage(this.currentAssistantId)?.id : undefined) ??
       frame.turn_id ??
       `assistant-${Date.now()}`;
-    // turn.completed 是终态 source of truth：覆盖 delta 累积文本。
+    this.currentAssistantId = null;
+    this.running = false;
+    // Update isRunning before notifying subscribers so the composer is re-enabled.
+    const existing = this.findMessage(existingId);
+    let parts: Part[] = existing ? [...existing.parts] : [];
+    // 终态是 source of truth：仅当与流式累积不一致时才重建（保留交错结构，
+    // 正文重建到末位、思考重建到首位；一致则原样保留，避免破坏交错）。
+    const textConcat = parts
+      .filter((p) => p.kind === "text")
+      .map((p) => p.text)
+      .join("");
+    const thinkConcat = parts
+      .filter((p) => p.kind === "reasoning")
+      .map((p) => p.text)
+      .join("");
+    if ((frame.content ?? "") !== textConcat) {
+      parts = parts.filter((p) => p.kind !== "text");
+      if (frame.content) parts.push({ kind: "text", text: frame.content });
+    }
+    if ((frame.thinking ?? "") !== thinkConcat) {
+      parts = parts.filter((p) => p.kind !== "reasoning");
+      if (frame.thinking) parts.unshift({ kind: "reasoning", text: frame.thinking });
+    }
     const finalMessage: ChatMessage = {
       id: existingId,
       role: "assistant",
-      parts: [
-        ...(frame.thinking ? [{ kind: "reasoning" as const, text: frame.thinking }] : []),
-        { kind: "text", text: frame.content },
-      ],
+      parts,
       status: "complete",
     };
-    // Update isRunning before notifying subscribers so the composer is re-enabled.
-    this.currentAssistantId = null;
-    this.running = false;
-    if (this.findMessage(existingId)) {
+    if (existing) {
       this.replaceMessage(existingId, finalMessage);
     } else {
       this.commit([...this.messages, finalMessage]);
@@ -258,8 +292,9 @@ export class ChatStore {
     const finalMessage: ChatMessage = {
       id,
       role: "assistant",
-      parts: existing ? existing.parts : [{ kind: "text", text: frame.error }],
+      parts: existing ? existing.parts : [],
       status: "error",
+      error: frame.error,
     };
     // Keep the snapshot consistent with the terminal assistant message.
     this.currentAssistantId = null;
@@ -276,6 +311,9 @@ export function useChatRuntime(onUnauthorized?: () => void): {
   runtime: ReturnType<typeof useExternalStoreRuntime>;
   status: ConnectionStatus;
   isRunning: boolean;
+  messages: readonly ChatMessage[];
+  /** 已发出用户消息但尚未收到任何 assistant 内容（渲染跳动省略号）。 */
+  awaitingFirstToken: boolean;
 } {
   const store = useMemo(() => new ChatStore(), []);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
@@ -319,19 +357,22 @@ export function useChatRuntime(onUnauthorized?: () => void): {
   }, []);
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
-    messages: snapshot.messages.map((message): ThreadMessageLike => ({
-      id: message.id,
-      role: message.role,
-      content: toContent(message.parts),
-      ...(message.role === "assistant"
-        ? { status: toAssistantStatus(message.status) }
-        : {}),
-    })),
+    messages: snapshot.messages.map(toThreadMessageLike),
     isRunning: snapshot.isRunning,
     onNew,
     onCancel,
     convertMessage: (message) => message,
   });
 
-  return { runtime, status, isRunning: snapshot.isRunning };
+  const lastMessage = snapshot.messages[snapshot.messages.length - 1];
+  const awaitingFirstToken =
+    snapshot.isRunning && (!lastMessage || lastMessage.role === "user");
+
+  return {
+    runtime,
+    status,
+    isRunning: snapshot.isRunning,
+    messages: snapshot.messages as readonly ChatMessage[],
+    awaitingFirstToken,
+  };
 }

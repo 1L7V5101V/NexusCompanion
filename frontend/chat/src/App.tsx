@@ -1,11 +1,27 @@
-import { AssistantRuntimeProvider, ThreadPrimitive, ComposerPrimitive, MessagePrimitive } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, ComposerPrimitive } from "@assistant-ui/react";
 import { ArrowUp } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useChatRuntime } from "./store";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useChatRuntime, type ChatMessage } from "./store";
+import { useMockChatRuntime } from "./mock";
+import { AuroraCanvas } from "./AuroraCanvas";
+import { ThinkingDots } from "./components/ThinkingDots";
+import { ThinkingBlock } from "./components/ThinkingBlock";
+import { ToolCallCard } from "./components/ToolCallCard";
+import { StreamingMarkdown } from "./components/StreamingMarkdown";
+import { useSmoothStream } from "./hooks/useSmoothStream";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
-import { AuroraCanvas } from "./AuroraCanvas";
 import { LoginPanel } from "./LoginPanel";
+
+const MOCK_MODE = new URLSearchParams(window.location.search).get("mock") === "1";
+
+type ChatBundle = {
+  runtime: React.ComponentProps<typeof AssistantRuntimeProvider>["runtime"];
+  status: ConnectionStatus;
+  isRunning: boolean;
+  messages: readonly ChatMessage[];
+  awaitingFirstToken: boolean;
+};
 
 function ConnectionBadge({ status }: { status: ConnectionStatus }) {
   const label =
@@ -24,63 +40,95 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
   );
 }
 
-function MessageBubble() {
-  return (
-    <MessagePrimitive.Root className="flex flex-col gap-1">
-      <MessagePrimitive.Parts
-        components={{
-          Text: TextPart,
-          Reasoning: ReasoningPart,
-          tools: { Fallback: ToolPart },
-        }}
-      />
-    </MessagePrimitive.Root>
-  );
-}
-
-function TextPart({ text }: { text?: string }) {
-  return <span className="whitespace-pre-wrap">{text}</span>;
-}
-
-function ReasoningPart({ text }: { text?: string }) {
-  return (
-    <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-muted whitespace-pre-wrap">
-      {text}
-    </div>
-  );
-}
-
-function ToolPart({
-  toolName,
-  isError,
-  result,
-}: {
-  toolName?: string;
-  isError?: boolean;
-  result?: unknown;
-}) {
-  return (
-    <div className="rounded-md border border-border bg-surface-2 px-3 py-1.5 font-mono text-xs">
-      <span className="text-subtle">tool</span>{" "}
-      <span className={isError ? "text-danger" : "text-fg"}>{toolName}</span>
-      {result ? <span className="text-subtle"> · {String(result)}</span> : null}
-    </div>
-  );
-}
-
-function UserMessage() {
+function UserMessageView({ message }: { message: ChatMessage }) {
+  const text = message.parts
+    .map((part) => (part.kind === "text" ? part.text : ""))
+    .join("");
   return (
     <div className="flex justify-end">
-      <MessagePrimitive.Root className="max-w-[80%] rounded-xl bg-surface-3 px-4 py-2">
-        <MessagePrimitive.Parts components={{ Text: TextPart }} />
-      </MessagePrimitive.Root>
+      <div className="max-w-[80%] rounded-2xl bg-surface-3 px-4 py-2">
+        <span className="whitespace-pre-wrap text-sm">{text}</span>
+      </div>
     </div>
   );
 }
 
-function ChatView({ onSignOut }: { onSignOut: () => void }) {
-  // 只在已认证时挂载：未认证不会有 WS 连接（避免对 4401 反复重连）。
-  const { runtime, status, isRunning } = useChatRuntime(onSignOut);
+/** 正文 part：useSmoothStream 匀速放出 → StreamingMarkdown 渲染。 */
+function StreamingTextPart({ text, streaming }: { text: string; streaming: boolean }) {
+  const shown = useSmoothStream(text);
+  return <StreamingMarkdown text={shown} streaming={streaming} />;
+}
+
+function AssistantMessageView({ message }: { message: ChatMessage }) {
+  const parts = message.parts;
+  const last = parts.length - 1;
+  return (
+    <div className="flex flex-col gap-2">
+      {parts.map((part, i) => {
+        if (part.kind === "reasoning") {
+          return (
+            <ThinkingBlock
+              key={i}
+              text={part.text}
+              active={message.status === "running" && i === last}
+            />
+          );
+        }
+        if (part.kind === "tool") {
+          return (
+            <ToolCallCard key={i} name={part.toolName} state={part.state} result={part.result} />
+          );
+        }
+        return (
+          <StreamingTextPart
+            key={i}
+            text={part.text}
+            streaming={message.status === "running" && i === last}
+          />
+        );
+      })}
+      {message.status === "error" && message.error ? (
+        <div className="msg-error">请求失败：{message.error}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => void }) {
+  const { runtime, status, messages, isRunning, awaitingFirstToken } = chat;
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  const handleScroll = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    atBottomRef.current = dist < 80;
+    setShowJump(!atBottomRef.current);
+  }, []);
+
+  // 内容增长（流式输出/折叠动画）时，用户停留在底部附近（<80px）则贴底
+  useEffect(() => {
+    const el = viewportRef.current;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (atBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduced ? "auto" : "smooth" });
+    atBottomRef.current = true;
+    setShowJump(false);
+  }, []);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -102,21 +150,35 @@ function ChatView({ onSignOut }: { onSignOut: () => void }) {
           </div>
         </header>
 
-        <ThreadPrimitive.Viewport
-          autoScroll
-          className="flex-1 overflow-y-auto px-4 py-4"
-        >
-          <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            <ThreadPrimitive.Empty>
-              <div className="py-24 text-center text-sm text-subtle">
-                发送第一条消息开始对话
-              </div>
-            </ThreadPrimitive.Empty>
-            <ThreadPrimitive.Messages
-              components={{ UserMessage, AssistantMessage: MessageBubble }}
-            />
+        <div className="relative min-h-0 flex-1">
+          <div
+            ref={viewportRef}
+            onScroll={handleScroll}
+            className="h-full overflow-y-auto px-4 py-4"
+          >
+            <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-5">
+              {messages.length === 0 ? (
+                <div className="py-24 text-center text-sm text-subtle">
+                  发送第一条消息开始对话
+                </div>
+              ) : (
+                messages.map((message) =>
+                  message.role === "user" ? (
+                    <UserMessageView key={message.id} message={message} />
+                  ) : (
+                    <AssistantMessageView key={message.id} message={message} />
+                  ),
+                )
+              )}
+              <ThinkingDots active={awaitingFirstToken} />
+            </div>
           </div>
-        </ThreadPrimitive.Viewport>
+          {showJump ? (
+            <button type="button" className="scroll-jump" onClick={jumpToBottom}>
+              回到底部 ↓
+            </button>
+          ) : null}
+        </div>
 
         <footer className="px-4 pb-6 pt-2">
           <div className="mx-auto max-w-3xl">
@@ -157,7 +219,8 @@ function Splash({ label }: { label: string }) {
   );
 }
 
-export default function App() {
+/** 真实链路：登录 → ChatRender（useChatRuntime 仅在已认证时挂载，避免 4401 重连）。 */
+function RealApp() {
   const [auth, setAuth] = useState<AuthState>({ phase: "checking" });
 
   // 刷新/重开浏览器：凭 HttpOnly Cookie 确认会话（不读取任何本地存储）。
@@ -181,7 +244,6 @@ export default function App() {
   if (auth.phase === "checking") {
     return <Splash label="正在确认登录状态…" />;
   }
-
   if (auth.phase === "anonymous") {
     return (
       <LoginPanel
@@ -191,6 +253,24 @@ export default function App() {
       />
     );
   }
+  return (
+    <RealChatView
+      onSignOut={() => setAuth({ phase: "anonymous" })}
+    />
+  );
+}
 
-  return <ChatView onSignOut={() => setAuth({ phase: "anonymous" })} />;
+function RealChatView({ onSignOut }: { onSignOut: () => void }) {
+  const chat = useChatRuntime(onSignOut);
+  return <ChatRender chat={chat} onSignOut={onSignOut} />;
+}
+
+/** ?mock=1：本地演示，不建立任何真实连接。 */
+function MockChatView() {
+  const chat = useMockChatRuntime();
+  return <ChatRender chat={chat} onSignOut={() => {}} />;
+}
+
+export default function App() {
+  return MOCK_MODE ? <MockChatView /> : <RealApp />;
 }
