@@ -59,9 +59,9 @@ body,
 
 .composer-aurora-canvas {
   position: absolute;
-  inset: -120px;
-  width: calc(100% + 240px);
-  height: calc(100% + 240px);
+  inset: -150px;
+  width: calc(100% + 300px);
+  height: calc(100% + 300px);
   display: block;
   pointer-events: none;
 }
