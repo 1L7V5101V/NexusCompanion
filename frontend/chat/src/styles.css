@@ -68,12 +68,192 @@ body,
   background: #000;
 }
 
-/* 登录卡：脉冲背景上的玻璃面板 */
+/* ===== 登录：极简胶囊 → 毛玻璃面板（点击展开）=====
+   毛玻璃配方（.login-card）在形变全程保持不变——只动画尺寸/圆角/透明，
+   不对 backdrop-filter 与底色做动画，避免模糊重算每帧抖动。 */
 .login-card {
   background: rgba(18, 18, 18, 0.72);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+:root {
+  --login-pill-w: 116px;
+  --login-pill-h: 46px;
+  --login-panel-w: min(90vw, 360px);
+  --login-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --login-dur: 460ms;
+}
+
+/* 舞台：整屏居中，点击空白处收回面板 */
+.login-stage {
+  position: relative;
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+/* 「Nexus」字标：细体、宽字距 */
+.login-brand {
+  font-size: 19px;
+  font-weight: 300;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;   /* 补偿末字符字距，视觉居中 */
+  color: rgba(237, 237, 237, 0.88);
+  user-select: none;
+}
+
+/* 外壳：收起=胶囊，展开=面板——同一元素上的形变，毛玻璃连贯 */
+.login-shell {
+  position: relative;
+  width: var(--login-pill-w);
+  height: var(--login-pill-h);
+  border-radius: 9999px;
+  overflow: hidden;
+  transition:
+    width var(--login-dur) var(--login-ease),
+    height var(--login-dur) var(--login-ease),
+    border-radius var(--login-dur) var(--login-ease);
+}
+.login-shell.is-open {
+  width: var(--login-panel-w);
+  height: var(--login-h, 240px);   /* 内容实测高度，随登录/注册切换过渡 */
+  border-radius: 18px;
+}
+
+/* 收起态的胶囊按钮 */
+.login-cta {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: rgba(237, 237, 237, 0.92);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: opacity 160ms ease;
+}
+.login-cta:hover { background: rgba(255, 255, 255, 0.05); }
+.login-cta:focus-visible { outline: 1px solid var(--color-border-strong); outline-offset: -6px; border-radius: 9999px; }
+.login-shell.is-open .login-cta {
+  opacity: 0;
+  visibility: hidden;               /* 同时移出 Tab 序与命中区 */
+  transition: opacity 140ms ease, visibility 0s 140ms;
+}
+
+/* 展开态内容层：宽度锚定面板宽；收起时 visibility:hidden 仍参与布局，
+   ResizeObserver 可持续测量内容高度（形变首帧即用正确目标高度）。 */
+.login-body {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--login-panel-w);
+  padding: 22px 22px 20px;
+  text-align: left;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 180ms ease, visibility 0s 180ms;
+}
+.login-shell.is-open .login-body {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 240ms ease 120ms, visibility 0s;
+}
+
+/* 逐项淡入并轻微上移；--i 序号 × 60ms 形成 stagger */
+.login-shell.is-open .login-anim {
+  animation: login-rise 360ms var(--login-ease) both;
+  animation-delay: calc(140ms + var(--i, 0) * 60ms);
+}
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 输入框：无方框、仅底线；focus 提亮底线 */
+.login-field {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  padding: 9px 2px;
+  font-size: 16px;                  /* ≥16px：避免 iOS 聚焦自动缩放 */
+  line-height: 1.5;
+  color: var(--color-fg);
+  outline: none;
+  transition: border-color 200ms ease;
+}
+.login-field::placeholder { color: var(--color-subtle); }
+.login-field:hover { border-bottom-color: var(--color-border-strong); }
+.login-field:focus { border-bottom-color: rgba(237, 237, 237, 0.5); }
+
+/* 提交按钮：沿用 accent 主色，胶囊形与外壳呼应 */
+.login-submit {
+  width: 100%;
+  border: 0;
+  border-radius: 9999px;
+  padding: 10px 16px;
+  font-size: 14px;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  cursor: pointer;
+  transition: opacity 160ms ease, transform 120ms ease;
+}
+.login-submit:disabled { opacity: 0.4; cursor: default; }
+.login-submit:not(:disabled):active { transform: scale(0.985); }
+.login-submit:focus-visible { outline: 2px solid var(--color-border-strong); outline-offset: 2px; }
+
+/* 文字链接（注册入口 / 返回登录） */
+.login-link {
+  font-size: 12px;
+  color: var(--color-muted);
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+.login-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 3px; }
+.login-link:focus-visible { outline: 1px solid var(--color-border-strong); outline-offset: 2px; border-radius: 4px; }
+
+/* 错误提示：小号红字 + 轻微抖动（元素每次报错重挂载，动画可重复） */
+.login-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  animation: login-shake 420ms ease 60ms;
+}
+@keyframes login-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(2px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(1px); }
+}
+
+/* 减少动态：只保留淡入淡出，不做形变与位移 */
+@media (prefers-reduced-motion: reduce) {
+  .login-shell { transition: none; }
+  .login-body { transition: opacity 160ms ease, visibility 0s 160ms; }
+  .login-shell.is-open .login-body { transition: opacity 160ms ease, visibility 0s; }
+  .login-shell.is-open .login-anim {
+    animation: login-fade 180ms ease both;
+    animation-delay: calc(var(--i, 0) * 40ms);
+  }
+  .login-error { animation: none; }
+}
+@keyframes login-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 @supports (height: 100dvh) {

@@ -38,7 +38,6 @@ import * as THREE from 'three';
 import { SHIM_PREFIX, SHIM_MAIN, FULLSCREEN_VERT, envelopeOf, type WaveShape } from '../shadertoy';
 import type { PulseCoreState } from '../PulseCorePipeline';
 import bufferASrc from './shaders/bufferA.glsl?raw';
-export type { WaveShape };
 
 // 超采样 blit：scale>1 时对输出像素脚印做 4 tap 盒式降采样（空间抗锯齿，
 // 替代低时间累积下失效的 TAA）；scale≤1 时退化为单次线性采样（放大）。
