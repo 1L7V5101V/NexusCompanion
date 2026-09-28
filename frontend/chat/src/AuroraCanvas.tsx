@@ -272,9 +272,11 @@ export function AuroraCanvas({ active }: { active: boolean }) {
 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // 脉冲模型：一次发送触发一次「入场 → 绕框一圈 → 出场」，结束后熄灭，
-    // 直到下一次发送（isRunning 上升沿）再触发。
-    const PULSE = { in: 450, lap: 5000, out: 600 };
+    // 脉冲模型：一次发送触发一次短脉冲——从右上角出发，沿阅读方向
+    // （右缘→底缘）1s 行进到左下角，原地淡出消失，直到下次发送再触发。
+    const PULSE = { travel: 1000, fadeIn: 120, fadeOut: 300 };
+    const START = 0.432; // 右上角圆弧中点
+    const END = 0.932;   // 左下角圆弧中点
 
     let running = false;
     let raf = 0;
@@ -291,21 +293,22 @@ export function AuroraCanvas({ active }: { active: boolean }) {
         turnAt = now;
       }
       const t = now - pulseStart;
-      // 包络：入场淡入 → 恒定 → 出场淡出
+      const p = Math.min(1, Math.max(0, t / PULSE.travel));
+      const prog = START + (END - START) * p;
+      // 包络：快速淡入 → 恒定 → 到达左下角后原地淡出
       let pulse = 1;
-      if (t < PULSE.in) {
-        pulse = Math.max(0, t / PULSE.in);
-      } else if (t > PULSE.in + PULSE.lap) {
-        pulse = Math.max(0, 1 - (t - PULSE.in - PULSE.lap) / PULSE.out);
+      if (t < PULSE.fadeIn) {
+        pulse = Math.max(0, t / PULSE.fadeIn);
+      } else if (t > PULSE.travel) {
+        pulse = Math.max(0, 1 - (t - PULSE.travel) / PULSE.fadeOut);
       }
-      const prog = Math.min(1, Math.max(0, (t - PULSE.in) / PULSE.lap));
       const activeFade = act ? 1 : Math.max(0, 1 - (now - turnAt) / 600);
       gl.uniform1f(uTime, now / 1000);
       gl.uniform1f(uPulse, pulse);
       gl.uniform1f(uProg, prog);
       gl.uniform1f(uActive, activeFade);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      const pulseDone = t > PULSE.in + PULSE.lap + PULSE.out;
+      const pulseDone = t > PULSE.travel + PULSE.fadeOut;
       if (pulseDone || (!act && now - turnAt > 700)) {
         running = false;
         return;
