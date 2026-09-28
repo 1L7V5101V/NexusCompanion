@@ -116,7 +116,7 @@ body,
 /* ===== 消息区（极简风）：变量集中定义，方便微调 ===== */
 :root {
   --msg-radius: 18px;
-  --msg-bubble-max: min(66vw, 44rem);
+  --msg-bubble-max: min(44vw, 29rem);
   --msg-bubble-pad: 10px 16px;
   --bubble-user-bg: var(--color-surface-2);
   --bubble-assistant-bg: var(--color-surface-2);
