@@ -21,7 +21,7 @@ let pipeline: PulseCoreInstance;
 // ---- 调参面板状态：全局参数默认值（用户定稿，2026-09-28）+ 每状态剖面覆盖 ----
 const adj = {
     dynamics: { oscGainK: 0.2, audioGainK: 0.15, audioScaleK: 0.012 },
-    pert: { lam: 1.45, lag: 0.33, horizonAmp: 0 },
+    pert: { lam: 1.45, lag: 0.33, horizonAmp: 0, glowK: 8 },
     mouse: { offsetK: 0.01, boost: 0.35, near: 0.12, far: 0.4 },
     scale: 1.25,
     fpsCap: 85,
@@ -49,6 +49,7 @@ function createPipeline(v: PulseCoreVariant) {
         a.setDynamics(adj.dynamics);
         a.setPert({ lam: adj.pert.lam, lag: adj.pert.lag });
         a.setHorizonAmp(adj.pert.horizonAmp);
+        a.setGlowK(adj.pert.glowK);
         a.setMouseParams(adj.mouse);
         a.setFeedback(adj.feedback);
         a.setStarGain(adj.starGain);
@@ -227,6 +228,7 @@ mkH4(advEl, '盘响应', '· 只影响心跳，不影响大小');
 mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; abstractOrNull()?.setPert({ lam: x }); });
 mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; abstractOrNull()?.setPert({ lag: x }); });
 mkRow(advEl, '本体脉动', 0, 1, 0.05, adj.pert.horizonAmp, x => { adj.pert.horizonAmp = x; abstractOrNull()?.setHorizonAmp(x); });
+mkRow(advEl, '辉光脉动', 0, 20, 0.5, adj.pert.glowK, x => { adj.pert.glowK = x; abstractOrNull()?.setGlowK(x); });
 
 // —— 鼠标交互 ——
 mkH4(advEl, '鼠标交互');

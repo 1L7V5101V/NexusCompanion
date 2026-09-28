@@ -86,6 +86,7 @@ const UNIFORM_DECLS = /* glsl */ `
 uniform float uHoleBase;    // 洞基础尺寸（holeSize，1 = 原作默认构图）
 uniform float uPulseAmp;    // 盘/云脉动幅度（分数，含每拍抖动 + 音频耦合）
 uniform float uHorizonAmp;  // 洞本体+引力随心跳脉动强度（0=恒定，默认；1=随心跳胀缩）
+uniform float uGlowK;       // 辉光脉动：心跳对内盘发射强度的调制系数
 uniform float uPhase;       // 心跳相位（拍，已 mod 1）
 uniform float uPertLam;     // 盘扰动衰减长度（世界单位）
 uniform float uPertLag;     // 盘扰动传播延迟（拍/单位半径）
@@ -136,6 +137,13 @@ float envWave(float ph) {
   }
   if(uWave==2)return exp(-ph*5.);
   return .5-.5*cos(6.283185307*ph);
+}
+// 辉光脉动：心跳包络调制内盘各环的发射强度——亮区随拍胀缩（洞顶白弧是
+// 远侧内缘的透镜像，内缘环 flare 时白弧同步缩放），沿与几何涟漪相同的
+// 衰减+延迟向外传播；幅度与盘脉动幅度成比例（各状态自动差异化）
+float glowF(float r) {
+  float x=max(0., r-1.);
+  return 1.+uGlowK*uPulseAmp*envWave(uPhase-uPertLag*x)*exp(-x/uPertLam);
 }
 // 盘径向翘曲场：r 为 u 空间（等距环）半径，返回物理半径倍率。
 // 静态项（大小）与动态项（心跳）解耦：
@@ -214,6 +222,7 @@ export class AbstractPipeline {
     private starGain = 1;         // 背景星空亮度
     private starLens = 0;         // 星空采样方向（0=初始 rd 静止，1=弯折 crd 随盘脉动漂）
     private horizonAmp = 0;       // 洞本体+引力随心跳脉动（0=恒定，星空不受扰；1=全随动）
+    private glowK = 8;            // 辉光脉动系数：白弧/亮带随心跳 flare 的强度
 
     // 鼠标
     private hasPointer = false;
@@ -266,6 +275,9 @@ export class AbstractPipeline {
                 'N=clamp(floor(diskInv(Z)/STEP+.5),1./STEP,6./STEP);')
             .replace('w=vec2(abs(Z-STEP*(N+j/(2.*REPS+1.))), ',
                 'rw=STEP*(N+j/(2.*REPS+1.));w=vec2(abs(Z-rw*diskF(rw)), ')
+            // 辉光脉动：内盘发射强度随心跳 flare（白弧/亮带胀缩），几何不动
+            .replace('O=(160.*(1.-dot(crd,rd))+1.+sin(a-1.*(N*STEP)+2.5*H+vec4(7,2,9,7)))/(1.+N*STEP);',
+                'O=(160.*(1.-dot(crd,rd))+1.+sin(a-1.*(N*STEP)+2.5*H+vec4(7,2,9,7)))/(1.+N*STEP);O*=glowF(N*STEP);')
             // 鼠标视差：P 空间偏移初始光线
             .replace('P=(C+C-R)/R.y', 'P=(C+C-R)/R.y+uMouseOff')
             // 状态化旋转：吸积盘角速度由 JS 积分（状态切换无相位跳变）
@@ -290,7 +302,7 @@ export class AbstractPipeline {
             // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
             // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
             .replace('i<99&&z<29.', 'i<130&&z<29.');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'uHorizonAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(mix(rd,crd', 'uStarGain', 'uStarLens']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'uHorizonAmp', 'uGlowK', 'glowF(', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(mix(rd,crd', 'uStarGain', 'uStarLens']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -308,6 +320,7 @@ export class AbstractPipeline {
             uHoleBase: { value: 1 },
             uPulseAmp: { value: 0 },
             uHorizonAmp: { value: 0 },
+            uGlowK: { value: 8 },
             uPhase: { value: 0 },
             uPertLam: { value: 1.2 },
             uPertLag: { value: 0.12 },
@@ -445,6 +458,9 @@ export class AbstractPipeline {
     /** 星空采样方向：0=初始方向（完全静止，默认），1=弯折方向（被引力透镜拉弯，但随盘脉动漂移） */
     setStarLens(v: number) { this.starLens = Math.max(0, Math.min(1, v)); }
 
+    /** 辉光脉动系数：内盘发射（白弧/亮带）随心跳 flare 的强度，0=只余几何涟漪 */
+    setGlowK(v: number) { this.glowK = Math.max(0, Math.min(20, v)); }
+
     /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
     setMouseParams(patch: { offsetK?: number; boost?: number; near?: number; far?: number }) {
         if (patch.offsetK !== undefined) this.mouseOffsetK = Math.max(0, Math.min(0.5, patch.offsetK));
@@ -548,6 +564,7 @@ export class AbstractPipeline {
         m.uniforms.uFeedback.value = this.feedback;
         m.uniforms.uStarGain.value = this.starGain;
         m.uniforms.uStarLens.value = this.starLens;
+        m.uniforms.uGlowK.value = this.glowK;
         m.uniforms.uHorizonAmp.value = this.horizonAmp;
         // 抖动只在有足够时间累积时才有意义（累积平均掉抖动=AA）；
         // 低累积下抖动没有历史可平均，纯剩噪声——关掉
