@@ -112,184 +112,185 @@ body,
   }
 }
 
-/* ===== 消息渲染动效（ThinkingDots / ThinkingBlock / ToolCallCard / 流式正文）===== */
 
-@keyframes thinking-bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
+/* ===== 消息区（极简风）：变量集中定义，方便微调 ===== */
+:root {
+  --msg-radius: 18px;
+  --msg-bubble-max: min(66vw, 44rem);
+  --msg-bubble-pad: 10px 16px;
+  --bubble-user-bg: var(--color-surface-2);
+  --bubble-assistant-bg: var(--color-surface-2);
+  --sweep-duration: 3.4s;          /* 流光扫过一轮的时长：缓慢、匀速 */
+  --line-fade: 0.26s;              /* 思考行淡出让位给正文的时长 */
+  --word-fade-in: 0.2s;            /* 状态词切换淡入 */
+  --word-fade-out: 0.15s;          /* 状态词切换淡出 */
+  --ellipsis-breathe: 2.4s;        /* 词尾省略号呼吸周期 */
+  --collapse-duration: 0.25s;      /* 过程详情展开/收起 */
+  --collapse-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --process-indent: 14px;          /* 过程详情的缩进/细线偏移 */
 }
-@keyframes thinking-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
-}
-.thinking-dots {
+
+/* 思考中：一行浮动的流光文字（无气泡、无背景、无边框） */
+.thinking-line {
+  min-height: 1.6em;
   display: flex;
-  gap: 4px;
   align-items: center;
-  height: 20px;
-  transition: opacity 0.15s ease;
+  animation: block-fade 0.25s ease-out;
+  transition: opacity var(--line-fade) ease;
 }
-.thinking-dots-hide {
+.thinking-line-hide {
   opacity: 0;
 }
-.thinking-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: var(--color-subtle);
-  animation: thinking-bounce 1.2s ease-in-out infinite;
-}
-.thinking-dot:nth-child(2) { animation-delay: 0.15s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.3s; }
 
-@keyframes shimmer-sweep {
-  to { background-position: -200% 0; }
-}
+/* 流光扫光：background-position 动画，不触发重排；
+   250% 渐变 + 30%/70% 双侧羽化，高光出入画外，循环无跳变 */
 .thinking-shimmer {
+  color: transparent;
   background: linear-gradient(
     90deg,
     var(--color-muted) 0%,
-    var(--color-muted) 40%,
+    var(--color-muted) 30%,
     var(--color-fg) 50%,
-    var(--color-muted) 60%,
+    var(--color-muted) 70%,
     var(--color-muted) 100%
   );
-  background-size: 200% 100%;
+  background-size: 250% 100%;
+  background-position: 100% 0;
   -webkit-background-clip: text;
   background-clip: text;
-  color: transparent;
-  animation: shimmer-sweep 2s linear infinite;
+  animation: thinking-sweep var(--sweep-duration) linear infinite;
+}
+@keyframes thinking-sweep {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
 }
 
-/* 折叠容器（grid-template-rows 0fr↔1fr），思考框与工具详情共用 */
-.thinking-body {
+/* 状态词：固定高度 + min-width（内联），切换只做淡入淡出 */
+.status-label {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  height: 1.5em;
+  vertical-align: bottom;
+}
+.status-word {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+}
+@keyframes word-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes word-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.status-word-enter { animation: word-fade-in var(--word-fade-in) ease-out; }
+.status-word-leave { animation: word-fade-out var(--word-fade-out) ease-out forwards; }
+
+/* 词尾省略号：轻微呼吸 */
+@keyframes ellipsis-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.status-ellipsis {
+  animation: ellipsis-breathe var(--ellipsis-breathe) ease-in-out infinite;
+}
+
+/* 过程入口：一行次要色小字，点击展开缩进详情（无卡片） */
+.process-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: block-fade var(--entry-fade, 0.2s) ease-out;
+}
+.process-toggle {
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-subtle);
+  text-align: left;
+  transition: color 0.15s ease;
+}
+.process-toggle:hover {
+  color: var(--color-muted);
+}
+.process-body {
   display: grid;
   grid-template-rows: 0fr;
-  transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: grid-template-rows var(--collapse-duration) var(--collapse-ease);
 }
-.thinking-body.open {
+.process-body.open {
   grid-template-rows: 1fr;
 }
-.thinking-body > div {
+.process-body > div {
   overflow: hidden;
 }
-.thinking-chevron {
-  margin-left: auto;
-  color: var(--color-subtle);
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.thinking-chevron.open {
-  transform: rotate(180deg);
-}
-
-.thinking-block {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface-2);
-  overflow: hidden;
-}
-.thinking-head {
+.process-detail {
+  margin-left: var(--process-indent);
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border);
   display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: var(--color-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-}
-.thinking-content {
-  padding: 2px 10px 10px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--color-muted);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-@keyframes rise-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes tool-spin {
-  to { transform: rotate(360deg); }
-}
-@keyframes tool-pop {
-  0% { transform: scale(0.4); opacity: 0; }
-  60% { transform: scale(1.18); }
-  100% { transform: scale(1); opacity: 1; }
-}
-.tool-card {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface-2);
-  animation: rise-in 0.2s ease-out;
-}
-.tool-head {
-  display: flex;
-  width: 100%;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  padding: 7px 10px;
   font-size: 12px;
-  color: var(--color-fg);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-}
-.tool-head:disabled {
-  cursor: default;
-}
-.tool-spinner {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  border: 2px solid var(--color-border-strong);
-  border-top-color: var(--color-fg);
-  border-radius: 9999px;
-  animation: tool-spin 0.8s linear infinite;
-}
-.tool-check {
-  color: var(--color-success);
-  animation: tool-pop 0.25s ease-out;
-}
-.tool-x {
-  color: var(--color-danger);
-  animation: tool-pop 0.25s ease-out;
-}
-.tool-summary {
-  margin-left: auto;
-  color: var(--color-subtle);
-}
-.tool-detail {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 12rem;
-  overflow-y: auto;
-  border-top: 1px solid var(--color-border);
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.6;
   color: var(--color-muted);
+}
+.process-think {
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.6;
+}
+.process-tool-name {
+  color: var(--color-fg);
+}
+.process-tool-status {
+  margin-left: 8px;
+  color: var(--color-subtle);
+}
+.process-tool-result {
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
 }
 
-/* 流式 Markdown */
+/* 气泡：用户右对齐、助手左对齐；页面上仅这两种气泡 */
+@keyframes block-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.bubble-user {
+  max-width: var(--msg-bubble-max);
+  margin-left: auto;
+  background: var(--bubble-user-bg);
+  border-radius: var(--msg-radius);
+  padding: var(--msg-bubble-pad);
+  width: fit-content;
+  overflow-wrap: anywhere;
+  animation: block-fade 0.2s ease-out;
+}
+.bubble-assistant {
+  max-width: var(--msg-bubble-max);
+  background: var(--bubble-assistant-bg);
+  border-radius: var(--msg-radius);
+  padding: var(--msg-bubble-pad);
+  width: fit-content;
+  overflow-wrap: anywhere;
+  animation: block-fade 0.2s ease-out;
+}
+
+/* 流式 Markdown（渲染在助手气泡内） */
 .md {
   display: flex;
   flex-direction: column;
   gap: 8px;
   font-size: 14px;
   line-height: 1.7;
-}
-@keyframes block-fade {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 .md > * {
   animation: block-fade 0.15s ease-out;
@@ -313,21 +314,14 @@ body,
   flex-direction: column;
   gap: 2px;
 }
-ul.md-list {
-  list-style: disc outside;
-}
-ol.md-list {
-  list-style: decimal outside;
-}
-.md-list li::marker {
-  color: var(--color-subtle);
-}
+ul.md-list { list-style: disc outside; }
+ol.md-list { list-style: decimal outside; }
+.md-list li::marker { color: var(--color-subtle); }
 .md-pre {
   margin: 0;
   padding: 10px 12px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
+  background: var(--color-surface-3);
+  border-radius: 10px;
   overflow-x: auto;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -335,15 +329,14 @@ ol.md-list {
 }
 .md-quote {
   margin: 0;
-  padding: 4px 12px;
+  padding: 2px 12px;
   border-left: 2px solid var(--color-border-strong);
   color: var(--color-muted);
 }
 .md-code-inline {
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
+  background: var(--color-surface-3);
   border-radius: 4px;
   padding: 1px 4px;
 }
@@ -362,53 +355,10 @@ ol.md-list {
   color: var(--color-fg);
   animation: cursor-blink 1s steps(1) infinite;
 }
-
-/* 状态词标签（随机轮换 + shimmer + 词尾三点依次闪烁） */
-.status-label {
-  position: relative;
-  display: inline-block;
-  overflow: hidden;
-  height: 1.5em;
-  vertical-align: bottom;
-}
-.status-word {
-  position: absolute;
-  left: 0;
-  top: 0;
-  white-space: nowrap;
-}
-@keyframes status-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes status-leave {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(-6px); }
-}
-.status-word-enter {
-  animation: status-enter 0.2s ease-out;
-}
-.status-word-leave {
-  animation: status-leave 0.15s ease-in forwards;
-}
-@keyframes status-dot-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.2; }
-}
-.status-dots {
-  display: inline-block;
-}
-.status-dots span {
-  animation: status-dot-blink 1.2s ease-in-out infinite;
-}
-.status-dots span:nth-child(2) { animation-delay: 0.15s; }
-.status-dots span:nth-child(3) { animation-delay: 0.3s; }
 .msg-error {
   font-size: 12px;
   color: var(--color-danger);
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  border-radius: 8px;
-  padding: 6px 10px;
+  padding: 2px 0;
 }
 .scroll-jump {
   position: absolute;
@@ -426,50 +376,32 @@ ol.md-list {
   padding: 6px 12px;
   cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  animation: rise-in 0.2s ease-out;
+  animation: block-fade 0.2s ease-out;
 }
 
-/* 减少动态效果：只保留透明度变化，关闭跳动/扫光/位移/旋转 */
+/* 减少动态效果：流光停止（静态次要色文字），只保留透明度变化 */
 @media (prefers-reduced-motion: reduce) {
-  .thinking-dot {
-    animation: thinking-pulse 1.2s ease-in-out infinite;
-  }
   .thinking-shimmer {
     animation: none;
     background: none;
     color: var(--color-muted);
   }
-  .tool-spinner {
-    animation: thinking-pulse 1.2s ease-in-out infinite;
-  }
-  .tool-check,
-  .tool-x,
-  .tool-card,
-  .md > *,
-  .scroll-jump {
-    animation: none;
-  }
-  .thinking-body,
-  .thinking-chevron {
-    transition: none;
-  }
-  /* 状态词：只淡入淡出，不位移；词尾三点静止 */
-  @keyframes status-fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  @keyframes status-fade-out {
-    from { opacity: 1; }
-    to { opacity: 0; }
-  }
-  .status-word-enter {
-    animation: status-fade-in 0.2s ease-out;
-  }
-  .status-word-leave {
-    animation: status-fade-out 0.15s ease-in forwards;
-  }
-  .status-dots span {
+  .status-ellipsis {
     animation: none;
     opacity: 0.55;
   }
+  .thinking-line,
+  .bubble-user,
+  .bubble-assistant,
+  .md > *,
+  .scroll-jump,
+  .process-entry {
+    animation: none;
+  }
+  .process-body,
+  .thinking-line {
+    transition: none;
+  }
+  .status-word-enter { animation: word-fade-in var(--word-fade-in) ease-out; }
+  .status-word-leave { animation: word-fade-out var(--word-fade-out) ease-out forwards; }
 }
