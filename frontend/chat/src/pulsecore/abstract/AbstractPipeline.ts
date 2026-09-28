@@ -49,11 +49,11 @@ export interface StateProfile {
 export type WaveShape = 'continuous' | 'lubdub' | 'pulse';
 
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    // idle 剖面为用户定稿值（2026-09-28 调参面板验收）
+    // 四状态剖面均为用户定稿值（2026-09-28 调参面板验收，idle 为基准）
     idle:      { bpm: 20,  holeAmp: 0.038, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
-    thinking:  { bpm: 72,  holeAmp: 0.030, gain: 1.00, swirl: 1.05, flicker: 0.0,  wobble: 0 },
-    streaming: { bpm: 96,  holeAmp: 0.044, gain: 1.12, swirl: 1.60, flicker: 0.0,  wobble: 0 },
-    error:     { bpm: 104, holeAmp: 0.050, gain: 0.88, swirl: 0.75, flicker: 0.28, wobble: 1 },
+    thinking:  { bpm: 20,  holeAmp: 0.056, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
+    streaming: { bpm: 30,  holeAmp: 0.076, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    error:     { bpm: 8,   holeAmp: 0.038, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
 };
 
 // 注入的 uniform 声明与脉动/盘响应函数（shim 之后、原作代码之前）。
