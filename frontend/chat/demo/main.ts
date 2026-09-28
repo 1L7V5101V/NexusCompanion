@@ -216,8 +216,8 @@ mkRow(advEl, '心跳→亮度', 0, 0.2, 0.005, adj.dynamics.oscGainK, x => { adj
 mkRow(advEl, '音频→亮度', 0, 0.5, 0.01, adj.dynamics.audioGainK, x => { adj.dynamics.audioGainK = x; abstractOrNull()?.setDynamics({ audioGainK: x }); });
 mkRow(advEl, '音频→脉动', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => { adj.dynamics.audioScaleK = x; abstractOrNull()?.setDynamics({ audioScaleK: x }); });
 
-// —— 盘响应（扰动如何向外传播）——
-mkH4(advEl, '盘响应', '· 内缘随洞，外缘稳住');
+// —— 盘响应（心跳涟漪如何向外传播）——
+mkH4(advEl, '盘响应', '· 只影响心跳，不影响大小');
 mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; abstractOrNull()?.setPert({ lam: x }); });
 mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; abstractOrNull()?.setPert({ lag: x }); });
 
