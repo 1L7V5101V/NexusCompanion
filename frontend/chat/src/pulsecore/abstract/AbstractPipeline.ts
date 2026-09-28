@@ -76,11 +76,11 @@ export interface StateProfile {
 export type { WaveShape };
 
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    // 四状态剖面均为用户定稿值（2026-09-28 调参面板验收，idle 为基准）
-    idle:      { bpm: 20,  holeAmp: 0.038, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
-    thinking:  { bpm: 20,  holeAmp: 0.056, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
-    streaming: { bpm: 30,  holeAmp: 0.076, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
-    error:     { bpm: 8,   holeAmp: 0.038, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
+    // 四状态剖面均为用户定稿值（2026-09-28 验收；29 日呼吸幅度整体 +30%）
+    idle:      { bpm: 20,  holeAmp: 0.0494, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    thinking:  { bpm: 20,  holeAmp: 0.0728, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
+    streaming: { bpm: 30,  holeAmp: 0.0988, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    error:     { bpm: 8,   holeAmp: 0.0494, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
 };
 
 // 注入的 uniform 声明与脉动/盘响应函数（shim 之后、原作代码之前）。
@@ -217,7 +217,7 @@ export class AbstractPipeline {
     private audioScaleK = 0.012;  // 音频→脉动幅度
     private pertLam = 1.45;       // 盘扰动衰减长度（世界单位）：越大盘跟随越多
     private pertLag = 0.33;       // 盘扰动传播延迟（拍/单位半径）：涟漪外传速度
-    private mouseOffsetK = 0.01;  // 鼠标视差幅度
+    private mouseOffsetK = 0.3;   // 鼠标视差幅度
     private mouseBoost = 0.35;    // 鼠标→能量增强
     private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
     private proxFar = 0.4;        // 接近半径外缘
@@ -225,7 +225,7 @@ export class AbstractPipeline {
     private starGain = 1;         // 背景星空亮度
     private starLens = 1;         // 星空采样方向（1=弯折 crd：透镜扭曲跟随洞，平移下远天静止；0=初始 rd 无扭曲）
     private horizonAmp = 0;       // 洞本体+引力随心跳脉动（0=恒定，星空不受扰；1=全随动）
-    private glowK = 8;            // 辉光脉动系数：白弧/亮带随心跳 flare 的强度
+    private glowK = 8.5;          // 辉光脉动系数：白弧/亮带随心跳 flare 的强度
 
     // 鼠标
     private hasPointer = false;
@@ -328,7 +328,7 @@ export class AbstractPipeline {
             uHoleBase: { value: 1 },
             uPulseAmp: { value: 0 },
             uHorizonAmp: { value: 0 },
-            uGlowK: { value: 8 },
+            uGlowK: { value: 8.5 },
             uPhase: { value: 0 },
             uPertLam: { value: 1.2 },
             uPertLag: { value: 0.12 },
