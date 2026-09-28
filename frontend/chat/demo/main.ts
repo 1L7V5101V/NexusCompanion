@@ -23,7 +23,7 @@ const adj = {
     dynamics: { oscGainK: 0.2, audioGainK: 0.15, audioScaleK: 0.012 },
     pert: { lam: 1.45, lag: 0.33 },
     mouse: { offsetK: 0.01, boost: 0.35, near: 0.12, far: 0.4 },
-    scale: 0.85,
+    scale: 1.25,
     fpsCap: 85,
     feedback: 0.05,
     wave: 'lubdub' as WaveShape,
@@ -230,8 +230,8 @@ mkRow(advEl, '近距半径', 0, 0.4, 0.02, adj.mouse.near, x => { adj.mouse.near
 mkRow(advEl, '远距半径', 0.2, 1.5, 0.05, adj.mouse.far, x => { adj.mouse.far = x; abstractOrNull()?.setMouseParams({ far: x }); });
 
 // —— 渲染 ——
-mkH4(advEl, '渲染', '· scale 改动会重收敛一瞬');
-mkRow(advEl, '分辨率系数', 0.25, 0.85, 0.05, adj.scale, x => { adj.scale = x; abstractOrNull()?.setScale(x); updateFpsLabel(); });
+mkH4(advEl, '渲染', '· >1 超采样抗锯齿 · scale 改动会重收敛一瞬');
+mkRow(advEl, '分辨率系数', 0.25, 1.5, 0.05, adj.scale, x => { adj.scale = x; abstractOrNull()?.setScale(x); updateFpsLabel(); });
 mkRow(advEl, 'FPS 上限', 15, 120, 5, adj.fpsCap, x => { adj.fpsCap = x; abstractOrNull()?.setFpsCap(x); updateFpsLabel(); });
 mkRow(advEl, '时间累积', 0, 0.95, 0.05, adj.feedback, x => { adj.feedback = x; abstractOrNull()?.setFeedback(x); });
 
