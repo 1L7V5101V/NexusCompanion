@@ -56,10 +56,10 @@ float fbn(vec2 q) {
 }
 vec3 palette(float t) {
   t = fract(t);
-  vec3 c1 = vec3(0.30, 0.58, 1.00);
-  vec3 c2 = vec3(0.68, 0.44, 0.90);
-  vec3 c3 = vec3(1.00, 0.38, 0.52);
-  vec3 c4 = vec3(1.00, 0.64, 0.16);
+  vec3 c1 = vec3(0.25, 0.62, 1.00);
+  vec3 c2 = vec3(0.72, 0.40, 0.95);
+  vec3 c3 = vec3(1.00, 0.30, 0.45);
+  vec3 c4 = vec3(1.00, 0.58, 0.10);
   float s = t * 4.0;
   vec3 col = mix(c1, c2, clamp(s, 0.0, 1.0));
   col = mix(col, c3, clamp(s - 1.0, 0.0, 1.0));
@@ -139,14 +139,15 @@ void main() {
   // 环向圆域坐标：噪声沿周长首尾连续
   vec2 sc = vec2(cos(s * 6.2831853), sin(s * 6.2831853));
 
-  // 单段短流光：位置由 u_prog 驱动（一次发送 = 一圈脉冲），头锐尾散
+  // 单段短流光：位置由 u_prog 驱动（顶边中偏右 → 底边中偏左），头锐尾散；
+  // 厚度基础值范围加大并与光段中心耦合——中段隆起、头尾收细，高低差更明显
   float cPos = u_prog;
   float x = s - cPos;
   x = x - floor(x + 0.5);
   float w = 0.105 * (1.0 + 0.18 * sin(u_time * 0.23 + 1.7));
   float prof = smoothstep(-1.25 * w, -0.12 * w, x) * smoothstep(1.05 * w, 0.30 * w, x);
-  float thick = 13.0 + 30.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07));
-  float amp = 1.55 * prof * (0.62 + 0.50 * fbn(sc * 3.0 + vec2(-u_time * 0.06, u_time * 0.16)));
+  float thick = (9.0 + 46.0 * fbn(sc * 2.6 + vec2(u_time * 0.10, -u_time * 0.07))) * (0.6 + 0.4 * prof);
+  float amp = 1.75 * prof * (0.55 + 0.75 * fbn(sc * 3.0 + vec2(-u_time * 0.06, u_time * 0.16)));
   vec3 col = palette(s + 0.18 * amp);
   vec3 c = col * amp * exp(-max(d, -2.5) / thick) * exp(-max(d, 0.0) / 50.0);
 
@@ -272,11 +273,11 @@ export function AuroraCanvas({ active }: { active: boolean }) {
 
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    // 脉冲模型：一次发送触发一次短脉冲——从右上角出发，沿阅读方向
-    // （右缘→底缘）1s 行进到左下角，原地淡出消失，直到下次发送再触发。
+    // 脉冲模型：一次发送触发一次短脉冲——从顶边中偏右出发，沿阅读方向
+    // 1s 行进到底边中偏左，原地淡出消失，直到下次发送再触发。
     const PULSE = { travel: 1000, fadeIn: 120, fadeOut: 300 };
-    const START = 0.432; // 右上角圆弧中点
-    const END = 0.932;   // 左下角圆弧中点
+    const START = 0.30; // 顶边中偏右
+    const END = 0.79;   // 底边中偏左
 
     let running = false;
     let raf = 0;
