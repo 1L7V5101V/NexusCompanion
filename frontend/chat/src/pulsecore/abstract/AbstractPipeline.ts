@@ -10,11 +10,12 @@
 //   d=l-.7*uHoleBase*(1+uPulseAmp*envWave(uPhase))
 //                                       心跳脉动：只有洞本体（视界/光子环）随包络胀缩，
 //                                       相机真正固定——不是整体缩放
-//   N=floor(Z/diskF(Z)/STEP) + rw*diskF(rw)
+//   N=floor(diskInv(Z)/STEP) + rw*diskF(rw)
 //                                       盘响应：径向翘曲场 diskF——内缘严格跟随洞
 //                                       （ISCO 随质量），扰动向外按 exp(-x/λ) 衰减、
 //                                       按 uPertLag（拍/单位半径）相位延迟传播，
-//                                       外缘基本不动（简化的轨道周期 r^1.5 响应）
+//                                       外缘基本不动（简化的轨道周期 r^1.5 响应）；
+//                                       diskInv 数值逆解 u·F(u)=Z（牛顿×2）
 //   P=.../R.y+uMouseOff                 鼠标视差：靠近核心时初始光线轻微偏移
 //   iTime/ → uSwirlTime/                吸积盘旋转时间由 JS 按状态积分（换挡无相位跳变）
 //   o/=5e3; 前插 o*=uGain               曝光增益（tonemap 前）：状态/音频/鼠标能量/闪烁
@@ -77,6 +78,18 @@ float envWave(float ph) {
 float diskF(float r) {
   float x=max(0., r-1.);
   return 1.+((uHoleBase-1.)+uHoleBase*uPulseAmp*envWave(uPhase-uPertLag*x))*exp(-x/uPertLam);
+}
+// Z→u 的数值逆（解 u·F(u)=Z）：一阶近似起步 + 两步牛顿。
+// 导数近似 F'≈-(F-1)/λ（把随 u 缓变的脉动项视为局部常数）。
+// 大 holeSize 时 F 在内缘变化剧烈，一步近似会错好几个环带——最内侧的厚云环
+// 会被推错位、配错厚度（云消失）。牛顿收敛后按环带精确归位。
+float diskInv(float Z) {
+  float u=Z/diskF(Z);
+  for(int i=0;i<2;++i){
+    float Fu=diskF(u);
+    u-=(u*Fu-Z)/(Fu-u*(Fu-1.)/uPertLam);
+  }
+  return u;
 }
 `;
 
@@ -173,7 +186,7 @@ export class AbstractPipeline {
             .replace('d=l-.7;', 'd=l-.7*uHoleBase*(1.+uPulseAmp*envWave(uPhase));')
             // 盘响应：径向翘曲——内环随洞进出，扰动向外衰减+延迟传播
             .replace('N=clamp(floor(length(p.xz)/STEP+.5),1./STEP,6./STEP);',
-                'N=clamp(floor(Z/diskF(Z)/STEP+.5),1./STEP,6./STEP);')
+                'N=clamp(floor(diskInv(Z)/STEP+.5),1./STEP,6./STEP);')
             .replace('w=vec2(abs(Z-STEP*(N+j/(2.*REPS+1.))), ',
                 'rw=STEP*(N+j/(2.*REPS+1.));w=vec2(abs(Z-rw*diskF(rw)), ')
             // 鼠标视差：P 空间偏移初始光线
@@ -184,7 +197,7 @@ export class AbstractPipeline {
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
             // 原作依赖未初始化局部量归零，显式化（驱动差异防御）
             .replace('vec4 O;', 'vec4 O;\n  o=vec3(0);');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'uSwirlTime/', 'uGain;\n']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
