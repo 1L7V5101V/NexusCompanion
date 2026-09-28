@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
+import { StatusLabel } from "./StatusLabel";
 
 /**
  * 可折叠思考框。active（思考流式进行中且为末位 part）时自动展开并显示
@@ -33,7 +34,7 @@ export function ThinkingBlock({ text, active }: { text: string; active: boolean 
         onClick={() => setPinned(!(pinned ?? active))}
       >
         {active ? (
-          <span className="thinking-shimmer">思考中…</span>
+          <StatusLabel category="thinking" />
         ) : (
           <span>已思考{seconds !== null ? ` ${seconds} 秒` : ""}</span>
         )}

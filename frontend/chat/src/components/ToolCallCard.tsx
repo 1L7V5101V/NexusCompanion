@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { Check, ChevronDown, X } from "lucide-react";
+import { StatusLabel } from "./StatusLabel";
+import { toolHint, UI_LANG } from "../statusWords";
 
 export type ToolState = "running" | "complete" | "error";
 
 /**
  * 工具调用卡片：默认只显示「状态图标 + 工具名 + 摘要」，点击展开完整
  * 返回内容（限高内部滚动）。running 旋转 spinner，success 对勾弹出，
- * error 红叉；多个工具各自独立更新。
+ * error 红叉；多个工具各自独立更新。运行中摘要用状态词（已知工具名
+ * 时优先显示具体文案，如「正在搜索网页…」）。
  */
 export function ToolCallCard({
   name,
@@ -37,7 +40,13 @@ export function ToolCallCard({
         )}
         <span className="tool-name">{name}</span>
         <span className="tool-summary">
-          {state === "running" ? "执行中…" : state === "error" ? "失败" : "完成"}
+          {state === "running" ? (
+            <StatusLabel category="tool_running" specific={toolHint(name, UI_LANG)} />
+          ) : state === "error" ? (
+            "失败"
+          ) : (
+            "完成"
+          )}
         </span>
         {hasDetail ? (
           <ChevronDown size={14} className={`thinking-chevron ${open ? "open" : ""}`} />
