@@ -49,7 +49,8 @@ export interface StateProfile {
 export type WaveShape = 'continuous' | 'lubdub' | 'pulse';
 
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    idle:      { bpm: 36,  holeAmp: 0.016, gain: 0.92, swirl: 0.55, flicker: 0.0,  wobble: 0 },
+    // idle 剖面为用户定稿值（2026-09-28 调参面板验收）
+    idle:      { bpm: 20,  holeAmp: 0.038, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
     thinking:  { bpm: 72,  holeAmp: 0.030, gain: 1.00, swirl: 1.05, flicker: 0.0,  wobble: 0 },
     streaming: { bpm: 96,  holeAmp: 0.044, gain: 1.12, swirl: 1.60, flicker: 0.0,  wobble: 0 },
     error:     { bpm: 104, holeAmp: 0.050, gain: 0.88, swirl: 0.75, flicker: 0.28, wobble: 1 },
@@ -139,21 +140,21 @@ export class AbstractPipeline {
     private state: PulseCoreState = 'idle';
     private cur: StateProfile = { ...STATE_PROFILES.idle };
     private profiles: Record<PulseCoreState, StateProfile>;  // 可调状态剖面（实例级）
-    private waveShape: WaveShape = 'continuous';
+    private waveShape: WaveShape = 'lubdub';
     private audioEnergy = 0;
     private energySmooth = 0;
 
-    // 耦合与交互参数（demo 调参面板实时改）
-    private oscGainK = 0.06;      // 心跳→亮度
+    // 耦合与交互参数（用户定稿默认值，2026-09-28；demo 调参面板实时改）
+    private oscGainK = 0.2;       // 心跳→亮度
     private audioGainK = 0.15;    // 音频→亮度
     private audioScaleK = 0.012;  // 音频→脉动幅度
-    private pertLam = 1.2;        // 盘扰动衰减长度（世界单位）：越大盘跟随越多
-    private pertLag = 0.12;       // 盘扰动传播延迟（拍/单位半径）：涟漪外传速度
-    private mouseOffsetK = 0.12;  // 鼠标视差幅度
+    private pertLam = 1.45;       // 盘扰动衰减长度（世界单位）：越大盘跟随越多
+    private pertLag = 0.33;       // 盘扰动传播延迟（拍/单位半径）：涟漪外传速度
+    private mouseOffsetK = 0.01;  // 鼠标视差幅度
     private mouseBoost = 0.35;    // 鼠标→能量增强
     private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
-    private proxFar = 0.7;        // 接近半径外缘
-    private feedback = 0.55;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
+    private proxFar = 0.4;        // 接近半径外缘
+    private feedback = 0.05;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
 
     // 鼠标
     private hasPointer = false;
@@ -165,13 +166,13 @@ export class AbstractPipeline {
     private canvas: HTMLCanvasElement;
     private scale: number;
     private fpsCap: number;
-    private holeSize = 1;        // 基础尺寸倍率（1.0 = 原作默认构图）
+    private holeSize = 0.6;      // 基础尺寸倍率（用户定稿默认 0.6；1.0 = 原作构图）
     private resizeObserver: ResizeObserver;
 
     constructor(canvas: HTMLCanvasElement, opts?: { scale?: number; fpsCap?: number }) {
         this.canvas = canvas;
         this.profiles = structuredClone(STATE_PROFILES);
-        this.scale = opts?.scale ?? 0.5;
+        this.scale = opts?.scale ?? 0.85;
         // 120 上限：shader 很便宜，跟垂直同步走（100Hz 屏=100fps）——
         // 残影时长=时间常数/帧率，帧率越高运动越干净
         this.fpsCap = opts?.fpsCap ?? 120;
@@ -248,7 +249,7 @@ export class AbstractPipeline {
             uGain: { value: 1 },
             uMouseOff: { value: new THREE.Vector2(0, 0) },
             uSwirlTime: { value: 0 },
-            uFeedback: { value: 0.55 },
+            uFeedback: { value: 0.05 },
             uJitter: { value: 1 },
         });
 

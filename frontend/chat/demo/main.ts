@@ -14,19 +14,19 @@ host.appendChild(canvas);
 
 let variant: PulseCoreVariant = 'abstract';
 let curState: PulseCoreState = 'idle';
-let holeSize = 1;
+let holeSize = 0.6;
 let audio = 0;
 let pipeline: PulseCoreInstance;
 
-// ---- 调参面板状态：全局参数默认值 + 每状态剖面覆盖（跨变体切换保留）----
+// ---- 调参面板状态：全局参数默认值（用户定稿，2026-09-28）+ 每状态剖面覆盖 ----
 const adj = {
-    dynamics: { oscGainK: 0.06, audioGainK: 0.15, audioScaleK: 0.012 },
-    pert: { lam: 1.2, lag: 0.12 },
-    mouse: { offsetK: 0.12, boost: 0.35, near: 0.12, far: 0.7 },
-    scale: 0.5,
-    fpsCap: 120,
-    feedback: 0.55,
-    wave: 'continuous' as WaveShape,
+    dynamics: { oscGainK: 0.2, audioGainK: 0.15, audioScaleK: 0.012 },
+    pert: { lam: 1.45, lag: 0.33 },
+    mouse: { offsetK: 0.01, boost: 0.35, near: 0.12, far: 0.4 },
+    scale: 0.85,
+    fpsCap: 85,
+    feedback: 0.05,
+    wave: 'lubdub' as WaveShape,
 };
 const profileOverrides: Record<PulseCoreState, Partial<StateProfile>> = {
     idle: {}, thinking: {}, streaming: {}, error: {},
@@ -208,6 +208,7 @@ waveSel.addEventListener('change', () => {
     adj.wave = waveSel.value as WaveShape;
     abstractOrNull()?.setWaveShape(adj.wave);
 });
+waveSel.value = adj.wave;
 advEl.appendChild(waveSel);
 
 // —— 耦合强度 ——

@@ -21,9 +21,9 @@ export interface PulseCoreProps {
     variant?: PulseCoreVariant;
     state?: PulseCoreState;
     audioEnergy?: number;
-    /** 内部渲染分辨率系数（默认 0.5；低端设备可 0.35） */
+    /** 内部渲染分辨率系数（默认 0.85；低端设备可降到 0.5） */
     scale?: number;
-    /** 黑洞基础尺寸倍率：1.0=原作默认构图（abstract 范围 0.3–1.5，kerr 0.2–1.3） */
+    /** 黑洞基础尺寸倍率：默认 0.6（用户定稿）；abstract 范围 0.3–2.0，kerr 0.2–1.3 */
     holeSize?: number;
     className?: string;
 }
