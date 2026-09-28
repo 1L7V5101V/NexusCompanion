@@ -15,8 +15,9 @@
 //                                       吞进视界，透镜弧消失
 //   N=floor(diskInv(Z)/STEP) + rw*diskF(rw)
 //                                       盘响应：径向翘曲场 diskF——内缘严格跟随洞
-//                                       （ISCO 随质量），扰动向外按 exp(-x/λ) 衰减、
-//                                       按 uPertLag（拍/单位半径）相位延迟传播，
+//                                       （ISCO 随质量），心跳扰动向外按 exp(-x/λ) 衰减、
+//                                       按 uPertLag（拍/单位半径）相位延迟传播；
+//                                       静态大小项用固定锥度（λ 只属于心跳扰动），
 //                                       外缘基本不动（简化的轨道周期 r^1.5 响应）；
 //                                       diskInv 数值逆解 u·F(u)=Z（牛顿×2）
 //   P=.../R.y+uMouseOff                 鼠标视差：靠近核心时初始光线轻微偏移
@@ -80,20 +81,23 @@ float envWave(float ph) {
   return .5-.5*cos(6.283185307*ph);
 }
 // 盘径向翘曲场：r 为 u 空间（等距环）半径，返回物理半径倍率。
-// x=0（内缘 u=1.0）处严格等于洞因子（内缘拴在 ISCO 上），向外衰减到 1（外盘不动）。
+// 静态项（大小）与动态项（心跳）解耦：
+//   x=0（内缘 u=1.0）处两者之和严格等于洞因子（内缘拴在 ISCO 上）；
+//   静态项用固定锥度 exp(-x/1.2)——大小改变的是"另一个质量黑洞的稳态盘"，
+//   不随 λ 变；λ 只管心跳扰动的传播衰减，外盘都不动。
+const float STATIC_TAPER=1.2;     // 静态大小项的固定锥度（λ 只属于心跳扰动；diskInv 导数同步用它）
 float diskF(float r) {
   float x=max(0., r-1.);
-  return 1.+((uHoleBase-1.)+uHoleBase*uPulseAmp*envWave(uPhase-uPertLag*x))*exp(-x/uPertLam);
+  return 1.+(uHoleBase-1.)*exp(-x/STATIC_TAPER)+uHoleBase*uPulseAmp*envWave(uPhase-uPertLag*x)*exp(-x/uPertLam);
 }
 // Z→u 的数值逆（解 u·F(u)=Z）：一阶近似起步 + 两步牛顿。
-// 导数近似 F'≈-(F-1)/λ（把随 u 缓变的脉动项视为局部常数）。
-// 大 holeSize 时 F 在内缘变化剧烈，一步近似会错好几个环带——最内侧的厚云环
-// 会被推错位、配错厚度（云消失）。牛顿收敛后按环带精确归位。
+// 导数近似 F'≈-(F-1)/STATIC_TAPER——静态项主导 F 的变化率，动态项的 λ/延迟
+// 导数是高阶小量；这里若误用心跳的 λ 会让反解随 λ 漂移（环带错位、云消失）。
 float diskInv(float Z) {
   float u=Z/diskF(Z);
   for(int i=0;i<2;++i){
     float Fu=diskF(u);
-    u-=(u*Fu-Z)/(Fu-u*(Fu-1.)/uPertLam);
+    u-=(u*Fu-Z)/(Fu-u*(Fu-1.)/STATIC_TAPER);
   }
   return u;
 }
