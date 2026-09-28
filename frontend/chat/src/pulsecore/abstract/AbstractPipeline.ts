@@ -8,11 +8,11 @@
 //
 // 相对原作的适配（原作 glsl 文件零修改，全部在加载层做字符串替换）：
 //   d=l-.7*uH + g=-p*uH/(l*L)
-//                                       心跳脉动：只有洞本体（视界/光子环）随包络胀缩，
-//                                       相机真正固定——不是整体缩放；引力弯折随瞬时
-//                                       质量 uH 同比缩放（光子球 ∝ 视界 ∝ M，GR 关系），
-//                                       弧始终贴着洞缘——只放大视界不放大会把光子球
-//                                       吞进视界，透镜弧消失
+//                                       uH=uHoleBase*(1+uHorizonAmp*env)：默认
+//                                       uHorizonAmp=0——洞本体（影子）与引力场恒定，
+//                                       星空透镜静止，心跳只作用于盘/云/外围光；
+//                                       >0 恢复"洞+引力随心跳胀缩"（光子球随视界
+//                                       同步缩放的 GR 关系由 uH 保证；会带动星空位移）
 //   N=floor(diskInv(Z)/STEP) + rw*diskF(rw)
 //                                       盘响应：径向翘曲场 diskF——内缘严格跟随洞
 //                                       （ISCO 随质量），心跳扰动向外按 exp(-x/λ) 衰减、
@@ -63,7 +63,7 @@ void main() {
 
 export interface StateProfile {
     bpm: number;         // 脉搏（次/分）
-    holeAmp: number;     // 整体呼吸缩放幅度（0.03 = 峰值放大 3%）
+    holeAmp: number;     // 盘/云径向脉动幅度（心跳驱动，本体不随动）；0.03 = 峰值外扩 3%
     gain: number;        // 基准曝光增益
     swirl: number;       // 吸积盘旋转速度倍率
     flicker: number;     // 闪烁强度（error）
@@ -84,7 +84,8 @@ const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
 // envWave 必须与 TS 侧 oscOf() 公式一致（波形三态），两边同步改。
 const UNIFORM_DECLS = /* glsl */ `
 uniform float uHoleBase;    // 洞基础尺寸（holeSize，1 = 原作默认构图）
-uniform float uPulseAmp;    // 洞脉动幅度（分数，含每拍抖动 + 音频耦合）
+uniform float uPulseAmp;    // 盘/云脉动幅度（分数，含每拍抖动 + 音频耦合）
+uniform float uHorizonAmp;  // 洞本体+引力随心跳脉动强度（0=恒定，默认；1=随心跳胀缩）
 uniform float uPhase;       // 心跳相位（拍，已 mod 1）
 uniform float uPertLam;     // 盘扰动衰减长度（世界单位）
 uniform float uPertLag;     // 盘扰动传播延迟（拍/单位半径）
@@ -95,6 +96,7 @@ uniform float uSwirlTime;   // 吸积盘旋转时间（JS 积分）
 uniform float uFeedback;    // 时间累积混合（0=无残影，0.9=原作 TAA）
 uniform float uJitter;      // 亚像素抖动开关（累积关掉时一并关，防边缘爬行）
 uniform float uStarGain;    // 背景星空亮度（0=无星）
+uniform float uStarLens;    // 星空采样方向：0=初始方向（完全静止，默认）1=弯折方向（透镜拉弯但随脉动漂）
 
 // 星空：原样移植自 fXV3Wm Kerr-Newman 版的星场函数（用户点名的背景元素）。
 // 方向向量驱动 → 用弯折后的 crd 采样时星星会被引力透镜拉弯、视界内被吞掉。
@@ -210,6 +212,8 @@ export class AbstractPipeline {
     private proxFar = 0.4;        // 接近半径外缘
     private feedback = 0.05;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
     private starGain = 1;         // 背景星空亮度
+    private starLens = 0;         // 星空采样方向（0=初始 rd 静止，1=弯折 crd 随盘脉动漂）
+    private horizonAmp = 0;       // 洞本体+引力随心跳脉动（0=恒定，星空不受扰；1=全随动）
 
     // 鼠标
     private hasPointer = false;
@@ -251,10 +255,10 @@ export class AbstractPipeline {
         // 加载层适配原作 Buffer A（正文零修改；替换点见文件头注释）
         const aSrc = bufferASrc
             .replace('float j,z=0.,d,D,L,l,s,N,a,H,A,Z;', 'float j,z=0.,d,D,L,l,s,N,a,H,A,Z,rw;')
-            // 洞本体脉动：只有视界随包络胀缩，相机固定。
-            // uH = 瞬时质量因子（基础尺寸 × 脉动包络），引力弯折必须同比例缩放——
-            // 否则光子球不随视界走，大洞会把绕行发光区整个吞进视界（上缘白弧消失）
-            .replace('d=l-.7;', 'float uH=uHoleBase*(1.+uPulseAmp*envWave(uPhase));d=l-.7*uH;')
+            // 洞本体与引力场：uH=uHoleBase*(1+uHorizonAmp*env)——默认 uHorizonAmp=0，
+            // 洞大小与引力恒定（星空透镜完全静止），脉动只作用于盘/云/外围光；
+            // >0 恢复"洞+引力随心跳胀缩"（大洞时靠 uH 保证光子球 ∝ 视界，弧不被吞）
+            .replace('d=l-.7;', 'float uH=uHoleBase*(1.+uHorizonAmp*envWave(uPhase));d=l-.7*uH;')
             // 引力随质量缩放：光子球 ∝ 视界 ∝ M（GR 关系），弧始终贴着洞缘
             .replace('g=-p/(l*L);', 'g=-p*uH/(l*L);')
             // 盘响应：径向翘曲——内环随洞进出，扰动向外衰减+延迟传播
@@ -269,9 +273,11 @@ export class AbstractPipeline {
             // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
             // 背景星空：只给逃逸光线加（视界内 d<1e-2=被吞，不加）；
-            // 盘面辉光亮处权重衰减（星星被辉光淹没，物理观感）
+            // 盘面辉光亮处权重衰减（星星被辉光淹没，物理观感）。
+            // 采样方向默认用初始 rd（完全静止）——用弯折后的 crd 会让步进
+            // （步长=min(球距,盘环距)）受盘面脉动影响而微动 → 星点漂移
             .replace('o*=smoothstep(.0,.2,dot(o,vec3(.299, .587, .114)));',
-                'o*=smoothstep(.0,.2,dot(o,vec3(.299, .587, .114)));\n  if(d>1e-2)o+=stars(crd)*uStarGain*(1.0-smoothstep(0.05,0.35,dot(o,vec3(.299,.587,.114))));')
+                'o*=smoothstep(.0,.2,dot(o,vec3(.299, .587, .114)));\n  if(d>1e-2)o+=stars(mix(rd,crd,uStarLens))*uStarGain*(1.0-smoothstep(0.05,0.35,dot(o,vec3(.299,.587,.114))));')
             // 时间累积可调：0.9 是原作的 TAA（静止抗锯齿，运动=残影）；
             // uJitter 与之联动——没有累积时抖动只剩噪声
             .replace('C+=jitter(iFrame);', 'C+=jitter(iFrame)*uJitter;')
@@ -284,7 +290,7 @@ export class AbstractPipeline {
             // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
             // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
             .replace('i<99&&z<29.', 'i<130&&z<29.');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(crd)', 'uStarGain']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'uHorizonAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(mix(rd,crd', 'uStarGain', 'uStarLens']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -301,6 +307,7 @@ export class AbstractPipeline {
             iChannel3: { value: null },
             uHoleBase: { value: 1 },
             uPulseAmp: { value: 0 },
+            uHorizonAmp: { value: 0 },
             uPhase: { value: 0 },
             uPertLam: { value: 1.2 },
             uPertLag: { value: 0.12 },
@@ -311,6 +318,7 @@ export class AbstractPipeline {
             uFeedback: { value: 0.05 },
             uJitter: { value: 1 },
             uStarGain: { value: 1 },
+            uStarLens: { value: 0 },
         });
 
         this.passes = {
@@ -431,6 +439,12 @@ export class AbstractPipeline {
     /** 背景星空亮度：0=无星，1=kerr 原版观感 */
     setStarGain(v: number) { this.starGain = Math.max(0, Math.min(3, v)); }
 
+    /** 洞本体+引力随心跳的脉动强度：0=洞大小恒定（默认，星空不受脉动影响），1=随心跳胀缩 */
+    setHorizonAmp(v: number) { this.horizonAmp = Math.max(0, Math.min(1, v)); }
+
+    /** 星空采样方向：0=初始方向（完全静止，默认），1=弯折方向（被引力透镜拉弯，但随盘脉动漂移） */
+    setStarLens(v: number) { this.starLens = Math.max(0, Math.min(1, v)); }
+
     /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
     setMouseParams(patch: { offsetK?: number; boost?: number; near?: number; far?: number }) {
         if (patch.offsetK !== undefined) this.mouseOffsetK = Math.max(0, Math.min(0.5, patch.offsetK));
@@ -533,6 +547,8 @@ export class AbstractPipeline {
         m.uniforms.uSwirlTime.value = this.swirlTime;
         m.uniforms.uFeedback.value = this.feedback;
         m.uniforms.uStarGain.value = this.starGain;
+        m.uniforms.uStarLens.value = this.starLens;
+        m.uniforms.uHorizonAmp.value = this.horizonAmp;
         // 抖动只在有足够时间累积时才有意义（累积平均掉抖动=AA）；
         // 低累积下抖动没有历史可平均，纯剩噪声——关掉
         m.uniforms.uJitter.value = this.feedback > 0.3 ? 1 : 0;

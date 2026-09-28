@@ -21,12 +21,13 @@ let pipeline: PulseCoreInstance;
 // ---- 调参面板状态：全局参数默认值（用户定稿，2026-09-28）+ 每状态剖面覆盖 ----
 const adj = {
     dynamics: { oscGainK: 0.2, audioGainK: 0.15, audioScaleK: 0.012 },
-    pert: { lam: 1.45, lag: 0.33 },
+    pert: { lam: 1.45, lag: 0.33, horizonAmp: 0 },
     mouse: { offsetK: 0.01, boost: 0.35, near: 0.12, far: 0.4 },
     scale: 1.25,
     fpsCap: 85,
     feedback: 0.05,
     starGain: 1,
+    starLens: 0,
     wave: 'lubdub' as WaveShape,
 };
 const profileOverrides: Record<PulseCoreState, Partial<StateProfile>> = {
@@ -46,10 +47,12 @@ function createPipeline(v: PulseCoreVariant) {
         });
         a.setWaveShape(adj.wave);
         a.setDynamics(adj.dynamics);
-        a.setPert(adj.pert);
+        a.setPert({ lam: adj.pert.lam, lag: adj.pert.lag });
+        a.setHorizonAmp(adj.pert.horizonAmp);
         a.setMouseParams(adj.mouse);
         a.setFeedback(adj.feedback);
         a.setStarGain(adj.starGain);
+        a.setStarLens(adj.starLens);
     }
     pipeline.setState(curState);
     pipeline.setAudioEnergy(audio);
@@ -223,6 +226,7 @@ mkRow(advEl, '音频→脉动', 0, 0.05, 0.001, adj.dynamics.audioScaleK, x => {
 mkH4(advEl, '盘响应', '· 只影响心跳，不影响大小');
 mkRow(advEl, '衰减长度', 0.3, 3, 0.05, adj.pert.lam, x => { adj.pert.lam = x; abstractOrNull()?.setPert({ lam: x }); });
 mkRow(advEl, '传播延迟', 0, 0.5, 0.01, adj.pert.lag, x => { adj.pert.lag = x; abstractOrNull()?.setPert({ lag: x }); });
+mkRow(advEl, '本体脉动', 0, 1, 0.05, adj.pert.horizonAmp, x => { adj.pert.horizonAmp = x; abstractOrNull()?.setHorizonAmp(x); });
 
 // —— 鼠标交互 ——
 mkH4(advEl, '鼠标交互');
@@ -237,6 +241,7 @@ mkRow(advEl, '分辨率系数', 0.25, 1.5, 0.05, adj.scale, x => { adj.scale = x
 mkRow(advEl, 'FPS 上限', 15, 120, 5, adj.fpsCap, x => { adj.fpsCap = x; abstractOrNull()?.setFpsCap(x); updateFpsLabel(); });
 mkRow(advEl, '时间累积', 0, 0.95, 0.05, adj.feedback, x => { adj.feedback = x; abstractOrNull()?.setFeedback(x); });
 mkRow(advEl, '星空亮度', 0, 2, 0.05, adj.starGain, x => { adj.starGain = x; abstractOrNull()?.setStarGain(x); });
+mkRow(advEl, '星空透镜', 0, 1, 0.05, adj.starLens, x => { adj.starLens = x; abstractOrNull()?.setStarLens(x); });
 
 // —— 音频能量 ——
 mkH4(advEl, '音频能量');
