@@ -21,8 +21,8 @@ let pipeline: PulseCoreInstance;
 // ---- 调参面板状态：全局参数默认值（用户定稿，2026-09-28）+ 每状态剖面覆盖 ----
 const adj = {
     dynamics: { oscGainK: 0.2, audioGainK: 0.15, audioScaleK: 0.012 },
-    pert: { lam: 1.45, lag: 0.33, horizonAmp: 0, glowK: 8 },
-    mouse: { offsetK: 0.01, boost: 0.35, near: 0.12, far: 0.4 },
+    pert: { lam: 1.45, lag: 0.33, horizonAmp: 0, glowK: 8.5 },
+    mouse: { offsetK: 0.3, boost: 0.35, near: 0.12, far: 0.4 },
     scale: 1.25,
     fpsCap: 85,
     feedback: 0.05,

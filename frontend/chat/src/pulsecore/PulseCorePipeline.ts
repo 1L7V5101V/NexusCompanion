@@ -30,12 +30,12 @@ interface StateProfile {
     wobble: number;      // 心律不齐强度（每拍随机化频率与幅度）
 }
 
-// 与 abstract 变体共用同一套用户定稿剖面（2026-09-28）
+// 与 abstract 变体共用同一套用户定稿剖面（2026-09-28 验收；29 日呼吸幅度整体 +30%）
 const STATE_PROFILES: Record<PulseCoreState, StateProfile> = {
-    idle:      { bpm: 20,  holeAmp: 0.038, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
-    thinking:  { bpm: 20,  holeAmp: 0.056, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
-    streaming: { bpm: 30,  holeAmp: 0.076, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
-    error:     { bpm: 8,   holeAmp: 0.038, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
+    idle:      { bpm: 20,  holeAmp: 0.0494, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    thinking:  { bpm: 20,  holeAmp: 0.0728, gain: 0.69, swirl: 2.0,  flicker: 0.0,  wobble: 0 },
+    streaming: { bpm: 30,  holeAmp: 0.0988, gain: 0.69, swirl: 0.90, flicker: 0.0,  wobble: 0 },
+    error:     { bpm: 8,   holeAmp: 0.0494, gain: 0.69, swirl: 0.2,  flicker: 0.2,  wobble: 0 },
 };
 
 interface RT {
