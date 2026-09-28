@@ -6,9 +6,12 @@
 
 ## 1. 前置核对与迁移
 
-- [ ] 1.1 **控制面/canonical API 对账**：程序化核对 `accept_inbound`/`complete_turn_with_delivery`/`DeliveryRepository`/`canonical_repo` 的签名与参数覆盖本 change 需求面（双键去重、WebChat 键类型、queued turn 可选后台项、turn 置 `in_progress` 路径、重复注入返回既有身份字段）；缺口逐项回 design 补决策。验证：对账表入 evidence，未决项 0
-- [ ] 1.2 **重放帧记录表迁移**：alembic 迁移（per-conversation `(conversation_id, seq)` 唯一 + frame_json + created_at；事务内 seq 分配策略定案）。验证：scratch 库 `upgrade head` → `downgrade base` → `upgrade head` 全链通过，结果入 evidence `task-1.2-migration.txt`
-- [ ] 1.3 **spec 交叉核对**：本 change delta 与 `durable-control-plane`/`canonical-identity`/`webchat-protocol-dev-loop` 现行规格逐条对读，确认零冲突（尤其重放窗口、overload 时序、`sent` 语义）。验证：对读结论入 evidence
+- [x] 1.1 **控制面/canonical API 对账**：程序化核对 `accept_inbound`/`complete_turn_with_delivery`/`DeliveryRepository`/`canonical_repo` 的签名与参数覆盖本 change 需求面（双键去重、WebChat 键类型、queued turn 可选后台项、turn 置 `in_progress` 路径、重复注入返回既有身份字段）；缺口逐项回 design 补决策。验证：对账表入 evidence，未决项 0
+  → 完成（2026-09-29）：对账表 [task-1.1-api-reconciliation.md](../../evidence/pg-durable-sot-cutover/task-1.1-api-reconciliation.md)——7 项已覆盖零改动消费（accept_inbound WebChat 键+重复重放字段全量返回、transition_turn CAS 状态机、T2、DeliveryRepository 全链、canonical fetch_messages/latest_sequence、auth 路径 conversation_id=canonical UUID）；4 个缺口均无需改 design：G1 列非终态 turn 方法（task 5.3）、G2 重放帧表（task 1.2）、G3 pg_turn_id 经 metadata 贯穿（task 3.x）、G4 durable 分支=UUID 身份∧PG 可用（task 2.x）；未决项 0
+- [x] 1.2 **重放帧记录表迁移**：alembic 迁移（per-conversation `(conversation_id, seq)` 唯一 + frame_json + created_at；事务内 seq 分配策略定案）。验证：scratch 库 `upgrade head` → `downgrade base` → `upgrade head` 全链通过，结果入 evidence `task-1.2-migration.txt`
+  → 完成（2026-09-29）：迁移 `d8e4f2b6a9c1`（down=b3f7a1c5d9e2）= `webchat_replay_counters`（per-conversation 计数器，T1/T2 事务内 `UPDATE..RETURNING` 取号，同 canonical next_sequence 模式）+ `webchat_replay_frames`（帧 CHECK 限三种 replayable 类型 + `(conversation_id, seq)` 唯一 + tenant 索引）+ ORM 双模型；scratch `nexus_sottest`（便携 PG 5432，psycopg3 方言 + vector/pg_trgm 扩展预建）三段演练全绿，evidence `task-1.2-migration.txt`
+- [x] 1.3 **spec 交叉核对**：本 change delta 与 `durable-control-plane`/`canonical-identity`/`webchat-protocol-dev-loop` 现行规格逐条对读，确认零冲突（尤其重放窗口、overload 时序、`sent` 语义）。验证：对读结论入 evidence
+  → 完成（2026-09-29）：evidence `task-1.3-spec-crosscheck.md`——DCP 9 条零冲突（「sent=明确成功结果」措辞直接覆盖 ADR-4；发现接线点：inbox 收束归 task 3.x）；canonical 契约零触碰（重放计数器独立于 canonical 序号）；**delta 扩展 2 条 MODIFIED**（慢消费者降级、连接生命周期——仅「重放 buffer」→「持久重放记录」承载措辞，行为不变，场景名保持原文，validate 通过）
 
 ## 2. durable 接受接线（ADR-1）
 

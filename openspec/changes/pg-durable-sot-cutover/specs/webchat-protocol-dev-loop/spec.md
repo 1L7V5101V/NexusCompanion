@@ -47,3 +47,31 @@
 
 - **WHEN** 服务端发送 `message.delta` / `tool.started` / `tool.completed`
 - **THEN** 这些帧不分配 `seq`、不进入持久重放记录，也不出现在任何补拉结果中
+
+### Requirement: 慢消费者分级降级与 overload close
+
+系统 SHALL 对 per-connection outbound 实施分级降级：出队深度达 soft 上限（默认 192）时 SHALL 丢弃可丢帧（delta/tool）并首次发 `replay_required`；深度达 hard 上限（默认 256）或累计 payload 达 1 MiB 时 SHALL 以 `CLOSE_OVERLOAD`(1013) 明确断开；canonical final 与 turn 终态 SHALL NOT 因队列满被删除。
+
+#### Scenario: soft 档丢弃 delta 并要求补拉
+
+- **WHEN** 某连接 outbound 深度达到 soft 上限，服务端广播一帧 `message.delta`
+- **THEN** 该帧不入队，连接收到一次 `replay_required`，连接保持开启且终态帧仍照常入队
+
+#### Scenario: hard 档与 1 MiB payload 触发 overload close
+
+- **WHEN** 某连接 outbound 深度达到 hard 上限，或累计入队 payload 达到 1 MiB
+- **THEN** 服务端以 close code 1013 关闭该连接，终态帧仍持久保留（持久重放记录）供重连补拉
+
+### Requirement: 连接生命周期与空闲回收
+
+系统 SHALL 在客户端断开、协议错误或心跳/空闲超时时清理连接状态（从连接表移除并释放 outbound 队列），SHALL NOT 因连接清理而取消服务端正在执行的 turn 或 tool。
+
+#### Scenario: 静默连接被心跳超时回收
+
+- **WHEN** 一条连接在空闲超时窗口内没有收到任何客户端帧
+- **THEN** 服务端以 `CLOSE_IDLE_TIMEOUT` 关闭该连接并清理其在连接表中的条目
+
+#### Scenario: 断线只影响显示不取消 turn
+
+- **WHEN** 客户端在 turn 执行期间断开连接
+- **THEN** 服务端 turn/tool 继续执行至终态，终态帧仍持久化（持久重放记录）供重连补拉

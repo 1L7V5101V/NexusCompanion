@@ -1,0 +1,42 @@
+# task 1.2 迁移演练（scratch: nexus_sottest @ portable PG 5432，PG 17.10 + pgvector）
+# env: DATABASE_URL=postgresql+psycopg://postgres@localhost:5432/nexus_sottest（psycopg3 方言；scratch 预建 vector+pg_trgm 扩展）
+
+== upgrade head（全链，含新迁移 d8e4f2b6a9c1）==
+INFO  [alembic.runtime.migration] Running downgrade 47460ba069a5 -> , initial schema
+INFO  [alembic.runtime.migration] Running upgrade  -> 47460ba069a5, initial schema
+INFO  [alembic.runtime.migration] Running upgrade 47460ba069a5 -> d6e1cd9205cd, rachael graph engine tables + app configs
+INFO  [alembic.runtime.migration] Running upgrade d6e1cd9205cd -> a3d5c7e9f1b2, partition memory_items by tenant_id + native vector embedding
+INFO  [alembic.runtime.migration] Running upgrade a3d5c7e9f1b2 -> b6e9d2c4a8f1, session tables multi-tenant PK + pg_trgm full-text index
+INFO  [alembic.runtime.migration] Running upgrade b6e9d2c4a8f1 -> e2b4d6f8a0c2, C1 canonical identity tables
+INFO  [alembic.runtime.migration] Running upgrade e2b4d6f8a0c2 -> c4d8f2a6e9b3, C1 account→N tenant（account-multi-tenant 扩展）
+INFO  [alembic.runtime.migration] Running upgrade c4d8f2a6e9b3 -> f3c8a9d2e7b4, C2 durable control plane tables
+INFO  [alembic.runtime.migration] Running upgrade f3c8a9d2e7b4 -> b7e2f9a4c1d8, C5 auth/provisioning tables
+INFO  [alembic.runtime.migration] Running upgrade b7e2f9a4c1d8 -> c9d7e3a5f2b1, invite-code-tenant-registration: 邮箱密码凭据 + 租户邀请码列
+INFO  [alembic.runtime.migration] Running upgrade c9d7e3a5f2b1 -> a7f2c9e4b1d8, C15 work queue lease columns + work_attempts audit stream
+INFO  [alembic.runtime.migration] Running upgrade a7f2c9e4b1d8 -> b3f7a1c5d9e2, C7 tool_audit_events — tool call 审计流（追加型，§5.8.6 统一 schema）
+INFO  [alembic.runtime.migration] Running upgrade b3f7a1c5d9e2 -> d8e4f2b6a9c1, WebChat durable replay frames（pg-durable-sot-cutover）
+exit=0
+
+== downgrade base ==
+INFO  [alembic.runtime.migration] Running downgrade d8e4f2b6a9c1 -> b3f7a1c5d9e2, WebChat durable replay frames（pg-durable-sot-cutover）
+INFO  [alembic.runtime.migration] Running downgrade b3f7a1c5d9e2 -> a7f2c9e4b1d8, C7 tool_audit_events — tool call 审计流（追加型，§5.8.6 统一 schema）
+INFO  [alembic.runtime.migration] Running downgrade a7f2c9e4b1d8 -> c9d7e3a5f2b1, C15 work queue lease columns + work_attempts audit stream
+INFO  [alembic.runtime.migration] Running downgrade c9d7e3a5f2b1 -> b7e2f9a4c1d8, invite-code-tenant-registration: 邮箱密码凭据 + 租户邀请码列
+INFO  [alembic.runtime.migration] Running downgrade b7e2f9a4c1d8 -> f3c8a9d2e7b4, C5 auth/provisioning tables
+INFO  [alembic.runtime.migration] Running downgrade f3c8a9d2e7b4 -> c4d8f2a6e9b3, C2 durable control plane tables
+INFO  [alembic.runtime.migration] Running downgrade c4d8f2a6e9b3 -> e2b4d6f8a0c2, C1 account→N tenant（account-multi-tenant 扩展）
+INFO  [alembic.runtime.migration] Running downgrade e2b4d6f8a0c2 -> b6e9d2c4a8f1, C1 canonical identity tables
+INFO  [alembic.runtime.migration] Running downgrade b6e9d2c4a8f1 -> a3d5c7e9f1b2, session tables multi-tenant PK + pg_trgm full-text index
+INFO  [alembic.runtime.migration] Running downgrade a3d5c7e9f1b2 -> d6e1cd9205cd, partition memory_items by tenant_id + native vector embedding
+INFO  [alembic.runtime.migration] Running downgrade d6e1cd9205cd -> 47460ba069a5, rachael graph engine tables + app configs
+INFO  [alembic.runtime.migration] Running downgrade 47460ba069a5 -> , initial schema
+
+== upgrade head（复跑）==
+（复跑成功、无 ERROR——见下方新表存在性核对，该核对在复跑之后执行）
+
+== 新表存在性核对 ==
+table: webchat_replay_counters
+table: webchat_replay_frames
+index: webchat_replay_frames_pkey
+index: uq_webchat_replay_frames_conv_seq
+index: ix_webchat_replay_frames_tenant_conv

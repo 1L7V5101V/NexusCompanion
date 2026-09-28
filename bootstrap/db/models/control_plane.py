@@ -19,6 +19,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -550,6 +551,83 @@ class DeliveryAttemptModel(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class WebchatReplayCounterModel(Base):
+    """per-conversation 重放 seq 计数器（pg-durable-sot-cutover ADR-3）。
+
+    与 canonical `next_sequence` 同模式：T1/T2 事务内 `UPDATE ... RETURNING`
+    取号，行锁串行化同会话帧写入。只增不减；retention 只删帧行不动计数器。
+    """
+
+    __tablename__ = "webchat_replay_counters"
+
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "canonical_conversations.id",
+            ondelete="RESTRICT",
+            name="fk_webchat_replay_counters_conversation_id",
+        ),
+        primary_key=True,
+    )
+    next_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default=text("1")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class WebchatReplayFrameModel(Base):
+    """WebChat durable 重放帧（只追加投影）：一行 = 一帧已盖 seq 的 wire 帧。
+
+    内容 = 已发给客户端的 replayable 帧（message.accepted/turn.completed/
+    turn.failed），随 T1/T2/终态收束同事务写入；canonical 流仍是内容 source of
+    truth，本表仅服务重连补拉，删行不影响会话内容（客户端回退 REST 重建）。
+    """
+
+    __tablename__ = "webchat_replay_frames"
+    __table_args__ = (
+        CheckConstraint(
+            "frame_type IN ('message.accepted', 'turn.completed', 'turn.failed')",
+            name="ck_webchat_replay_frames_type",
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "seq",
+            name="uq_webchat_replay_frames_conv_seq",
+        ),
+        Index(
+            "ix_webchat_replay_frames_tenant_conv",
+            "tenant_id",
+            "conversation_id",
+            "seq",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "canonical_conversations.id",
+            ondelete="RESTRICT",
+            name="fk_webchat_replay_frames_conversation_id",
+        ),
+        nullable=False,
+    )
+    seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    frame_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    frame_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 __all__ = [
     "DELIVERY_ATTEMPT_OUTCOMES",
     "DELIVERY_INTENT_STATUSES",
@@ -567,5 +645,7 @@ __all__ = [
     "OutboundDeliveryIntentModel",
     "ToolCallModel",
     "TurnModel",
+    "WebchatReplayCounterModel",
+    "WebchatReplayFrameModel",
     "WorkAttemptModel",
 ]
