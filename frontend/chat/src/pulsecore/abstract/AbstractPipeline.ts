@@ -94,6 +94,36 @@ uniform vec2  uMouseOff;    // 鼠标视差偏移（P 空间）
 uniform float uSwirlTime;   // 吸积盘旋转时间（JS 积分）
 uniform float uFeedback;    // 时间累积混合（0=无残影，0.9=原作 TAA）
 uniform float uJitter;      // 亚像素抖动开关（累积关掉时一并关，防边缘爬行）
+uniform float uStarGain;    // 背景星空亮度（0=无星）
+
+// 星空：原样移植自 fXV3Wm Kerr-Newman 版的星场函数（用户点名的背景元素）。
+// 方向向量驱动 → 用弯折后的 crd 采样时星星会被引力透镜拉弯、视界内被吞掉。
+vec4 hash43x(vec3 p) {
+    uvec3 x = uvec3(ivec3(p));
+    x = 1103515245U*((x.xyz >> 1U)^(x.yzx));
+    uint h = 1103515245U*((x.x^x.z)^(x.y>>3U));
+    uvec4 rz = uvec4(h, h*16807U, h*48271U, h*69621U);
+    return vec4((rz >> 1) & uvec4(0x7fffffffU))/float(0x7fffffff);
+}
+vec3 stars(vec3 p) {
+    vec3 col = vec3(0); float rad = .087*iResolution.y; float dens = 0.15; float id = 0.; float z = 1.;
+    for (float i = 0.; i < 5.; i++) {
+        p *= mat3(0.86564, -0.28535, 0.41140, 0.50033, 0.46255, -0.73193, 0.01856, 0.83942, 0.54317);
+        vec3 q = abs(p); vec3 p2 = p/max(q.x, max(q.y,q.z)); p2 *= rad;
+        vec3 ip = floor(p2 + 1e-5); vec3 fp = fract(p2 + 1e-5);
+        vec4 rand = hash43x(ip*283.1); vec3 q2 = abs(p2);
+        vec3 pl = 1.0- step(max(q2.x, max(q2.y, q2.z)), q2);
+        vec3 pp = fp - ((rand.xyz-0.5)*.6 + 0.5)*pl;
+        float pr = length(ip) - rad;
+        if (rand.w > (dens - dens*pr*0.035)) pp += 1e6;
+        float d = dot(pp, pp) / (pow(fract(rand.w*172.1), 32.) + .25);
+        float bri = dot(rand.xyz*(1.-pl),vec3(1));
+        id = fract(rand.w*101.);
+        col += bri*z*.00009/pow(d + 0.025, 3.0)*(mix(vec3(1.0,0.45,0.1),vec3(0.75,0.85,1.), id)*0.6+0.4);
+        rad = floor(rad*1.08); dens *= 1.45; z *= 0.6; p = p.yxz;
+    }
+    return col;
+}
 
 float envWave(float ph) {
   ph-=floor(ph);
@@ -179,6 +209,7 @@ export class AbstractPipeline {
     private proxNear = 0.12;      // 接近半径内缘（P 空间，半高=1）
     private proxFar = 0.4;        // 接近半径外缘
     private feedback = 0.05;      // 时间累积混合：0=无残影，0.9=原作 TAA 手感
+    private starGain = 1;         // 背景星空亮度
 
     // 鼠标
     private hasPointer = false;
@@ -237,6 +268,10 @@ export class AbstractPipeline {
             .replace('iTime/', 'uSwirlTime/')
             // 曝光增益：tonemap 前乘（亮度呼吸/音频/鼠标能量/闪烁都在 uGain 里）
             .replace('o/=5e3;', 'o*=uGain;\n  o/=5e3;')
+            // 背景星空：只给逃逸光线加（视界内 d<1e-2=被吞，不加）；
+            // 盘面辉光亮处权重衰减（星星被辉光淹没，物理观感）
+            .replace('o*=smoothstep(.0,.2,dot(o,vec3(.299, .587, .114)));',
+                'o*=smoothstep(.0,.2,dot(o,vec3(.299, .587, .114)));\n  if(d>1e-2)o+=stars(crd)*uStarGain*(1.0-smoothstep(0.05,0.35,dot(o,vec3(.299,.587,.114))));')
             // 时间累积可调：0.9 是原作的 TAA（静止抗锯齿，运动=残影）；
             // uJitter 与之联动——没有累积时抖动只剩噪声
             .replace('C+=jitter(iFrame);', 'C+=jitter(iFrame)*uJitter;')
@@ -249,7 +284,7 @@ export class AbstractPipeline {
             // 不要用动态上界或更大的常量——ANGLE/D3D 的 FXC 前者编译劣化
             // （帧率崩）、后者展开爆炸（主线程冻结几十秒）
             .replace('i<99&&z<29.', 'i<130&&z<29.');
-        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*']) {
+        for (const marker of ['uHoleBase', 'uPulseAmp', 'envWave(', 'diskF(', 'diskInv(', 'uSwirlTime/', 'uGain;\n', 'g=-p*uH', 'uFeedback', 'jitter(iFrame)*', 'stars(crd)', 'uStarGain']) {
             if (!aSrc.includes(marker)) console.warn('[PulseCore:abstract] 原作源码漂移，替换点未命中：', marker);
         }
 
@@ -275,6 +310,7 @@ export class AbstractPipeline {
             uSwirlTime: { value: 0 },
             uFeedback: { value: 0.05 },
             uJitter: { value: 1 },
+            uStarGain: { value: 1 },
         });
 
         this.passes = {
@@ -392,6 +428,9 @@ export class AbstractPipeline {
     /** 时间累积混合：0=无运动残影（同时关亚像素抖动），0.9=原作 TAA 手感 */
     setFeedback(v: number) { this.feedback = Math.max(0, Math.min(0.95, v)); }
 
+    /** 背景星空亮度：0=无星，1=kerr 原版观感 */
+    setStarGain(v: number) { this.starGain = Math.max(0, Math.min(3, v)); }
+
     /** 鼠标交互：视差幅度 / 能量增强 / 接近内缘 / 接近外缘（P 空间，半高=1） */
     setMouseParams(patch: { offsetK?: number; boost?: number; near?: number; far?: number }) {
         if (patch.offsetK !== undefined) this.mouseOffsetK = Math.max(0, Math.min(0.5, patch.offsetK));
@@ -493,6 +532,7 @@ export class AbstractPipeline {
         m.uniforms.uMouseOff.value.copy(this.mouseOff);
         m.uniforms.uSwirlTime.value = this.swirlTime;
         m.uniforms.uFeedback.value = this.feedback;
+        m.uniforms.uStarGain.value = this.starGain;
         // 抖动只在有足够时间累积时才有意义（累积平均掉抖动=AA）；
         // 低累积下抖动没有历史可平均，纯剩噪声——关掉
         m.uniforms.uJitter.value = this.feedback > 0.3 ? 1 : 0;

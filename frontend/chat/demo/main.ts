@@ -26,6 +26,7 @@ const adj = {
     scale: 1.25,
     fpsCap: 85,
     feedback: 0.05,
+    starGain: 1,
     wave: 'lubdub' as WaveShape,
 };
 const profileOverrides: Record<PulseCoreState, Partial<StateProfile>> = {
@@ -48,6 +49,7 @@ function createPipeline(v: PulseCoreVariant) {
         a.setPert(adj.pert);
         a.setMouseParams(adj.mouse);
         a.setFeedback(adj.feedback);
+        a.setStarGain(adj.starGain);
     }
     pipeline.setState(curState);
     pipeline.setAudioEnergy(audio);
@@ -234,6 +236,7 @@ mkH4(advEl, '渲染', '· >1 超采样抗锯齿 · scale 改动会重收敛一�
 mkRow(advEl, '分辨率系数', 0.25, 1.5, 0.05, adj.scale, x => { adj.scale = x; abstractOrNull()?.setScale(x); updateFpsLabel(); });
 mkRow(advEl, 'FPS 上限', 15, 120, 5, adj.fpsCap, x => { adj.fpsCap = x; abstractOrNull()?.setFpsCap(x); updateFpsLabel(); });
 mkRow(advEl, '时间累积', 0, 0.95, 0.05, adj.feedback, x => { adj.feedback = x; abstractOrNull()?.setFeedback(x); });
+mkRow(advEl, '星空亮度', 0, 2, 0.05, adj.starGain, x => { adj.starGain = x; abstractOrNull()?.setStarGain(x); });
 
 // —— 音频能量 ——
 mkH4(advEl, '音频能量');
