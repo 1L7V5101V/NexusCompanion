@@ -127,8 +127,10 @@ function AssistantMessageView({ message }: { message: ChatMessage }) {
 
 function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => void }) {
   const { runtime, status, messages, isRunning, awaitingFirstToken } = chat;
+  const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
 
@@ -138,6 +140,28 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
     atBottomRef.current = dist < 80;
     setShowJump(!atBottomRef.current);
+  }, []);
+
+  // 输入栏实测高度 → --composer-h：同步滚动容器底部内边距、虚化层高度、
+  // 回到底部按钮位置；多行增高时若处于贴底状态则保持贴底不跳动
+  useEffect(() => {
+    const wrap = composerWrapRef.current;
+    const root = rootRef.current;
+    if (!wrap || !root) return;
+    const apply = () => {
+      root.style.setProperty(
+        "--composer-h",
+        `${Math.round(wrap.getBoundingClientRect().height)}px`,
+      );
+      if (atBottomRef.current) {
+        const vp = viewportRef.current;
+        if (vp) vp.scrollTop = vp.scrollHeight;
+      }
+    };
+    const observer = new ResizeObserver(apply);
+    observer.observe(wrap);
+    apply();
+    return () => observer.disconnect();
   }, []);
 
   // 内容增长（流式输出/折叠动画）时，用户停留在底部附近（<80px）则贴底
@@ -163,8 +187,10 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      {/* overflow-hidden：裁掉流光画布向下出界的部分，避免撑出 body 滚动 */}
-      <div className="flex h-full flex-col overflow-hidden bg-bg text-fg">
+      {/* app-root：overflow 用 clip（见 CSS）——裁掉流光画布向下出界的部分，
+          同时不产生滚动容器（hidden 会让画布外伸计入 scrollHeight，
+          焦点滚动把整个界面推上去） */}
+      <div ref={rootRef} className="app-root relative flex h-full flex-col bg-bg text-fg">
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
           <div className="flex items-center gap-3">
@@ -183,11 +209,15 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
         </header>
 
         <div className="relative min-h-0 flex-1">
-          <div
-            ref={viewportRef}
-            onScroll={handleScroll}
-            className="h-full overflow-y-auto px-4 py-4"
-          >
+        <div
+          ref={viewportRef}
+          onScroll={handleScroll}
+          className="thread-scroll h-full overflow-y-auto px-4 pt-4"
+          style={{
+            paddingBottom:
+              "calc(var(--composer-h) + var(--composer-safe-bottom) + var(--composer-gap-bottom) + var(--thread-pad-bottom))",
+          }}
+        >
             <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-5">
               {messages.length === 0 ? (
                 <div className="py-24 text-center text-sm text-subtle">
@@ -205,6 +235,14 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
               {awaitingFirstToken ? <ThinkingLine category="thinking" /> : null}
             </div>
           </div>
+
+          {/* 渐进虚化层：纯视觉、不拦截点击；两层递进 blur + 一层渐隐着色 */}
+          <div className="thread-fade" aria-hidden="true">
+            <div className="thread-fade-blur thread-fade-blur-far" />
+            <div className="thread-fade-blur thread-fade-blur-near" />
+            <div className="thread-fade-tint" />
+          </div>
+
           {showJump ? (
             <button type="button" className="scroll-jump" onClick={jumpToBottom}>
               回到底部 ↓
@@ -212,14 +250,15 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
           ) : null}
         </div>
 
-        <footer className="px-4 pb-6 pt-2">
-          <div className="mx-auto max-w-3xl">
+        {/* 悬浮输入栏：外层全透明、不拦截点击（两侧空白可滚动下方内容） */}
+        <div className="composer-float">
+          <div ref={composerWrapRef} className="pointer-events-auto mx-auto max-w-3xl">
             <ComposerPrimitive.Root
               data-running={isRunning ? "true" : undefined}
               className="composer relative rounded-[28px] p-[2px]"
             >
               <AuroraCanvas active={isRunning} />
-              <div className="relative rounded-[26px] bg-surface-3 ring-1 ring-inset ring-border">
+              <div className="composer-body relative rounded-[26px] ring-1 ring-inset ring-border">
                 <ComposerPrimitive.Input
                   auto-focus
                   rows={1}
@@ -237,7 +276,7 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
               </div>
             </ComposerPrimitive.Root>
           </div>
-        </footer>
+        </div>
       </div>
     </AssistantRuntimeProvider>
   );

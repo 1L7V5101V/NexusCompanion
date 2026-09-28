@@ -48,6 +48,14 @@ body,
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;   /* 移动端动态工具栏/软键盘：跟随可视视口 */
+  }
+}
+
 /* ---- Composer：Gemini 风格极光边框（等待响应时点亮）----
    WebGL 点光场日冕（AuroraCanvas），光斑 CSS 仅作无 WebGL 时的回退。 */
 
@@ -128,6 +136,21 @@ body,
   --collapse-duration: 0.25s;      /* 过程详情展开/收起 */
   --collapse-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --process-indent: 14px;          /* 过程详情的缩进/细线偏移 */
+
+  /* 悬浮输入栏与渐进虚化层 */
+  --composer-h: 130px;             /* 输入栏实测高度（ResizeObserver 写入） */
+  --composer-gap-x: 16px;          /* 左右间距 */
+  --composer-gap-bottom: 14px;     /* 距页面底部间距 */
+  --composer-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --thread-pad-bottom: 18px;       /* 输入栏上方与最后一条消息的呼吸空隙 */
+  --fade-extend: 90px;             /* 虚化层高出输入栏的部分 */
+  --fade-bleed: 28px;              /* blur 层下缘外扩（把模糊截断线推出视口） */
+  --fade-blur-far: 3px;            /* 虚化远层（弱模糊，覆盖更靠上） */
+  --fade-blur-near: 8px;           /* 虚化近层（强模糊，贴近输入栏） */
+  --fade-tint: 0.5;                /* 渐隐着色强度（页面底色 alpha） */
+  --composer-bg-alpha: 0.72;       /* 输入栏半透明 surface 的不透明度 */
+  --composer-blur: 7px;            /* 输入栏自身毛玻璃强度 */
+  --composer-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 /* 思考中：一行浮动的流光文字（无气泡、无背景、无边框） */
@@ -363,8 +386,8 @@ ol.md-list { list-style: decimal outside; }
 .scroll-jump {
   position: absolute;
   right: 1.25rem;
-  bottom: 1rem;
-  z-index: 10;
+  bottom: calc(var(--composer-h) + var(--composer-safe-bottom) + var(--composer-gap-bottom) + 12px);
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -378,6 +401,116 @@ ol.md-list { list-style: decimal outside; }
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
   animation: block-fade 0.2s ease-out;
 }
+
+/* app 根：overflow clip 裁剪但不产生滚动容器——
+   hidden 会把流光画布的外伸部分计入 scrollHeight，textarea 焦点滚动
+   会把整个界面推上去（composer 偏移 136px） */
+.app-root {
+  overflow: hidden;              /* 老浏览器 fallback */
+  overflow: clip;
+  overscroll-behavior: none;
+}
+
+/* ===== 悬浮输入栏 + 渐进虚化层 ===== */
+.thread-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* 悬浮输入栏：外层全透明、不拦截点击（两侧空白可点击/滚动下方内容） */
+.composer-float {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  padding: 0 var(--composer-gap-x) calc(var(--composer-safe-bottom) + var(--composer-gap-bottom));
+  pointer-events: none;
+}
+.composer-float > div {
+  pointer-events: auto;          /* 仅输入栏本体接收交互 */
+}
+
+/* 输入栏本体：半透明 surface + 轻度毛玻璃，聚焦轻微反馈 */
+.composer-float .composer > div {
+  background: rgb(var(--color-surface-3-rgb) / var(--composer-bg-alpha));
+  backdrop-filter: blur(var(--composer-blur)) saturate(1.15);
+  -webkit-backdrop-filter: blur(var(--composer-blur)) saturate(1.15);
+  box-shadow: var(--composer-shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.composer-float .composer:focus-within > div {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--composer-shadow), 0 0 0 1px var(--color-border-strong);
+}
+
+/* 渐进虚化层：纯视觉、不拦截点击；内容从后方穿过产生「沉入毛玻璃」感 */
+.thread-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--composer-h) + var(--fade-extend));
+  z-index: 10;
+  pointer-events: none;
+}
+.thread-fade > div {
+  position: absolute;
+  inset: 0;
+}
+/* blur 层下缘外扩到视口之外：backdrop-filter 在元素边界处采样截断，
+   下边缘若落在视口内会留下一条硬线 */
+.thread-fade-blur-far,
+.thread-fade-blur-near {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: auto;
+  height: calc(100% + var(--fade-bleed));
+}
+.thread-fade-blur-far {
+  backdrop-filter: blur(var(--fade-blur-far));
+  -webkit-backdrop-filter: blur(var(--fade-blur-far));
+  mask-image: linear-gradient(to bottom, transparent 0%, black 62%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 62%);
+}
+.thread-fade-blur-near {
+  backdrop-filter: blur(var(--fade-blur-near));
+  -webkit-backdrop-filter: blur(var(--fade-blur-near));
+  mask-image: linear-gradient(to bottom, transparent 20%, black 80%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 20%, black 80%);
+}
+.thread-fade-tint {
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--color-bg-rgb) / 0) 0%,
+    rgb(var(--color-bg-rgb) / calc(var(--fade-tint) * 0.45)) 55%,
+    rgb(var(--color-bg-rgb) / var(--fade-tint)) 100%
+  );
+}
+
+/* backdrop-filter 不支持：降级为仅渐隐着色（无黑块，输入栏不透明兜底） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .thread-fade-blur-far,
+  .thread-fade-blur-near {
+    display: none;
+  }
+  .thread-fade-tint {
+    background: linear-gradient(
+      to bottom,
+      rgb(var(--color-bg-rgb) / 0) 0%,
+      rgb(var(--color-bg-rgb) / calc(var(--fade-tint) * 0.7)) 55%,
+      rgb(var(--color-bg-rgb) / calc(var(--fade-tint) + 0.2)) 100%
+    );
+  }
+  .composer-float .composer > div {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--color-surface-3);
+  }
+}
+
+/* 减少动态效果
 
 /* 减少动态效果：流光停止（静态次要色文字），只保留透明度变化 */
 @media (prefers-reduced-motion: reduce) {
