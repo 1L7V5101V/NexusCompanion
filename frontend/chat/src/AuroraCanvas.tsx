@@ -81,7 +81,7 @@ vec3 closestBorder(vec2 pc, vec2 h, float r) {
     bp = sgn * vec2(ax, ay) + r * dir;
     if (sgn.x > 0.0 && sgn.y < 0.0) {
       s = 2.0 * ax + (phi + 1.5707963) * r;
-    } else if (sgn.y > 0.0) {
+    } else if (sgn.x > 0.0 && sgn.y > 0.0) {
       s = 2.0 * ax + arc + 2.0 * ay + phi * r;
     } else if (sgn.x < 0.0 && sgn.y > 0.0) {
       s = 4.0 * ax + 2.0 * arc + 2.0 * ay + (phi - 1.5707963) * r;
