@@ -57,12 +57,12 @@ class _Identity:
 
 
 async def test_gateway_hello_seq_and_replay_window(
-    c5_factory: async_sessionmaker, c5_pg_url, c5_reset
+    c5_factory: async_sessionmaker, c5_pg_url, c5_reset, tmp_path
 ) -> None:
     c5_reset()
     import asyncio
 
-    runtime = make_runtime(c5_pg_url, __import__("pathlib").Path("ws-hello"))
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-hello")
     try:
         await _hello_window_body(c5_factory, runtime)
     finally:
@@ -234,12 +234,12 @@ class _StubSessionManager:
 
 
 async def test_reconcile_fails_pending_turns_and_rebuilds_view(
-    c5_factory: async_sessionmaker, c5_pg_url, c5_reset
+    c5_factory: async_sessionmaker, c5_pg_url, c5_reset, tmp_path
 ) -> None:
     c5_reset()
     import asyncio
 
-    runtime = make_runtime(c5_pg_url, __import__("pathlib").Path("ws-rc"))
+    runtime = make_runtime(c5_pg_url, tmp_path / "ws-rc")
     try:
         await _reconcile_body(c5_factory, runtime)
     finally:
