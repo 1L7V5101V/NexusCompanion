@@ -1005,6 +1005,34 @@ class WebchatReplayRepository:
                     frames.append(frame)
             return frames
 
+    async def frame_for_message(
+        self,
+        tenant_id: str,
+        conversation_id: uuid.UUID | str,
+        message_id: uuid.UUID | str,
+        frame_type: str,
+    ) -> dict[str, Any] | None:
+        """按 canonical 消息取对应重放帧（delivery 投递取帧用；无帧返回 None）。"""
+        conv_id = _coerce_uuid(conversation_id)
+        msg_id = _coerce_uuid(message_id)
+        if conv_id is None or msg_id is None:
+            return None
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    select(WebchatReplayFrameModel).where(
+                        WebchatReplayFrameModel.tenant_id == tenant_id,
+                        WebchatReplayFrameModel.conversation_id == conv_id,
+                        WebchatReplayFrameModel.message_id == msg_id,
+                        WebchatReplayFrameModel.frame_type == frame_type,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            frame = _from_json(row.frame_json)
+            return frame if isinstance(frame, dict) else None
+
     async def delete_frames_before(
         self, tenant_id: str, conversation_id: uuid.UUID | str, before_seq: int
     ) -> int:

@@ -21,7 +21,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
@@ -29,10 +29,13 @@ from agent.config_models import Config
 from bootstrap.db.config import DatabaseConfig
 from bootstrap.db.engine import create_engine, create_session_factory
 from bootstrap.db.repository.control_plane_repo import (
+    DeliveryRepository,
     IngressRepository,
     NotFoundError,
     TurnControlRepository,
+    WebchatReplayRepository,
 )
+from bootstrap.delivery_worker import OutboundDeliveryWorker
 from bootstrap.work_queue import async_pg_url
 from bus.events import InboundMessage
 from bus.queue import MessageBus
@@ -42,8 +45,11 @@ from infra.channels.web_chat_protocol import message_accepted, turn_failed
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "WebchatDeliveryAdapter",
+    "WebchatDeliveryLoop",
     "WebchatDurableGateway",
     "WebchatDurableRuntime",
+    "WebchatDurableTurnFinisher",
     "build_webchat_durable_runtime",
 ]
 
@@ -275,6 +281,11 @@ class WebchatDurableTurnFinisher:
         self._turns = TurnControlRepository(session_factory)
         self._ingress = IngressRepository(session_factory)
         self._channel_name = channel_name
+        self._wake: Callable[[], None] | None = None
+
+    def bind_wake(self, wake: Callable[[], None]) -> None:
+        """绑定 T2 提交后的 delivery 唤醒回调（task 4.1；未绑定为 no-op）。"""
+        self._wake = wake
 
     def subscribe(self, bus: MessageBus) -> None:
         bus.subscribe_outbound(self._channel_name, self._on_outbound)
@@ -343,6 +354,88 @@ class WebchatDurableTurnFinisher:
             await self._ingress.mark_inbox_processed(tenant_id, inbox_id)
         if replay_seq is not None:
             metadata["nexus_replay_seq"] = int(replay_seq)
+        if not is_error and self._wake is not None:
+            # T2 已产出 pending intent：唤醒 delivery worker 立即投递（task 4.1）。
+            self._wake()
+
+
+class WebchatDeliveryAdapter:
+    """delivery worker 的 WebChat 发送回调（task 4.1；ADR-4）。
+
+    从 durable 重放帧表取 final 帧（含 seq，逐字 = 在线广播帧），投递到该
+    canonical 会话的全部在线连接；前端按 turn_id 幂等渲染（store 覆盖语义），
+    at-least-once 重复投递安全。**零在线连接 → 抛错**（spec：attempt 记录
+    失败并按退避重试至 dead_letter；离线客户端重连后经补拉/REST 重建补齐）。
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        channel: Any,
+    ) -> None:
+        self._replay = WebchatReplayRepository(session_factory)
+        self._channel = channel
+
+    async def __call__(self, envelope: Any) -> str | None:
+        frame = await self._replay.frame_for_message(
+            envelope.tenant_id,
+            envelope.conversation_id,
+            envelope.message_id,
+            "turn.completed",
+        )
+        if frame is None:
+            # 帧已被 retention 清理（C12 §8.4）：无法在线补投，按失败重试；
+            # 客户端始终可经 REST 从 canonical 重建。
+            raise RuntimeError(
+                f"replay frame 缺失（retention?）: message_id={envelope.message_id}"
+            )
+        delivered = await self._channel.deliver_frame(
+            str(envelope.conversation_id), frame
+        )
+        if delivered == 0:
+            raise RuntimeError(
+                "webchat 会话无在线连接: "
+                f"conversation_id={envelope.conversation_id}"
+            )
+        return f"webchat:{delivered}"
+
+
+class WebchatDeliveryLoop:
+    """T2 提交事件唤醒 + 轮询兜底的 delivery worker 循环（task 4.1）。"""
+
+    def __init__(
+        self,
+        worker: Any,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        self._worker = worker
+        self._poll = poll_interval_seconds
+        self._wake = asyncio.Event()
+        self._running = False
+
+    def wake(self) -> None:
+        """T2 提交后立即唤醒（避免 final 帧等一个轮询周期）。"""
+        self._wake.set()
+
+    def stop(self) -> None:
+        self._running = False
+        self._wake.set()
+
+    async def run(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=self._poll)
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
+            self._wake.clear()
+            if not self._running:
+                break
+            try:
+                await self._worker.process_once()
+            except Exception:
+                logger.exception("webchat delivery 轮询异常（下一周期重试）")
 
 
 @dataclass
@@ -353,9 +446,47 @@ class WebchatDurableRuntime:
     session_factory: async_sessionmaker
     gateway: WebchatDurableGateway
     finisher: WebchatDurableTurnFinisher
+    delivery_loop: "WebchatDeliveryLoop | None" = None
+    delivery_task: "asyncio.Task[None] | None" = None
 
     async def aclose(self) -> None:
         await self.engine.dispose()
+
+    def start_delivery(self, channel: Any) -> None:
+        """装配 delivery worker 循环并启动任务（需通道实例，二阶段调用）。
+
+        通道与网关互为构造前置（通道要注入 gateway、适配器要读通道连接表），
+        因此 delivery 装配独立于 runtime 构造，由 app 在通道建成后调用。
+        """
+        if self.delivery_task is not None:
+            return
+        worker = OutboundDeliveryWorker(
+            DeliveryRepository(self.session_factory),
+            WebchatDeliveryAdapter(self.session_factory, channel),
+        )
+        loop = WebchatDeliveryLoop(worker)
+        self.finisher.bind_wake(loop.wake)
+        self.delivery_loop = loop
+        self.delivery_task = asyncio.create_task(
+            loop.run(), name="webchat_delivery"
+        )
+        self.delivery_task.add_done_callback(self._delivery_done)
+        logger.info("webchat delivery worker 已装配（wake+poll 混合循环）")
+
+    def stop_delivery(self) -> None:
+        if self.delivery_loop is not None:
+            self.delivery_loop.stop()
+
+    @staticmethod
+    def _delivery_done(task: "asyncio.Task[None]") -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "webchat delivery 循环意外退出",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
 
 def build_webchat_durable_runtime(

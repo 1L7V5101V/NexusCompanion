@@ -1,0 +1,21 @@
+# task 4.1/4.2 delivery worker 接线验证
+# 日期：2026-09-29；环境：便携 PG 5432（scratch nexus_c2test）
+
+== PG 集成 ==
+$ NEXUS_TEST_PG_URL=... pytest -q -W error tests/control_plane/test_webchat_delivery.py
+3 passed in 7.51s
+
+== pyright --level error ==
+0 errors
+
+== 覆盖的 spec 场景（webchat-durable-storage「final 投递经 delivery 状态机」）==
+- 在线投递推进 sent：适配器从重放帧表取帧（含 durable seq，与在线广播逐字一致）→ deliver_frame 到该 canonical 会话在线连接 → sent + attempt（test_online_delivery_advances_sent_with_attempt；sent 后不被二次认领）
+- 无在线连接时重试：适配器抛错 → attempt 失败按退避排程（next_attempt_at 到期前不被认领）、final 消息与重放帧不受影响（test_no_online_connection_fails_attempt_with_backoff）
+- 重启后继续投递：worker 无状态、claim 以 DB lease 为准（C2 test_restart_replay 既有覆盖 + lease/接管语义不变）
+- 超限 dead_letter：max_attempts=1 演练 → dead_letter 终态 + attempt_count=1 + last_error 可查（test_dead_letter_after_max_attempts）
+
+== 关键实现 ==
+- WebchatDeliveryAdapter：帧取自重放帧表（frame_for_message，turn.completed 挂 final message_id）；零在线连接抛错（spec 语义）；前端按 turn_id 幂等渲染（store.applyTurnCompleted 覆盖语义）→ at-least-once 重复投递安全
+- WebchatDeliveryLoop：T2 提交事件唤醒（finisher.bind_wake）+ 1s 轮询兜底；worker 参数保持 C2 冻结值（lease 60s/heartbeat 20s/5 次/1m-6h）
+- 装配：runtime.start_delivery(channel) 二阶段（解 channel↔gateway 构造环）+ app 停机先 stop_delivery 再收连接池
+- 帧缺失（未来 retention 清理后）：适配器抛错走失败路径，客户端 REST 重建兜底

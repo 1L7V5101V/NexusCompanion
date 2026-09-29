@@ -266,6 +266,23 @@ class WebChatChannel:
             return []
         return [self._attachments.root]
 
+    async def deliver_frame(self, conversation_id: str, frame: dict[str, Any]) -> int:
+        """把一帧投递到指定 canonical 会话的全部在线连接（delivery worker 用，
+        pg-durable-sot-cutover task 4.1）。
+
+        返回成功发送的连接数；前端按 ``turn_id`` 幂等渲染（重复投递覆盖渲染，
+        store.ts applyTurnCompleted/applyTurnFailed），at-least-once 安全。
+        """
+        delivered = 0
+        for conn in list(self._connections.values()):
+            if conn.closed or conn.identity is None:
+                continue
+            if str(conn.identity.conversation_id) != str(conversation_id):
+                continue
+            if conn.try_enqueue(frame):
+                delivered += 1
+        return delivered
+
     def has_media(self, path: Path) -> bool:
         if self._attachments is None:
             return False

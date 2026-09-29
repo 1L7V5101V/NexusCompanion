@@ -462,6 +462,9 @@ class AppRuntime:
                     ),
                 )
                 plugin_channels.append(self.web_chat_channel)
+                if self.webchat_durable is not None:
+                    # 二阶段装配 delivery worker（需通道连接表；task 4.1）。
+                    self.webchat_durable.start_delivery(self.web_chat_channel)
             self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -757,14 +760,22 @@ class AppRuntime:
             await runtime.aclose()
 
     async def _stop_webchat_durable(self) -> None:
-        """释放 webchat durable 网关的 async engine 连接池（pg-durable-sot-cutover）。
+        """停止 delivery 循环并释放 webchat durable 网关的 engine（pg-durable-sot-cutover）。
 
-        置于 work_queue 步骤之后、servers.wait 之前：chat server 仍在等待退出，
-        但入站已无新 send 处理，先收连接池不阻塞停机。
+        先停 delivery 循环（worker 不再认领新 intent），再收连接池。
         """
         runtime = self.webchat_durable
         if runtime is not None:
             self.webchat_durable = None
+            runtime.stop_delivery()
+            task = runtime.delivery_task
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("webchat delivery 循环停止时异常")
             await runtime.aclose()
 
     def _work_queue_done(self, task: asyncio.Task[None]) -> None:

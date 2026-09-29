@@ -31,8 +31,10 @@
 
 ## 4. delivery worker 接线（ADR-4）
 
-- [ ] 4.1 WebChat 投递适配器 + worker 装配进应用生命周期：按 conversation 找在线连接逐个投递，≥1 写成功推进 `sent`（record_attempt_sent），零连接/写失败走退避；T2 提交后事件唤醒 worker（轮询兜底）。验证：单测——在线投递 sent、无连接重试、唤醒触发即时投递
-- [ ] 4.2 `dead_letter` 与重试边界：按冻结参数（lease 60s/5 次/`1m–6h`）验证 attempt 链路收束，dead_letter 可查、final 消息不受影响。验证：PG 集成——退避参数下重试至 dead_letter 的状态轨迹（可注入缩短退避），结果入 evidence `task-4.2-delivery.txt`
+- [x] 4.1 WebChat 投递适配器 + worker 装配进应用生命周期：按 conversation 找在线连接逐个投递，≥1 写成功推进 `sent`（record_attempt_sent），零连接/写失败走退避；T2 提交后事件唤醒 worker（轮询兜底）。验证：单测——在线投递 sent、无连接重试、唤醒触发即时投递
+  → 完成（2026-09-29）：`WebchatDeliveryAdapter`（帧取自重放帧表 `frame_for_message`，与在线广播逐字一致；零在线连接抛错按 spec 走重试；前端按 turn_id 幂等渲染故 at-least-once 重复投递安全）+ `WebchatDeliveryLoop`（finisher T2 唤醒 + 1s 轮询兜底）+ runtime `start_delivery`/`stop_delivery` 二阶段装配（解 channel↔gateway 构造环）；worker 参数保持 C2 冻结值。PG 3/3 全绿（evidence `task-4.x-delivery.txt`）
+- [x] 4.2 `dead_letter` 与重试边界：按冻结参数（lease 60s/5 次/`1m–6h`）验证 attempt 链路收束，dead_letter 可查、final 消息不受影响。验证：PG 集成——退避参数下重试至 dead_letter 的状态轨迹（可注入缩短退避），结果入 evidence `task-4.2-delivery.txt`
+  → 完成（2026-09-29）：验证并入 `tests/control_plane/test_webchat_delivery.py`（evidence 合并为 `task-4.x-delivery.txt`）：max_attempts=1 注入演练 → `dead_letter` 终态 + attempt_count=1 + last_error「无在线连接」可查、重放帧/final 不受影响；未到期 intent 不被认领（退避排程）；已 sent 不被二次认领。lease/接管/失去租约语义由 C2 既有测试继续守护
 
 ## 5. durable 重放、REST 重建与启动对账（ADR-3）
 
