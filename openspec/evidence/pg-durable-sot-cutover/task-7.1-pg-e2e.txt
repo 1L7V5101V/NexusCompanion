@@ -1,0 +1,23 @@
+# task 7.1 PG 端到端（全链路 + 重启模拟）
+# 日期：2026-09-29；环境：便携 PG 5432（scratch nexus_sottest_e2e，真实 C5 provisioning + AuthRuntime）
+
+== e2e ==
+$ NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=... pytest -q -W error tests/pg_sot/test_e2e_roundtrip.py
+1 passed in 10.57s
+
+== 链路覆盖（webchat-durable-storage 全部 requirement 的集成验证）==
+1. T1 接受事务提交后才 accepted（durable seq，重复注入重放原帧）；overload 预检不消耗幂等
+2. loop 出站 → finisher T2（final canonical message + turn completed + pending intent + turn.completed 帧同事务）+ inbox 收束 + nexus_replay_seq 盖回
+3. 通道在线帧以 durable seq 逐字下发（进程内 buffer 不参与）
+4. delivery worker 认领投递 → sent + attempt；已 sent 不被二次认领（不重新生成/重投）
+5. 重启模拟（组件全重建仅 DB 存续）：重发同 id 重放原 accepted 同 seq；补拉 [accepted, completed] 连续无重复；中断 turn 由启动对账收束 failed（turn.failed 帧可见）
+6. REST 重建 = canonical 流（user+assistant，0-based 连续）；跨账号请求他人 chat:{tenant} → 404（tenant 由 session 派生）
+
+== 全量回归（task 7.2，2026-09-29 最终轮）==
+$ NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=postgresql://nexus:nexus_dev@localhost:5432/nexus pytest -q -W error tests/
+**1768 passed, 0 failed** in 482.06s（8:02；含本 change 新增 18 个测试：契约/单测/PG 集成/e2e）
+$ pyright --level error（project / tests 双配置）→ 38 / 57 errors，均既有基线，零新增
+注：过程中曾出现 36 failed/4 errors 与 1 failed（trace parity）——分别为共享 nexus 库 schema 过旧（"memory_items" 未分区，alembic d6e1cd9205cd 旧版本）与 5433 Docker PG 缺失（test_trace_backend_parity 硬编码默认 URL），均为环境问题；处置 = 共享库升级至 head + 以便携实例补建 5433/nexus（initdb→migrate），与本 change 代码无关。
+
+== 环境备注 ==
+- 本地无 Docker，PG 换用项目自带便携实例（pg.py 管理，D:/Projects/postgres，PG 17.10 + pgvector，端口 5432）；共享 nexus 库已由旧版升级至 alembic head d8e4f2b6a9c1（补 vector/pg_trgm 扩展）——首跑全量回归的 36 failed/4 errors 全部源于该库 schema 过旧（如 "memory_items" 未分区），升级后消失，与本 change 代码无关

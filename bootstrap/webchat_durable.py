@@ -488,10 +488,11 @@ class WebchatDeliveryLoop:
 
 
 async def reconcile_webchat_on_startup(
-    runtime: "WebchatDurableRuntime",
+    runtime: Any,
     *,
     session_manager: Any,
 ) -> dict[str, Any]:
+    # ``runtime`` 只消费 ``session_factory``（测试可用真实 factory 的轻量替身）。
     """启动对账（pg-durable-sot-cutover task 5.3；spec「启动对账与恢复」）。
 
     - 非终态 turn（queued/in_progress）→ 收束为 ``failed``（原因

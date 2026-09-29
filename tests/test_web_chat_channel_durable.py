@@ -31,8 +31,12 @@ from tests.test_web_chat_channel import (
 
 
 def _register_authed(channel: WebChatChannel, ws: _FakeWebSocket) -> _Connection:
-    conn = _Connection(ws, uuid4().hex, identity=_authed_identity())
-    channel._connections[ws] = conn
+    conn = _Connection(
+        ws,  # type: ignore[arg-type]
+        uuid4().hex,
+        identity=_authed_identity(),
+    )
+    channel._connections[ws] = conn  # type: ignore[assignment]
     return conn
 
 

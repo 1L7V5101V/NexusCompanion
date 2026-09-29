@@ -54,6 +54,9 @@
 
 ## 7. 验收与回归
 
-- [ ] 7.1 **PG 端到端**（`NEXUS_REQUIRE_PG=1`，真实 C5 provisioning 账号）：发消息 → accepted（durable seq）→ final 经 delivery worker 抵达 → 重启进程 → 重发同 id 重放原 ack + 补拉连续 + REST 重建一致 + delivery 意图不重生成。验证：`tests/pg_sot/`（或就近目录）e2e 全绿，输出入 evidence `task-7.1-pg-e2e.txt`
-- [ ] 7.2 **全量回归与基线对齐**：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` 全绿；`pyright --level error` 双配置（project + tests）对齐基线（既有错误数不新增）。验证：结果入 evidence `task-7.2-regression.txt`
-- [ ] 7.3 **管理闭环回填**：本 change tasks 全勾 + `openspec status` 收口；`PILOT_ROADMAP_PROJECT_CHECKLIST` 回填（P0.5「canonical stream/0-based seq」、P1「durable source of truth」两条目勾选带 evidence；current blocker 解除说明——公网开放存储前置完成，下一步为部署 canary 与运维放开决策）。验证：checklist diff 仅含 evidence 支撑的状态变更
+- [x] 7.1 **PG 端到端**（`NEXUS_REQUIRE_PG=1`，真实 C5 provisioning 账号）：发消息 → accepted（durable seq）→ final 经 delivery worker 抵达 → 重启进程 → 重发同 id 重放原 ack + 补拉连续 + REST 重建一致 + delivery 意图不重生成。验证：`tests/pg_sot/`（或就近目录）e2e 全绿，输出入 evidence `task-7.1-pg-e2e.txt`
+  → 完成（2026-09-29）：`tests/pg_sot/test_e2e_roundtrip.py` 全链路通过（真实 C5 provisioning + AuthRuntime，scratch nexus_sottest_e2e）：T1 接受 → T2 完成 → 在线帧/worker 投递/sent → 重启模拟（组件全重建）→ 同 id 重放原 ack 同 seq → 补拉 [accepted, completed] 连续 → REST 重建=canonical（含越权 404）→ 中断 turn 启动对账收束 failed（turn.failed 帧可见）。evidence `task-7.1-pg-e2e.txt`
+- [x] 7.2 **全量回归与基线对齐**：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` 全绿；`pyright --level error` 双配置（project + tests）对齐基线（既有错误数不新增）。验证：结果入 evidence `task-7.2-regression.txt`
+  → 完成（2026-09-29）：**1768 passed / 0 failed**（8:02，NEXUS_REQUIRE_PG=1，含本 change 新增 18 测试；基线 1738）；pyright 双配置 38/57 均既有基线零新增（结果并入 evidence `task-7.1-pg-e2e.txt` 7.2 段）。首跑的 36 failed/1 failed 均为环境问题（共享 nexus 库 schema 过旧 + 5433 Docker PG 缺失），已修复环境后复跑全绿，详见 evidence 环境备注
+- [x] 7.3 **管理闭环回填**：本 change tasks 全勾 + `openspec status` 收口；`PILOT_ROADMAP_PROJECT_CHECKLIST` 回填（P0.5「canonical stream/0-based seq」、P1「durable source of truth」两条目勾选带 evidence；current blocker 解除说明——公网开放存储前置完成，下一步为部署 canary 与运维放开决策）。验证：checklist diff 仅含 evidence 支撑的状态变更
+  → 完成（2026-09-29）：checklist 回填（P0.5 canonical 条目勾选；P1 durable SOT 条目按实际覆盖注记——schedule durable 归 C11 不勾选；当前进度/current focus/next decision 刷新）；本 change 18/18 全勾，`openspec status` 4/4 artifacts complete

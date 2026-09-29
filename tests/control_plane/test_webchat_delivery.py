@@ -91,7 +91,7 @@ def _channel_with_connection(
     channel = WebChatChannel()
     ws = _FakeWebSocket()
     conn = _Connection(
-        ws,
+        ws,  # type: ignore[arg-type]
         uuid.uuid4().hex,
         identity=WebChatIdentity(
             account_id=str(tenant["account_id"]),
@@ -101,7 +101,7 @@ def _channel_with_connection(
             chat_id=str(tenant["tenant_id"]),
         ),
     )
-    channel._connections[ws] = conn
+    channel._connections[ws] = conn  # type: ignore[assignment]
     return channel, ws
 
 

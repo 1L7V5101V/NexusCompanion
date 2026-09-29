@@ -143,6 +143,7 @@ async def test_completion_and_failure_frames_in_same_transaction(
         expected_status="queued", new_status="in_progress",
     )
 
+    assert accepted.turn_id is not None
     completed = await turns.complete_turn_with_delivery(
         tenant["tenant_id"],
         tenant["conversation_id"],
@@ -172,6 +173,7 @@ async def test_completion_and_failure_frames_in_same_transaction(
         content="会失败的",
         replay_frame=_ack("c1f0a2b3-0000-4000-8000-0000000000b2"),
     )
+    assert accepted2.turn_id is not None
     failed = await turns.transition_turn(
         tenant["tenant_id"],
         accepted2.turn_id,
@@ -305,6 +307,7 @@ async def test_finisher_completes_turn_with_delivery_and_frames(
 
     assert outbound.metadata["nexus_replay_seq"] == 2  # accepted=1, completed=2
     turns_repo = TurnControlRepository(c2_factory)
+    assert accepted.turn_id is not None
     turn = await turns_repo.get_turn(tenant["tenant_id"], accepted.turn_id)
     assert turn is not None and turn["status"] == "completed"
     inbox = await ingress_repo.get_inbox(tenant["tenant_id"], accepted.inbox_id)
@@ -357,6 +360,7 @@ async def test_finisher_marks_failed_without_intent_on_error_outbound(
     await finisher._on_outbound(outbound)
 
     assert outbound.metadata["nexus_replay_seq"] == 2
+    assert accepted.turn_id is not None
     turns_repo = TurnControlRepository(c2_factory)
     turn = await turns_repo.get_turn(tenant["tenant_id"], accepted.turn_id)
     assert turn is not None and turn["status"] == "failed"
