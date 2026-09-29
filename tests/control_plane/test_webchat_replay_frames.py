@@ -265,3 +265,107 @@ async def test_gateway_accept_duplicate_and_overload_precheck(
     assert outcome.frame is not None and outcome.frame["seq"] == 1
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(bus.consume_inbound(), timeout=0.05)
+
+
+async def test_finisher_completes_turn_with_delivery_and_frames(
+    c2_factory: async_sessionmaker, make_tenant, ingress: IngressRepository
+) -> None:
+    """正常回复 → T2（final+completed+intent 同事务）+ inbox 收束 + seq 盖回。"""
+    from bootstrap.webchat_durable import WebchatDurableTurnFinisher
+    from bus.events import OutboundMessage
+
+    tenant = await make_tenant()
+    ingress_repo = IngressRepository(c2_factory)
+    finisher = WebchatDurableTurnFinisher(c2_factory, channel_name="chat")
+    cmid = "c1f0a2b3-0000-4000-8000-0000000000e1"
+    accepted = await ingress_repo.accept_inbound(
+        tenant["tenant_id"],
+        tenant["conversation_id"],
+        account_id=tenant["account_id"],
+        client_message_id=cmid,
+        content="问题",
+        replay_frame=_ack(cmid),
+    )
+    assert accepted.turn_id is not None
+
+    outbound = OutboundMessage(
+        channel="chat",
+        chat_id=tenant["tenant_id"],
+        content="回答正文",
+        thinking="想了一下",
+        metadata={
+            "nexus_pg_turn_id": accepted.turn_id,
+            "nexus_pg_inbox_id": accepted.inbox_id,
+            "nexus_pg_conversation_id": tenant["conversation_id"],
+            "tenant_id": tenant["tenant_id"],
+            "client_message_id": cmid,
+        },
+    )
+    await finisher._on_outbound(outbound)
+
+    assert outbound.metadata["nexus_replay_seq"] == 2  # accepted=1, completed=2
+    turns_repo = TurnControlRepository(c2_factory)
+    turn = await turns_repo.get_turn(tenant["tenant_id"], accepted.turn_id)
+    assert turn is not None and turn["status"] == "completed"
+    inbox = await ingress_repo.get_inbox(tenant["tenant_id"], accepted.inbox_id)
+    assert inbox is not None and inbox["status"] == "processed"
+    rows = await WebchatReplayRepository(c2_factory).frames_after(
+        tenant["tenant_id"], tenant["conversation_id"], 0
+    )
+    assert [f["type"] for f in rows] == ["message.accepted", "turn.completed"]
+    assert rows[1]["content"] == "回答正文"
+    # T2 产出的 pending intent 可被 delivery worker 认领（4.x 前置）。
+    delivery = DeliveryRepository(c2_factory)
+    claimed = await delivery.claim_batch("test-owner", batch_size=5)
+    assert len(claimed) == 1
+    assert claimed[0]["status"] == "attempting"
+
+
+async def test_finisher_marks_failed_without_intent_on_error_outbound(
+    c2_factory: async_sessionmaker, make_tenant, ingress: IngressRepository
+) -> None:
+    """nexus_error 出站 → 失败终态 + turn.failed 帧，不产投递意图。"""
+    from bootstrap.webchat_durable import WebchatDurableTurnFinisher
+    from bus.events import OutboundMessage
+
+    tenant = await make_tenant()
+    ingress_repo = IngressRepository(c2_factory)
+    finisher = WebchatDurableTurnFinisher(c2_factory, channel_name="chat")
+    cmid = "c1f0a2b3-0000-4000-8000-0000000000f1"
+    accepted = await ingress_repo.accept_inbound(
+        tenant["tenant_id"],
+        tenant["conversation_id"],
+        account_id=tenant["account_id"],
+        client_message_id=cmid,
+        content="会失败的问题",
+        replay_frame=_ack(cmid),
+    )
+
+    outbound = OutboundMessage(
+        channel="chat",
+        chat_id=tenant["tenant_id"],
+        content="处理消息时出错，请稍后再试。",
+        metadata={
+            "nexus_pg_turn_id": accepted.turn_id,
+            "nexus_pg_inbox_id": accepted.inbox_id,
+            "nexus_pg_conversation_id": tenant["conversation_id"],
+            "tenant_id": tenant["tenant_id"],
+            "nexus_error": True,
+            "nexus_fail_reason": "provider_error",
+        },
+    )
+    await finisher._on_outbound(outbound)
+
+    assert outbound.metadata["nexus_replay_seq"] == 2
+    turns_repo = TurnControlRepository(c2_factory)
+    turn = await turns_repo.get_turn(tenant["tenant_id"], accepted.turn_id)
+    assert turn is not None and turn["status"] == "failed"
+    inbox = await ingress_repo.get_inbox(tenant["tenant_id"], accepted.inbox_id)
+    assert inbox is not None and inbox["status"] == "processed"
+    delivery = DeliveryRepository(c2_factory)
+    claimed = await delivery.claim_batch("test-owner", batch_size=5)
+    assert claimed == []  # 失败终态不创建投递意图
+    frames = await WebchatReplayRepository(c2_factory).frames_after(
+        tenant["tenant_id"], tenant["conversation_id"], 0
+    )
+    assert [f["type"] for f in frames] == ["message.accepted", "turn.failed"]

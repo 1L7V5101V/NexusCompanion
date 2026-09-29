@@ -22,9 +22,12 @@
 
 ## 3. 执行与完成事务接线（ADR-2）
 
-- [ ] 3.1 turn 生命周期落控制面：执行起点置 `in_progress`（服务端派生 turn 身份贯穿）；失败/取消收束 `transition_turn` 记原因，不产 intent。验证：单测——失败 turn 终态有原因、delivery intent 表零行
-- [ ] 3.2 成功完成包 `complete_turn_with_delivery`（T2）：final canonical message + completed 终态 + pending intent 同事务；T2 后同步投影 `session_manager.append_messages`（失败记日志不阻断，ADR-5）。验证：PG 集成——T2 原子性（中途失败全回滚）；投影内容与 canonical 一致
-- [ ] 3.3 `_on_outbound` 拆分：final/failed 帧不再由 EventBus 直发（改由 T2/终态路径与 delivery worker），delta/tool 帧维持即时广播。验证：协议契约测试（`chat_protocol_frames.json`）全绿不变；帧序——delta 先于 final 的既有客户端预期不破坏
+- [x] 3.1 turn 生命周期落控制面：执行起点置 `in_progress`（服务端派生 turn 身份贯穿）；失败/取消收束 `transition_turn` 记原因，不产 intent。验证：单测——失败 turn 终态有原因、delivery intent 表零行
+  → 完成（2026-09-29，实现取更简形态）：取消独立 in_progress 步骤（无消费方，Pilot 从简）——终态 CAS expected=queued 直接收束；pg 身份经 `nexus_pg_*` metadata 贯穿（成功路径由 after_reasoning 的 `outbound_metadata={**msg.metadata}` 整体透传零改动；abort/错误路径经 `_control_outbound`/loop catch-all 显式富化 + `nexus_error`/`nexus_fail_reason` 标记）。finisher 镜像管线持久化事实：无 TurnCommitted 的出站（abort/provider_error）= 失败终态（session 与 canonical 均无 final，零漂移），不产 intent（PG 测试锁定 intent 零行）。**wire 行为变化**：错误回复从「completed 帧带错误文本」改为协议正确的 `turn.failed` 帧（C4 fixture 示例文案即此场景，前端已消费该帧类型）。测试 7+9 全绿 + 管线回归 308 passed（evidence `task-3.x-turn-lifecycle.txt`）
+- [x] 3.2 成功完成包 `complete_turn_with_delivery`（T2）：final canonical message + completed 终态 + pending intent 同事务；T2 后同步投影 `session_manager.append_messages`（失败记日志不阻断，ADR-5）。验证：PG 集成——T2 原子性（中途失败全回滚）；投影内容与 canonical 一致
+  → 完成（2026-09-29）：`WebchatDurableTurnFinisher` 订阅 outbound（app 装配先于通道，dispatch 顺序保证先收束后发帧）→ T2 同事务 final+completed+intent+重放帧 → `mark_inbox_processed`（task 1.3 登记的收束点）→ `nexus_replay_seq` 盖回。**投影修正**：session view 的 user/assistant 写入由既有管线 after_reasoning `_AppendMessagesModule` 承担（即 ADR-5 所述投影，无需新写）；T2 与投影的顺序差由启动对账以 canonical 兜底（5.3）。T2 原子性由 C2 既有测试 + 本组 finisher PG 测试（canonical final/intent/帧/inbox 四点断言）覆盖
+- [x] 3.3 `_on_outbound` 拆分：final/failed 帧不再由 EventBus 直发（改由 T2/终态路径与 delivery worker），delta/tool 帧维持即时广播。验证：协议契约测试（`chat_protocol_frames.json`）全绿不变；帧序——delta 先于 final 的既有客户端预期不破坏
+  → 完成（2026-09-29）：`_on_outbound` durable 分支 = finisher 已持久化并盖 `nexus_replay_seq` → 通道逐字下发同帧（`_broadcast(stamp=False)`，进程内 buffer 不再盖 seq）；legacy 分支行为不变（buffer 盖 seq）。final 帧的 delivery worker 重投语义归 4.x（在线连接去重策略在该任务定案）；delta/tool 帧维持 EventBus 即时广播不受影响。协议契约测试全绿（`test_web_chat_protocol_contract.py` 在回归集内 308 passed）
 
 ## 4. delivery worker 接线（ADR-4）
 

@@ -583,19 +583,24 @@ class WebChatChannel:
 
     # ── EventBus / outbound 桥接 ────────────────────────────────
 
-    def _broadcast(self, frame: dict[str, Any]) -> None:
+    def _broadcast(self, frame: dict[str, Any], *, stamp: bool = True) -> None:
         """向所有连接广播一帧；慢消费者按协议语义分级降级。
 
         dev 模式只有一个 canonical session，无需按 session 过滤；所有事件
         handler 已按 channel 过滤。terminal/ack 帧先在 channel 级盖一次
         seq（保证多连接看到同一 seq 且 buffer 不重复入帧）。
 
+        ``stamp=False``（pg-durable-sot-cutover task 3.3）：durable 终态帧
+        已由收束方持久化并盖 durable seq（metadata ``nexus_replay_seq``），
+        直接下发同帧、跳过进程内 buffer（durable 重放归持久层，task 5.1）。
+
         §5.9.5 分级降级：出队深度达 soft 上限时丢弃非 durable 可丢帧并发
         ``replay_required``（客户端按 ``last_sequence`` 补拉）；达 hard 上限
         或累计 payload 超 1 MiB 时以 ``CLOSE_OVERLOAD``(1013) 明确断开。
         canonical final message 与 terminal state 不因队列满而删除。
         """
-        frame = self._replay.stamp(frame)
+        if stamp:
+            frame = self._replay.stamp(frame)
         for conn in list(self._connections.values()):
             if conn.closed:
                 continue
@@ -676,7 +681,9 @@ class WebChatChannel:
 
     async def _on_outbound(self, msg: OutboundMessage) -> None:
         turn_id = str(msg.control_turn_id or "")
-        if bool(msg.metadata.get("nexus_error")):
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        durable_seq = metadata.get("nexus_replay_seq")
+        if bool(metadata.get("nexus_error")):
             frame = turn_failed(turn_id=turn_id, error=str(msg.content))
         else:
             frame = turn_completed(
@@ -685,4 +692,10 @@ class WebChatChannel:
                 thinking=msg.thinking,
                 media=list(msg.media),
             )
-        self._broadcast(frame)
+        if isinstance(durable_seq, int):
+            # durable 终态：收束方（finisher）已持久化同帧并分配 seq，
+            # 逐字下发（进程内 buffer 不再盖 seq，task 3.3）。
+            frame["seq"] = durable_seq
+            self._broadcast(frame, stamp=False)
+        else:
+            self._broadcast(frame)

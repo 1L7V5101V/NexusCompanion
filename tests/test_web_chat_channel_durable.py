@@ -14,7 +14,7 @@ from uuid import uuid4
 import pytest
 
 from bus.event_bus import EventBus
-from bus.events import InboundMessage
+from bus.events import InboundMessage, OutboundMessage
 from bus.queue import MessageBus
 from infra.channels.contract import ChannelContext
 from infra.channels.web_chat_channel import (
@@ -226,3 +226,127 @@ async def test_no_gateway_keeps_legacy_behaviour():
     assert inbound.metadata["client_message_id"] == cmid
     accepted = [f for f in _queued(conn) if f["type"] == "message.accepted"]
     assert len(accepted) == 1  # legacy seq 由进程内 buffer 分配
+
+
+# ── task 3.3：durable 终态帧（finisher 盖 seq，通道逐字下发） ─────────
+
+
+@pytest.mark.asyncio
+async def test_outbound_durable_seq_skips_inproc_buffer():
+    """带 nexus_replay_seq 的出站：终态帧以 durable seq 下发，不经 _replay。"""
+    channel, _gateway = _make_channel([])
+    _start_channel(channel)
+    ws = _FakeWebSocket()
+    _register_authed(channel, ws)
+
+    await channel._on_outbound(
+        OutboundMessage(
+            channel="chat",
+            chat_id="dev",
+            content="回答",
+            metadata={"nexus_pg_turn_id": "t-1", "nexus_replay_seq": 9},
+            control_turn_id="t-1",
+        )
+    )
+
+    completed = [f for f in _queued(conn_of(channel)) if f["type"] == "turn.completed"]
+    assert len(completed) == 1
+    assert completed[0]["seq"] == 9  # durable seq 原样下发
+    assert completed[0]["turn_id"] == "t-1"
+
+
+@pytest.mark.asyncio
+async def test_outbound_error_with_durable_seq_emits_failed_frame():
+    """nexus_error + durable seq：turn.failed 帧带 durable seq。"""
+    channel, _gateway = _make_channel([])
+    _start_channel(channel)
+    ws = _FakeWebSocket()
+    _register_authed(channel, ws)
+
+    await channel._on_outbound(
+        OutboundMessage(
+            channel="chat",
+            chat_id="dev",
+            content="处理消息时出错，请稍后再试。",
+            metadata={
+                "nexus_pg_turn_id": "t-2",
+                "nexus_replay_seq": 4,
+                "nexus_error": True,
+            },
+            control_turn_id="t-2",
+        )
+    )
+
+    failed = [f for f in _queued(conn_of(channel)) if f["type"] == "turn.failed"]
+    assert len(failed) == 1
+    assert failed[0]["seq"] == 4
+    assert failed[0]["error"] == "处理消息时出错，请稍后再试。"
+
+
+@pytest.mark.asyncio
+async def test_outbound_legacy_still_stamped_by_buffer():
+    """无 durable seq（legacy/dev）：行为与 C4 一致（buffer 盖 seq）。"""
+    channel, _gateway = _make_channel([])
+    _start_channel(channel)
+    ws = _FakeWebSocket()
+    _register(channel, ws)
+
+    await channel._on_outbound(
+        OutboundMessage(channel="chat", chat_id="local", content="hi")
+    )
+
+    completed = [f for f in _queued(conn_of(channel)) if f["type"] == "turn.completed"]
+    assert len(completed) == 1
+    assert completed[0]["seq"] == 1  # legacy 进程内 buffer 分配
+
+
+def conn_of(channel: WebChatChannel) -> Any:
+    return next(iter(channel._connections.values()))
+
+
+# ── task 3.1：_control_outbound 富化（abort/错误路径 pg 元数据透传） ────
+
+
+@pytest.mark.asyncio
+async def test_control_outbound_enriches_pg_metadata_and_error_flag():
+    from agent.core.passive_turn import PassiveTurnPipeline, TurnState
+    from bus.events import InboundMessage as _Inbound
+
+    pipeline = PassiveTurnPipeline.__new__(PassiveTurnPipeline)
+
+    class _Port:
+        dispatched: list[Any] = []
+
+        async def dispatch(self, outbound):
+            self.dispatched.append(outbound)
+            return True
+
+    pipeline._outbound_port = _Port()
+    state = TurnState(
+        msg=_Inbound(
+            channel="chat",
+            sender="webchat",
+            chat_id="t",
+            content="hi",
+            metadata={
+                "nexus_pg_turn_id": "pg-turn-1",
+                "nexus_pg_inbox_id": "inbox-1",
+                "tenant_id": "dev",
+            },
+            tenant_id="dev",
+        ),
+        session_key="chat:t",
+        dispatch_outbound=True,
+        session=None,
+    )
+    outbound = await pipeline._control_outbound(
+        state,
+        OutboundMessage(channel="chat", chat_id="t", content="处理消息时出错，请稍后再试。"),
+        fail_reason="provider_error",
+    )
+
+    assert outbound.metadata["nexus_error"] is True
+    assert outbound.metadata["nexus_fail_reason"] == "provider_error"
+    assert outbound.metadata["nexus_pg_turn_id"] == "pg-turn-1"
+    assert outbound.control_turn_id == "pg-turn-1"
+    assert pipeline._outbound_port.dispatched  # type: ignore[attr-defined]

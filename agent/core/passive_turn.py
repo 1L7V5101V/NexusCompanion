@@ -525,6 +525,7 @@ class PassiveTurnPipeline:
                         chat_id=msg.chat_id,
                         content="处理消息时出错，请稍后再试。",
                     ),
+                    fail_reason="provider_error",
                 )
 
             try:
@@ -637,7 +638,30 @@ class PassiveTurnPipeline:
         self,
         state: TurnState,
         outbound: OutboundMessage,
+        *,
+        fail_reason: str = "turn_aborted",
     ) -> OutboundMessage:
+        """abort/错误路径出站：统一标记 ``nexus_error`` 并透传 pg durable 元数据。
+
+        这些路径不经过 AfterReasoning（session 与 canonical 均无 final 消息），
+        因此 durable 侧按失败终态收束（pg-durable-sot-cutover task 3.1：镜像
+        管线持久化事实——无 TurnCommitted 即失败，不产投递意图）；wire 侧由
+        channel 的 ``nexus_error`` 约定渲染 ``turn.failed`` 帧（C4 冻结协议）。
+        """
+        msg_metadata = state.msg.metadata if isinstance(state.msg.metadata, dict) else {}
+        pg_meta = {
+            k: v
+            for k, v in msg_metadata.items()
+            if isinstance(k, str) and k.startswith("nexus_pg_")
+        }
+        if pg_meta:
+            merged = dict(pg_meta)
+            merged["nexus_error"] = True
+            merged["nexus_fail_reason"] = fail_reason
+            outbound.metadata = {**merged, **(outbound.metadata or {})}
+            turn_id = str(pg_meta.get("nexus_pg_turn_id") or "")
+            if turn_id:
+                outbound.control_turn_id = turn_id
         if state.dispatch_outbound:
             _ = await self._outbound_port.dispatch(
                 OutboundDispatch(

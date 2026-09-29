@@ -248,6 +248,103 @@ class WebchatDurableGateway:
             )
 
 
+class WebchatDurableTurnFinisher:
+    """outbound 流终态收束器（pg-durable-sot-cutover task 3.1/3.2/3.3）。
+
+    订阅 bus outbound（**先于通道订阅**，见 app 装配）：对携带 pg durable 元
+    数据的 WebChat 出站做控制面终态写入，并把 durable 重放 seq 盖回出站
+    metadata（``nexus_replay_seq``），通道随后以该 seq 发终态帧（wire 帧与
+    durable 帧逐字一致）。
+
+    镜像管线持久化事实（design ADR-2/task 3.1）：
+    - 正常回复（AfterReasoning 已持久化 session）→ T2 ``complete_turn_with_
+      delivery``：final canonical message + turn completed + pending intent
+      + ``turn.completed`` 重放帧，同事务；
+    - ``nexus_error``（abort/provider_error/loop 兜底：session 与 canonical 均
+      无 final）→ ``transition_turn`` 失败终态 + ``turn.failed`` 重放帧，
+      **不产投递意图**；
+    - 终态后 ``mark_inbox_processed``（accepted→processed 收束，task 1.3）。
+    """
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker,
+        *,
+        channel_name: str = "chat",
+    ) -> None:
+        self._turns = TurnControlRepository(session_factory)
+        self._ingress = IngressRepository(session_factory)
+        self._channel_name = channel_name
+
+    def subscribe(self, bus: MessageBus) -> None:
+        bus.subscribe_outbound(self._channel_name, self._on_outbound)
+
+    async def _on_outbound(self, msg: Any) -> None:
+        try:
+            await self._finish(msg)
+        except Exception:
+            logger.exception(
+                "webchat durable 终态收束异常 turn=%s",
+                (msg.metadata or {}).get("nexus_pg_turn_id")
+                if isinstance(msg.metadata, dict)
+                else "?",
+            )
+
+    async def _finish(self, msg: Any) -> None:
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        turn_id = str(metadata.get("nexus_pg_turn_id") or "")
+        if not turn_id or msg.channel != self._channel_name:
+            return
+        tenant_id = str(metadata.get("tenant_id") or "").strip()
+        inbox_id = str(metadata.get("nexus_pg_inbox_id") or "")
+        is_error = bool(metadata.get("nexus_error"))
+        fail_reason = str(metadata.get("nexus_fail_reason") or "turn_failed")
+        if is_error:
+            # 失败终态：无 final message、无投递意图；原因与 wire 文案可查。
+            row = await self._turns.transition_turn(
+                tenant_id,
+                turn_id,
+                expected_status="queued",
+                new_status="failed",
+                error={"code": fail_reason, "detail": str(msg.content)[:500]},
+                replay_frame=turn_failed(
+                    turn_id=turn_id, error=str(msg.content)[:500]
+                ),
+            )
+            replay_seq = row.get("replay_seq")
+        else:
+            result = await self._turns.complete_turn_with_delivery(
+                tenant_id,
+                str(metadata.get("nexus_pg_conversation_id") or ""),
+                turn_id,
+                expected_status="queued",
+                response_content=str(msg.content),
+                delivery_channel=self._channel_name,
+                delivery_target=tenant_id,
+                delivery_payload={
+                    "turn_id": turn_id,
+                    "media": [str(m) for m in (msg.media or [])],
+                },
+                message_metadata={
+                    "thinking": msg.thinking,
+                    "client_message_id": metadata.get("client_message_id"),
+                },
+                replay_frame={
+                    "type": "turn.completed",
+                    "seq": None,
+                    "turn_id": turn_id,
+                    "content": str(msg.content),
+                    "thinking": msg.thinking,
+                    "media": [str(m) for m in (msg.media or [])],
+                },
+            )
+            replay_seq = result.replay_seq
+        if inbox_id:
+            await self._ingress.mark_inbox_processed(tenant_id, inbox_id)
+        if replay_seq is not None:
+            metadata["nexus_replay_seq"] = int(replay_seq)
+
+
 @dataclass
 class WebchatDurableRuntime:
     """durable 网关 + 独立 async engine（停机 cleanup 释放连接池）。"""
@@ -255,6 +352,7 @@ class WebchatDurableRuntime:
     engine: AsyncEngine
     session_factory: async_sessionmaker
     gateway: WebchatDurableGateway
+    finisher: WebchatDurableTurnFinisher
 
     async def aclose(self) -> None:
         await self.engine.dispose()
@@ -284,10 +382,16 @@ def build_webchat_durable_runtime(
         bus,
         channel_name=channel_name,
     )
+    finisher = WebchatDurableTurnFinisher(
+        session_factory, channel_name=channel_name
+    )
     logger.info(
         "webchat durable 接受网关已装配（channel=%s, PG durable source of truth）",
         channel_name,
     )
     return WebchatDurableRuntime(
-        engine=engine, session_factory=session_factory, gateway=gateway
+        engine=engine,
+        session_factory=session_factory,
+        gateway=gateway,
+        finisher=finisher,
     )

@@ -1,0 +1,22 @@
+# task 3.1/3.2/3.3 turn 生命周期与完成事务接线验证
+# 日期：2026-09-29；环境：便携 PG 5432（PG 17.10 + pgvector）
+
+== PG 集成（finisher 端到端：T2/inbox 收束/帧/意图；失败路径无意图）==
+$ NEXUS_TEST_PG_URL=... pytest -q -W error tests/control_plane/test_webchat_replay_frames.py
+7 passed in 13.22s
+
+== 单测（通道 durable 终态帧 + _control_outbound 富化）==
+$ pytest -q -W error tests/test_web_chat_channel_durable.py
+9 passed in 0.95s
+
+== 管线相关回归（passive/loop/turn/outbound/chat 全组）==
+$ pytest -q -W error tests/ -k "passive or pipeline or loop or turn or outbound or chat"
+308 passed, 22 skipped (PG 组另跑), 1424 deselected in 61.00s
+
+== pyright --level error（触碰文件）==
+0 errors
+
+== 关键实现 ==
+- 成功路径：inbound metadata 整体透传 outbound（after_reasoning outbound_metadata={**msg.metadata}，零改动）→ finisher 订阅 outbound（先于通道）→ T2 complete_turn_with_delivery（final+completed+intent 同事务）+ turn.completed 重放帧 + mark_inbox_processed → nexus_replay_seq 盖回 metadata → 通道以 durable seq 发终态帧（stamp=False 跳过进程内 buffer）
+- 失败路径（abort/provider_error/loop 兜底）：session 与 canonical 均无 final（镜像管线持久化事实）→ _control_outbound/loop catch-all 标 nexus_error + pg 元数据透传 → finisher transition_turn 失败终态 + turn.failed 帧，不产投递意图；wire 侧按 C4 冻结协议渲染 turn.failed 帧（行为变化：错误回复从『completed 帧带错误文本』改为协议正确的 turn.failed 帧，fixture 示例文案即此场景）
+- spec 场景覆盖：执行完成事务原子收束/失败终态无投递意图（test_finisher_* 两用例）；E10/投影归 6.x 与既有管线（pipeline 即投影，T2 与投影顺序差由启动对账兜底，ADR-5）

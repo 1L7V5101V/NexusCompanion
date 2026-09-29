@@ -439,11 +439,25 @@ class AgentLoop:
                 logger.info(f"Turn cancelled for {key}")
             except Exception as e:
                 logger.error(f"处理消息出错: {e}", exc_info=True)
+                error_metadata: dict[str, Any] = {"nexus_error": True}
+                if isinstance(item, InboundMessage):
+                    # durable pg 身份透传（pg-durable-sot-cutover task 3.1）：
+                    # 让终态收束方能定位控制面 turn 并落 turn.failed 帧。
+                    for key, value in (item.metadata or {}).items():
+                        if isinstance(key, str) and key.startswith("nexus_pg_"):
+                            error_metadata[key] = value
+                    pg_turn_id = str(error_metadata.get("nexus_pg_turn_id") or "")
+                    if pg_turn_id:
+                        error_metadata["nexus_fail_reason"] = "loop_error"
                 await self.bus.publish_outbound(
                     OutboundMessage(
                         channel=item.channel,
                         chat_id=item.chat_id,
                         content=f"出错：{e}",
+                        metadata=error_metadata,
+                        control_turn_id=str(
+                            error_metadata.get("nexus_pg_turn_id") or ""
+                        ),
                     )
                 )
             finally:

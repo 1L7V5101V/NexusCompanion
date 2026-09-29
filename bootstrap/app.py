@@ -441,6 +441,11 @@ class AppRuntime:
                 self.webchat_durable = build_webchat_durable_runtime(
                     self.config, bus=self.bus, channel_name=chat_config.channel_name
                 )
+                if self.webchat_durable is not None:
+                    # 终态收束先于通道订阅（dispatch 按订阅顺序 await）：finisher
+                    # 先落 durable 终态并把 seq 盖回 metadata，通道随后以同 seq
+                    # 发终态帧（task 3.3）。
+                    self.webchat_durable.finisher.subscribe(self.bus)
                 self.web_chat_channel = WebChatChannel(
                     channel_name=chat_config.channel_name,
                     identity=WebChatIdentity(),
