@@ -969,6 +969,26 @@ class WebchatReplayRepository:
                 return 0
             return int(counter.next_seq) - 1
 
+    async def oldest_seq(
+        self, tenant_id: str, conversation_id: uuid.UUID | str
+    ) -> int | None:
+        """会话内仍保留的最旧帧 seq（retention 窗口下沿）；无帧返回 None。"""
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return None
+        async with self._sf() as sess:
+            stmt = (
+                select(WebchatReplayFrameModel.seq)
+                .where(
+                    WebchatReplayFrameModel.tenant_id == tenant_id,
+                    WebchatReplayFrameModel.conversation_id == conv_id,
+                )
+                .order_by(WebchatReplayFrameModel.seq.asc())
+                .limit(1)
+            )
+            row = (await sess.execute(stmt)).scalar_one_or_none()
+            return int(row) if row is not None else None
+
     async def frames_after(
         self,
         tenant_id: str,

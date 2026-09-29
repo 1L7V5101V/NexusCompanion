@@ -33,6 +33,7 @@ from bootstrap.work_queue import WorkQueueRuntime, build_work_queue_runtime
 from bootstrap.webchat_durable import (
     WebchatDurableRuntime,
     build_webchat_durable_runtime,
+    reconcile_webchat_on_startup,
 )
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
@@ -465,6 +466,14 @@ class AppRuntime:
                 if self.webchat_durable is not None:
                     # 二阶段装配 delivery worker（需通道连接表；task 4.1）。
                     self.webchat_durable.start_delivery(self.web_chat_channel)
+                    # 启动对账（task 5.3）：best-effort，失败不阻断启动。
+                    try:
+                        await reconcile_webchat_on_startup(
+                            self.webchat_durable,
+                            session_manager=self.session_manager,
+                        )
+                    except Exception:
+                        logger.exception("webchat 启动对账异常（跳过，下轮重启重试）")
             self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -550,6 +559,7 @@ class AppRuntime:
                     port=self.config.channels.chat.port,
                     auth_runtime=auth_runtime,
                     allow_public_bind=self.config.channels.chat.allow_public_bind,
+                    durable_runtime=self.webchat_durable,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

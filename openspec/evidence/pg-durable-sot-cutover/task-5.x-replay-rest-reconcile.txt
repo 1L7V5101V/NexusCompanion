@@ -1,0 +1,22 @@
+# task 5.1/5.2/5.3 durable 重放/REST 重建/启动对账验证
+# 日期：2026-09-29；环境：便携 PG 5432（C5 scratch，真实 provisioning + AuthRuntime）
+
+== PG 集成（tests/auth_provisioning/test_webchat_rebuild_reconcile.py）==
+3 passed in 15.22s
+
+== 回归（chat_api/通道/协议/身份/WS 门禁）==
+59 passed in 2.61s
+
+== pyright --level error ==
+0 errors
+
+== 覆盖的 spec 场景 ==
+- 重启后按游标补拉（webchat-durable-storage）：gateway.replay_after 从持久层按序服务，hello 水位=持久层 current_seq
+- 游标不可用指引 REST 重建（webchat-protocol-dev-loop delta）：retention 清理后 oldest=None → replay_required；游标超前水位 → replay_required（test_gateway_hello_seq_and_replay_window）
+- 重建结果与实时会话一致：REST durable 分支以 canonical 流为权威（seq/role/content/thinking/created_at）+ tenant 由已认证 session 派生（§5.9.1），跨账号请求他人 chat:{tenant} → 404（test_rest_rebuild_serves_canonical_with_ownership）
+- 中断 turn 对账为失败 / 派生视图分歧被修复（启动对账两场景）：list_non_terminal_turns → failed(restart_reconciled, 同事务 turn.failed 帧) + inbox 收束 + 无 intent + session view 按 canonical 全量重建（delete cascade + 重放 user/assistant），二次运行幂等（test_reconcile_fails_pending_turns_and_rebuilds_view）
+
+== 关键实现 ==
+- 重放窗口语义：after_seq>latest→None；after_seq>=latest→[]；oldest=None（retention 清空）→None；after_seq<oldest-1→None；其余 frames_after 升序
+- REST durable 分支挂在 /api/chat/sessions/{key}/messages（auth 时 chat:* 键），legacy（dev/无 PG）分支行为不变——附带收口：durable 键的 tenant 归属由服务端 session 派生而非 URL（修复 dashboard 端点对 chat:* 键的越权读取面；非 chat:* 的 dashboard 会话聚合行为不变）
+- 启动对账为 best-effort（异常记录日志不阻断启动，下轮重启重试）；对账摘要结构化返回 + warning 日志（管理员可见）

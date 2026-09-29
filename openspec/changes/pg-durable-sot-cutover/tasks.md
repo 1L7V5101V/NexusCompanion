@@ -38,9 +38,12 @@
 
 ## 5. durable 重放、REST 重建与启动对账（ADR-3）
 
-- [ ] 5.1 重连补拉切持久层：`replay{after_seq}` 从重放帧表按序服务；窗口外/不可用回 `replay_required`；delta/tool 帧不入表。验证：协议契约测试补「重启后补拉」「游标超窗」场景（对应 delta 两 Scenario）
-- [ ] 5.2 REST 重建读 canonical：`/api/chat/sessions/{key}/messages` 与重建路径以 canonical 流为权威（会话映射：canonical conversation ↔ session_key）；序号连续无重复。验证：PG 集成——重建结果与实时推送内容一致（对应 spec「重建结果与实时会话一致」场景）
-- [ ] 5.3 启动对账模块：非终态 turn 收束 failed（原因 `restart_reconciled`、不产 intent）；派生视图与 canonical 分歧以 canonical 修复；对账结果出日志/指标。验证：PG 集成——执行中重启（kill 模拟）→ 启动后 turn=failed、无 intent、重建不出现半截 final（对应 spec 启动对账两场景）
+- [x] 5.1 重连补拉切持久层：`replay{after_seq}` 从重放帧表按序服务；窗口外/不可用回 `replay_required`；delta/tool 帧不入表。验证：协议契约测试补「重启后补拉」「游标超窗」场景（对应 delta 两 Scenario）
+  → 完成（2026-09-29）：gateway 增 `hello_seq`/`replay_after`（窗口语义：游标超前/低于保留下沿/retention 清空 → replay_required）+ 协议接口扩展 + 通道 hello/replay durable 分支（dev 回退走 legacy buffer 不变）；delta/tool 帧由 repo 白名单 + CHECK 双重拒绝（task 2.1 已落）。PG 测试覆盖「重启后补拉」「游标超窗」两场景（evidence `task-5.x-replay-rest-reconcile.txt`）
+- [x] 5.2 REST 重建读 canonical：`/api/chat/sessions/{key}/messages` 与重建路径以 canonical 流为权威（会话映射：canonical conversation ↔ session_key）；序号连续无重复。验证：PG 集成——重建结果与实时推送内容一致（对应 spec「重建结果与实时会话一致」场景）
+  → 完成（2026-09-29）：chat_api 注入 `durable_runtime`，durable 分支（auth + `chat:*` 键）以 canonical 流为权威产出重建条目（seq/role/content/thinking/created_at，分页/排序对齐既有契约）；**tenant 由已认证 session 派生、URL key 只做归属匹配**——附带收口 durable 键的越权读取面（他人 `chat:{tenant}` → 404；非 chat:* 的 dashboard 会话聚合行为不变）。真实 AuthRuntime + provisioning 的 PG e2e 锁定（含跨账号 404）
+- [x] 5.3 启动对账模块：非终态 turn 收束 failed（原因 `restart_reconciled`、不产 intent）；派生视图与 canonical 分歧以 canonical 修复；对账结果出日志/指标。验证：PG 集成——执行中重启（kill 模拟）→ 启动后 turn=failed、无 intent、重建不出现半截 final（对应 spec 启动对账两场景）
+  → 完成（2026-09-29）：`reconcile_webchat_on_startup`（app 启动装配，best-effort 不阻断）：`list_non_terminal_turns` → failed（同事务 turn.failed 帧 + inbox 收束）+ 受影响会话 session view 按 canonical 全量重建（delete cascade + user/assistant 重放，双向分歧一并修复，§5.9.12）；摘要 warning 日志。二次运行幂等、失败终态零 intent 已由 PG 测试锁定；指标出线归 6.x E10 记录点
 
 ## 6. E10 记录点（ADR-7）
 

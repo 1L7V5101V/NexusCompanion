@@ -83,6 +83,7 @@ class WebchatDurableGateway:
     ) -> None:
         self._ingress = IngressRepository(session_factory)
         self._turns = TurnControlRepository(session_factory)
+        self._replay = WebchatReplayRepository(session_factory)
         self._bus = bus
         self._channel_name = channel_name
         self._enqueue_wait = enqueue_wait_seconds
@@ -95,6 +96,35 @@ class WebchatDurableGateway:
             and _is_uuid(str(getattr(identity, "account_id", "") or ""))
             and bool(str(getattr(identity, "tenant_id", "") or "").strip())
         )
+
+    async def hello_seq(self, identity: Any) -> int:
+        """durable 重放水位（hello ``latest_seq``；task 5.1）。"""
+        return await self._replay.current_seq(
+            str(identity.tenant_id), str(identity.conversation_id)
+        )
+
+    async def replay_after(
+        self, identity: Any, after_seq: int
+    ) -> list[dict[str, Any]] | None:
+        """durable 补拉（task 5.1）：``seq > after_seq`` 的帧按序返回。
+
+        游标超出持久窗口（早于最旧保留帧或晚于当前水位）→ 返回 None，
+        调用方按协议回 ``replay_required`` 由客户端经 REST 重建。
+        """
+        tenant_id = str(identity.tenant_id)
+        conversation_id = str(identity.conversation_id)
+        latest = await self._replay.current_seq(tenant_id, conversation_id)
+        if after_seq > latest:
+            return None
+        if after_seq >= latest:
+            return []
+        oldest = await self._replay.oldest_seq(tenant_id, conversation_id)
+        if oldest is None:
+            # 水位 > 游标但窗口内无帧（retention 已清理）→ 无法保证连续补拉。
+            return None
+        if after_seq < oldest - 1:
+            return None
+        return await self._replay.frames_after(tenant_id, conversation_id, after_seq)
 
     async def accept_send(
         self,
@@ -436,6 +466,97 @@ class WebchatDeliveryLoop:
                 await self._worker.process_once()
             except Exception:
                 logger.exception("webchat delivery 轮询异常（下一周期重试）")
+
+
+async def reconcile_webchat_on_startup(
+    runtime: "WebchatDurableRuntime",
+    *,
+    session_manager: Any,
+) -> dict[str, Any]:
+    """启动对账（pg-durable-sot-cutover task 5.3；spec「启动对账与恢复」）。
+
+    - 非终态 turn（queued/in_progress）→ 收束为 ``failed``（原因
+      ``restart_reconciled``），不重新生成 final、不创建投递意图；
+      同事务写 ``turn.failed`` 重放帧（重连补拉可见失败终态）；
+    - 关联 inbox 收束（accepted→processed）；
+    - 受影响会话的派生视图（session view）按 canonical 流全量重建
+      （canonical 为唯一权威，双向分歧一并修复，§5.9.12 可重建派生物）；
+    - 对账结果结构化返回并记日志（管理员可见，不静默丢弃）。
+    """
+    from bootstrap.db.repository.canonical_repo import (
+        CanonicalMessageRepository,
+    )
+
+    turns_repo = TurnControlRepository(runtime.session_factory)
+    ingress_repo = IngressRepository(runtime.session_factory)
+    messages_repo = CanonicalMessageRepository(runtime.session_factory)
+
+    pending = await turns_repo.list_non_terminal_turns()
+    affected: dict[str, str] = {}  # conversation_id -> tenant_id
+    reconciled = 0
+    for turn in pending:
+        tenant_id = str(turn["tenant_id"])
+        turn_id = str(turn["id"])
+        conversation_id = str(turn["conversation_id"])
+        try:
+            await turns_repo.transition_turn(
+                tenant_id,
+                turn_id,
+                expected_status=str(turn["status"]),
+                new_status="failed",
+                error={
+                    "code": "restart_reconciled",
+                    "detail": "进程重启中断的执行收束为失败（不重新生成）",
+                },
+                replay_frame=turn_failed(
+                    turn_id=turn_id, error="restart_reconciled"
+                ),
+            )
+            reconciled += 1
+            affected[conversation_id] = tenant_id
+            inbox_id = turn.get("inbox_record_id")
+            if inbox_id:
+                await ingress_repo.mark_inbox_processed(tenant_id, inbox_id)
+        except Exception:
+            logger.exception(
+                "启动对账收束 turn 失败（下轮重启重试）turn=%s", turn_id
+            )
+
+    rebuilt: list[str] = []
+    for conversation_id, tenant_id in affected.items():
+        session_key = f"chat:{tenant_id}"
+        try:
+            messages = await messages_repo.fetch_messages(
+                tenant_id, conversation_id
+            )
+            storage = session_manager._view(tenant_id)
+            _ = storage.delete_session(session_key, cascade=True)
+            session = session_manager.get_or_create(tenant_id, session_key)
+            replayed = [
+                {
+                    "role": str(m["role"]),
+                    "content": str(m["content"] or ""),
+                    "timestamp": str(m.get("created_at") or ""),
+                }
+                for m in messages
+                if str(m["role"]) in ("user", "assistant")
+            ]
+            if replayed:
+                await session_manager.append_messages(session, replayed)
+            rebuilt.append(session_key)
+        except Exception:
+            logger.exception(
+                "启动对账重建派生视图失败 conversation=%s", conversation_id
+            )
+
+    summary = {
+        "pending_turns": len(pending),
+        "reconciled_turns": reconciled,
+        "rebuilt_sessions": rebuilt,
+    }
+    if reconciled or rebuilt:
+        logger.warning("webchat 启动对账完成: %s", summary)
+    return summary
 
 
 @dataclass

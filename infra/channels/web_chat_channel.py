@@ -114,6 +114,16 @@ class DurableSendGateway(Protocol):
         """该服务端身份是否可走 durable 接受路径（dev 回退身份返回 False）。"""
         ...
 
+    async def hello_seq(self, identity: WebChatIdentity) -> int:
+        """durable 重放水位（hello ``latest_seq``；task 5.1）。"""
+        ...
+
+    async def replay_after(
+        self, identity: WebChatIdentity, after_seq: int
+    ) -> list[dict[str, Any]] | None:
+        """durable 补拉：``seq > after_seq`` 帧按序；None = 窗口外（replay_required）。"""
+        ...
+
     async def accept_send(
         self,
         *,
@@ -357,13 +367,26 @@ class WebChatChannel:
             max_payload_bytes=self._ws_max_payload,
         )
         self._connections[websocket] = conn
+        # hello 游标：durable 连接取持久层水位（重启存续，task 5.1）；
+        # dev 回退取进程内 buffer（legacy 行为不变）。
+        if (
+            self._durable is not None
+            and self._durable.eligible(identity)
+        ):
+            try:
+                latest_seq = await self._durable.hello_seq(identity)
+            except Exception:
+                logger.exception("webchat durable hello 水位查询失败，按 0 处理")
+                latest_seq = 0
+        else:
+            latest_seq = self._replay.next_seq - 1
         hello_frame = hello(
             connection_id=connection_id,
             account_id=identity.account_id,
             tenant_id=identity.tenant_id,
             conversation_id=identity.conversation_id,
             session_key=identity.session_key,
-            latest_seq=self._replay.next_seq - 1,
+            latest_seq=latest_seq,
         )
         conn.sender_task = asyncio.create_task(self._sender_loop(conn))
         conn.try_enqueue(hello_frame)
@@ -452,6 +475,10 @@ class WebChatChannel:
                     )
                 )
                 return
+            identity = conn.identity or self._identity
+            if self._durable is not None and self._durable.eligible(identity):
+                await self._handle_replay_durable(conn, identity, after_seq)
+                return
             self._handle_replay(conn, after_seq)
             return
         if frame_type == "send":
@@ -471,6 +498,22 @@ class WebChatChannel:
             return
         for frame in frames:
             _ = conn.try_enqueue(frame)
+
+    async def _handle_replay_durable(
+        self, conn: _Connection, identity: WebChatIdentity, after_seq: int
+    ) -> None:
+        """durable 补拉（task 5.1）：持久层按游标服务，窗口外回 replay_required。"""
+        assert self._durable is not None  # 调用方已判空
+        try:
+            frames = await self._durable.replay_after(identity, after_seq)
+        except Exception:
+            logger.exception("webchat durable 补拉失败 conn=%s", conn.connection_id)
+            frames = None
+        if frames is None:
+            conn.try_enqueue(replay_required(after_seq=after_seq))
+            return
+        for frame in frames:
+            _ = conn.try_enqueue(dict(frame))
 
     async def _handle_send(self, conn: _Connection, frame: dict[str, Any]) -> None:
         ctx = self._require_ctx()

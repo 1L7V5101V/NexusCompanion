@@ -89,10 +89,12 @@ def create_chat_app(
     auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
     static_root: Path | None = None,
+    durable_runtime: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
     app.state.channel = channel
+    app.state.durable_runtime = durable_runtime
     # C4 dev-only 门禁第 3 层（design ADR-3）：默认只接受回环客户端；反向代理后
     # 也不能用公网来源冒充本机。显式 allow_public_bind 才关闭本层。
     # 与 C5 auth 并存（两者都 fail-closed，取交集）：dev 门禁约束来源网络，
@@ -106,14 +108,15 @@ def create_chat_app(
         app.include_router(build_auth_api(auth_runtime))
         app.state.auth_runtime = auth_runtime
 
-    async def _require_user_session(request: Request) -> None:
+    async def _require_user_session(request: Request) -> dict[str, Any]:
         """用户面 HTTP 端点的凭据门禁（auth 启用时生效）。
 
         与 WS 握手使用同一套语义（Cookie + session 有效性 + 403 主体禁用），
         使「HTTP 与 WebSocket 统一认证」成立；未启用认证时不引入门禁（dev 回退）。
+        返回 session dict（durable 重建的属主派生用）。
         """
         if auth_runtime is None:
-            return
+            return {}
         from bootstrap.auth.service import cookie_name
         from bootstrap.auth.ws_guard import ws_session_cookie
         from bootstrap.db.repository.auth_repo import (
@@ -128,7 +131,7 @@ def create_chat_app(
         if not raw:
             raise HTTPException(401, detail="authentication required")
         try:
-            await auth_runtime.auth.validate_user_session(raw)
+            return await auth_runtime.auth.validate_user_session(raw)
         except SessionInvalidError:
             raise HTTPException(401, detail="authentication required") from None
         except SessionForbiddenError:
@@ -176,13 +179,65 @@ def create_chat_app(
         "/api/chat/sessions/{session_key:path}/messages",
         dependencies=[Depends(_require_user_session)],
     )
-    def list_messages(
-        session_key: str,
+    async def list_messages(
+        session: dict[str, Any] = Depends(_require_user_session),
+        session_key: str = "",
         page: int = Query(1),
         page_size: int = Query(50),
         sort_by: str = Query("seq"),
         sort_order: str = Query("asc"),
     ) -> dict[str, Any]:
+        # durable 重建分支（pg-durable-sot-cutover task 5.2）：canonical 流为
+        # 权威；tenant 由已认证 session 派生（§5.9.1），URL 的 session_key 只做
+        # 归属匹配，不参与授权。
+        if (
+            durable_runtime is not None
+            and auth_runtime is not None
+            and session_key.startswith("chat:")
+        ):
+            from bootstrap.db.repository.canonical_repo import (
+                CanonicalIdentityRepository,
+                CanonicalMessageRepository,
+            )
+
+            account_id = session.get("account_id")
+            conversations = (
+                await CanonicalIdentityRepository(durable_runtime.session_factory)
+                .list_conversations_by_account(account_id)
+                if account_id is not None
+                else []
+            )
+            requested_tenant = session_key[len("chat:") :]
+            owned = [
+                conv
+                for conv in conversations
+                if str(conv["tenant_id"]) == requested_tenant
+            ]
+            if not owned:
+                raise HTTPException(404, detail="session not found")
+            conv = owned[0]
+            tenant_id = str(conv["tenant_id"])
+            messages = await CanonicalMessageRepository(
+                durable_runtime.session_factory
+            ).fetch_messages(tenant_id, conv["id"])
+            items = [
+                {
+                    "seq": int(m["sequence"]),
+                    "role": str(m["role"]),
+                    "content": str(m["content"] or ""),
+                    "thinking": (m.get("metadata") or {}).get("thinking"),
+                    "created_at": m.get("created_at") or None,
+                }
+                for m in messages
+                if str(m["role"]) in ("user", "assistant")
+            ]
+            reverse = str(sort_order).lower() == "desc"
+            items.sort(key=lambda item: item["seq"], reverse=reverse)
+            safe_page = max(1, int(page))
+            safe_size = max(1, min(int(page_size), 200))
+            start = (safe_page - 1) * safe_size
+            window = items[start : start + safe_size]
+            return {"items": window, "total": len(items)}
         ctx = channel._require_ctx()
         items, total = ctx.session_manager._store.list_messages_for_dashboard(
             session_key=session_key,
@@ -248,6 +303,7 @@ def build_chat_server(
     port: int = 6322,
     auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
+    durable_runtime: Any = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -271,6 +327,7 @@ def build_chat_server(
             channel=channel,
             auth_runtime=auth_runtime,
             allow_public_bind=allow_public_bind,
+            durable_runtime=durable_runtime,
         ),
         host=host,
         port=port,
