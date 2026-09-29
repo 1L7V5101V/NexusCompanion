@@ -15,8 +15,10 @@
 
 ## 2. durable 接受接线（ADR-1）
 
-- [ ] 2.1 `_handle_send` 接 `accept_inbound`：overload 检查后同步 T1，提交后才发 `message.accepted`（durable seq）；事务失败回结构化错误帧且不缓存幂等。验证：新增单测——提交失败零写入可重发；accepted 帧.seq = 持久层 seq
-- [ ] 2.2 幂等权威切换：重复 `client_message_id` 以数据库重复返回重放原 ack（同 seq）；`_accepted_frames`/`_deduper` 降级为缓存（命中路径保留、未命中回落 PG 查询）。验证：单测 + PG 集成——同 id 重发唯一消息行；重启进程后重发仍重放原 seq（对应 delta「重启后重复提交重放原 ack」场景）
+- [x] 2.1 `_handle_send` 接 `accept_inbound`：overload 检查后同步 T1，提交后才发 `message.accepted`（durable seq）；事务失败回结构化错误帧且不缓存幂等。验证：新增单测——提交失败零写入可重发；accepted 帧.seq = 持久层 seq
+  → 完成（2026-09-29）：repo 扩展（`accept_inbound(replay_frame=)` 同事务写 accepted 帧 + `_record_replay_frame` 计数器取号；`transition_turn`/`complete_turn_with_delivery` 同参接 turn.failed/completed 帧）+ `bootstrap/webchat_durable.py` 网关（预检→T1→`publish_inbound_wait` 界内入队，超时 turn.failed durable 收束）+ 通道 durable 分支（`DurableSendGateway` Protocol 注入，app.py 装配 + 停机释放）。ADR-1 实现细化已回填 design：T1 失败错误帧复用冻结 `overload` 码（零协议改动）。测试 5+5 全绿 + 回归 98 passed（evidence `task-2.x-durable-accept.txt`）
+- [x] 2.2 幂等权威切换：重复 `client_message_id` 以数据库重复返回重放原 ack（同 seq）；`_accepted_frames`/`_deduper` 降级为缓存（命中路径保留、未命中回落 PG 查询）。验证：单测 + PG 集成——同 id 重发唯一消息行；重启进程后重发仍重放原 seq（对应 delta「重启后重复提交重放原 ack」场景）
+  → 完成（2026-09-29）：重复注入回查**原 accepted 帧**逐字重放（帧表 `message_id` 软引用列确定性回查，同 wire seq；迁移 `d8e4f2b6a9c1` 就地修订并复跑三段演练通过）；进程内缓存仅 L1 加速（命中重放/未命中回落网关 PG 查询）。PG 集成 `test_duplicate_returns_original_frame_with_same_seq` + 通道清缓存重放测试锁定「重启后重复提交重放原 ack」场景（evidence 同上）
 
 ## 3. 执行与完成事务接线（ADR-2）
 

@@ -45,6 +45,8 @@ from bootstrap.db.models.control_plane import (
     ToolAuditEventModel,
     ToolCallModel,
     TurnModel,
+    WebchatReplayCounterModel,
+    WebchatReplayFrameModel,
     WorkAttemptModel,
 )
 
@@ -68,6 +70,7 @@ __all__ = [
     "TransitionError",
     "TurnControlRepository",
     "TurnNotFoundError",
+    "WebchatReplayRepository",
     "WorkItemNotFoundError",
     "WorkItemRepository",
 ]
@@ -217,7 +220,12 @@ class RedriveNotAllowedError(ControlPlaneError):
 
 @dataclass(frozen=True)
 class AcceptInboundResult:
-    """T1 结果：duplicate=True 时返回既有身份（幂等成功路径，零新写入）。"""
+    """T1 结果：duplicate=True 时返回既有身份（幂等成功路径，零新写入）。
+
+    ``replay_seq``/``replay_frame`` 为 durable 重放帧产物（pg-durable-sot-cutover
+    ADR-3）：重复路径返回**原 accepted 帧**（含原 wire seq，从重放帧表回查），
+    调用方逐字重放，保证重启前后同 id 重放同 seq。
+    """
 
     duplicate: bool
     inbox_id: str
@@ -225,6 +233,8 @@ class AcceptInboundResult:
     sequence: int
     turn_id: str | None
     work_item_ids: tuple[str, ...]
+    replay_seq: int | None = None
+    replay_frame: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -234,6 +244,8 @@ class CompletionResult:
     message: dict[str, Any]
     turn: dict[str, Any]
     intent: dict[str, Any]
+    replay_seq: int | None = None
+    replay_frame: dict[str, Any] | None = None
 
 
 def _new_uuid() -> uuid.UUID:
@@ -299,6 +311,7 @@ class IngressRepository:
         inbox_id: uuid.UUID | str | None = None,
         message_id: uuid.UUID | str | None = None,
         dedup_key_id: uuid.UUID | str | None = None,
+        replay_frame: dict[str, Any] | None = None,
     ) -> AcceptInboundResult:
         """原子接受一条入站消息；重复注入返回既有身份（ADR-3），零新写入。
 
@@ -308,6 +321,10 @@ class IngressRepository:
         ``{"work_kind": str, "idempotency_key": str | None, "payload": dict | None,
         "work_item_id": uuid | str | None}``。
         会话不存在 / tenant 不符时整体回滚（零写入）。
+
+        `replay_frame`（pg-durable-sot-cutover）：可重放 ack 帧模板（不含 seq），
+        与本事务同提交持久化到重放帧表并分配 wire seq；重复路径回查**原帧**
+        （原 seq）供逐字重放。delta/tool 帧不得传入。
         """
         conv_id = _require_uuid(conversation_id, "conversation_id")
         has_source_key = source_message_id is not None
@@ -445,6 +462,21 @@ class IngressRepository:
                     await _insert_work_item(sess, tenant_id, conv_id, spec)
                 )
 
+            # 6. durable 重放帧（与 T1 同事务；delta/tool 帧不可传入）。
+            replay_seq: int | None = None
+            stamped_frame: dict[str, Any] | None = None
+            if replay_frame is not None:
+                replay_seq = await _record_replay_frame(
+                    sess,
+                    tenant_id,
+                    conv_id,
+                    frame_type="message.accepted",
+                    frame=replay_frame,
+                    message_id=msg_id,
+                    turn_id=uuid.UUID(turn_id_str) if turn_id_str else None,
+                )
+                stamped_frame = {**replay_frame, "seq": replay_seq}
+
             return AcceptInboundResult(
                 duplicate=False,
                 inbox_id=str(inbox_row.id),
@@ -452,6 +484,8 @@ class IngressRepository:
                 sequence=allocated,
                 turn_id=turn_id_str,
                 work_item_ids=tuple(work_item_ids),
+                replay_seq=replay_seq,
+                replay_frame=stamped_frame,
             )
 
     async def _find_dedup_key(
@@ -506,6 +540,27 @@ class IngressRepository:
         ).scalar_one_or_none()
         if turn is not None:
             turn_id = str(turn.id)
+        # 回查原 accepted 重放帧：重复注入逐字重放原帧（同 wire seq，
+        # pg-durable-sot-cutover ADR-3）；无帧行 = 旧写入（帧表上线前），按
+        # canonical sequence 兜底盖 seq，仍保证同 id 重放同 seq。
+        replay_seq: int | None = None
+        replay_frame: dict[str, Any] | None = None
+        stored = (
+            await sess.execute(
+                select(WebchatReplayFrameModel).where(
+                    WebchatReplayFrameModel.conversation_id
+                    == inbox.conversation_id,
+                    WebchatReplayFrameModel.message_id
+                    == inbox.canonical_message_id,
+                    WebchatReplayFrameModel.frame_type == "message.accepted",
+                )
+            )
+        ).scalar_one_or_none()
+        if stored is not None:
+            replay_seq = int(stored.seq)
+            replay_frame = _from_json(stored.frame_json)
+        else:
+            replay_seq = int(sequence) if sequence is not None else None
         return AcceptInboundResult(
             duplicate=True,
             inbox_id=str(inbox.id),
@@ -513,6 +568,8 @@ class IngressRepository:
             sequence=int(sequence) if sequence is not None else -1,
             turn_id=turn_id,
             work_item_ids=(),
+            replay_seq=replay_seq,
+            replay_frame=replay_frame,
         )
 
     async def mark_inbox_processed(
@@ -572,8 +629,13 @@ class TurnControlRepository:
         expected_status: str,
         new_status: str,
         error: dict[str, Any] | None = None,
+        replay_frame: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """CAS 推进 turn 状态（沿用 ConversationRuntime 的 expected 语义）。"""
+        """CAS 推进 turn 状态（沿用 ConversationRuntime 的 expected 语义）。
+
+        `replay_frame`（pg-durable-sot-cutover）：失败/取消终态收束时同事务
+        持久化 `turn.failed` 帧；返回 dict 附 `replay_seq`/`replay_frame`。
+        """
         trn_id = _require_uuid(turn_id, "turn_id")
         async with self._sf() as sess, sess.begin():
             row = (
@@ -593,7 +655,19 @@ class TurnControlRepository:
             row.status = new_status
             row.error_json = _to_json(error)
             row.updated_at = datetime.now(UTC)
-            return _turn_to_dict(row)
+            result = _turn_to_dict(row)
+            if replay_frame is not None:
+                seq = await _record_replay_frame(
+                    sess,
+                    tenant_id,
+                    row.conversation_id,
+                    frame_type="turn.failed",
+                    frame=replay_frame,
+                    turn_id=row.id,
+                )
+                result["replay_seq"] = seq
+                result["replay_frame"] = {**replay_frame, "seq": seq}
+            return result
 
     async def complete_turn_with_delivery(
         self,
@@ -610,11 +684,15 @@ class TurnControlRepository:
         message_metadata: dict[str, Any] | None = None,
         message_id: uuid.UUID | str | None = None,
         intent_id: uuid.UUID | str | None = None,
+        replay_frame: dict[str, Any] | None = None,
     ) -> CompletionResult:
         """T2：final assistant message + turn 终态 + pending intent 单事务原子提交。
 
         投递幂等键默认 ``msg:<message_id>``（一条 final 恰一个意图，ADR-4）；
         重复键触发唯一约束 → 整体回滚（turn 保持原状态，无半写入）。
+
+        `replay_frame`（pg-durable-sot-cutover）：`turn.completed` 帧与本事务
+        同提交持久化（seq 独立取号），结果附 `replay_seq`/`replay_frame`。
         """
         conv_id = _require_uuid(conversation_id, "conversation_id")
         trn_id = _require_uuid(turn_id, "turn_id")
@@ -686,10 +764,26 @@ class TurnControlRepository:
             sess.add(intent_row)
             await sess.flush()
 
+            replay_seq: int | None = None
+            stamped_frame: dict[str, Any] | None = None
+            if replay_frame is not None:
+                replay_seq = await _record_replay_frame(
+                    sess,
+                    tenant_id,
+                    conv_id,
+                    frame_type="turn.completed",
+                    frame=replay_frame,
+                    message_id=msg_id,
+                    turn_id=trn_id,
+                )
+                stamped_frame = {**replay_frame, "seq": replay_seq}
+
             return CompletionResult(
                 message=_message_to_dict(message_row),
                 turn=_turn_to_dict(turn),
                 intent=_intent_to_dict(intent_row),
+                replay_seq=replay_seq,
+                replay_frame=stamped_frame,
             )
 
     async def get_turn(
@@ -703,6 +797,24 @@ class TurnControlRepository:
             if row is None or row.tenant_id != tenant_id:
                 return None
             return _turn_to_dict(row)
+
+    async def list_non_terminal_turns(
+        self, tenant_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """列出非终态（queued/in_progress）turn——启动对账扫描入口
+        （pg-durable-sot-cutover task 5.3；design ADR-2）。
+
+        ``tenant_id=None`` 为系统启动对账的全租户扫描（控制面内部操作，
+        不经任何租户可见 API 暴露；对外查询面仍遵守租户隔离要求）。
+        """
+        async with self._sf() as sess:
+            stmt = select(TurnModel).where(
+                TurnModel.status.in_(("queued", "in_progress"))
+            )
+            if tenant_id is not None:
+                stmt = stmt.where(TurnModel.tenant_id == tenant_id)
+            rows = (await sess.execute(stmt)).scalars().all()
+            return [_turn_to_dict(row) for row in rows]
 
     async def record_tool_call(
         self,
@@ -829,6 +941,93 @@ class TurnControlRepository:
             if new_status in _WORK_TERMINAL_STATUSES:
                 row.finished_at = datetime.now(UTC)
             return _work_item_to_dict(row)
+
+
+class WebchatReplayRepository:
+    """durable 重放帧读取面（pg-durable-sot-cutover ADR-3；只读，不分配 seq）。
+
+    帧写入只发生在 T1/T2/终态收束事务内（`_record_replay_frame`）；本仓储
+    服务重连补拉与 hello 游标。retention/清理归 C12 §8.4（本类预留删除入口）。
+    """
+
+    def __init__(self, session_factory: async_sessionmaker):
+        self._sf = session_factory
+
+    async def current_seq(
+        self, tenant_id: str, conversation_id: uuid.UUID | str
+    ) -> int:
+        """会话当前最大重放 seq（已提交帧计数的单调水位）；无帧返回 0。
+
+        tenant 不符的会话返回 0（不泄露存在性，语义同「空会话」）。
+        """
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return 0
+        async with self._sf() as sess:
+            counter = await sess.get(WebchatReplayCounterModel, conv_id)
+            if counter is None:
+                return 0
+            return int(counter.next_seq) - 1
+
+    async def frames_after(
+        self,
+        tenant_id: str,
+        conversation_id: uuid.UUID | str,
+        after_seq: int,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """按 seq 升序返回 ``seq > after_seq`` 的已存帧（frame_json 已解析）。
+
+        跨 tenant 查询返回空列表（租户隔离，语义同
+        `CanonicalMessageRepository.fetch_messages`）。
+        """
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None or after_seq < 0:
+            return []
+        stmt = (
+            select(WebchatReplayFrameModel)
+            .where(
+                WebchatReplayFrameModel.tenant_id == tenant_id,
+                WebchatReplayFrameModel.conversation_id == conv_id,
+                WebchatReplayFrameModel.seq > after_seq,
+            )
+            .order_by(WebchatReplayFrameModel.seq.asc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        async with self._sf() as sess:
+            rows = (await sess.execute(stmt)).scalars().all()
+            frames: list[dict[str, Any]] = []
+            for row in rows:
+                frame = _from_json(row.frame_json)
+                if isinstance(frame, dict):
+                    frames.append(frame)
+            return frames
+
+    async def delete_frames_before(
+        self, tenant_id: str, conversation_id: uuid.UUID | str, before_seq: int
+    ) -> int:
+        """清理 ``seq < before_seq`` 的帧（C12 §8.4 retention 挂接点；
+        计数器行不动，seq 水位只增不减）。返回删除行数。"""
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return 0
+        async with self._sf() as sess, sess.begin():
+            result = await sess.execute(
+                text("""
+                    DELETE FROM webchat_replay_frames
+                    WHERE tenant_id = :tenant_id
+                      AND conversation_id = :conversation_id
+                      AND seq < :before_seq
+                    """),
+                {
+                    "tenant_id": tenant_id,
+                    "conversation_id": conv_id,
+                    "before_seq": int(before_seq),
+                },
+            )
+            return int(result.rowcount)
 
 
 class DeliveryRepository:
@@ -1491,6 +1690,64 @@ def _pg_insert(model):  # noqa: ANN001, ANN202
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     return pg_insert(model)
+
+
+_REPLAY_FRAME_TYPES = frozenset(
+    {"message.accepted", "turn.completed", "turn.failed"}
+)
+
+
+async def _record_replay_frame(
+    sess: Any,
+    tenant_id: str,
+    conversation_id: uuid.UUID,
+    *,
+    frame_type: str,
+    frame: dict[str, Any],
+    message_id: uuid.UUID | None = None,
+    turn_id: uuid.UUID | None = None,
+) -> int:
+    """在**调用方事务内**分配 wire seq 并持久化一帧 durable 重放帧
+    （pg-durable-sot-cutover design ADR-3）。
+
+    seq 由 per-conversation 计数器行 `UPDATE ... RETURNING` 分配（与 canonical
+    `next_sequence` 同模式，行锁串行化同会话写入）；帧 JSON 存**已盖 seq 的完整
+    wire 帧**，补拉 = 按游标 SELECT。delta/tool 帧不可入表（CHECK 约束 + 此处
+    白名单双重防御）。返回分配的 seq；调用方以 ``{**frame, "seq": seq}`` 作为
+    wire 发送帧，与存储逐字一致。
+    """
+    if frame_type not in _REPLAY_FRAME_TYPES:
+        raise ValueError(
+            f"非法重放帧类型（delta/tool 帧不入 durable 重放）: {frame_type!r}"
+        )
+    counter_stmt = (
+        _pg_insert(WebchatReplayCounterModel)
+        .values(conversation_id=conversation_id)
+        .on_conflict_do_nothing(index_elements=["conversation_id"])
+    )
+    await sess.execute(counter_stmt)
+    allocated = (
+        await sess.execute(
+            update(WebchatReplayCounterModel)
+            .where(WebchatReplayCounterModel.conversation_id == conversation_id)
+            .values(next_seq=WebchatReplayCounterModel.next_seq + 1)
+            .returning(WebchatReplayCounterModel.next_seq - 1)
+        )
+    ).scalar_one()
+    stamped = {**frame, "seq": int(allocated)}
+    sess.add(
+        WebchatReplayFrameModel(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            seq=int(allocated),
+            frame_type=frame_type,
+            frame_json=_to_json(stamped),
+            message_id=message_id,
+            turn_id=turn_id,
+        )
+    )
+    await sess.flush()
+    return int(allocated)
 
 
 async def _insert_work_item(

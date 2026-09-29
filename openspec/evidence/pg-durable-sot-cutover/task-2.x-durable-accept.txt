@@ -1,0 +1,24 @@
+# task 2.1/2.2 durable 接受接线验证
+# 日期：2026-09-29；环境：便携 PG 5432（PG 17.10 + pgvector），NEXUS_TEST_PG_URL=nexus:nexus_dev@5432/nexus
+
+== 单测（通道 durable 分支，fake gateway）==
+$ NEXUS_TEST_PG_URL=... python -m pytest -q -W error tests/test_web_chat_channel_durable.py
+5 passed in 0.82s
+
+== PG 集成（repo 重放帧 + gateway，scratch nexus_c2test）==
+$ NEXUS_TEST_PG_URL=... python -m pytest -q -W error tests/control_plane/test_webchat_replay_frames.py
+5 passed in 9.78s
+
+== 回归（受影响面：control_plane 全组 + 通道/协议/chat_api）==
+$ NEXUS_TEST_PG_URL=... python -m pytest -q -W error tests/control_plane/ tests/test_web_chat_channel.py tests/test_web_chat_channel_durable.py tests/test_web_chat_protocol_contract.py tests/test_chat_api.py
+98 passed in 108.90s (0:01:48)
+
+== pyright --level error（5 个触碰文件）==
+0 errors, 0 warnings, 0 informations
+
+== 覆盖的 spec 场景（webchat-durable-storage）==
+- 提交后才返回 accepted：gateway.accept_send T1 → publish_inbound_wait → accepted（test_gateway_accept_duplicate_and_overload_precheck）
+- 重启后重复提交重放原 ack：清缓存后 duplicate 逐字重放原帧同 seq（test_duplicate_returns_original_frame_with_same_seq / channel test_duplicate_replays_exact_frame_and_cache_hit_skips_gateway）
+- 接受事务失败可重发：T1 回滚 + error 帧不缓存幂等（test_overload_and_error_do_not_consume_idempotency）
+- 失败终态无投递意图 / completed/failed 帧同事务：test_completion_and_failure_frames_in_same_transaction
+- 补拉租户隔离与 retention：test_replay_frames_tenant_isolation_and_retention

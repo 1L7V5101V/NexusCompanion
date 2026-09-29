@@ -47,6 +47,8 @@ def upgrade() -> None:
             seq             BIGINT       NOT NULL,
             frame_type      VARCHAR(32)  NOT NULL,
             frame_json      TEXT         NOT NULL,
+            message_id      UUID         NULL,
+            turn_id         UUID         NULL,
             created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
             CONSTRAINT uq_webchat_replay_frames_conv_seq
                 UNIQUE (conversation_id, seq),
@@ -54,7 +56,13 @@ def upgrade() -> None:
                 frame_type IN ('message.accepted', 'turn.completed', 'turn.failed')),
             CONSTRAINT fk_webchat_replay_frames_conversation_id
                 FOREIGN KEY (conversation_id)
-                REFERENCES canonical_conversations (id) ON DELETE RESTRICT
+                REFERENCES canonical_conversations (id) ON DELETE RESTRICT,
+            CONSTRAINT fk_webchat_replay_frames_message_id
+                FOREIGN KEY (message_id)
+                REFERENCES canonical_messages (id) ON DELETE RESTRICT,
+            CONSTRAINT fk_webchat_replay_frames_turn_id
+                FOREIGN KEY (turn_id)
+                REFERENCES turns (id) ON DELETE RESTRICT
         )
         """)
     op.execute("""

@@ -623,6 +623,24 @@ class WebchatReplayFrameModel(Base):
     seq: Mapped[int] = mapped_column(BigInteger, nullable=False)
     frame_type: Mapped[str] = mapped_column(String(32), nullable=False)
     frame_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # accepted/completed 帧引用对应 canonical 消息（重复注入按
+    # conversation+message 回查原 accepted 帧，ADR-3 幂等重放）；failed 帧为 NULL。
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "canonical_messages.id",
+            ondelete="RESTRICT",
+            name="fk_webchat_replay_frames_message_id",
+        ),
+    )
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "turns.id",
+            ondelete="RESTRICT",
+            name="fk_webchat_replay_frames_turn_id",
+        ),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

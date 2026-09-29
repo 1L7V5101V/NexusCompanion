@@ -30,6 +30,10 @@ from bootstrap.proactive import build_memory_optimizer_task, build_proactive_run
 from bootstrap.runtime_readiness import RuntimeReadiness
 from bootstrap.passive_worker import PassiveMessageWorker
 from bootstrap.work_queue import WorkQueueRuntime, build_work_queue_runtime
+from bootstrap.webchat_durable import (
+    WebchatDurableRuntime,
+    build_webchat_durable_runtime,
+)
 from bootstrap.tools import CoreRuntime, build_core_runtime
 from bootstrap.workspace_lock import WorkspaceInstanceLock
 from bootstrap.workspace_token import ensure_workspace_token
@@ -223,6 +227,7 @@ class AppRuntime:
         self.provisioning_worker: TenantProvisioningWorker | None = None
         self.work_queue: WorkQueueRuntime | None = None
         self.work_queue_task: asyncio.Task[None] | None = None
+        self.webchat_durable: "WebchatDurableRuntime | None" = None
         self.peer_process_manager = None
         self.peer_poller = None
         self.dashboard_server = None
@@ -430,6 +435,12 @@ class AppRuntime:
                     WebChatIdentity,
                 )
 
+                # pg-durable-sot-cutover ADR-6：PG 多租户模式注入 durable 接受
+                # 网关（T1 提交后才 ack）；非 postgres 后端返回 None，dev 回退
+                # 走 legacy in-proc 幂等/重放路径。
+                self.webchat_durable = build_webchat_durable_runtime(
+                    self.config, bus=self.bus, channel_name=chat_config.channel_name
+                )
                 self.web_chat_channel = WebChatChannel(
                     channel_name=chat_config.channel_name,
                     identity=WebChatIdentity(),
@@ -438,6 +449,11 @@ class AppRuntime:
                     ws_outbound_hard_limit=self.config.admission.ws_outbound_hard_limit,
                     ws_outbound_max_payload_bytes=(
                         self.config.admission.ws_outbound_max_payload_bytes
+                    ),
+                    durable_gateway=(
+                        self.webchat_durable.gateway
+                        if self.webchat_durable is not None
+                        else None
                     ),
                 )
                 plugin_channels.append(self.web_chat_channel)
@@ -735,6 +751,17 @@ class AppRuntime:
         if runtime is not None:
             await runtime.aclose()
 
+    async def _stop_webchat_durable(self) -> None:
+        """释放 webchat durable 网关的 async engine 连接池（pg-durable-sot-cutover）。
+
+        置于 work_queue 步骤之后、servers.wait 之前：chat server 仍在等待退出，
+        但入站已无新 send 处理，先收连接池不阻塞停机。
+        """
+        runtime = self.webchat_durable
+        if runtime is not None:
+            self.webchat_durable = None
+            await runtime.aclose()
+
     def _work_queue_done(self, task: asyncio.Task[None]) -> None:
         """worker task 意外退出时大声记录（`run()` 已保证轮询异常不逃逸）。"""
         if task.cancelled():
@@ -778,6 +805,7 @@ class AppRuntime:
                 # 在途 handler 收束（ADR-7），若先走 `runtime_tasks.cancel` 会在 handler
                 # 执行中直接取消它。
                 ("work_queue.drain_and_stop", self._stop_work_queue),
+                ("webchat_durable.close", self._stop_webchat_durable),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 (

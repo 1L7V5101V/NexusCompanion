@@ -18,7 +18,7 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
@@ -89,6 +89,42 @@ class WebChatIdentity:
     conversation_id: str = DEV_SESSION_KEY
     session_key: str = DEV_SESSION_KEY
     chat_id: str = "local"
+
+
+@dataclass(frozen=True)
+class DurableSendOutcome:
+    """durable 接受网关的结果（pg-durable-sot-cutover ADR-1）。
+
+    ``kind``：
+    - ``accepted``/``duplicate``：``frame`` 为已盖 durable seq 的完整
+      ``message.accepted`` wire 帧（duplicate = 逐字重放原帧，同 seq）；
+    - ``overload``/``error``：``error_message`` 为用户可见文案；两种情况下
+      幂等键均未被消耗（overload 发生在 T1 前 / T1 回滚），客户端可原样重发。
+    """
+
+    kind: str
+    frame: dict[str, Any] | None = None
+    error_message: str | None = None
+
+
+class DurableSendGateway(Protocol):
+    """durable 接受网关协议（infra 定义契约，bootstrap 实现；ADR-1/ADR-6）。"""
+
+    def eligible(self, identity: WebChatIdentity) -> bool:
+        """该服务端身份是否可走 durable 接受路径（dev 回退身份返回 False）。"""
+        ...
+
+    async def accept_send(
+        self,
+        *,
+        identity: WebChatIdentity,
+        client_message_id: str,
+        content: str,
+        media: list[str],
+        sender: str,
+    ) -> DurableSendOutcome:
+        """durable 接受：T1 提交 + 入队执行；overload/error 不消耗幂等键。"""
+        ...
 
 
 def _frame_size(frame: dict[str, Any]) -> int:
@@ -197,6 +233,7 @@ class WebChatChannel:
         ws_outbound_soft_limit: int = SOFT_LIMIT,
         ws_outbound_hard_limit: int = _OUTBOUND_QUEUE_SIZE,
         ws_outbound_max_payload_bytes: int = _WS_MAX_PAYLOAD_BYTES,
+        durable_gateway: DurableSendGateway | None = None,
     ) -> None:
         self.name = channel_name
         self._identity = identity or WebChatIdentity()
@@ -204,6 +241,9 @@ class WebChatChannel:
         self._ws_soft_limit = ws_outbound_soft_limit
         self._ws_hard_limit = ws_outbound_hard_limit
         self._ws_max_payload = ws_outbound_max_payload_bytes
+        # durable 接受网关（pg-durable-sot-cutover ADR-1/6）：PG 多租户模式注入；
+        # None（dev 回退）保持 legacy in-proc 幂等/重放路径。
+        self._durable = durable_gateway
         self._ctx: ChannelContext | None = None
         self._connections: dict[WebSocket, _Connection] = {}
         self._replay = _ReplayBuffer(
@@ -452,12 +492,20 @@ class WebChatChannel:
         # §5.9.1：客户端帧里的 tenant_id / account_id / session_key / channel
         # 只是待校验输入，永不参与授权——这里刻意不读取它们，只用服务端身份。
         identity = conn.identity or self._identity
+        media_list = [str(m) for m in media] if isinstance(media, list) else []
+
+        if self._durable is not None and self._durable.eligible(identity):
+            await self._handle_send_durable(
+                conn, identity, client_message_id, content, media_list
+            )
+            return
+
         inbound = InboundMessage(
             channel=self.name,
             sender="webchat",
             chat_id=identity.chat_id,
             content=content,
-            media=[str(m) for m in media] if isinstance(media, list) else [],
+            media=media_list,
             metadata={"client_message_id": client_message_id, "username": "webchat"},
             tenant_id=identity.tenant_id,
         )
@@ -484,6 +532,54 @@ class WebChatChannel:
         if len(self._accepted_frames) > _DEDUPER_SIZE:
             self._accepted_frames.pop(next(iter(self._accepted_frames)))
         conn.try_enqueue(accepted)
+
+    async def _handle_send_durable(
+        self,
+        conn: _Connection,
+        identity: WebChatIdentity,
+        client_message_id: str,
+        content: str,
+        media_list: list[str],
+    ) -> None:
+        """durable 接受路径（pg-durable-sot-cutover ADR-1）。
+
+        T1 提交（dedupe + canonical user message + inbox + queued turn +
+        accepted 重放帧）后才向客户端发 ``message.accepted``（seq 来自 durable
+        重放帧表）；``duplicate`` 逐字重放原帧（同 seq，重启存续）。overload/
+        error 返回结构化错误帧且**不缓存幂等**——overload 发生在 T1 前、T1 失败
+        整体回滚，两种情况客户端都可原样重发（错误码复用冻结的 ``overload``，
+        真实原因服务端日志可见，design ADR-1）。
+        """
+        assert self._durable is not None  # 调用方已判空
+        outcome = await self._durable.accept_send(
+            identity=identity,
+            client_message_id=client_message_id,
+            content=content,
+            media=media_list,
+            sender="webchat",
+        )
+        if outcome.kind in ("accepted", "duplicate"):
+            if outcome.frame is None:  # 正常流程不可达（网关保证帧非空）。
+                conn.try_enqueue(
+                    error_frame(
+                        code=ERR_OVERLOAD,
+                        message="服务暂时不可用，请稍后重发这条消息。",
+                    )
+                )
+                return
+            # 幂等缓存（L1）：存已盖 durable seq 的帧，重复提交原样重放；
+            # 权威判定仍在网关（数据库唯一约束，task 2.2）。
+            self._accepted_frames[client_message_id] = dict(outcome.frame)
+            if len(self._accepted_frames) > _DEDUPER_SIZE:
+                self._accepted_frames.pop(next(iter(self._accepted_frames)))
+            conn.try_enqueue(dict(outcome.frame))
+            return
+        conn.try_enqueue(
+            error_frame(
+                code=ERR_OVERLOAD,
+                message=outcome.error_message or "服务繁忙，请稍后重发这条消息。",
+            )
+        )
 
     # ── EventBus / outbound 桥接 ────────────────────────────────
 

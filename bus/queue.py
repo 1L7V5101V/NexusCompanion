@@ -151,6 +151,44 @@ class MessageBus:
                 detail=f"global interactive ingress queue 已满（{self._inbound_limit}）",
             ) from exc
 
+    def inbound_full(self) -> bool:
+        """interactive ingress 队列是否已达容量（pg-durable-sot-cutover ADR-1）。
+
+        durable acceptance **之前**的 overload 预检：预检非绑定（并发窗口内
+        仍可能满载），真值以 publish 的 QueueFull 为准。
+        """
+        return self._inbound.qsize() >= self._inbound_limit
+
+    async def publish_inbound_wait(
+        self, msg: InboundItem, *, timeout: float | None = None
+    ) -> None:
+        """同 :meth:`publish_inbound`，但队列满时在 ``timeout`` 界内等待槽位。
+
+        供 durable acceptance **之后**的入队路径使用（pg-durable-sot-cutover
+        ADR-1）：消息已被 T1 持久接受，此刻拒绝只会产生孤儿 turn——应等待消费
+        者腾出槽位；超时抛 :class:`AdmissionOverloadError`，由调用方按失败终态
+        收束。§5.9.4 的 overload 拒绝语义（发生在 durable acceptance 之前、不
+        消耗幂等键）只属于 :meth:`publish_inbound` / :meth:`inbound_full`。
+        """
+        await self._chat_lane.mark_passive_pending(msg.channel, msg.chat_id)
+        try:
+            if timeout is None:
+                await self._inbound.put(msg)
+            else:
+                await asyncio.wait_for(self._inbound.put(msg), timeout)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            raise AdmissionOverloadError(
+                "global_interactive",
+                detail=(
+                    f"global interactive ingress queue 持续满载（{self._inbound_limit}），"
+                    f"等待 {timeout}s 未获得槽位"
+                ),
+            ) from exc
+        except asyncio.CancelledError:
+            await self._chat_lane.mark_passive_done(msg.channel, msg.chat_id)
+            raise
+
     async def consume_inbound(self) -> InboundItem:
         """阻塞直到有消息可消费"""
         return await self._inbound.get()

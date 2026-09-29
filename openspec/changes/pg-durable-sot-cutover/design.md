@@ -16,6 +16,7 @@
 ### ADR-1 接线位置：channel 侧调用 `accept_inbound`，MessageBus 保持不变
 
 `_handle_send` 在 overload 检查后同步 await `accept_inbound`（PG T1），提交成功才以 durable seq 盖 `message.accepted`；进程内 `_accepted_frames`/`_deduper` 降级为缓存加速（权威判定 = 数据库唯一约束 + 重复返回既有身份）。
+**实现细化（task 2.1/2.2 回填）**：序列 = `inbound_full()` 预检（overload 拒绝在 T1 前、不消耗幂等键）→ T1 → `publish_inbound_wait`（T1 后队列满载**界内等待槽位**而非拒绝——此刻拒绝只会产生孤儿 turn；超时按 `turn.failed`（原因 `overload_enqueue_timeout`）durable 收束）。T1 失败的错误帧复用冻结的 `overload` 码（可重发语义；真实原因服务端日志可见），零协议改动。网关以 Protocol 注入通道（`infra.channels.web_chat_channel.DurableSendGateway`，bootstrap `webchat_durable.py` 实现，ADR-6 分支 = identity 三元组为合法 UUID ∧ storage.backend=postgres）。
 **备选**：把 MessageBus 消费端整体改造为 durable turn 执行器（从 queued turn 拉起执行）——拒绝：改造面横跨 admission/agent loop，Pilot 交互延迟与回归风险不可控；§5.9.10 允许接线型切换，全量总线 durable 化留待多副本阶段（SCALING_ROADMAP C3 范畴）。
 
 ### ADR-2 执行模式：bus 执行 + 控制面状态跟随，启动对账收束中断 turn
@@ -28,6 +29,7 @@ turn 继续由既有 bus/admission/agent loop 执行（interactive lane 不变�
 
 新增 per-conversation 重放帧记录（迁移新表，形如 `webchat_replay_frames(conversation_id, seq, frame_json, created_at)`，`(conversation_id, seq)` 唯一）：T1 提交时写 accepted 帧，T2（或失败终态收束）提交时写 `turn.completed`/`turn.failed` 帧；wire seq 由该表在事务内分配（per-conversation 单调）。补拉 = 按游标 SELECT。
 **备选**：复用 canonical message seq 作 wire seq（accepted=user msg seq、completed=final msg seq）——拒绝：`turn.failed` 无 canonical 行，需在 turn 行加 seq 列且补拉要跨表 union 重建帧 JSON，帧格式演进时脆弱；独立表是重放投影（内容=已发给客户端的帧，无新增泄露面），canonical 仍是内容 SOT，两表职责清晰。retention：帧记录归 C12 §8.4 清理范围，本 change 在 backup manifest 登记条目（表加入 §5.9.12 workspace/PG manifest 校验器 fixture 所列范围由任务 6.2 核对）。
+**实现细化（task 2.1/2.2 回填）**：seq 由独立计数器表 `webchat_replay_counters`（per-conversation 行，`UPDATE..RETURNING`，与 canonical next_sequence 同模式）分配，从 1 起与 legacy 进程内 buffer 对齐；帧表增 `message_id`/`turn_id` 软引用列——重复注入按 conversation+message 回查**原 accepted 帧**逐字重放（同 seq，重启存续），不按 canonical sequence 兜底；delta/tool 帧由 repo 白名单 + CHECK 约束双重拒绝入表。
 
 ### ADR-4 delivery 语义：WS 写成功 = channel ack；无连接按失败重试
 
