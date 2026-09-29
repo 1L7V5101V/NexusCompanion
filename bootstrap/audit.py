@@ -23,10 +23,16 @@ logger = logging.getLogger(__name__)
 
 
 class PgToolAuditSink:
-    """control-plane PG 追加写入（审计流，无 CAS/回填语义）。"""
+    """control-plane PG 追加写入（审计流，无 CAS/回填语义）。
 
-    def __init__(self, repo: ToolAuditRepository) -> None:
+    E10 tool_call 记录点（pg-durable-sot-cutover task 6.1）：审计写入后以
+    `ToolAuditEvent` 字段投影一条 lifecycle 事件（白名单构造，同 fixture）；
+    记录点失败不影响审计写入（各自 fail-open）。
+    """
+
+    def __init__(self, repo: ToolAuditRepository, telemetry: Any = None) -> None:
         self._repo = repo
+        self._telemetry = telemetry
 
     async def write(self, event: ToolAuditEvent) -> None:
         try:
@@ -38,6 +44,24 @@ class PgToolAuditSink:
                 event.tool_name,
                 exc_info=True,
             )
+        if self._telemetry is not None:
+            try:
+                self._telemetry.tool_call_finished(
+                    tool_call_id=event.tool_call_id,
+                    turn_id=event.turn_id or None,
+                    tenant_id=event.tenant_id,
+                    tool_name=event.tool_name,
+                    result=event.status,
+                    duration_ms=event.duration_ms,
+                    error_code=event.error_code,
+                    effect_class=event.effect_class,
+                )
+            except Exception:  # noqa: BLE001 —— 记录点失败不阻断
+                logger.warning(
+                    "tool_call lifecycle 记录点失败 tool=%s",
+                    event.tool_name,
+                    exc_info=True,
+                )
 
 
 def resolve_tool_audit_sink(
@@ -59,5 +83,11 @@ def resolve_tool_audit_sink(
         from sqlalchemy.ext.asyncio import async_sessionmaker
 
         factory = async_sessionmaker(engine, expire_on_commit=False)
-        return PgToolAuditSink(ToolAuditRepository(factory)), engine
+        from bootstrap.webchat_telemetry import build_default_lifecycle_telemetry
+
+        try:
+            telemetry = build_default_lifecycle_telemetry()
+        except Exception:  # noqa: BLE001 —— 指标注册失败降级为无遥测
+            telemetry = None
+        return PgToolAuditSink(ToolAuditRepository(factory), telemetry), engine
     return LogAuditSink(workspace / "logs"), None

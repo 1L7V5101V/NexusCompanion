@@ -1,0 +1,14 @@
+# task 6.1/6.2 E10 记录点与 manifest/台账核对
+# 日期：2026-09-29
+
+== 契约测试（events ⊆ fixture 双向 + 映射 + label 白名单 + worker 回调三态）==
+$ pytest -q -W error tests/test_webchat_telemetry.py
+7 passed in 0.58s
+
+== pyright --level error ==
+0 errors
+
+== fixture/manifest 核对结论（task 6.2）==
+- fixture 零改动：字段白名单复用 work_queue_telemetry.ALLOWED_EVENT_FIELDS（单一来源，tests/test_webchat_telemetry.py::test_allowed_event_fields_equal_fixture 双向锁定）；status 落冻结枚举，原始词汇落 result（无枚举约束）——字段与枚举均无缺口，未触发 ADR-7 的回 design 条件
+- manifest：重放帧表（webchat_replay_frames/counters）位于控制面 PG 同库，已被 pg-canonical 条目（base backup + WAL 归档）覆盖，模板无需新增条目；表级 retention 清理入口已预留（WebchatReplayRepository.delete_frames_before，执行接线归 C12 §8.4）
+- C12 台账：c12-observability-backup/tasks.md §8.1 已追加承接记录（work=C15、turn/tool_call/delivery=本 change），8.1 义务全部落地，8.4 聚合 API 阻塞解除

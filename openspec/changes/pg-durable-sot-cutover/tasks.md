@@ -47,8 +47,10 @@
 
 ## 6. E10 记录点（ADR-7）
 
-- [ ] 6.1 turn/tool_call/delivery 记录点模块：fixture 白名单构造（字段超出丢弃并报错）+ `redact_text` + label 白名单 fail-fast；接线到 §3/§4 各收束点；记录点异常不阻断主流程。验证：契约测试——事件字段 ⊆ fixture 白名单（双向断言，模式同 `test_work_queue_telemetry.py::test_allowed_event_fields_equal_fixture`）；若发现 fixture 字段不足 → 停，回 design 补决策（不许顺手扩 fixture）
-- [ ] 6.2 C12 台账与 manifest 登记：`c12-observability-backup/tasks.md` §8.1 追加本 change 承接记录（turn/tool_call/delivery 三记录点落地，消除无 owner 滞留项）；重放帧表纳入 backup manifest 校验器 fixture/模板核对（有差异则补模板条目）。验证：C12 tasks 更新 + manifest fixture 核对结论入 evidence
+- [x] 6.1 turn/tool_call/delivery 记录点模块：fixture 白名单构造（字段超出丢弃并报错）+ `redact_text` + label 白名单 fail-fast；接线到 §3/§4 各收束点；记录点异常不阻断主流程。验证：契约测试——事件字段 ⊆ fixture 白名单（双向断言，模式同 `test_work_queue_telemetry.py::test_allowed_event_fields_equal_fixture`）；若发现 fixture 字段不足 → 停，回 design 补决策（不许顺手扩 fixture）
+  → 完成（2026-09-29）：`bootstrap/webchat_telemetry.py` 三记录点（`turn_finished`/`tool_call_finished`/`delivery_finished` + 4 指标族）；接线 = finisher 终态（turn）+ `PgToolAuditSink` 投影（tool_call，C7 审计流同点）+ `OutboundDeliveryWorker.on_delivery_finished` 回调（delivery，sent/failed/dead_letter 三态）；词汇映射：status 落 fixture 冻结枚举、原始词汇（sent/succeeded/unknown/rejected/dead_letter）落无枚举约束的 `result`（fixture 无缺口，未触发回 design 条件）。契约测试 7 passed（evidence `task-6.x-e10-telemetry.txt`）
+- [x] 6.2 C12 台账与 manifest 登记：`c12-observability-backup/tasks.md` §8.1 追加本 change 承接记录（turn/tool_call/delivery 三记录点落地，消除无 owner 滞留项）；重放帧表纳入 backup manifest 校验器 fixture/模板核对（有差异则补模板条目）。验证：C12 tasks 更新 + manifest fixture 核对结论入 evidence
+  → 完成（2026-09-29）：C12 §8.1 已追加承接记录（记录点义务全部落地：work=C15、turn/tool_call/delivery=本 change；8.4 聚合 API 阻塞解除）；manifest 核对：重放帧表在控制面 PG 同库、由 pg-canonical 条目（base backup+WAL）覆盖，模板无需新增（retention 清理入口 `delete_frames_before` 已预留，执行归 C12 §8.4）
 
 ## 7. 验收与回归
 

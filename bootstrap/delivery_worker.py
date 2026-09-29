@@ -86,11 +86,16 @@ class OutboundDeliveryWorker:
         *,
         config: DeliveryWorkerConfig | None = None,
         worker_id: str | None = None,
+        on_delivery_finished: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._repo = repository
         self._send = send_callback
         self._cfg = config or DeliveryWorkerConfig()
         self._owner = worker_id or f"delivery-worker:{uuid.uuid4().hex[:8]}"
+        # E10 delivery 记录点回调（pg-durable-sot-cutover task 6.1；可省）。
+        # 入参 = {"intent": <认领行 dict>, "result": sent|failed|dead_letter,
+#          "recorded": <终态行 dict>, "error": str | None}；回调异常由调用方兜底。
+        self._on_finished = on_delivery_finished
         self._running = False
 
     @property
@@ -192,6 +197,16 @@ class OutboundDeliveryWorker:
                     recorded["next_attempt_at"],
                     exc,
                 )
+                self._emit_finished(
+                    intent,
+                    result=(
+                        "dead_letter"
+                        if recorded["status"] == "dead_letter"
+                        else "failed"
+                    ),
+                    recorded=recorded,
+                    error=str(exc),
+                )
                 return
             if lease_lost.is_set():
                 # 失租后即使拿到成功结果也不得写 sent（ADR-5）；接管者会重投。
@@ -214,10 +229,34 @@ class OutboundDeliveryWorker:
                 )
                 return
             logger.info("delivery sent intent=%s owner=%s", intent_id, self._owner)
+            self._emit_finished(intent, result="sent", recorded=None, error=None)
         finally:
             heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat_task
+
+    def _emit_finished(
+        self,
+        intent: dict[str, Any],
+        *,
+        result: str,
+        recorded: dict[str, Any] | None,
+        error: str | None,
+    ) -> None:
+        """E10 delivery 记录点（task 6.1）；回调异常只记日志，不阻断投递流程。"""
+        if self._on_finished is None:
+            return
+        try:
+            self._on_finished(
+                {
+                    "intent": intent,
+                    "result": result,
+                    "recorded": recorded,
+                    "error": error,
+                }
+            )
+        except Exception:
+            logger.exception("delivery lifecycle 记录点异常（不阻断主流程）")
 
     async def _heartbeat_loop(
         self,

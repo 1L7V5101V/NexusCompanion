@@ -307,10 +307,12 @@ class WebchatDurableTurnFinisher:
         session_factory: async_sessionmaker,
         *,
         channel_name: str = "chat",
+        telemetry: Any = None,
     ) -> None:
         self._turns = TurnControlRepository(session_factory)
         self._ingress = IngressRepository(session_factory)
         self._channel_name = channel_name
+        self._telemetry = telemetry
         self._wake: Callable[[], None] | None = None
 
     def bind_wake(self, wake: Callable[[], None]) -> None:
@@ -387,6 +389,23 @@ class WebchatDurableTurnFinisher:
         if not is_error and self._wake is not None:
             # T2 已产出 pending intent：唤醒 delivery worker 立即投递（task 4.1）。
             self._wake()
+        # E10 turn 记录点（task 6.1；失败不阻断主流程）。
+        if self._telemetry is not None:
+            try:
+                self._telemetry.turn_finished(
+                    turn_id=turn_id,
+                    tenant_id=tenant_id,
+                    status="failed" if is_error else "completed",
+                    channel=self._channel_name,
+                    error=str(msg.content)[:200] if is_error else None,
+                    error_type=(
+                        str(metadata.get("nexus_fail_reason"))
+                        if is_error
+                        else None
+                    ),
+                )
+            except Exception:
+                logger.exception("turn lifecycle 记录点异常（不阻断主流程）")
 
 
 class WebchatDeliveryAdapter:
@@ -567,6 +586,7 @@ class WebchatDurableRuntime:
     session_factory: async_sessionmaker
     gateway: WebchatDurableGateway
     finisher: WebchatDurableTurnFinisher
+    telemetry: Any = None
     delivery_loop: "WebchatDeliveryLoop | None" = None
     delivery_task: "asyncio.Task[None] | None" = None
 
@@ -581,9 +601,23 @@ class WebchatDurableRuntime:
         """
         if self.delivery_task is not None:
             return
+        telemetry = self.telemetry
         worker = OutboundDeliveryWorker(
             DeliveryRepository(self.session_factory),
             WebchatDeliveryAdapter(self.session_factory, channel),
+            on_delivery_finished=(
+                (lambda payload: telemetry.delivery_finished(
+                    message_id=str(payload["intent"]["message_id"]),
+                    turn_id=str(payload["intent"].get("turn_id")) or None,
+                    tenant_id=str(payload["intent"]["tenant_id"]),
+                    channel=str(payload["intent"]["channel"]),
+                    result=str(payload["result"]),
+                    attempt=int(payload["intent"].get("attempt_count") or 0),
+                    error=payload.get("error"),
+                ))
+                if telemetry is not None
+                else None
+            ),
         )
         loop = WebchatDeliveryLoop(worker)
         self.finisher.bind_wake(loop.wake)
@@ -634,8 +668,15 @@ def build_webchat_durable_runtime(
         bus,
         channel_name=channel_name,
     )
+    from bootstrap.webchat_telemetry import build_default_lifecycle_telemetry
+
+    try:
+        telemetry = build_default_lifecycle_telemetry()
+    except Exception:
+        logger.exception("webchat lifecycle 指标注册失败（降级为仅日志）")
+        telemetry = None
     finisher = WebchatDurableTurnFinisher(
-        session_factory, channel_name=channel_name
+        session_factory, channel_name=channel_name, telemetry=telemetry
     )
     logger.info(
         "webchat durable 接受网关已装配（channel=%s, PG durable source of truth）",
@@ -646,4 +687,5 @@ def build_webchat_durable_runtime(
         session_factory=session_factory,
         gateway=gateway,
         finisher=finisher,
+        telemetry=telemetry,
     )
