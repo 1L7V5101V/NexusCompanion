@@ -323,6 +323,11 @@ class AppRuntime:
             ).scan()
             if self.provisioning_worker is not None:
                 await self.provisioning_worker.start()
+                # §5.9.13 + 多租户激活：启动时分区 reconciliation——全部 canonical
+                # 租户（∪ 跨进程遗留的 pending/running job 租户）逐个
+                # request_provisioning：分区已存在则探针恢复 READY（幂等、廉价），
+                # 缺失则入队由 worker 执行 DDL。修复跨进程创建的租户永不触发
+                # 分区 DDL 的缺口（worker 只消费进程内 _queued）。
             # C15：首次在生产构造 control plane 的 async engine 并启动 work item 消费者。
             # `[agent.work_queue].enabled` 默认 false ⇒ 通常返回 None（不建连接、不启 task）。
             # 启用但没有任何 flow handler 时 `build_work_queue_runtime` fail-fast 抛错。
@@ -537,6 +542,46 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()
             self.auth_runtime = auth_runtime
+            if (
+                self.provisioning_worker is not None
+                and self.provisioning_service is not None
+            ):
+                # §5.9.13 + 多租户激活：启动时分区 reconciliation——全部 canonical
+                # 租户（∪ 跨进程遗留的 pending/running job 租户）逐个
+                # request_provisioning：分区已存在则探针恢复 READY（幂等、廉价），
+                # 缺失则入队由 worker 执行 DDL。修复跨进程创建的租户永不触发
+                # 分区 DDL 的缺口（worker 只消费进程内 _queued）。
+                try:
+                    from sqlalchemy import text
+
+                    async with auth_runtime.session_factory() as sess:
+                        rows = (
+                            await sess.execute(
+                                text(
+                                    "SELECT DISTINCT tenant_id FROM "
+                                    "canonical_conversations UNION SELECT "
+                                    "DISTINCT tenant_id FROM "
+                                    "tenant_provisioning_jobs WHERE status IN "
+                                    "('pending', 'running') AND tenant_id IS NOT NULL"
+                                )
+                            )
+                        ).scalars().all()
+                    for tenant in rows:
+                        try:
+                            status = await self.provisioning_service.request_provisioning(
+                                str(tenant)
+                            )
+                            logger.info(
+                                "分区 reconciliation: tenant=%s status=%s",
+                                tenant,
+                                status,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "分区 reconciliation 失败 tenant=%s", tenant
+                            )
+                except Exception:
+                    logger.exception("启动分区 reconciliation 异常（跳过）")
             self.dashboard_server = build_dashboard_server(
                 workspace=self.workspace,
                 manual_consolidator=self.agent_loop,
