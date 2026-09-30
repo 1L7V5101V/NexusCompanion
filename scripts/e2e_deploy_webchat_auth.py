@@ -58,6 +58,41 @@ async def main() -> int:
             print("[FATAL] canary 账号无 canonical conversation")
             return 1
         conv = convs[0]
+        # PG 主存储（backend=postgres）：turn 的 require_ready 是真实门禁——
+        # canary 跨进程创建，须在此显式触发分区 provisioning 并等 READY
+        #（app 进程内注册走 partition_step 桥接，无此需要）。
+        tenant_id = str(conv["tenant_id"])
+        from infra.storage.provisioning import (
+            PartitionStatus,
+            TenantProvisioningService,
+            TenantProvisioningWorker,
+        )
+        from memory2.store import VEC_DIM
+        from infra.storage.postgres_memory_store import PostgresMemoryStore
+
+        sync_url = str(config.storage.postgres_url)
+        if sync_url.startswith("postgresql+asyncpg://"):
+            sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+        backend = PostgresMemoryStore(
+            sync_url, tenant_id="deploy-e2e", vec_dim=VEC_DIM
+        )
+
+        async def _run_db(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        svc = TenantProvisioningService(backend, run_db=_run_db)
+        worker = TenantProvisioningWorker(svc)
+        await worker.start()
+        _ = await svc.request_provisioning(tenant_id)
+        for _ in range(100):
+            state = svc._states.get(tenant_id)
+            if state is PartitionStatus.READY:
+                break
+            await asyncio.sleep(0.1)
+        await worker.stop()
+        if state is not PartitionStatus.READY:
+            print(f"[FATAL] canary 租户分区未就绪：{state}")
+            return 1
         print(f"[1] canary 账号 ready：account={account_id}")
         print(f"    PG 派生预期：tenant={conv['tenant_id']} conv={conv['id']}")
 
