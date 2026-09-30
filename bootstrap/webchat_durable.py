@@ -337,6 +337,13 @@ class WebchatDurableTurnFinisher:
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         turn_id = str(metadata.get("nexus_pg_turn_id") or "")
         if not turn_id or msg.channel != self._channel_name:
+            logger.info(
+                "webchat durable 终态收束跳过: channel=%s expected=%s pg_turn_id=%s meta_keys=%s",
+                msg.channel,
+                self._channel_name,
+                turn_id or "<空>",
+                sorted(metadata),
+            )
             return
         tenant_id = str(metadata.get("tenant_id") or "").strip()
         inbox_id = str(metadata.get("nexus_pg_inbox_id") or "")
