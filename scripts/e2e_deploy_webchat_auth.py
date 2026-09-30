@@ -68,14 +68,12 @@ async def main() -> int:
             TenantProvisioningWorker,
         )
         from memory2.store import VEC_DIM
-        from infra.storage.postgres_memory_store import PostgresMemoryStore
+        from infra.storage.postgres_memory_store import PostgresMemoryBackend
 
         sync_url = str(config.storage.postgres_url)
         if sync_url.startswith("postgresql+asyncpg://"):
             sync_url = sync_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-        backend = PostgresMemoryStore(
-            sync_url, tenant_id="deploy-e2e", vec_dim=VEC_DIM
-        )
+        backend = PostgresMemoryBackend(sync_url, vec_dim=VEC_DIM)
 
         async def _run_db(fn, *args, **kwargs):
             return fn(*args, **kwargs)
