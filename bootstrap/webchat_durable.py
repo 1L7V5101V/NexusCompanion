@@ -323,6 +323,13 @@ class WebchatDurableTurnFinisher:
         bus.subscribe_outbound(self._channel_name, self._on_outbound)
 
     async def _on_outbound(self, msg: Any) -> None:
+        logger.info(
+            "webchat durable finisher 收到出站: channel=%s meta_keys=%s",
+            getattr(msg, "channel", "?"),
+            sorted((msg.metadata or {}).keys())
+            if isinstance(getattr(msg, "metadata", None), dict)
+            else "<非 dict>",
+        )
         try:
             await self._finish(msg)
         except Exception:
