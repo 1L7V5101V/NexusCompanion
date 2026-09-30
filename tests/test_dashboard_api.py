@@ -93,6 +93,7 @@ class _ManualConsolidator:
         self.result = result
         self.error = error
         self.calls: list[tuple[str, bool, bool]] = []
+        self.tenants: list[str] = []
 
     async def trigger_memory_consolidation(
         self,
@@ -100,7 +101,9 @@ class _ManualConsolidator:
         *,
         archive_all: bool = False,
         force: bool = False,
+        tenant_id: str = "default",
     ) -> bool:
+        self.tenants.append(tenant_id)
         self.calls.append((session_key, archive_all, force))
         if self.error is not None:
             raise self.error

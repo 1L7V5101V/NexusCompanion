@@ -471,6 +471,8 @@ async def test_before_turn_memory_context_guard_blocks_unconsolidated_tail():
 
     ctx = await phase.run(state)
 
+    # tenant 贯穿：guard 把 state.tenant_id 原样传给 consolidator（测试入站
+    # 未显式设 tenant → 透传 ""，真实链路由适配器 fail-closed 派生）。
     assert ctx.abort is True
     assert "记忆归档现在处于异常积压状态" in ctx.abort_reply
     assert "当前未归档消息数 30" in ctx.abort_reply
@@ -502,6 +504,8 @@ async def test_before_turn_memory_context_guard_consolidates_before_blocking():
         prepare=AsyncMock(return_value=ContextBundle(history_messages=[]))
     )
 
+    tenants: list[str] = []
+
     class _Consolidator:
         async def trigger_memory_consolidation(
             self,
@@ -509,7 +513,9 @@ async def test_before_turn_memory_context_guard_consolidates_before_blocking():
             *,
             archive_all: bool = False,
             force: bool = False,
+            tenant_id: str = "default",
         ) -> bool:
+            tenants.append(tenant_id)
             assert session_key == "telegram:123"
             assert archive_all is False
             assert force is False

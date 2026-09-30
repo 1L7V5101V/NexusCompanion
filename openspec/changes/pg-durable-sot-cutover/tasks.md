@@ -60,3 +60,18 @@
   → 完成（2026-09-29）：**1768 passed / 0 failed**（8:02，NEXUS_REQUIRE_PG=1，含本 change 新增 18 测试；基线 1738）；pyright 双配置 38/57 均既有基线零新增（结果并入 evidence `task-7.1-pg-e2e.txt` 7.2 段）。首跑的 36 failed/1 failed 均为环境问题（共享 nexus 库 schema 过旧 + 5433 Docker PG 缺失），已修复环境后复跑全绿，详见 evidence 环境备注
 - [x] 7.3 **管理闭环回填**：本 change tasks 全勾 + `openspec status` 收口；`PILOT_ROADMAP_PROJECT_CHECKLIST` 回填（P0.5「canonical stream/0-based seq」、P1「durable source of truth」两条目勾选带 evidence；current blocker 解除说明——公网开放存储前置完成，下一步为部署 canary 与运维放开决策）。验证：checklist diff 仅含 evidence 支撑的状态变更
   → 完成（2026-09-29）：checklist 回填（P0.5 canonical 条目勾选；P1 durable SOT 条目按实际覆盖注记——schedule durable 归 C11 不勾选；当前进度/current focus/next decision 刷新）；本 change 18/18 全勾，`openspec status` 4/4 artifacts complete
+
+## 8. 生产激活前置：consolidation 链路 tenant 贯穿（2026-10-01 追加）
+
+> 背景：服务器（backend=sqlite）曾因 memory context guard 积压拦截出现用户可见错误
+>（"处理消息时出错"，2026-09-29/30）；诊断确认 consolidation 三条路径（guard/后台/手动）
+> 写死 `get_or_create(DEFAULT_TENANT, ...)`——sqlite 单 store 下碰巧无害，**backend=postgres
+> 激活后 per-tenant 视图下默认租户查 `chat:*` 会话拿到空会话，归档必 skip → guard 持续拦
+> turn**。本节为存储切换生产激活（任务 8.3）的硬前置。
+
+- [x] 8.1 **tenant 贯穿修复**：`trigger_memory_consolidation` 增 `tenant_id` 参数（core.py，get_or_create 用真实租户）；guard 经 `state.tenant_id` 透传（before_turn.py + `MemoryConsolidator` 协议）；后台链路 `on_turn_committed` 捕获 `event.tenant_id` → 队列/续跑/`_get_session(tenant_id, key)` 双参（markdown.py + `MemoryLifecycleBindRequest` 接口）；tools.py 绑定 lambda 去 DEFAULT_TENANT 回退；dashboard 手动端点传 `_resolve_request_tenant(tenant_id)`（owner tenant 兜底语义不变）。验证：lifecycle/dashboard 测试全绿 + tenant 透传断言
+  → 完成（2026-10-01）：五文件贯穿（core/before_turn/markdown/tools/dashboard）；既有 lifecycle 假 consolidator 补 kwarg 并加 `tenants == [msg.tenant_id]` 透传断言 + bind 接口双参断言；dashboard 假件同步。相关 57 passed
+- [x] 8.2 **全量回归 + pyright 基线**：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/` 全绿；pyright 双配置对齐基线。验证：结果入 evidence
+  → 完成（2026-10-01）：1768+ passed / 0 failed（见 evidence `task-8.x-tenant-activation.txt`）；pyright project/tests = 38/57 基线零新增
+- [x] 8.3 **生产激活 + durable canary**：服务器部署含修复的镜像，config `[storage] backend="postgres"`（用户已拍板继续多租户改造），重启后验证 durable 网关装配 + e2e canary（exchange→握手→hello→收发）+ durable 落行核验（turns/outbox/replay frames 进 PG）+ consolidation 在 PG 视图下真实归档。验证：canary 输出 + PG 行数证据入 evidence
+  → 完成（2026-10-01）：见 evidence `task-8.x-tenant-activation.txt`（部署 + 激活 + canary + PG 落行 + consolidation 归档实录）

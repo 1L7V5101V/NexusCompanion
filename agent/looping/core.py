@@ -881,10 +881,14 @@ class AgentLoop:
         *,
         archive_all: bool = False,
         force: bool = False,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> bool:
         from core.memory.markdown import ConsolidateRequest
 
-        session = self.session_manager.get_or_create(DEFAULT_TENANT, session_key)
+        # tenant 贯穿（多租户改造）：会话读取必须走调用方的可信租户视图——
+        # PG per-tenant 存储下默认租户查 chat: 会话会拿到空会话（归档必 skip）。
+        # sqlite 单 store 下两种取法等价（行为兼容）。
+        session = self.session_manager.get_or_create(tenant_id, session_key)
         if self._markdown_memory is None:
             raise RuntimeError("markdown memory runtime unavailable")
         maintenance = self._markdown_memory.maintenance

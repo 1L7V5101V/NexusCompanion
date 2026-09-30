@@ -60,7 +60,6 @@ from bootstrap.toolsets.peer import build_peer_agent_resources
 from bootstrap.toolsets.protocol import ToolsetDeps
 from infra.storage.factory import create_session_store, create_storage_runtime
 from infra.storage.runtime import StorageRuntime
-from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
@@ -644,9 +643,11 @@ def _bind_memory_lifecycle_if_supported(
 
     markdown.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            # markdown 旧记忆系统不在 M4H-2 范围（文件路径天然隔离），
-            # 其 session 访问按显式 single-user 回退到默认租户。
-            get_session=lambda key: session_manager.get_or_create(DEFAULT_TENANT, key),
+            # maintenance 会话读取按真实租户视图解析（多租户改造）：
+            # PG per-tenant 存储下默认租户查 chat: 会话会拿到空会话。
+            get_session=lambda tenant_id, key: session_manager.get_or_create(
+                tenant_id, key
+            ),
             save_session=_save_session,
         )
     )

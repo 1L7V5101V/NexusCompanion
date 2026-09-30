@@ -9,6 +9,7 @@ R = TypeVar("R")
 
 from bus.event_bus import EventBus
 from agent.core.runtime_support import SessionLike
+from infra.storage.tenancy import DEFAULT_TENANT
 from agent.core.types import ContextBundle
 from agent.lifecycle.phase import (
     PhaseFrame,
@@ -41,6 +42,7 @@ class MemoryConsolidator(Protocol):
         *,
         archive_all: bool = False,
         force: bool = False,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> bool: ...
 
 
@@ -139,6 +141,7 @@ class _MemoryContextGuardModule:
             try:
                 triggered = await self._consolidator.trigger_memory_consolidation(
                     state.session_key,
+                    tenant_id=state.tenant_id,
                 )
             except Exception:
                 logger.exception(

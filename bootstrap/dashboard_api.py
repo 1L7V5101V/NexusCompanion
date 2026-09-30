@@ -31,6 +31,7 @@ from core.telemetry.metrics_export import export_json, export_prometheus_text
 from infra.storage.factory import create_storage_runtime
 from infra.storage.interfaces import MemoryStorage, SessionStorage, TenantContext
 from infra.storage.runtime import StorageRuntime
+from infra.storage.tenancy import DEFAULT_TENANT
 from infra.storage.tenancy import DEFAULT_TENANT, assert_tenant_resolved, resolve_tenant
 from proactive_v2.memory_optimizer import MemoryOptimizerBusy
 from proactive_v2.state import ProactiveStateStore
@@ -177,6 +178,7 @@ class ManualConsolidator(Protocol):
         *,
         archive_all: bool = False,
         force: bool = False,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> bool: ...
 
 
@@ -1146,6 +1148,7 @@ def create_dashboard_app(
                 session_key,
                 archive_all=archive_all,
                 force=force,
+                tenant_id=_resolve_request_tenant(tenant_id),
             )
         except TimeoutError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -51,7 +51,9 @@ class RefreshRecentTurnsRequest:
 
 @dataclass(frozen=True)
 class MemoryLifecycleBindRequest:
-    get_session: Callable[[str], object]
+    # get_session(tenant_id, session_key)：多租户改造——maintenance 会话读取
+    # 必须走真实租户视图（PG per-tenant 存储下默认租户查不到 chat: 会话）。
+    get_session: Callable[[str, str], object]
     save_session: Callable[[object], Awaitable[None]]
 
 
@@ -1028,7 +1030,7 @@ class MarkdownMemoryMaintenance:
         )
         self._keep_count = keep_count
         self._consolidation_min_new_messages = max(5, keep_count // 2)
-        self._get_session: Callable[[str], object] | None = None
+        self._get_session: Callable[[str, str], object] | None = None
         self._save_session: Callable[[object], Awaitable[None]] | None = None
         self._maintenance_queues: dict[str, deque[str]] = {}
         self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
@@ -1058,9 +1060,9 @@ class MarkdownMemoryMaintenance:
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
-        self._enqueue_maintenance(event.session_key)
+        self._enqueue_maintenance(event.session_key, event.tenant_id)
 
-    def _enqueue_maintenance(self, session_key: str) -> None:
+    def _enqueue_maintenance(self, session_key: str, tenant_id: str) -> None:
         if self._get_session is None or self._save_session is None:
             return
         # C3 §5.9.5：per-session maintenance 意图合并（单槽至多 1 个 pending；
@@ -1082,11 +1084,13 @@ class MarkdownMemoryMaintenance:
         if session_key in self._maintenance_tasks:
             return
         task = asyncio.create_task(
-            self._run_maintenance_queue(session_key),
+            self._run_maintenance_queue(session_key, tenant_id),
             name=f"markdown-memory-maintenance:{session_key}",
         )
         self._maintenance_tasks[session_key] = task
-        task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
+        task.add_done_callback(
+            lambda t: self._on_maintenance_done(t, session_key, tenant_id)
+        )
 
     def _maintenance_inflight(self) -> int:
         """全局在途 maintenance：运行中任务 + 非空 pending 意图会话数。"""
@@ -1095,7 +1099,7 @@ class MarkdownMemoryMaintenance:
         )
         return len(self._maintenance_tasks) + pending_sessions
 
-    async def _run_maintenance_queue(self, session_key: str) -> None:
+    async def _run_maintenance_queue(self, session_key: str, tenant_id: str) -> None:
         lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
         async with lock:
             while True:
@@ -1104,7 +1108,11 @@ class MarkdownMemoryMaintenance:
                     return
                 _ = queue.popleft()
                 try:
-                    session = self._get_session(session_key) if self._get_session else None
+                    session = (
+                        self._get_session(tenant_id, session_key)
+                        if self._get_session
+                        else None
+                    )
                     if session is None:
                         return
                     # C8 §5.9.16：maintenance work start 取一次 snapshot lease
@@ -1132,17 +1140,20 @@ class MarkdownMemoryMaintenance:
         self,
         task: asyncio.Task[None],
         session_key: str,
+        tenant_id: str,
     ) -> None:
         if self._maintenance_tasks.get(session_key) is task:
             _ = self._maintenance_tasks.pop(session_key, None)
         queue = self._maintenance_queues.get(session_key)
         if queue:
             next_task = asyncio.create_task(
-                self._run_maintenance_queue(session_key),
+                self._run_maintenance_queue(session_key, tenant_id),
                 name=f"markdown-memory-maintenance:{session_key}",
             )
             self._maintenance_tasks[session_key] = next_task
-            next_task.add_done_callback(lambda t: self._on_maintenance_done(t, session_key))
+            next_task.add_done_callback(
+            lambda t: self._on_maintenance_done(t, session_key, tenant_id)
+        )
         else:
             _ = self._maintenance_queues.pop(session_key, None)
         if task.cancelled():
