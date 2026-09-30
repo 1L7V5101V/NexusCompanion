@@ -30,9 +30,12 @@ Configure = Callable[[psycopg.Connection[Any]], Any]
 
 
 def _normalize_url(url: str) -> str:
-    # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容
+    # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容；asyncpg 方言 URL（auth/
+    # work_queue 等 async 消费方的既有形态）同样剥成裸 libpq 串
     if url.startswith("postgresql+psycopg://"):
         return url.replace("postgresql+psycopg://", "postgresql://", 1)
+    if url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
     return url
 
 

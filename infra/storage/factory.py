@@ -24,6 +24,10 @@ def _check_pg_schema(postgres_url: str, table: str) -> None:
     url = postgres_url
     if url.startswith("postgresql+psycopg://"):
         url = url.replace("postgresql+psycopg://", "postgresql://", 1)
+    # asyncpg 方言 URL（config 生产形态，auth/work_queue 等 async 消费方直用）
+    # 对 sync 探测/连接串同样剥成裸 libpq 串
+    if url.startswith("postgresql+asyncpg://"):
+        url = url.replace("postgresql+asyncpg://", "postgresql://", 1)
     conn = psycopg.connect(url)
     try:
         row = conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()

@@ -137,10 +137,14 @@ class PostgresMemoryBackend:
         timeout: float = 5.0,
         max_waiting: int = 20,
     ) -> None:
-        # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容
+        # SQLAlchemy 风格 scheme 与 psycopg 连接串兼容（asyncpg 同剥）
         if postgres_url.startswith("postgresql+psycopg://"):
             postgres_url = postgres_url.replace(
                 "postgresql+psycopg://", "postgresql://", 1
+            )
+        if postgres_url.startswith("postgresql+asyncpg://"):
+            postgres_url = postgres_url.replace(
+                "postgresql+asyncpg://", "postgresql://", 1
             )
         self._url = postgres_url
         self._vec_dim = vec_dim

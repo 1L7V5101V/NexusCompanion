@@ -72,6 +72,10 @@ class PostgresSessionBackend:
             postgres_url = postgres_url.replace(
                 "postgresql+psycopg://", "postgresql://", 1
             )
+        if postgres_url.startswith("postgresql+asyncpg://"):
+            postgres_url = postgres_url.replace(
+                "postgresql+asyncpg://", "postgresql://", 1
+            )
         self._url = postgres_url
         self._lock = threading.RLock()
         self._closed = False
