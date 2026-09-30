@@ -561,6 +561,7 @@ async def test_before_turn_memory_context_guard_blocks_after_consolidation_failu
             *,
             archive_all: bool = False,
             force: bool = False,
+            tenant_id: str = "default",
         ) -> bool:
             return False
 
