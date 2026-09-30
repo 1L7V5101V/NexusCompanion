@@ -21,3 +21,14 @@ $ pyright --level error（project / tests 双配置）→ 38 / 57 errors，均�
 
 == 环境备注 ==
 - 本地无 Docker，PG 换用项目自带便携实例（pg.py 管理，D:/Projects/postgres，PG 17.10 + pgvector，端口 5432）；共享 nexus 库已由旧版升级至 alembic head d8e4f2b6a9c1（补 vector/pg_trgm 扩展）——首跑全量回归的 36 failed/4 errors 全部源于该库 schema 过旧（如 "memory_items" 未分区），升级后消失，与本 change 代码无关
+
+---
+
+## 部署后 canary（2026-10-01，阿里云 ECS /opt/NexusCompanion）
+
+- **代码版本**：服务器 main @ `8593a64`（gemini merge `d40d4590` + sync 栈 URL 修复 `8593a649`），镜像 `nexuscompanion-nexus:latest` 重建；迁移链已在服务器控制面 PG 应用至 head `d8e4f2b6a9c1`（含 C7 审计 + 重放帧两表）。
+- **canary e2e（scripts/e2e_deploy_webchat_auth.py 容器内实跑）**：E2E PASS——provisioning ready → exchange 200（__Host-nexus_session 三属性）→ 负向握手×2 拒绝 → hello 三元组与 PG 派生一致 → accepted(seq=1) → turn.completed(seq=2, 'OK') → canary 撤销。与 webchat-auth-wiring deploy-e2e 同脚本同链路。
+- **前端**：新 bundle 上线（index-CHc_AFJn.js 200/460KB 含 PulseCore chunk；/assets 挂载映射 static/chat 根，gemini 分支 vite 布局）。
+- **运行时形态（重要）**：服务器 config 保持 `[storage] backend` 默认 sqlite（config 内注释明确"不设 backend 保持默认 sqlite"，且曾有"遗留误改…恢复默认 sqlite"的运维恢复痕迹）——durable 网关不装配（ADR-6 设计：非 PG 主存储走 legacy 路径，本 change 代码 inert）。存储切换代码已在镜像内待命，**生产激活 = 一行 backend="postgres"**（会话历史自激活时点起入 PG，SQLite 原库保留；属运维决策，待拍板）。
+- **部署踩坑（已修复并回 main）**：`backend=postgres` 首次生产启动暴露 sync 栈 URL 方言缺口（`+asyncpg://` 串直传 libpq 即崩，四处只剥 `+psycopg`）——commit `8593a649` 补齐 + 回归测试 4 项。
+- **服务器 GitHub 连通**：直连 443 超时（国内波动）；本次以本地 push 到服务器临时 ref + ff merge 部署，后经 SSH 反向隧道（本机 7890）fetch 对齐 origin/main；仓库级不留死代理配置，需要时 `ssh -R 17890:127.0.0.1:7890` + `git -c http.proxy=http://127.0.0.1:17890 pull`。
