@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseCore Demo — Abstract Blackhole / Kerr-Newman</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, sans-serif; }
+    #host { position: fixed; inset: 0; }
+    #panel {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; z-index: 10;
+      background: rgba(10, 12, 20, 0.72); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 8px 10px; backdrop-filter: blur(8px);
+    }
+    #panel button {
+      background: rgba(255,255,255,0.06); color: #cfd6e4; border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 7px; padding: 6px 14px; font-size: 13px; cursor: pointer; transition: all .15s;
+    }
+    #panel button:hover { background: rgba(255,255,255,0.14); }
+    #panel button.active { background: #3b5bd6; color: #fff; border-color: #5b7bf0; }
+    #panel button[data-variant].active { background: #8a5bd6; border-color: #a97bf0; }
+    #hint { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.45); font-size: 12px; z-index: 10; }
+    #fps { position: fixed; top: 16px; left: 16px; color: rgba(255,255,255,0.5); font-size: 12px;
+      font-variant-numeric: tabular-nums; z-index: 10; }
+    #adv {
+      position: fixed; top: 70px; right: 16px; width: 280px; max-height: calc(100vh - 96px);
+      overflow-y: auto; z-index: 10; display: none;
+      background: rgba(10, 12, 20, 0.8); border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 10px 12px; backdrop-filter: blur(8px);
+      color: #cfd6e4; font-size: 12px;
+    }
+    #adv.open { display: block; }
+    #adv h4 { margin: 10px 0 6px; font-size: 12px; color: #9fb2d8; font-weight: 600; }
+    #adv h4:first-child { margin-top: 2px; }
+    #adv h4 .tag { color: #6d7f9f; font-weight: 400; }
+    #adv .row { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+    #adv .row .k { width: 88px; flex: none; }
+    #adv .row input[type="range"] { flex: 1; min-width: 0; accent-color: #8a5bd6; }
+    #adv .row .v { width: 46px; flex: none; text-align: right; font-variant-numeric: tabular-nums; color: #e8edf7; }
+    #adv select {
+      width: 100%; background: rgba(255,255,255,0.06); color: #cfd6e4;
+      border: 1px solid rgba(255,255,255,0.14); border-radius: 7px; padding: 4px 6px; font-size: 12px;
+    }
+    #adv .chk { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+    #adv .chk input { accent-color: #8a5bd6; }
+  </style>
+</head>
+<body>
+  <div id="host"></div>
+  <div id="panel">
+    <button data-variant="abstract" class="active">Abstract（新）</button>
+    <button data-variant="kerr">Kerr-Newman（旧）</button>
+    <span style="width:1px;background:rgba(255,255,255,.15);margin:0 2px;"></span>
+    <button data-state="idle" class="active">idle</button>
+    <button data-state="thinking">thinking</button>
+    <button data-state="streaming">streaming</button>
+    <button data-state="error">error</button>
+    <label style="display:flex;align-items:center;gap:6px;color:#cfd6e4;font-size:12px;margin-left:8px;">
+      大小 <input id="size" type="range" min="0.4" max="2" step="0.05" value="0.6" style="width:110px;">
+      <span id="sizeVal" style="font-variant-numeric:tabular-nums;width:34px;">0.60</span>
+    </label>
+    <button id="advToggle" title="实时调参面板（仅 Abstract 变体）">调参</button>
+  </div>
+  <div id="adv"></div>
+  <div id="fps"></div>
+  <div id="hint">鼠标靠近中心：光线偏移 + 能量增强 · 心跳=盘/云呼吸，黑洞本体与星空恒定（「本体脉动」可调回）· 右侧「调参」实时试所有参数</div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

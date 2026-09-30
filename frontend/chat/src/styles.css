@@ -43,7 +43,710 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--color-bg);
   color: var(--color-fg);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+/* 底色只放 html：html 背景作为画布背景最先绘制（在一切之下）；
+   body/#root 必须透明——它们的背景属于普通流内容层，绘制在
+   负 z-index 的脉冲背景之上，不透明会整体盖住黑洞 */
+html {
+  background: var(--color-bg);
+}
+body,
+#root {
+  background: transparent;
+}
+
+/* ===== PulseCore 背景：黑洞脉冲核心（fixed 层，位于内容之下）=====
+   z -1：加入根层叠上下文、落在所有正常流内容之后；
+   自带纯黑底，WebGL 就绪前/失败回退时也是深空。 */
+.pulse-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: #000;
+}
+
+/* ===== 登录：极简胶囊 → 毛玻璃面板（点击展开）=====
+   毛玻璃配方（.login-card）在形变全程保持不变——只动画尺寸/圆角/透明，
+   不对 backdrop-filter 与底色做动画，避免模糊重算每帧抖动。 */
+.login-card {
+  background: rgba(18, 18, 18, 0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+:root {
+  --login-pill-w: 116px;
+  --login-pill-h: 46px;
+  --login-panel-w: min(90vw, 360px);
+  --login-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --login-dur: 460ms;
+}
+
+/* 舞台：整屏居中，点击空白处收回面板 */
+.login-stage {
+  position: relative;
+  display: flex;
+  min-height: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+/* 「Nexus」字标：细体、宽字距 */
+.login-brand {
+  font-size: 19px;
+  font-weight: 300;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;   /* 补偿末字符字距，视觉居中 */
+  color: rgba(237, 237, 237, 0.88);
+  user-select: none;
+}
+
+/* 外壳：收起=胶囊，展开=面板——同一元素上的形变，毛玻璃连贯 */
+.login-shell {
+  position: relative;
+  width: var(--login-pill-w);
+  height: var(--login-pill-h);
+  border-radius: 9999px;
+  overflow: hidden;
+  transition:
+    width var(--login-dur) var(--login-ease),
+    height var(--login-dur) var(--login-ease),
+    border-radius var(--login-dur) var(--login-ease);
+}
+.login-shell.is-open {
+  width: var(--login-panel-w);
+  height: var(--login-h, 240px);   /* 内容实测高度，随登录/注册切换过渡 */
+  border-radius: 18px;
+}
+
+/* 收起态的胶囊按钮 */
+.login-cta {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  letter-spacing: 0.14em;
+  color: rgba(237, 237, 237, 0.92);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: opacity 160ms ease;
+}
+.login-cta:hover { background: rgba(255, 255, 255, 0.05); }
+.login-cta:focus-visible { outline: 1px solid var(--color-border-strong); outline-offset: -6px; border-radius: 9999px; }
+.login-shell.is-open .login-cta {
+  opacity: 0;
+  visibility: hidden;               /* 同时移出 Tab 序与命中区 */
+  transition: opacity 140ms ease, visibility 0s 140ms;
+}
+
+/* 展开态内容层：宽度锚定面板宽；收起时 visibility:hidden 仍参与布局，
+   ResizeObserver 可持续测量内容高度（形变首帧即用正确目标高度）。 */
+.login-body {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--login-panel-w);
+  padding: 22px 22px 20px;
+  text-align: left;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 180ms ease, visibility 0s 180ms;
+}
+.login-shell.is-open .login-body {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 240ms ease 120ms, visibility 0s;
+}
+
+/* 逐项淡入并轻微上移；--i 序号 × 60ms 形成 stagger */
+.login-shell.is-open .login-anim {
+  animation: login-rise 360ms var(--login-ease) both;
+  animation-delay: calc(140ms + var(--i, 0) * 60ms);
+}
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 输入框：无方框、仅底线；focus 提亮底线 */
+.login-field {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  padding: 9px 2px;
+  font-size: 16px;                  /* ≥16px：避免 iOS 聚焦自动缩放 */
+  line-height: 1.5;
+  color: var(--color-fg);
+  outline: none;
+  transition: border-color 200ms ease;
+}
+.login-field::placeholder { color: var(--color-subtle); }
+.login-field:hover { border-bottom-color: var(--color-border-strong); }
+.login-field:focus { border-bottom-color: rgba(237, 237, 237, 0.5); }
+
+/* 提交按钮：沿用 accent 主色，胶囊形与外壳呼应 */
+.login-submit {
+  width: 100%;
+  border: 0;
+  border-radius: 9999px;
+  padding: 10px 16px;
+  font-size: 14px;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  cursor: pointer;
+  transition: opacity 160ms ease, transform 120ms ease;
+}
+.login-submit:disabled { opacity: 0.4; cursor: default; }
+.login-submit:not(:disabled):active { transform: scale(0.985); }
+.login-submit:focus-visible { outline: 2px solid var(--color-border-strong); outline-offset: 2px; }
+
+/* 文字链接（注册入口 / 返回登录） */
+.login-link {
+  font-size: 12px;
+  color: var(--color-muted);
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+.login-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 3px; }
+.login-link:focus-visible { outline: 1px solid var(--color-border-strong); outline-offset: 2px; border-radius: 4px; }
+
+/* 错误提示：小号红字 + 轻微抖动（元素每次报错重挂载，动画可重复） */
+.login-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-danger);
+  animation: login-shake 420ms ease 60ms;
+}
+@keyframes login-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(2px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(1px); }
+}
+
+/* 减少动态：只保留淡入淡出，不做形变与位移 */
+@media (prefers-reduced-motion: reduce) {
+  .login-shell { transition: none; }
+  .login-body { transition: opacity 160ms ease, visibility 0s 160ms; }
+  .login-shell.is-open .login-body { transition: opacity 160ms ease, visibility 0s; }
+  .login-shell.is-open .login-anim {
+    animation: login-fade 180ms ease both;
+    animation-delay: calc(var(--i, 0) * 40ms);
+  }
+  .login-error { animation: none; }
+}
+@keyframes login-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@supports (height: 100dvh) {
+  html,
+  body,
+  #root {
+    height: 100dvh;   /* 移动端动态工具栏/软键盘：跟随可视视口 */
+  }
+}
+
+/* ---- Composer：Gemini 风格极光边框（等待响应时点亮）----
+   WebGL 点光场日冕（AuroraCanvas），光斑 CSS 仅作无 WebGL 时的回退。 */
+
+@property --composer-ring-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.composer-aurora-canvas {
+  position: absolute;
+  inset: -150px;
+  width: calc(100% + 300px);
+  height: calc(100% + 300px);
+  display: block;
+  pointer-events: none;
+}
+
+.composer-ring-fallback {
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--composer-ring-angle),
+    rgba(66, 133, 244, 0) 0deg,
+    rgba(66, 133, 244, 0.9) 40deg,
+    rgba(155, 114, 203, 0.95) 110deg,
+    rgba(217, 101, 112, 0.95) 185deg,
+    rgba(242, 169, 59, 0.9) 255deg,
+    rgba(66, 133, 244, 0.9) 320deg,
+    rgba(66, 133, 244, 0) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+  animation:
+    composer-ring-wander 13s ease-in-out infinite,
+    composer-ring-breathe 5.5s ease-in-out infinite;
+}
+
+/* 光弧沿边框往复游走（无净旋转）。 */
+@keyframes composer-ring-wander {
+  0% { --composer-ring-angle: 0deg; }
+  28% { --composer-ring-angle: 150deg; }
+  52% { --composer-ring-angle: 60deg; }
+  76% { --composer-ring-angle: 240deg; }
+  100% { --composer-ring-angle: 0deg; }
+}
+
+@keyframes composer-ring-breathe {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-ring-fallback {
+    animation: none;
+  }
+}
+
+
+/* ===== 消息区（极简风）：变量集中定义，方便微调 ===== */
+:root {
+  --msg-radius: 18px;
+  --msg-bubble-max: min(44vw, 29rem);
+  --msg-bubble-pad: 10px 16px;
+  --bubble-user-bg: rgba(20, 20, 20, 0.72);        /* 脉冲背景上玻璃化：半透明 + 毛玻璃 */
+  --bubble-assistant-bg: rgba(20, 20, 20, 0.72);
+  --sweep-duration: 3.4s;          /* 流光扫过一轮的时长：缓慢、匀速 */
+  --line-fade: 0.26s;              /* 思考行淡出让位给正文的时长 */
+  --word-fade-in: 0.2s;            /* 状态词切换淡入 */
+  --word-fade-out: 0.15s;          /* 状态词切换淡出 */
+  --ellipsis-breathe: 2.4s;        /* 词尾省略号呼吸周期 */
+  --collapse-duration: 0.25s;      /* 过程详情展开/收起 */
+  --collapse-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --process-indent: 14px;          /* 过程详情的缩进/细线偏移 */
+
+  /* 悬浮输入栏与渐进虚化层 */
+  --composer-h: 130px;             /* 输入栏实测高度（ResizeObserver 写入） */
+  --composer-gap-x: 16px;          /* 左右间距 */
+  --composer-gap-bottom: 14px;     /* 距页面底部间距 */
+  --composer-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --thread-pad-bottom: 18px;       /* 输入栏上方与最后一条消息的呼吸空隙 */
+  --fade-extend: 90px;             /* 虚化层高出输入栏的部分 */
+  --fade-bleed: 28px;              /* blur 层下缘外扩（把模糊截断线推出视口） */
+  --fade-blur-far: 3px;            /* 虚化远层（弱模糊，覆盖更靠上） */
+  --fade-blur-near: 8px;           /* 虚化近层（强模糊，贴近输入栏） */
+  --fade-tint: 0.5;                /* 渐隐着色强度（页面底色 alpha） */
+  --composer-bg-alpha: 0.72;       /* 输入栏半透明 surface 的不透明度 */
+  --composer-blur: 7px;            /* 输入栏自身毛玻璃强度 */
+  --composer-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* 思考中：一行浮动的流光文字（无气泡、无背景、无边框） */
+.thinking-line {
+  min-height: 1.6em;
+  display: flex;
+  align-items: center;
+  animation: block-fade 0.25s ease-out;
+  transition: opacity var(--line-fade) ease;
+}
+.thinking-line-hide {
+  opacity: 0;
+}
+
+/* 流光扫光：background-position 动画，不触发重排；
+   250% 渐变 + 30%/70% 双侧羽化，高光出入画外，循环无跳变 */
+.thinking-shimmer {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--color-muted) 0%,
+    var(--color-muted) 30%,
+    var(--color-fg) 50%,
+    var(--color-muted) 70%,
+    var(--color-muted) 100%
+  );
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: thinking-sweep var(--sweep-duration) linear infinite;
+}
+@keyframes thinking-sweep {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+/* 状态词：固定高度 + min-width（内联），切换只做淡入淡出 */
+.status-label {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  height: 1.5em;
+  vertical-align: bottom;
+}
+.status-word {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+}
+@keyframes word-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes word-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.status-word-enter { animation: word-fade-in var(--word-fade-in) ease-out; }
+.status-word-leave { animation: word-fade-out var(--word-fade-out) ease-out forwards; }
+
+/* 词尾省略号：轻微呼吸 */
+@keyframes ellipsis-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.status-ellipsis {
+  animation: ellipsis-breathe var(--ellipsis-breathe) ease-in-out infinite;
+}
+
+/* 过程入口：一行次要色小字，点击展开缩进详情（无卡片） */
+.process-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: block-fade var(--entry-fade, 0.2s) ease-out;
+}
+.process-toggle {
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-subtle);
+  text-align: left;
+  transition: color 0.15s ease;
+}
+.process-toggle:hover {
+  color: var(--color-muted);
+}
+.process-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--collapse-duration) var(--collapse-ease);
+}
+.process-body.open {
+  grid-template-rows: 1fr;
+}
+.process-body > div {
+  overflow: hidden;
+}
+.process-detail {
+  margin-left: var(--process-indent);
+  padding-left: 12px;
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-muted);
+}
+.process-think {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+.process-tool-name {
+  color: var(--color-fg);
+}
+.process-tool-status {
+  margin-left: 8px;
+  color: var(--color-subtle);
+}
+.process-tool-result {
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+/* 气泡：用户右对齐、助手左对齐；页面上仅这两种气泡 */
+@keyframes block-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.bubble-user {
+  max-width: var(--msg-bubble-max);
+  margin-left: auto;
+  background: var(--bubble-user-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--msg-radius);
+  padding: var(--msg-bubble-pad);
+  width: fit-content;
+  overflow-wrap: anywhere;
+  animation: block-fade 0.2s ease-out;
+}
+.bubble-assistant {
+  max-width: var(--msg-bubble-max);
+  background: var(--bubble-assistant-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--msg-radius);
+  padding: var(--msg-bubble-pad);
+  width: fit-content;
+  overflow-wrap: anywhere;
+  animation: block-fade 0.2s ease-out;
+}
+
+/* 流式 Markdown（渲染在助手气泡内） */
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.md > * {
+  animation: block-fade 0.15s ease-out;
+}
+.md-p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md-h1, .md-h2, .md-h3 {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.md-h1 { font-size: 18px; }
+.md-h2 { font-size: 16px; }
+.md-h3 { font-size: 14px; }
+.md-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+ul.md-list { list-style: disc outside; }
+ol.md-list { list-style: decimal outside; }
+.md-list li::marker { color: var(--color-subtle); }
+.md-pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--color-surface-3);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.md-quote {
+  margin: 0;
+  padding: 2px 12px;
+  border-left: 2px solid var(--color-border-strong);
+  color: var(--color-muted);
+}
+.md-code-inline {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--color-surface-3);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.md-link {
+  color: #8ab4f8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@keyframes cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.stream-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--color-fg);
+  animation: cursor-blink 1s steps(1) infinite;
+}
+.msg-error {
+  font-size: 12px;
+  color: var(--color-danger);
+  padding: 2px 0;
+}
+.scroll-jump {
+  position: absolute;
+  right: 1.25rem;
+  bottom: calc(var(--composer-h) + var(--composer-safe-bottom) + var(--composer-gap-bottom) + 12px);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-3);
+  color: var(--color-fg);
+  font-size: 12px;
+  border-radius: 9999px;
+  padding: 6px 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  animation: block-fade 0.2s ease-out;
+}
+
+/* app 根：overflow clip 裁剪但不产生滚动容器——
+   hidden 会把流光画布的外伸部分计入 scrollHeight，textarea 焦点滚动
+   会把整个界面推上去（composer 偏移 136px） */
+.app-root {
+  overflow: hidden;              /* 老浏览器 fallback */
+  overflow: clip;
+  overscroll-behavior: none;
+}
+
+/* ===== 悬浮输入栏 + 渐进虚化层 ===== */
+.thread-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* 悬浮输入栏：外层全透明、不拦截点击（两侧空白可点击/滚动下方内容） */
+.composer-float {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  padding: 0 var(--composer-gap-x) calc(var(--composer-safe-bottom) + var(--composer-gap-bottom));
+  pointer-events: none;
+}
+.composer-float > div {
+  pointer-events: auto;          /* 仅输入栏本体接收交互 */
+}
+
+/* 输入栏本体：半透明 surface + 轻度毛玻璃，聚焦轻微反馈 */
+.composer-float .composer > div {
+  background: rgb(var(--color-surface-3-rgb) / var(--composer-bg-alpha));
+  backdrop-filter: blur(var(--composer-blur)) saturate(1.15);
+  -webkit-backdrop-filter: blur(var(--composer-blur)) saturate(1.15);
+  box-shadow: var(--composer-shadow);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.composer-float .composer:focus-within > div {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--composer-shadow), 0 0 0 1px var(--color-border-strong);
+}
+
+/* 渐进虚化层：纯视觉、不拦截点击；内容从后方穿过产生「沉入毛玻璃」感 */
+.thread-fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(var(--composer-h) + var(--fade-extend));
+  z-index: 10;
+  pointer-events: none;
+}
+.thread-fade > div {
+  position: absolute;
+  inset: 0;
+}
+/* blur 层下缘外扩到视口之外：backdrop-filter 在元素边界处采样截断，
+   下边缘若落在视口内会留下一条硬线 */
+.thread-fade-blur-far,
+.thread-fade-blur-near {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: auto;
+  height: calc(100% + var(--fade-bleed));
+}
+.thread-fade-blur-far {
+  backdrop-filter: blur(var(--fade-blur-far));
+  -webkit-backdrop-filter: blur(var(--fade-blur-far));
+  mask-image: linear-gradient(to bottom, transparent 0%, black 62%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 62%);
+}
+.thread-fade-blur-near {
+  backdrop-filter: blur(var(--fade-blur-near));
+  -webkit-backdrop-filter: blur(var(--fade-blur-near));
+  mask-image: linear-gradient(to bottom, transparent 20%, black 80%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 20%, black 80%);
+}
+.thread-fade-tint {
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--color-bg-rgb) / 0) 0%,
+    rgb(var(--color-bg-rgb) / calc(var(--fade-tint) * 0.45)) 55%,
+    rgb(var(--color-bg-rgb) / var(--fade-tint)) 100%
+  );
+}
+
+/* backdrop-filter 不支持：降级为仅渐隐着色（无黑块，输入栏不透明兜底） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .thread-fade-blur-far,
+  .thread-fade-blur-near {
+    display: none;
+  }
+  .thread-fade-tint {
+    background: linear-gradient(
+      to bottom,
+      rgb(var(--color-bg-rgb) / 0) 0%,
+      rgb(var(--color-bg-rgb) / calc(var(--fade-tint) * 0.7)) 55%,
+      rgb(var(--color-bg-rgb) / calc(var(--fade-tint) + 0.2)) 100%
+    );
+  }
+  .composer-float .composer > div {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--color-surface-3);
+  }
+}
+
+/* 减少动态效果
+
+/* 减少动态效果：流光停止（静态次要色文字），只保留透明度变化 */
+@media (prefers-reduced-motion: reduce) {
+  .thinking-shimmer {
+    animation: none;
+    background: none;
+    color: var(--color-muted);
+  }
+  .status-ellipsis {
+    animation: none;
+    opacity: 0.55;
+  }
+  .thinking-line,
+  .bubble-user,
+  .bubble-assistant,
+  .md > *,
+  .scroll-jump,
+  .process-entry {
+    animation: none;
+  }
+  .process-body,
+  .thinking-line {
+    transition: none;
+  }
+  .status-word-enter { animation: word-fade-in var(--word-fade-in) ease-out; }
+  .status-word-leave { animation: word-fade-out var(--word-fade-out) ease-out forwards; }
 }
