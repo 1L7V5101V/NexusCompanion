@@ -373,7 +373,7 @@ async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
     save_session = AsyncMock()
     maintenance.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
+            get_session=lambda _tenant_id, _key: session,
             save_session=save_session,
         )
     )
@@ -417,7 +417,7 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
     save_session = AsyncMock()
     maintenance.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
+            get_session=lambda _tenant_id, _key: session,
             save_session=save_session,
         )
     )
@@ -548,7 +548,7 @@ async def test_default_memory_engine_serializes_lifecycle_maintenance():
     maintenance.refresh_recent_turns = AsyncMock(side_effect=_refresh_recent_turns)
     maintenance.bind_lifecycle(
         MemoryLifecycleBindRequest(
-            get_session=lambda _key: session,
+            get_session=lambda _tenant_id, _key: session,
             save_session=AsyncMock(),
         )
     )

@@ -304,7 +304,7 @@ async def test_maintenance_background_worker_holds_lease() -> None:
         cast(
             object,
             SimpleNamespace(
-                get_session=lambda key: session,
+                get_session=lambda _tenant_id, key: session,
                 save_session=AsyncMock(return_value=None),
             ),
         )
@@ -318,7 +318,7 @@ async def test_maintenance_background_worker_holds_lease() -> None:
     maintenance.refresh_recent_turns = spy_refresh  # type: ignore[method-assign]
 
     # 经真实入队路径启动后台 worker（空消息 → 走 refresh 分支）
-    maintenance._enqueue_maintenance("sess-a")
+    maintenance._enqueue_maintenance("sess-a", "default")
     for _ in range(200):
         if "sess-a" not in maintenance._maintenance_tasks:
             break
