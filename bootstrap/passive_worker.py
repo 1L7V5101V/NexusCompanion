@@ -145,6 +145,7 @@ class PassiveMessageWorker:
 
         try:
             # 1. 渠道信息只作为 executor 所需的受控 metadata，不改变 thread identity。
+            item_metadata = item.metadata if isinstance(item.metadata, dict) else {}
             request = TurnRequest(
                 item.session_key,
                 item.content,
@@ -154,6 +155,14 @@ class PassiveMessageWorker:
                     "sender": item.sender,
                     "media": list(item.media),
                     "tenantId": item.tenant_id,
+                    # durable 身份键贯穿（pg-durable-sot-cutover task 8.5）：
+                    # control 路径的终态收束方需要 pg turn/inbox 身份。
+                    "clientMessageId": item_metadata.get("client_message_id"),
+                    **{
+                        k: v
+                        for k, v in item_metadata.items()
+                        if isinstance(k, str) and k.startswith("nexus_pg_")
+                    },
                 },
             )
             while True:
@@ -188,16 +197,30 @@ class PassiveMessageWorker:
                     reply_to=cast(str | None, data.get("replyTo")),
                     media=list(cast(list[str], data.get("media", []))),
                     metadata=dict(cast(dict[str, Any], data.get("metadata", {}))),
-                    control_turn_id=handle.id,
+                    # wire turn_id 优先用 pg durable turn（与 durable 重放帧一致）
+                    control_turn_id=str(
+                        (data.get("metadata") or {}).get("nexus_pg_turn_id")
+                        or handle.id
+                    ),
                 )
             elif result.status is TurnStatus.FAILED:
+                pg_meta = {
+                    k: v
+                    for k, v in item_metadata.items()
+                    if isinstance(k, str) and k.startswith("nexus_pg_")
+                }
                 outbound = OutboundMessage(
                     channel=item.channel,
                     chat_id=item.chat_id,
                     content="处理消息时出错，请稍后再试。",
                     # channel adapter 据此映射协议级失败帧（如 WebChat turn.failed）；
                     # 对不识别该标记的 channel 无行为影响。
-                    metadata={"nexus_error": True},
+                    metadata={
+                        "nexus_error": True,
+                        "nexus_fail_reason": "turn_failed",
+                        **pg_meta,
+                    },
+                    control_turn_id=str(pg_meta.get("nexus_pg_turn_id") or ""),
                 )
             else:
                 return

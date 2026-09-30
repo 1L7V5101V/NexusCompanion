@@ -762,9 +762,19 @@ class AgentLoop:
         sender: str = "user",
         media: list[str] | None = None,
         turn_id: str = "",
+        tenant_id: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> OutboundMessage:
-        """执行直接消息并保留渠道可观察的完整输出。"""
+        """执行直接消息并保留渠道可观察的完整输出。
+
+        ``tenant_id``：多租户改造——control 路径必须传可信入站租户；省略时
+        才回退 channel 派生（sqlite 单 store 行为兼容）。
+        ``extra_metadata``：调用方的 durable 身份键（nexus_pg_*）原样并入
+        inbound metadata，经 outbound_metadata 透传给终态收束方。
+        """
         metadata: dict[str, object] = {}
+        if extra_metadata:
+            metadata.update(extra_metadata)
         if omit_user_turn:
             metadata["omit_user_turn"] = True
         if skip_post_memory:
@@ -781,7 +791,7 @@ class AgentLoop:
             channel=channel,
             sender=sender,
             chat_id=chat_id,
-            tenant_id=tenant_id_for_channel(channel, chat_id),
+            tenant_id=tenant_id or tenant_id_for_channel(channel, chat_id),
             content=content,
             media=list(media or []),
             metadata=metadata,

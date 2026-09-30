@@ -93,6 +93,13 @@ async def execute_control_turn(
     delta_subscription = event_bus.on(StreamDeltaReady, collect_delta)
     try:
         try:
+            # 多租户改造：可信租户与 durable 身份键（nexus_pg_*）贯穿——
+            # PG per-tenant 存储下 channel 派生租户会把会话写进错误租户。
+            pg_meta = {
+                k: v
+                for k, v in (request.metadata or {}).items()
+                if isinstance(k, str) and k.startswith("nexus_pg_")
+            }
             outbound = await loop.process_direct_message(
                 request.input,
                 session_key=request.thread_id,
@@ -102,6 +109,8 @@ async def execute_control_turn(
                 media=_media_values(request.metadata.get("media")),
                 turn_id=turn_id,
                 stream_events=True,
+                tenant_id=str(request.metadata.get("tenantId") or "") or None,
+                extra_metadata=pg_meta or None,
             )
         except (openai.RateLimitError, RateLimitError) as exc:
             raise ControlExecutionError("provider_rate_limited", str(exc), retryable=True) from exc
