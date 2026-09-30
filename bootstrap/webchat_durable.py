@@ -56,6 +56,7 @@ __all__ = [
 # metadata 保留键：pg durable 身份贯穿（task 3.x 完成事务消费；`nexus_` 前缀
 # 与既有 `nexus_error` 约定一致，不进 prompt、不参与授权）。
 PG_TURN_ID_KEY = "nexus_pg_turn_id"
+PG_TENANT_ID_KEY = "nexus_pg_tenant_id"
 PG_INBOX_ID_KEY = "nexus_pg_inbox_id"
 PG_MESSAGE_ID_KEY = "nexus_pg_message_id"
 PG_SEQUENCE_KEY = "nexus_pg_sequence"
@@ -352,7 +353,11 @@ class WebchatDurableTurnFinisher:
                 sorted(metadata),
             )
             return
-        tenant_id = str(metadata.get("tenant_id") or "").strip()
+        # 租户以 durable 链自身的键为准（control 路径的 outbound metadata 不含
+        # tenant_id 下划线键——TurnNotFoundError 教训）。
+        tenant_id = str(
+            metadata.get("nexus_pg_tenant_id") or metadata.get("tenant_id") or ""
+        ).strip()
         inbox_id = str(metadata.get("nexus_pg_inbox_id") or "")
         is_error = bool(metadata.get("nexus_error"))
         fail_reason = str(metadata.get("nexus_fail_reason") or "turn_failed")
