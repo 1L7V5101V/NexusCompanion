@@ -740,12 +740,6 @@ class WebChatChannel:
         )
 
     async def _on_outbound(self, msg: OutboundMessage) -> None:
-        logger.info(
-            "webchat channel 收到出站: channel=%s control_turn_id=%s meta_keys=%s",
-            msg.channel,
-            msg.control_turn_id,
-            sorted((msg.metadata or {}).keys()) if isinstance(msg.metadata, dict) else "?",
-        )
         turn_id = str(msg.control_turn_id or "")
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         durable_seq = metadata.get("nexus_replay_seq")

@@ -224,12 +224,6 @@ class PassiveMessageWorker:
                 )
             else:
                 return
-            logger.info(
-                "passive lane publish_outbound: channel=%s control_turn_id=%s meta_keys=%s",
-                outbound.channel,
-                outbound.control_turn_id,
-                sorted((outbound.metadata or {}).keys()),
-            )
             await self._bus.publish_outbound(outbound)
         finally:
             await self._bus.complete_inbound(item)
