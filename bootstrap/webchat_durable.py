@@ -216,6 +216,7 @@ class WebchatDurableGateway:
                 PG_MESSAGE_ID_KEY: result.message_id,
                 PG_SEQUENCE_KEY: str(result.sequence),
                 PG_CONVERSATION_ID_KEY: conversation_id,
+                PG_TENANT_ID_KEY: tenant_id,
             },
             tenant_id=tenant_id,
         )
