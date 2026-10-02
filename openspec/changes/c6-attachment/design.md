@@ -50,17 +50,20 @@ Pillow 已覆盖 allowlist 全格式；libmagic 的商标/归属面（text 判�
 
 ## ADR-3 storage key 与 blob 布局
 
-**冻结**：blob root = `{workspace}/attachments/`（即 C7 `_category_root("attachments")` 的根，
-`TenantPathResolver.attachments_root` 同树）。布局：
+**冻结**：blob root = C7 `TenantPathResolver.attachments_root`（多租户模式即
+`{workspace}/tenants/{_tenant_dirname}/attachments/`，单机模式 `{workspace}/attachments/`）。
+**工具读 attachment 与 HTTP 读 blob 是同一物理根**（ADR-9 不改工具侧：`read_image_vision`/
+`read_file` 已能读到本租户上传附件），这是比目录形态更硬的约束。布局：
 
 ```
-{workspace}/attachments/
-├── .staging/<upload_session_uuid>/          # 临时区：sniff+校验后先落此，24h TTL
-└── {tenant_dirname}/                        # _tenant_dirname(tenant_id)（C7 同函数）
-    └── <attachment_id>.<server_ext>         # server_ext 由 sniff 的 MIME 映射，不用客户端扩展名
+{attachments_root}
+├── .staging/<upload_session_uuid>/   # 临时区：sniff+校验后先落此，24h TTL
+└── <attachment_id>.<server_ext>       # server_ext 由 sniff 的 MIME 映射，不用客户端扩展名
 ```
 
-- `attachment_id = uuid4()`；文件名不含客户端 filename（filename 只存 metadata 展示名，不参与路径）。
+- ``storage_key`` = ``{attachment_id}.{server_ext}``（**相对 attachments_root**；租户隔离由
+  resolver 根天然提供，不再嵌套 tenant 段）；`attachment_id = uuid4()`，文件名不含客户端
+  filename（filename 只存 metadata 展示名，不参与路径）。
 - staging 落盘 → 校验全过 → `os.rename` 到最终路径（同文件系统原子移动）→ metadata 事务提交。
   两步之间进程崩溃留下 orphan（staging 超龄由 24h 清理；最终路径有 blob 无 metadata 由 reconciliation 清理）。
 - **删除** `AttachmentStore` 的 `/tmp/nexus_uploads` fallback（`infra/channels/base.py`），单机/多租户一律

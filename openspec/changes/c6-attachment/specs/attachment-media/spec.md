@@ -77,8 +77,8 @@ SHALL 拒绝并提示转码后重传。
 
 ### Requirement: blob 落 tenant 命名空间且 metadata 全量入 PostgreSQL
 
-附件字节 SHALL 存储在 tenant 命名空间的 blob 根下（复用 C7 attachments_root 与 tenant 目录清洗），
-路径由服务端派生为 `{blob_root}/{tenant_dirname}/{attachment_id}.{server_ext}`；
+附件字节 SHALL 存储在租户命名空间的 blob 根下（复用 C7 attachments_root 的租户命名
+空间），路径由服务端派生为 `{blob_root}/{attachment_id}.{server_ext}`；
 SHALL NOT 使用 `/tmp` 或任何临时目录作为持久位置。PostgreSQL 的 attachment metadata SHALL 至少记录：
 owner（account + tenant）、size、detected MIME、checksum（sha256）、storage key、状态、引用 message、
 retention deadline 与时间戳。blob 落盘与 metadata 提交 SHALL 有明确的两段式流程，使「blob 存在但 metadata

@@ -32,16 +32,16 @@
 
 ## 3. AttachmentRepository / Service（ADR-3 / ADR-4 / ADR-5）
 
-- [ ] 3.1 `AttachmentRepository`（PG，tenant 维度）：`create_attachment`（staged）→ `commit_attachment`
+- [x] 3.1 `AttachmentRepository`（PG，tenant 维度）：`create_attachment`（staged）→ `commit_attachment`
   （rename 后置 committed + checksum/storage_key）、`get_owned(account, tenant, attachment_id)`、
   `add_reference(message_id, attachment_id)` / `remove_reference`（更新 referencing_count /
   last_referenced_at / retention_deadline）、`mark_missing`、`list_expired`（staged>24h 或
   committed refcount=0 且 deadline 过期）。验证：PG scratch（NEXUS_REQUIRE_PG=1）：引用 insert 更新
   deadline、解除全部引用后 refcount=0、跨租户查询返回空、CAS 幂等
-- [ ] 3.2 staging→committed 两段式：staging 落 `{root}/.staging/<uuid>/` → 校验全过 → `os.rename` 到
+- [x] 3.2 staging→committed 两段式：staging 落 `{root}/.staging/<uuid>/` → 校验全过 → `os.rename` 到
   `{root}/{tenant_dirname}/{attachment_id}.{server_ext}` → 同会话 metadata 提交。验证：进程崩溃窗口
   （模拟 rename 后未提交 metadata）产生 orphan，由 reconciliation 收敛；storage_key 与磁盘路径一致
-- [ ] 3.3 清理任务（幂等）：`cleanup_expired()` 删 staging 超龄 + committed 到期（refcount=0 硬条件）；
+- [x] 3.3 清理任务（幂等）：`cleanup_expired()` 删 staging 超龄 + committed 到期（refcount=0 硬条件）；
   `reconcile()` 标记 missing（committed 无 blob）+ 清理 orphan（有 blob 无 metadata）。验证：重复跑
   第二次删除数=0；missing 项被标记且读取返回 `attachment_blob_missing`；已引用附件永不误删
 

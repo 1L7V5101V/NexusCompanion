@@ -19,7 +19,8 @@
 ## What Changes
 
 - **新 capability `attachment-media`**：上传只返回 immutable `attachment_id`；blob 落
-  `<workspace>/attachments/{tenant_dirname}/{attachment_id}.{ext}`（复用 C7 同一根与 `_tenant_dirname` 清洗）；
+  `<attachments_root（租户命名空间）>/{attachment_id}.{ext}`（复用 C7 attachments_root 同一物理根与
+  tenant 命名空间，工具读 attachment 与 HTTP 读 blob 同树）；
   attachment metadata（owner/size/detected MIME/checksum/storage key/status/引用/retention deadline）落 PostgreSQL；
   上传/读取/转发/删除均重新校验 principal 与 ownership。
 - **BREAKING（HTTP 契约）**：`/api/chat/uploads` 返回改为 `{"attachment_id", "url"}`（url 按 attachment_id 构造，
