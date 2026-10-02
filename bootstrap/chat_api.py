@@ -107,6 +107,7 @@ def create_chat_app(
     if durable_runtime is not None and attachment_config is not None:
         from bootstrap.attachments.blob_store import AttachmentBlobStore
         from bootstrap.attachments.service import AttachmentService
+        from bootstrap.attachments.telemetry import build_default_attachment_telemetry
         from bootstrap.db.repository.attachment_repo import AttachmentRepository
 
         blob_root = workspace / "attachments"
@@ -114,6 +115,7 @@ def create_chat_app(
             AttachmentRepository(durable_runtime.session_factory),
             AttachmentBlobStore(blob_root),
             attachment_config,
+            telemetry=build_default_attachment_telemetry(),
         )
         app.state.attachment_service = service
     # C4 dev-only 门禁第 3 层（design ADR-3）：默认只接受回环客户端；反向代理后
@@ -329,15 +331,7 @@ def create_chat_app(
         except Exception:
             logger.exception("attachment upload 失败")
             raise HTTPException(status_code=500, detail="upload failed") from None
-        app.state.attachment_service.emit(
-            "upload.finished",
-            {
-                "status": "succeeded",
-                "tenant_id": identity.tenant_id,
-                "size_bytes": len(data),
-                "duration_ms": 0,
-            },
-        )
+        # upload.finished 由 service 内部记录点 emit（C12 §8.1）；此处不再重复。
         return {"attachment_id": result.attachment_id, "url": result.url}
 
     @app.get("/api/chat/media", dependencies=[Depends(_require_user_session)])
@@ -369,14 +363,7 @@ def create_chat_app(
             )
         except Exception:
             raise HTTPException(404, detail="file not found") from None
-        service.emit(
-            "fetch.finished",
-            {
-                "status": "succeeded",
-                "tenant_id": identity.tenant_id,
-                "duration_ms": 0,
-            },
-        )
+        # fetch.finished 由 service 内部记录点 emit（C12 §8.1）；此处不再重复。
         filename = record.filename_display or f"attachment{record.server_ext}"
         _ = filename
         return Response(

@@ -68,11 +68,11 @@
 
 ## 6. 观测记录点与 redaction（C12 §8.1 伴随落地）
 
-- [ ] 6.1 `bootstrap/attachments/telemetry.py`：`upload.finished`/`fetch.finished`/`delete.finished`/
+- [x] 6.1 `bootstrap/attachments/telemetry.py`：`upload.finished`/`fetch.finished`/`delete.finished`/
   `cleanup.finished` 四类事件，字段严格 ⊆ `work_queue_telemetry.ALLOWED_EVENT_FIELDS`（单一来源，不扩
   fixture/白名单）；filename/路径/内容一律不入事件（redact_text 兜底）。验证：契约测试双向断言
   （字段 ⊆ 单一来源、不得自造）+ label 白名单负向（`attachment_id` 注册被拒）
-- [ ] 6.2 C12 登记：`c12-observability-backup/tasks.md` §8.1 增量登记本 change 为 attachment 事件记录点
+- [x] 6.2 C12 登记：`c12-observability-backup/tasks.md` §8.1 增量登记本 change 为 attachment 事件记录点
   owner；§8.3 随 5.2 勾选。验证：`openspec validate c12-observability-backup` 通过
 
 ## 7. 测试闸门与证据

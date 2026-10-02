@@ -831,10 +831,13 @@ class AppRuntime:
 
         if self.webchat_durable is None:
             return
+        from bootstrap.attachments.telemetry import build_default_attachment_telemetry
+
         runtime = AttachmentLifecycleRuntime(
             AttachmentLifecycle(
                 AttachmentRepository(self.webchat_durable.session_factory),
                 AttachmentBlobStore(Path(self.workspace) / "attachments"),
+                telemetry=build_default_attachment_telemetry(),
             ),
             cleanup_interval_s=self.config.attachments.cleanup_interval_s,
             reconcile_interval_s=self.config.attachments.reconcile_interval_s,
