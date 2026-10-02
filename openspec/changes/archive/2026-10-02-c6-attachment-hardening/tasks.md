@@ -81,10 +81,10 @@
 - [x] 8.1 端到端守卫：`Service.upload` → 启动轮 + 周期轮 → blob 仍在 → `fetch` 字节一致。
   验证：`test_runtime.py::test_uploaded_attachment_survives_roundtrip`（旧实现必失败）。
 - [x] 8.2 定向回归：`tests/attachments/ + tests/test_chat_api.py + tests/test_channel_base.py +
-  tests/backup_manifest/`。证据：`task-8-targeted-regression.txt`。
+  tests/backup_manifest/`。证据：`task-8.2-targeted-and-pyright.txt`。
 - [x] 8.3 全量：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/`。证据：`task-8.3-full-regression.txt`。
 - [x] 8.4 pyright：改动文件 `--level error` 0 errors；project 全局错误数与 C6 基线对照不新增。
-  证据：`task-8.4-pyright.md`。
+  证据：并入 `task-8.3-full-regression.txt` 的 pyright 段。
 - [x] 8.5 `openspec validate c6-attachment-hardening` 通过。
 - [x] 8.6 `PILOT_ROADMAP_PROJECT_CHECKLIST.md` 刷新：C6 行补「加固」证据链与当前阶段/next decision；
   `SCALING_ROADMAP` 状态同步。证据：本文件勾选 + checklist diff。

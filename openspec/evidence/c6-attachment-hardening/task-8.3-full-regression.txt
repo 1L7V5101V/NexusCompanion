@@ -1,0 +1,41 @@
+C6 加固 §8.3 全量回归认证（2026-10-02，fix/c6-attachment-hardening @ 5df04209）
+
+## 认证跑（最终提交树，无并发任务）
+命令：NEXUS_REQUIRE_PG=1 pytest -q -W error tests/
+结果：**1849 passed / 0 failed / 0 error**（552.5s → 8m52s）
+对照：C6 归档时基线 1835 passed（worktree D:/1/wt-nexus-c6）；+14 为本次新增
+      （tests/attachments 回归守卫 11 个 + 签名迁移拆分用例），无 skip。
+      两次独立全量（1846 passed / 1849 passed）均无失败，全部 PG 集成真实执行。
+
+## 同日的两次非绿色采样（已定性为环境抖动，非回归）
+
+1. **22 errors**（tests/attachments/test_telemetry.py 等一批）出现在某次全量期间，
+   当时我并发跑了 `pyright --level error`（node 开 6GB 堆，且此前已出现过一次 node
+   `JavaScript heap out of memory`）。该批用例随后**单独跑 `-W error` 全绿**
+   （test_telemetry 纯单元、不接触 PG fixture），且仓库未安装随机排序/xdist 插件。
+   → 定性：并发资源争抢导致的连接/内存失败。
+
+2. **2 failed**（`tests/pg_sot/test_e2e_roundtrip.py::test_full_roundtrip_with_restart`
+   + `tests/test_io_modules.py::test_filesystem_tools_cover_core_paths`）出现在全量末尾。
+   逐项核查：
+   - 前者异常为 `OSError: [WinError 64] 指定的网络名不再可用`（Windows 传输层抖动）；
+   - 后者断言 `read_file('big.png')` 返回 `'读取文件失败：'`（异常 str 为空），
+     单独跑 `tests/test_io_modules.py` **12 passed**；
+   - 同一对组合在本地复跑 **5/5 passed**；
+   - 用临时诊断打印试图复现时，该组合直接通过（未能复现，随后 `git restore` 还原）。
+   结论：二者均为全量长跑末尾的压力/句柄抖动，与本 change 改动的代码路径无关。
+   最终认证跑（无并发、独占资源）1849 全绿即为反证。
+
+## pyright
+
+- 改动文件（`bootstrap/attachments/`、`attachment_repo.py`、`chat_api.py`、`app.py`、
+  `agent/config*.py`、`agent/tools/path_resolver.py`、`tests/attachments/`）：
+  `--level error` **0 errors**（一次性全传会触发 node 堆溢出，分批执行稳定）。
+- project 全局：与 C6 记录的 38 errors 基线同源（`agent/tools.py`、`proactive_v2/*`、
+  `plugin_packages/*` 等既有文件），本 change 触碰的文件不在其中。
+
+## 备份面
+
+`tests/backup_manifest/` 14 passed：blob root 迁移到租户命名空间后，`tenant_workspace`
+条目 path 仍指向 `~/.nexus/workspace`（整个 workspace 入备份），未新增 kind、未改校验器，
+C6 的 C12 §8.3 伴随落地结论不变。
