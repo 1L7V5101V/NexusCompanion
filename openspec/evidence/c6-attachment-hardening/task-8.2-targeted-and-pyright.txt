@@ -1,0 +1,20 @@
+C6 加固 §8.2/§8.4 定向回归 & pyright（2026-10-02，fix/c6-attachment-hardening）
+
+## 定向回归（真 PG，-W error）
+命令：NEXUS_REQUIRE_PG=1 pytest -q -W error tests/attachments/ tests/test_chat_api.py
+      tests/test_channel_base.py tests/backup_manifest/
+结果：99 passed / 0 failed / 0 error（62.01s）
+构成：tests/attachments/ 现 76 用例（blob_store 12 / lifecycle 7 / runtime 5 /
+      attachment_repo 10 / http_api 10 / validation 14 / config+text 9 / model_contract 4，
+      含本次新增 11 个回归守卫），加 chat_api / channel_base / backup_manifest 契约。
+对照：C6 归档时同口径 91 passed；本次 +8 为新增守卫（其余为签名迁移改写）。
+      tests/backup_manifest/ 14 passed 未变动 —— C6 §5.2 细化的 tenant-workspace 条目
+      仍过校验器（kind 集合未变，未新增 manifest kind）。
+
+## pyright（--level error）
+命令：pyright --level error bootstrap/attachments/ bootstrap/db/repository/attachment_repo.py
+      bootstrap/chat_api.py bootstrap/app.py agent/config.py agent/config_models.py
+      agent/tools/path_resolver.py tests/attachments/
+结果：0 errors（分批执行：NODE_OPTIONS=--max-old-space-size=6144）
+注：一次性传全部路径会触发 node 堆溢出（与代码无关），分批后稳定 0 errors。
+project 全局错误数对照见 task-8.3-full-regression.txt。
