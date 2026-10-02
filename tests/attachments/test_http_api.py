@@ -125,7 +125,7 @@ def _build_client(
 
 
 @pytest.fixture
-def client(tmp_path, att_pg_url: str) -> TestClient:
+def client(tmp_path, att_pg_url: str):
     c, engine, auth = _build_client(
         tmp_path, att_pg_url, "00000000-0000-0000-0000-000000000001"
     )

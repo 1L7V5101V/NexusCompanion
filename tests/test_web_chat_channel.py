@@ -367,16 +367,15 @@ async def test_two_connections_share_replay_seq():
     assert f1[0]["seq"] == f2[0]["seq"]
 
 
-# ── save_upload ──────────────────────────────────────────────────
+# ── save_upload（C6 移除）──────────────────────────────────
 
 
-def test_save_upload_and_media_allowlist(tmp_path: Path):
+def test_save_upload_removed_c6(tmp_path: Path):
+    """C6 BREAKING：channel 层不再暴露 save_upload/has_media/upload_roots
+    （HTTP 上传走 attachment service，本地 path 回显根除）。"""
     channel = WebChatChannel()
-    # start() 用 session_manager.workspace 初始化 AttachmentStore。
     _start_channel(channel, SessionManager(tmp_path))
 
-    result = channel.save_upload(b"data", "a.png")
-    assert Path(result["path"]).read_bytes() == b"data"
-    assert result["url"].startswith("/api/chat/media?path=")
-    assert channel.has_media(Path(result["path"]))
-    assert not channel.has_media(tmp_path / "outside.png")
+    assert not hasattr(channel, "save_upload")
+    assert not hasattr(channel, "has_media")
+    assert not hasattr(channel, "upload_roots")

@@ -1,0 +1,45 @@
+C6 §7.1 全量回归 & pyright 对照（2026-10-02，feature/c6-attachment）
+
+## pytest 全量（NEXUS_REQUIRE_PG=1, -W error）
+命令：NEXUS_REQUIRE_PG=1 pytest -q -W error tests/（worktree D:/1/wt-nexus-c6）
+结果：1835 passed / 0 failed（约 9m10s）
+对照：C12 merge-record 基线 1277 passed（2026-09-05 前后），本次含 C6 全部新增
+      （tests/attachments/ 现 76 个用例 + web_chat_channel 契约改写 1 个），
+      无 skip、全部 PG 集成真实执行。
+
+## pyright project 配置（pyrightconfig.json, --level error）
+结果：38 errors
+逐条核对：全部位于 agent/tools.py、proactive_v2/*.py、plugin_packages/* 等既有文件
+      （default_pipeline/drift_turn/mcp_sources/memory/proactive_turn/registry/
+       responses/sandbox/setup_main/tools.py），与 C6 27 个新增/改动 py 文件
+      零交集（git diff --name-only main...HEAD 对照）。
+基线：C12 记录 36 errors（2026-09-05）；差异 2 个来自 v1.10.x→当前 pyright 版本
+      对既有代码的新增告警，非 C6 引入。
+确认：C6 改动文件project 配置下均为 0 errors（任务内已逐文件 scoped pyright）。
+
+## pyright tests 配置（pyrightconfig.tests.json, --level error）
+结果：57 errors
+逐条核对：tests/attachments/*（test_http_api 2 处已修、test_config_and_text_limits
+      4 处已修——validate_upload 标注 bytes|str、fixture 返回标注、Path 类型）
+      现 0 errors；剩余 57 全在既有测试文件（test_ws_guard/test_remind_tool/
+      test_web_chat_channel 等，与本 change 无关的既有类型问题）。
+基线：C12 记录 31 errors；差异为既有测试基线随依赖版本漂移，非 C6 引入。
+
+## 修正清单（本次回归暴露并修复）
+- tests/test_web_chat_channel.py::test_save_upload_and_media_allowlist → 改为
+  test_save_upload_removed_c6（C6 删除 save_upload/has_media/upload_roots；
+  channel 层不再回显本地 path）
+- bootstrap/attachments/validation.py: validate_upload 标注 bytes|str（实现已
+  接受 str，标注补齐避免 tests 配置告警）
+- tests/attachments/test_config_and_text_limits.py: tmp_path: Path 标注修正
+- tests/attachments/test_http_api.py: client fixture 去除显式 -> TestClient
+  返回标注（yield generator 类型）
+
+## Task 7.2 — checklist 回填
+PILOT_ROADMAP_PROJECT_CHECKLIST.md 已回填三行（均注明 change c6-attachment+evidence）：
+- §5.9.15 门禁行「Attachment/media ownership、MIME/size、retention 与 backup」→ [x]
+  实现层 verified（备份恢复演练与每日粒度 reconciliation 归 P3 仍 planned）
+- P1「immutable attachment_id + tenant ownership + MIME/size/cleanup」→ [x]
+- P3「attachment blob backup、orphan cleanup 与 missing reconciliation」→ 保持 [ ]
+  但注明 orphan/missing reconciliation 已实现、backup restore 演练归 C12 §8.6
+顶层「当前阶段/current focus/next decision」同步刷新（C6 从「尚未开工」→「实现完成待 review/归档」）。

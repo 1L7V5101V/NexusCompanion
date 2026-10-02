@@ -184,7 +184,7 @@ async def _run_decode_bound(
 
 
 async def validate_upload(
-    data: bytes,
+    data: bytes | str,
     filename: str,
     config: AttachmentConfig,
 ) -> ValidatedAttachment:

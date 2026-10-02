@@ -20,14 +20,14 @@
 
 ## 2. 内容校验核心（ADR-2）
 
-- [ ] 2.1 实现 `bootstrap/attachments/validation.py`：allowlist 表（MIME↔扩展名双向映射 + server_ext 映射）、
+- [x] 2.1 实现 `bootstrap/attachments/validation.py`：allowlist 表（MIME↔扩展名双向映射 + server_ext 映射）、
   magic-byte sniff（jpeg/png/webp/gif 头 + Pillow `Image.open` 懒加载 format 双重印证）、文本 UTF-8 严格解码
   （容 BOM）、单文件 ≤20MiB 判断、总像素 ≤16.8M / GIF 帧 ≤100（seek 断）、解码超时 5s（线程池 + 超时包裹）。
   验证：`tests/attachments/test_validation.py` 矩阵——每种 allowlist 类型正例 × 伪装扩展名、
   拒绝面样本（PDF/zip/exe/svg/html/bmp/avif/heic）、`upload_type_denied`/`upload_ext_mismatch`/
   `upload_pixel_limit`/`upload_frames_limit`/`upload_decode_timeout`/`upload_text_limit`/
   `upload_encoding` 错误码稳定
-- [ ] 2.2 文本上限（≤200k 字符）与编码错误码（`upload_text_limit`/`upload_encoding`）冻结并测试。
+- [x] 2.2 文本上限（≤200k 字符）与编码错误码（`upload_text_limit`/`upload_encoding`）冻结并测试。
   验证：同一校验函数对 200001 字符 UTF-8 文本拒绝；UTF-16/GBK 字节拒绝且错误码为 `upload_encoding`
 
 ## 3. AttachmentRepository / Service（ADR-3 / ADR-4 / ADR-5）
@@ -77,9 +77,9 @@
 
 ## 7. 测试闸门与证据
 
-- [ ] 7.1 全量回归：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/`（含 tests/attachments 全组）全绿；
+- [x] 7.1 全量回归：`NEXUS_REQUIRE_PG=1 pytest -q -W error tests/`（含 tests/attachments 全组）全绿；
   pyright `--level error` project + tests 两配置零新增。验证：evidence `openspec/evidence/c6-attachment/
   task-7.1-regression.txt`（回归计数与基线对照）
-- [ ] 7.2 checklist 回填（仅在有 evidence 时）：PILOT_ROADMAP_PROJECT_CHECKLIST —— §5.9.15 门禁行
+- [x] 7.2 checklist 回填（仅在有 evidence 时）：PILOT_ROADMAP_PROJECT_CHECKLIST —— §5.9.15 门禁行
   标记收口（附本 change 指针）、P1「HTTP/上传/媒体统一认证」条目勾选（附件租户归属与生命周期归 C6
   落定）、next decision 移除 C6 提名项。验证：checklist 状态与 evidence 指针一致

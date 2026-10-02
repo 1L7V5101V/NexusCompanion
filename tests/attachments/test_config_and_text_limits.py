@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent.config import load_config
@@ -51,7 +53,7 @@ def test_attachment_config_frozen_defaults() -> None:
     assert cfg.referenced_ttl_days == 30
 
 
-def test_attachment_config_loads_from_toml(tmp_path: pytest.TempPathFactory) -> None:
+def test_attachment_config_loads_from_toml(tmp_path: Path) -> None:
     """[agent.attachments] 显式值可覆盖冻结默认，且缺省时保持冻结默认。"""
     toml = tmp_path / "config.toml"
     toml.write_text(
