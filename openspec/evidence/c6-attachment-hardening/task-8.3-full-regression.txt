@@ -31,8 +31,12 @@ C6 加固 §8.3 全量回归认证（2026-10-02，fix/c6-attachment-hardening @ 
 - 改动文件（`bootstrap/attachments/`、`attachment_repo.py`、`chat_api.py`、`app.py`、
   `agent/config*.py`、`agent/tools/path_resolver.py`、`tests/attachments/`）：
   `--level error` **0 errors**（一次性全传会触发 node 堆溢出，分批执行稳定）。
-- project 全局：与 C6 记录的 38 errors 基线同源（`agent/tools.py`、`proactive_v2/*`、
-  `plugin_packages/*` 等既有文件），本 change 触碰的文件不在其中。
+- project 全局（最终提交树独占资源实测）：**38 errors**，与 C6 记录基线数值一致。
+  分布在 11 个既有文件：agent/core/drift_turn.py、agent/core/proactive_turn.py、
+  agent/mcp/registry.py、agent/model_runtime/transports/responses.py、
+  agent/retrieval/default_pipeline.py、agent/retrieval/sandbox.py、agent/tools/registry.py、
+  bootstrap/memory.py、bootstrap/setup_main.py、bootstrap/tools.py、proactive_v2/mcp_sources.py。
+  与本 change 触碰文件的交集：**0**（grep 计数核实）。
 
 ## 备份面
 
