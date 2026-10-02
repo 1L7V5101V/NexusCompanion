@@ -2,11 +2,11 @@
 
 > 对应任务计划：`openspec/openspec-tasks-bundle/task-04-webchat-protocol-dev-loop.md`（PILOT_ROADMAP §5.9.10 第 4 项）。
 > 输入的已冻结决策（§5.9.4 WS 协议/游标/慢消费者、§5.9.1 WS replay 硬冲突、§5.9.5 per-connection outbound、§5.6 双入口同步、§10 DECIDED 消息顺序与幂等）不在此重复论证，design.md 逐条引用。
-> 前置已落地：C1 canonical identity（commit `e124dbf8`，account→tenant→canonical conversation resolver + canonical message/sequence）；C2 durable control plane（`7ed6897d`：inbox/outbox/delivery 三事务）；C3 admission（`7c405e8`：tenant lane + 有界队列 + WS outbound 分级降级）。
+> 前置已落地：C1 canonical identity（commit `061a4334`，account→tenant→canonical conversation resolver + canonical message/sequence）；C2 durable control plane（`4d3d3d76`：inbox/outbox/delivery 三事务）；C3 admission（`744860a`：tenant lane + 有界队列 + WS outbound 分级降级）。
 
 ## Why
 
-P0.5 的 dev-only WebChat 闭环在 C1/C2/C3 之前就有一版实现（commit `4e40e510`，2026-09-03）。它把「能收发」跑通了，但对照本 task 的验收标准仍有明确缺口：
+P0.5 的 dev-only WebChat 闭环在 C1/C2/C3 之前就有一版实现（commit `757f721d`，2026-09-03）。它把「能收发」跑通了，但对照本 task 的验收标准仍有明确缺口：
 
 - **`hello` 不携带账号与规范会话**：只回 `session_key`（dev 常量），客户端无法知道服务端派生的账号/tenant/canonical conversation，也没有任何测试断言「客户端 payload 里的 tenant/session 字段不参与授权」——§5.9.1 的硬冲突正是靠这条负向语义防住的。
 - **无 dev-only 暴露门禁**：`channels.chat` 只要 `enabled` 就绑 `host`（配置里可以写 `0.0.0.0`），没有任何代码路径阻止「非 dev 模式 + 非回环地址」的启动或请求。P0.5 出口要求「dev-only 暴露门禁，P1 前不得公网」。

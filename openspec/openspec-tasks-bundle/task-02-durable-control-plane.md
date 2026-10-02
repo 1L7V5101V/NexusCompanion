@@ -8,7 +8,7 @@
 - **§5.9 引用**：§5.9.6（durable state 与 restart recovery）、§5.9.9（inbox/turn/tool/work/outbox/delivery 实体）、§5.9.11（ingress/canonical message/outbox/delivery transaction）、§10 DECIDED（Ingress/outbox/delivery）
 - **§6 出口条件引用**：P0.5 出口「durable inbox/acceptance + final/outbox + delivery ack 状态机」「模型生成完成与 channel sent/failed 语义分离」；P1 出口（公网 durable source of truth）
 - **状态**：verified
-  - 2026-09-06：完成并置 `verified`（§8：commit `c2d40770`/`4946c9df` + 可复现证据）。OpenSpec change `2026-09-06-c2-durable-control-plane`（19/19 任务完成，已归档至 `openspec/changes/archive/`）；交付设计冻结 ADR-1..8、Alembic migration `f3c8a9d2e7b4`（七表，revises `c4d8f2a6e9b3`）、三事务边界仓储（`IngressRepository`/`TurnControlRepository`/`DeliveryRepository`）、`OutboundDeliveryWorker`（lease/heartbeat/退避/dead_letter/redrive）、幂等双键契约 fixture、50 项测试；证据齐 `openspec/evidence/c2-durable-control-plane/`（migration/事务原子性/幂等/状态机/重启重放/grep 无 SQLite fallback/rollback drill 13 项 PASS）。
+  - 2026-09-06：完成并置 `verified`（§8：commit `f9435325`/`a773af5f` + 可复现证据）。OpenSpec change `2026-09-06-c2-durable-control-plane`（19/19 任务完成，已归档至 `openspec/changes/archive/`）；交付设计冻结 ADR-1..8、Alembic migration `f3c8a9d2e7b4`（七表，revises `c4d8f2a6e9b3`）、三事务边界仓储（`IngressRepository`/`TurnControlRepository`/`DeliveryRepository`）、`OutboundDeliveryWorker`（lease/heartbeat/退避/dead_letter/redrive）、幂等双键契约 fixture、50 项测试；证据齐 `openspec/evidence/c2-durable-control-plane/`（migration/事务原子性/幂等/状态机/重启重放/grep 无 SQLite fallback/rollback drill 13 项 PASS）。
 
 ## 目标
 

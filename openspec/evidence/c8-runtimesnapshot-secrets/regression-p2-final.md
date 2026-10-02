@@ -46,7 +46,7 @@
 - 环境记录：便携 PG（C:\Users\HP\.localpg）以 `-o "-p 5433"` 启动后 166 项
   PG 依赖测试从 skip 转为通过。
 
-## Rebase 后受影响验证（origin/main = `bd592ec6`，2026-09-27）
+## Rebase 后受影响验证（origin/main = `b6e27183`，2026-09-27）
 
 按 issue-lifecycle 规范，主题分支 PR 前 rebase 到目标分支最新提交并完成受影响验证：
 
@@ -59,7 +59,7 @@
   （同一 `nexus` 库互相踩踏导致运行间波动），故创建独立 `nexus_c8` 库
   （`NEXUS_TEST_PG_URL` 指向）并以 `NEXUS_REQUIRE_PG=1` 跑双份全量对照：
   - C8 分支（rebase 后）：`37 failed, 1458 passed, 4 errors`；
-  - origin/main 干净 worktree（`bd592ec6`，同 venv 同库同环境）：`37 failed, 1398 passed, 4 errors`；
+  - origin/main 干净 worktree（`b6e27183`，同 venv 同库同环境）：`37 failed, 1398 passed, 4 errors`；
   - **FAILED/ERROR 清单逐项 diff 完全一致** → 41 项失败全部为 main 既有环境性失败
     （含 memory 记录的 `test_web_chat_e2e_dev` 环境性失败组），C8 零新增失败；
   - 1458 = 1398 + 60（C8 新增 60 项测试全部通过）。

@@ -2,7 +2,7 @@
 
 > 对应 `openspec/openspec-tasks-bundle/task-02-durable-control-plane.md`；证据统一落 `openspec/evidence/c2-durable-control-plane/`。
 > 管理闭环：任务 checkbox → `openspec status` → evidence → 仅在有 evidence 时更新 task-02 / PILOT_ROADMAP_PROJECT_CHECKLIST 状态。
-> 分支/worktree：`feature/c2-durable-control-plane` @ `D:\.Projects\NexusCompanion-c2`（基于 `main`@`632d3006`）。
+> 分支/worktree：`feature/c2-durable-control-plane` @ `D:\.Projects\NexusCompanion-c2`（基于 `main`@`abfa5d41`）。
 
 ## 1. 实现准备
 

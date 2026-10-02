@@ -14,7 +14,7 @@
 - 进程内队列/task 在重启时全部丢失，没有统一启动补偿扫描，`unknown` / `compensation_required` 语义完全没有落地；
 - LLM/embedding/MCP/process 四类资源没有分类并发上限，某一类慢资源可耗尽其他资源额度。
 
-C3 是批次 0 并行根（与 C1 并行，E9 弱耦合）；C1 canonical identity 已落地（commit `e124dbf8`），本 change 在切换点对齐 canonical tenant 解析 seam。C4（WebChat dev 闭环扩展）与 P1GATE 都以本 change 的 tenant-scoped admission + 有界队列为前置（E2、D2）。
+C3 是批次 0 并行根（与 C1 并行，E9 弱耦合）；C1 canonical identity 已落地（commit `061a4334`），本 change 在切换点对齐 canonical tenant 解析 seam。C4（WebChat dev 闭环扩展）与 P1GATE 都以本 change 的 tenant-scoped admission + 有界队列为前置（E2、D2）。
 
 ## What Changes
 

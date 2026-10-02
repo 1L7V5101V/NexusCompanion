@@ -1,6 +1,6 @@
 ## Why
 
-main 分支的测试套件不可用：近几次重构（proactive_v2 → plugins/ 插件化、loop 快照与 turn 生命周期、插件系统、通道体系、mcp 源 ack 分组）改了生产代码但没有同步更新对应测试。2026-08-23 在干净 main 上实测：分类一（孤儿测试，引用已删模块）已随 `0a83314d` 合入时删除；剩余 **80 项失败** 分布在 23 个测试文件（针对 archive 分类二~四的定向复跑），全量 pytest 无法作为回归 gate。`scaling-governance` 将「代码·测试·证据」列为三大事实来源，套件不绿意味着 Phase 1B/1C（M5–M7）合入 main 时无法用 pytest 判定零回归。必须先恢复 main 测试套件健康，再承接后续 phase 合并。
+main 分支的测试套件不可用：近几次重构（proactive_v2 → plugins/ 插件化、loop 快照与 turn 生命周期、插件系统、通道体系、mcp 源 ack 分组）改了生产代码但没有同步更新对应测试。2026-08-23 在干净 main 上实测：分类一（孤儿测试，引用已删模块）已随 `98664e02` 合入时删除；剩余 **80 项失败** 分布在 23 个测试文件（针对 archive 分类二~四的定向复跑），全量 pytest 无法作为回归 gate。`scaling-governance` 将「代码·测试·证据」列为三大事实来源，套件不绿意味着 Phase 1B/1C（M5–M7）合入 main 时无法用 pytest 判定零回归。必须先恢复 main 测试套件健康，再承接后续 phase 合并。
 
 ## What Changes
 

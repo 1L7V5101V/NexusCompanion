@@ -2,7 +2,7 @@
 
 > 归属：Pilot 冻结容量与恢复语义验证（[PILOT_ROADMAP §5.9.4/§5.9.5/§5.9.6](../PILOT_ROADMAP.md)），harness 覆盖 C3 change `c3-admission-queue-recovery` 已合入代码
 > 分支：`main`（本地 dev worktree）
-> 运行日期：2026-09-08（git `b05692b6`，结果 JSON `run_at=2026-09-08T15:25:17Z`）
+> 运行日期：2026-09-08（git `231c3911`，结果 JSON `run_at=2026-09-08T15:25:17Z`）
 > 结果原始数据：[`openspec/evidence/c3-admission-queue-recovery/results/pilot_loadtest-2026-09-08.json`](../../evidence/c3-admission-queue-recovery/results/pilot_loadtest-2026-09-08.json)
 > harness：`tests/pilot_loadtest_bench.py`（独立脚本，pytest 不收集 `pilot_*_bench.py`）
 

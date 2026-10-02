@@ -1,7 +1,7 @@
 # Phase 1B 基线：main（2026-08-25 实测）
 
 - 记录日期：2026-08-25
-- main commit：`998395e0dba9d9dedd2ef60d80dbdc019befe776`（docs(scaling) C0 标记 verified，含 C0 可观测性 merge `a777ded2`）
+- main commit：`3bf0db3443437feb8cc551ff8bd07f1936a6cfcf`（docs(scaling) C0 标记 verified，含 C0 可观测性 merge `a68f51f5`）
 - 说明：`feature/phase1b-migration` 分支自该 main commit 创建；记录时刻分支 == main（尚无代码改动），以下基线即 main 基线。
 - 历史参考：main 全量 1031 passed / 0 failed（2026-08-23 测试债清理后，见 memory `phase1-pre-existing-test-failures.md`）；C0 合入后总量扩至 1060。
 

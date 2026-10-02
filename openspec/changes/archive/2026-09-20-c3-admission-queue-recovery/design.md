@@ -1,7 +1,7 @@
 # C3 admission + queue + recovery — 设计
 
 > 引用的冻结决策：§5.9.5（容量表/overload 行为）、§5.9.6（恢复语义）、§6.1 A（tenant-scoped serial lane）、§6.1 B（durable recovery/replay）、§10 DECIDED（Tenant admission、Queue 容量初始值、工具取消）。
-> 代码锚点均为 2026-09-06 main（`632d3006`）实际行为，行号以当时为准。
+> 代码锚点均为 2026-09-06 main（`abfa5d41`）实际行为，行号以当时为准。
 
 ## 1. 现状与差距
 

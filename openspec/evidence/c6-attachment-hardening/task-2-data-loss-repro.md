@@ -3,7 +3,7 @@
 命令环境：本地 PG 5433（`nexus` 管理库 + `nexus_c6test` scratch），
 `NEXUS_REQUIRE_PG=1 .venv/Scripts/python.exe -m pytest -q -W error tests/attachments/`
 
-## 复现（修复前，main HEAD `76209a5d`（原 `bc24797f`），临时用例已删除）
+## 复现（修复前，main HEAD `76209a5d`，临时用例已删除）
 
 用两个临时用例直接跑真实 `AttachmentService` / `AttachmentLifecycleRuntime`：
 

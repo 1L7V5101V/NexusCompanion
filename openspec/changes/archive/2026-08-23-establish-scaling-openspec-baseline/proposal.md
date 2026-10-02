@@ -1,6 +1,6 @@
 ## Why
 
-Scaling 文档体系先于 OpenSpec 存在，`docs/scaling/` 与 `docs/tasks/phase1-storage/` 把架构设想、长期 roadmap、Phase 状态和已执行的里程碑记录混在同一组文件里，靠手动同步维持一致。`docs/scaling/SCALING_PLAN.md` 同时承担架构结论、长期 roadmap、任务拆分、完成时间线与历史状态，内部存在 5 处以上过期或互相矛盾的状态表述（其中"当前结论"段落仍称 Phase 1 只完成"后端兼容接入的一部分"，与已合并进 main 的 `0a83314d` current-state 直接冲突）。继续维护这份混合文档必然持续漂移。
+Scaling 文档体系先于 OpenSpec 存在，`docs/scaling/` 与 `docs/tasks/phase1-storage/` 把架构设想、长期 roadmap、Phase 状态和已执行的里程碑记录混在同一组文件里，靠手动同步维持一致。`docs/scaling/SCALING_PLAN.md` 同时承担架构结论、长期 roadmap、任务拆分、完成时间线与历史状态，内部存在 5 处以上过期或互相矛盾的状态表述（其中"当前结论"段落仍称 Phase 1 只完成"后端兼容接入的一部分"，与已合并进 main 的 `98664e02` current-state 直接冲突）。继续维护这份混合文档必然持续漂移。
 
 本 change 的治理模型修正为**三类事实来源**，各自承担单一职责，避免任何文档同时管理多类信息：
 

@@ -19,7 +19,7 @@
 | 周期轮租户集合取构造参数，生产未传 → 空 | `app.py:836-845` | 24h staging 清理与孤儿收敛只在启动发生 |
 | `cleanup_expired` 先删 blob 再删行；`deleted_blobs += 0` | `lifecycle.py:59-66` | 行可存活而 blob 已无；报告恒报 0 个 blob |
 | `delete.finished` 无生产调用方 | `service.emit` | §7.1 四类记录点缺一 |
-| `secrets/auth_pepper` 被 `47778932`（原 `146736d2`）提交 | 仓库 | 密钥入库（本地未推送） |
+| `secrets/auth_pepper` 被 `47778932` 提交 | 仓库 | 密钥入库（本地未推送） |
 
 ## ADR-1 上传终态保持 `staged`，不在上传时推进 `committed`
 

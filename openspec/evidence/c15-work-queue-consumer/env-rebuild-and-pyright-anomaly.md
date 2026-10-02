@@ -7,7 +7,7 @@
 | 现象 | 证据 |
 | --- | --- |
 | 主仓库 `.git` 被重建 | `.git/worktrees/` **整个不存在**；`git worktree list` 只剩主工作树（wt-c15/wt-c4/c5-merge 全部消失）；本地无 `feature/c15-work-queue-consumer` 分支 |
-| 主仓库 HEAD 前进 | 由 `224458e` → `bd592ec6`（含 `webchat-auth-wiring 21/21` 等新提交） |
+| 主仓库 HEAD 前进 | 由 `1b74860` → `b6e27183`（含 `webchat-auth-wiring 21/21` 等新提交） |
 | `.venv` 被重建 | **Python 3.13.15 → 3.12.14**（pytest 9.1.1 / sqlalchemy 2.0.49） |
 | 本 worktree 变成普通目录 | `.git` 指针文件仍在，但指向已不存在的 admin 目录 → `git status` 报 `fatal: not a git repository: (NULL)` |
 

@@ -3,7 +3,7 @@
 > 日期：2026-10-01/02；生产：阿里云 ECS /opt/NexusCompanion（backend=postgres 激活）；
 > 本地：NEXUS_REQUIRE_PG=1 全量 1772 passed / 0 failed（task 8.2/8.5 后两轮）。
 
-## 8.1 tenant 贯穿修复（commit ccc351f2 + c3506cbd + 7c071533）
+## 8.1 tenant 贯穿修复（commit e6d8c867 + 3d26663c + acf05a03）
 
 - `trigger_memory_consolidation` 增 `tenant_id`；guard 经 `state.tenant_id` 透传；
   markdown maintenance 队列/绑定 `get_session(tenant_id, key)` 双参（去 DEFAULT_TENANT
@@ -14,12 +14,12 @@
 
 ## 8.4/8.5 生产激活暴露的三个真实缺口（全部修复并回 main）
 
-1. **sync 栈 URL 方言**（8593a649）：`+asyncpg://` 直传 libpq 即崩（四处只剥 +psycopg）。
-2. **跨进程租户分区缺口**（3107279a）：C1 分区 worker 只消费进程内 `_queued`——跨进程
+1. **sync 栈 URL 方言**（fe4a96eb）：`+asyncpg://` 直传 libpq 即崩（四处只剥 +psycopg）。
+2. **跨进程租户分区缺口**（8171ec08）：C1 分区 worker 只消费进程内 `_queued`——跨进程
    （canary 脚本/admin API）创建的租户永不触发分区 DDL → require_ready 必挂。修复 =
    app 启动分区 reconciliation（全部 canonical 租户 ∪ pending/running job 租户逐个
    request_provisioning，探针恢复/缺失建分区，§5.9.13 启动恢复）。
-3. **control 路径 tenant/元数据缺口**（63d3cb15 + 后续两修）：webchat turn 实际走
+3. **control 路径 tenant/元数据缺口**（3b7fb91b + 后续两修）：webchat turn 实际走
    passive worker → ConversationRuntime → execute_control_turn → process_direct_message
    （dispatch_outbound=False）——bus 上没有终态 outbound，finisher 结构性收不到；且
    channel 派生租户把会话写进畸形租户 `chat:chat:<tenant>`。修复 =

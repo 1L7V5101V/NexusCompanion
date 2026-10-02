@@ -47,7 +47,7 @@
 
 `tests/control_plane/test_work_queue_state_machine.py` 的副作用 INSERT 引用了
 `test_accounts.tenant_id` 列，但该列已被 C1 迁移 `c4d8f2a6e9b3`（account→N tenant
-去多租户化）**删除** —— 在真 PG 上必然 `UndefinedColumnError`。修复提交 `f541cb8d`：
+去多租户化）**删除** —— 在真 PG 上必然 `UndefinedColumnError`。修复提交 `2c6bdbbc`：
 INSERT 去掉 tenant_id 列（与 conftest seed 一致），state_machine 全文件 19 passed。
 
 ## 证据文件

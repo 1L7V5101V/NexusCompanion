@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P0（独立质量基线，可并行根之一）
 - **§5.9 引用**：§4.1（当前 DefaultMemoryEngine 实现）、§4.4（default 引擎 Pilot 目标实现）、§5.9.10（独立性：13 不阻塞 4、5）、§10 DEFERRED BY EVIDENCE（Retrieval 增强开关）
 - **§6 出口条件引用**：P0 出口「以独立质量 change 建立 default engine 的 raw query + dense semantic/hotness + BM25/hotness + RRF + top-k 记忆召回基线，并将两条 lane 的 hotness 作为长期保留的默认组成；该 change 不阻塞 P0.5/P1 的 WebChat 与认证安全闭环」
-- **状态**：verified（2026-09-27，PR #5 merge commit `5b140fe8`；证据：`openspec/evidence/c13-memory-retrieval-bm25/` — A 基线评测 JSON+markdown（MRR 1.0 / recall@5 0.373 / 注入命中率 1.0）、A/B/C/D 消融矩阵、全量回归 1362 passed（merge 前）/ 1482 passed + 6 既有环境性失败（merge 后）、pyright 全仓 36 errors 与 main 基线一致）
+- **状态**：verified（2026-09-27，PR #5 merge commit `bb13ddb8`；证据：`openspec/evidence/c13-memory-retrieval-bm25/` — A 基线评测 JSON+markdown（MRR 1.0 / recall@5 0.373 / 注入命中率 1.0）、A/B/C/D 消融矩阵、全量回归 1362 passed（merge 前）/ 1482 passed + 6 既有环境性失败（merge 后）、pyright 全仓 36 errors 与 main 基线一致）
 
 ## 目标
 

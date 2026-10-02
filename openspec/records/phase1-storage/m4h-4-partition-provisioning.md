@@ -1,6 +1,6 @@
 # M4H-4 分区 provisioning（计划 + ADR）
 
-> 状态：已完成（2026-08-22，9 commits `4c50a0e0`–`f04c62c7`）
+> 状态：已完成（2026-08-22，9 commits `48e8c73f`–`9c670682`）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
 > 依据：[`SCALING_PLAN-2026-08-22.md`](../../archive/SCALING_PLAN-2026-08-22.md) §C 分区生产验证（:384-393）与风险表 :814
@@ -90,16 +90,16 @@ npx --no-install pyright --venvpath D:\.Projects\NexusCompanion --project pyrigh
 
 ## 4. 实现证据与偏离记录
 
-**状态：已完成（2026-08-22，9 commits，`4c50a0e0`–`f04c62c7`）**
+**状态：已完成（2026-08-22，9 commits，`48e8c73f`–`9c670682`）**
 
 按 §2 序列实现：
 
-1. ADR + seam/state 模型：`4c50a0e0`
-2. 稳定分区命名：`ec7d445a`（`partition_name_for_tenant`：可读前缀 + 48-bit md5 后缀，bound 值保留原始 tenant_id）
-3. 幂等 provisioning 服务：`fa31b228`（状态机 + `request_provisioning` 只读探测恢复 + 同步 DDL 执行器）
-4. 独立 control worker：`2ca420be`（同 tenant 去重、异 tenant 并行、retry/backoff、失败 FAILED）
-5. 接入 + 移除懒 DDL：`1dd09385`（store 写路径 fail-fast）、`9ac95d83`（TurnStartup/Proactive/接线）、`8736740c`（dashboard/undo READY-only 验证）
-6. 5000 tenant 基准：`f056d5ea`
+1. ADR + seam/state 模型：`48e8c73f`
+2. 稳定分区命名：`8d1bb55a`（`partition_name_for_tenant`：可读前缀 + 48-bit md5 后缀，bound 值保留原始 tenant_id）
+3. 幂等 provisioning 服务：`761892f3`（状态机 + `request_provisioning` 只读探测恢复 + 同步 DDL 执行器）
+4. 独立 control worker：`3398ba5e`（同 tenant 去重、异 tenant 并行、retry/backoff、失败 FAILED）
+5. 接入 + 移除懒 DDL：`6d8c04de`（store 写路径 fail-fast）、`df312187`（TurnStartup/Proactive/接线）、`af9faaa8`（dashboard/undo READY-only 验证）
+6. 5000 tenant 基准：`35fe0ea1`
 
 **基准结果**（详细方法/解读见 [`m4h-4-benchmark.md`](m4h-4-benchmark.md)，原始数据 `openspec/evidence/phase1-storage/results/m4h4_partition_provisioning.json`，本地 dev PG，5000 tenant，pool_size 20，poll_interval 0.01）：
 

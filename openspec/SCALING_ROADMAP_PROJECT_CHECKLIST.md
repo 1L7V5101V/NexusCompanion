@@ -14,7 +14,7 @@
 
 ## 当前进度（来自 SCALING_ROADMAP §5）
 
-- **当前阶段**：GOV 治理与文档基线 verified（merge `e50732d6`）；C1 Storage Foundation verified（merge `0a83314d`）；C0 可观测性与负载工具 verified（merge `a777ded2`，change `c0-observability-load` 已 archive）；Phase 1B（C1B+C1C）verified（merge `1788de40`，change `phase1b-migration-cutover` 已 archive）。
+- **当前阶段**：GOV 治理与文档基线 verified（merge `b686395a`）；C1 Storage Foundation verified（merge `98664e02`）；C0 可观测性与负载工具 verified（merge `a68f51f5`，change `c0-observability-load` 已 archive）；Phase 1B（C1B+C1C）verified（merge `823e9d94`，change `phase1b-migration-cutover` 已 archive）。
 - **current focus**：C1D 生产规模验证（M7，Phase 1C）——真实 1024 维 embedding、5000 并发用户、autovacuum/REINDEX、PITR 生产基准；或按证据推进 C2/C3。
 - **current blocker**：无 hard blocker。C1D 生产基准需生产硬件与真实数据分布。
 - **next decision**：开始 Phase 1C（C1D 生产规模验证）——确定生产硬件与真实数据分布基线；C1C 边界内 turn control plane 归属已定案为 dual-store（见 change design.md D6）。
@@ -23,15 +23,15 @@
 ## GOV 治理与文档基线
 
 - [x] **GOV 治理与文档基线** — 三类事实来源生效，SCALING_PLAN 退役；`verified`
-  → [spec](specs/scaling-governance/spec.md) · [change archive](changes/archive/2026-08-23-establish-scaling-openspec-baseline/) · 证据：merge `e50732d6`
+  → [spec](specs/scaling-governance/spec.md) · [change archive](changes/archive/2026-08-23-establish-scaling-openspec-baseline/) · 证据：merge `b686395a`
   - [x] **OpenSpec / Roadmap / 代码·测试·证据三类事实来源职责分离** → [scaling-governance spec](specs/scaling-governance/spec.md)
   - [x] **capability → change → evidence 追踪闭环与生命周期**（apply→review→sync-specs→archive） → [scaling-governance spec](specs/scaling-governance/spec.md)
   - [x] **SCALING_PLAN 退役为历史快照 + tombstone 导航** → [archive tombstone](archive/SCALING_PLAN.md)
 
-## Phase 1 已完成（storage foundation，merge `0a83314d`）
+## Phase 1 已完成（storage foundation，merge `98664e02`）
 
 - [x] **C1 Storage Foundation（PG + pgvector）** — SQLite/PG 双 adapter、tenant 贯穿、pool + bounded executor、provisioning 控制面；`verified`
-  → [主记录](records/phase1-storage/phase1-storage.md) · [M4.5 硬化](records/phase1-storage/m4.5-architecture-hardening.md) · 证据：merge `0a83314d` + [5000 tenant 基准](evidence/phase1-storage/results/m4h4_partition_provisioning.json)
+  → [主记录](records/phase1-storage/phase1-storage.md) · [M4.5 硬化](records/phase1-storage/m4.5-architecture-hardening.md) · 证据：merge `98664e02` + [5000 tenant 基准](evidence/phase1-storage/results/m4h4_partition_provisioning.json)
   - [x] **SQLite/PG 双 adapter 与共同 interface**（M4H-1） → [storage-interface 契约](records/phase1-storage/storage-interface.md) · [interfaces.py](../infra/storage/interfaces.py)
   - [x] **tenant 贯穿（TenantContext/TenantResolver + 各通道派生）**（M4H-2） → [m4h-2-tenant-wiring](records/phase1-storage/m4h-2-tenant-wiring.md) · [tenancy.py](../infra/storage/tenancy.py)
   - [x] **pool + bounded executor（event-loop 隔离）**（M4H-3） → [m4h-3-connection-isolation](records/phase1-storage/m4h-3-connection-isolation.md) · [runtime.py](../infra/storage/runtime.py)
@@ -48,7 +48,7 @@
   - [x] **指标注册与导出**（JSON + Prometheus 文本，dashboard `/metrics` 消费） → [dashboard-metrics 证据](evidence/c0/dashboard-metrics.md)
   - [x] **turn_id 统一追踪表面**（当前 hop；C2/C3 端到端明确留后） → [trace-store 证据](evidence/c0/trace-store.md)
 
-## Phase 1B 已完成（M5/M6，merge `1788de40`）
+## Phase 1B 已完成（M5/M6，merge `823e9d94`）
 
 > change：[`phase1b-migration-cutover`](changes/archive/2026-08-26-phase1b-migration-cutover/)（已 archive `2026-08-26-phase1b-migration-cutover`；spec `storage-migration` 已 sync 至 [spec](specs/storage-migration/spec.md)）
 

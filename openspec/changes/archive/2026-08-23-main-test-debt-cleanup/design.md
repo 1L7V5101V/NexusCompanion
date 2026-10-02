@@ -2,7 +2,7 @@
 
 main 测试债务的现状与成因已在 proposal.md 说明。设计基线（2026-08-23 实测）：
 
-- **80 项失败**集中在 archive 分类二~四的 23 个文件（定向复跑），分类一孤儿测试已随 `0a83314d` 删除，无收集错误。
+- **80 项失败**集中在 archive 分类二~四的 23 个文件（定向复跑），分类一孤儿测试已随 `98664e02` 删除，无收集错误。
 - **全量 suite 会挂起**：某网络依赖测试在 asyncio `select` 上超 90s（`--timeout=120` 可截断，已复现），与 archive 环境性注意一致。
 - **根因已抽丝（traceback 验证），多数是单一构造点漂移**：
 
@@ -72,8 +72,8 @@ main 测试债务的现状与成因已在 proposal.md 说明。设计基线（20
 **结论**：按 D2 准则（仅当生产行为明显违反其文档/规格、确为回归时修生产），本 change 含**一处**生产修复，根因与回归证据如下：
 
 - **修复**：`PluginManager._publish_plugin` 恢复 `self._bind_handlers(instance, mp, scope)` 调用（在 `_register_tools` 前）；`_load_plugin_config` 增加 `overrides` 参数，`_load_module` 处以 `self._plugin_configs.get(name, {})` 注入插件 config 覆盖。
-- **根因一（lifecycle hook 未接线）**：插件系统重构时把 `_bind_handlers(` 调用点删掉，仅剩定义（HEAD `manager.py:2585`）。`git log -S "_bind_handlers(" -- agent/plugins/manager.py` 证实调用点存在于 `9154a408`/`c4be5413`，HEAD 已无调用 → before_turn / after_step / on_tool_call / on_tool_result 等生命周期 hook 在 HEAD 生产完全失效。
-- **根因二（config 覆盖未消费）**：`PluginManager.__init__` 接受并存储 `plugin_configs`（`manager.py:167`）但从未消费；`git log -S "_plugin_configs.get"` 证实消费逻辑存在于 `0ad9c13a`/`82d1e883`/`c4be5413`，HEAD 已丢失 → 程序化 config 注入（含 bare-name config fallback）失效。
+- **根因一（lifecycle hook 未接线）**：插件系统重构时把 `_bind_handlers(` 调用点删掉，仅剩定义（HEAD `manager.py:2585`）。`git log -S "_bind_handlers(" -- agent/plugins/manager.py` 证实调用点存在于 `9154a408`/`c4d98dfe`，HEAD 已无调用 → before_turn / after_step / on_tool_call / on_tool_result 等生命周期 hook 在 HEAD 生产完全失效。
+- **根因二（config 覆盖未消费）**：`PluginManager.__init__` 接受并存储 `plugin_configs`（`manager.py:167`）但从未消费；`git log -S "_plugin_configs.get"` 证实消费逻辑存在于 `0ad9c13a`/`82d1e883`/`c4d98dfe`，HEAD 已丢失 → 程序化 config 注入（含 bare-name config fallback）失效。
 - **回归证据**：撤修复后 9 项插件测试失败（`test_before_turn_hook_fires`、`test_after_step_tap_hook_fires`、`test_counter_increments_extra_metadata`、`test_kv_store_persists_across_manager_instances`、`test_installed_plugin_uses_bare_name_config_fallback`、`test_on_tool_call_fires_before_tool_execution`、`test_on_tool_result_fires_after_tool_execution`、`test_tool_hooks_fire_through_real_reasoner`、`test_plugin_config_model_validates_and_injects_config`）；恢复后 `tests/test_plugin_manager.py test_plugin_doctor.py test_plugin_config_schema.py test_plugin_install.py` 39 项全绿。
 - **不修的理由被否决**：若保留 HEAD 死代码、把 9 项测试改为断言「hook 不触发 / config 不注入」，等于把插件系统文档化的核心能力删掉，丢失真实回归覆盖，与 D3「保留有效覆盖」相悖。
 

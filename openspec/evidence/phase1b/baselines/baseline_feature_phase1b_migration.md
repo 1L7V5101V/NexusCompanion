@@ -3,7 +3,7 @@
 ## 创建时基线（分支 == main）
 
 - 记录日期：2026-08-25
-- 分支 commit：`998395e0dba9d9dedd2ef60d80dbdc019befe776`（HEAD == main，尚未产生代码改动）
+- 分支 commit：`3bf0db3443437feb8cc551ff8bd07f1936a6cfcf`（HEAD == main，尚未产生代码改动）
 - 与 main 基线差异：无（本分支从 main 创建）。
 
 ### pytest

@@ -7,7 +7,7 @@
 - **所属阶段**：P0 lease coverage audit → P2 per-task context + revocation gate 收尾
 - **§5.9 引用**：§5.9.16（RuntimeSnapshot/hooks/credentials/revocation 全节 + memory engine 插件固定表）、§5.9.7（per-task context）、§10 DECIDED（RuntimeSnapshot/hooks/revocation）
 - **§6 出口条件引用**：P0 出口「完成 RuntimeSnapshot lease coverage audit，证明 Passive/Proactive/Drift/maintenance/plugin job 都按 5.9.16 绑定 snapshot，且旧 snapshot 不能绕过 revocation」；P2 出口含 per-task tenant context + hook failure/revocation gate
-- **状态**：verified（P0 段 + P2 段 verified，2026-09-27；merge commit `4a8a1f6f`，PR #6；change 归档 `changes/archive/2026-09-27-c8-runtimesnapshot-secrets/`；证据 [evidence/c8-runtimesnapshot-secrets](../evidence/c8-runtimesnapshot-secrets/)；revocation 真实账号源接线归 C5、TenantToolCatalog 消费归 C7、tenant plugin catalog/engine slot 归 C14、tenant binding durable 化归 C14/C5）
+- **状态**：verified（P0 段 + P2 段 verified，2026-09-27；merge commit `79f036bb`，PR #6；change 归档 `changes/archive/2026-09-27-c8-runtimesnapshot-secrets/`；证据 [evidence/c8-runtimesnapshot-secrets](../evidence/c8-runtimesnapshot-secrets/)；revocation 真实账号源接线归 C5、TenantToolCatalog 消费归 C7、tenant plugin catalog/engine slot 归 C14、tenant binding durable 化归 C14/C5）
 
 ## 目标
 

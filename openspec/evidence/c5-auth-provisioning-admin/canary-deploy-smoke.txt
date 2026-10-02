@@ -14,7 +14,7 @@
 - 生产容器 `NexusCompanion` 与此隔离（不同 docker 网络 `nexuscompanion_default`，
   无 `nexus-pg-c5` DNS，config 无 `[storage]`/`[auth]` 段）——冒烟全程未触碰生产。
 
-## 同步内容（canary 原落后一个修复提交 405d4dc3）
+## 同步内容（canary 原落后一个修复提交 9288b49a）
 
 比对 18 个 C5 核心文件的 md5：16 个与 feature HEAD 一致，2 个不同 —— 正是修复
 提交改动的两个文件。经 `git archive HEAD`（28 文件，340 KB）打包 scp 解包：
@@ -70,7 +70,7 @@ RESULT: ALL-PASS
 要点：
 
 - **suspend / revoke 在部署态不再 500**（`{"status":"suspended"}` /
-  `{"status":"revoked"}` 正常返回），即 405d4dc3 的 MissingGreenlet 修复在真实
+  `{"status":"revoked"}` 正常返回），即 9288b49a 的 MissingGreenlet 修复在真实
   进程中生效。
 - **Cookie 名符合设计退化规则**：`cookie_secure=false`（dev HTTP）时
   `cookie_name()` 返回 `nexus_admin` 而非 `__Host-nexus_admin`；HttpOnly、

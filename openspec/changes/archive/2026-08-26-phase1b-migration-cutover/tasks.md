@@ -59,4 +59,4 @@
 - [x] 5.2 更新 change 状态与跟踪文档：tasks 全勾选 → `openspec validate` 通过 → `openspec status` 显示 apply 完成 → sync-specs 把 `storage-migration` 增量合入主 spec → archive change。验证：`openspec validate` 通过、change archived
   - 证据：`openspec validate --specs` 3 specs 全通过（含新建 `specs/storage-migration`）；change 已 archive 为 `2026-08-26-phase1b-migration-cutover`；`openspec/specs/storage-migration/spec.md`（10 requirements）已 sync。
 - [x] 5.3 更新 `SCALING_ROADMAP.md` 与 `PROJECT_CHECKLIST.md`：仅在 evidence 齐全（merge commit + 可复现测试/基准）时把 C1B/C1C 标 `verified`，Phase 1B 移入已完成节。验证：两文档状态与 evidence 一致、`verified` 满足 §8 规则
-  - 证据：merge `1788de40` + `openspec/evidence/phase1b/`（import/verify/promote/audit/pitr JSON + baselines，pytest 1096 passed 无回归）；SCALING_ROADMAP §4 C1B/C1C 标 `verified`、§5 focus 移至 C1D；PROJECT_CHECKLIST Phase 1B 移入已完成节并链 evidence。
+  - 证据：merge `823e9d94` + `openspec/evidence/phase1b/`（import/verify/promote/audit/pitr JSON + baselines，pytest 1096 passed 无回归）；SCALING_ROADMAP §4 C1B/C1C 标 `verified`、§5 focus 移至 C1D；PROJECT_CHECKLIST Phase 1B 移入已完成节并链 evidence。

@@ -2,7 +2,7 @@
 
 ## Why
 
-C1 Storage Foundation（SQLite/PG 双 adapter、tenant 贯穿、pool + bounded executor、provisioning 控制面）已 merge（`0a83314d`），但生产仍以 SQLite 为主数据源。现有 `scripts/import_to_pg.py` 逐行 insert（万级慢）、无断点续传、无机器可读校验；且无迁移校验工具（根目录 `verify_migration.py` 为 opencode.db 检查脚本，与本次迁移无关）。5000 用户目标要求 PostgreSQL 成为会话、记忆与交付状态的主数据源；必须先让 SQLite → PG 的迁移工具可恢复、可校验、证据可复现，再按 S0-S4 状态机切换到 PG primary，才能安全承载多用户生产。
+C1 Storage Foundation（SQLite/PG 双 adapter、tenant 贯穿、pool + bounded executor、provisioning 控制面）已 merge（`98664e02`），但生产仍以 SQLite 为主数据源。现有 `scripts/import_to_pg.py` 逐行 insert（万级慢）、无断点续传、无机器可读校验；且无迁移校验工具（根目录 `verify_migration.py` 为 opencode.db 检查脚本，与本次迁移无关）。5000 用户目标要求 PostgreSQL 成为会话、记忆与交付状态的主数据源；必须先让 SQLite → PG 的迁移工具可恢复、可校验、证据可复现，再按 S0-S4 状态机切换到 PG primary，才能安全承载多用户生产。
 
 ## What Changes
 

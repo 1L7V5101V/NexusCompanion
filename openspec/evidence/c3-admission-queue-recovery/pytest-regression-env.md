@@ -3,7 +3,7 @@
 ## 本次运行
 
 - 命令：`.venv/Scripts/python.exe -m pytest -q -W error tests/`（`pytest.ini` 已含 `addopts = -W error`）
-- 工作树：`D:/Project/NexusCompanion`（`main` @ `5e959e1`）
+- 工作树：`D:/Project/NexusCompanion`（`main` @ `6f42e2b`）
 - 结果：**1 failed, 1193 passed, 166 skipped**（422.57s）；原始输出见同目录 `pytest-regression.txt`
 - 采集总数 1360 = 1193 + 166 + 1（`pytest --collect-only -q tests/`）
 
@@ -21,7 +21,7 @@
 
 - 原因：`OSError [WinError 1314] 客户端没有所需的特权`。测试用 `Path.symlink_to(..., target_is_directory=True)` 建目录符号链接（`tests/test_plugin_doctor.py:39`），本机非管理员且未开启开发者模式，无法创建符号链接。
 - 独立复现：直接调用 `os.symlink(dir, link, target_is_directory=True)` 同样抛 WinError 1314，与插件代码无关。
-- 与 C3 无关：该测试 2026-07-05 由插件外置化引入（`82d1e88`，PR #96），2026-08-23 债务清理（`e67e56e`）后仍在；C3 只改 `agent/admission/**`、`tests/admission/**`、`bus/queue.py` 等 admission 路径，不触碰 plugin doctor。
+- 与 C3 无关：该测试 2026-07-05 由插件外置化引入（`82d1e88`，PR #96），2026-08-23 债务清理（`4d7c22f`）后仍在；C3 只改 `agent/admission/**`、`tests/admission/**`、`bus/queue.py` 等 admission 路径，不触碰 plugin doctor。
 - 判读：**环境性、既有、非 C3 归因**。该测试缺少「符号链接不可用则 skip」的守卫，属既有测试债务（无开发者模式的 Windows 上必然失败，与代码无关）。
 
 ## 跳过判读：166 项跳过全部为环境性

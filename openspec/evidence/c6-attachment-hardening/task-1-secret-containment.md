@@ -3,11 +3,11 @@
 ## 背景
 
 C6 Task 4 的 HTTP 测试以仓库根作为 AuthRuntime 的 workspace，`PepperProvider` 在
-`workspace/secrets/` 生成 pepper 文件，被 uploads/media 端点那个 commit 连带提交（历史改写后为 `47778932`，原 `146736d2`）：
+`workspace/secrets/` 生成 pepper 文件，被 uploads/media 端点那个 commit 连带提交（历史改写后为 `47778932`）：
 
 ```
 $ git log --oneline --diff-filter=A -- secrets/auth_pepper
-146736d2 feat(c6): uploads/media 端点 BREAKING 改造…  ← 改写前哈希，现对应 47778932
+47778932 feat(c6): uploads/media 端点 BREAKING 改造…（改写后哈希）
 ```
 
 `.gitignore` 原本没有任何 `secrets/` 规则。该 commit 随 C6 合入**本地 main，但未推送**
@@ -38,7 +38,7 @@ $ ls secrets/
 auth_pepper          # 文件仍在本地，digest 校验链不变
 ```
 
-提交：`fix(security): 停止跟踪运行期生成的 auth pepper`（改写后 `45ad61a4`，原 `7aac6494`；
+提交：`fix(security): 停止跟踪运行期生成的 auth pepper`（改写后 `45ad61a4`；
 独立于附件改动，不随附件 revert 一起撤销）。
 
 ## 历史抹除（2026-10-02，经所有者确认后执行）
@@ -59,7 +59,7 @@ git filter-repo --invert-paths --path secrets/auth_pepper --force   # 对 alread
 
 ## 顺带查出的谱系分叉（重要，非本 change 引入）
 
-`git fetch origin main` 后发现：远端 main（`7a2bc1ff`）**不是**本地 main 的祖先。共同祖先是
+`git fetch origin main` 后发现：远端 main（`15cac893`）**不是**本地 main 的祖先。共同祖先是
 `7c358258`（2026-07-13 18:44），正好与 `.git/filter-repo/already_ran`（2026-07-13 18:42）同一时刻
 ——即本地在 7-13 被 filter-repo 改写出一条**从未推送**的平行谱系（本地独有 425 commit，
 远端独有 412 commit）。后果：
@@ -68,4 +68,11 @@ git filter-repo --invert-paths --path secrets/auth_pepper --force   # 对 alread
   核对为本地的严格子集，无远端独有文件，覆盖不丢工作）；
 - 本地其他分支（c4/c5/c8/c12/gemini/pulsecore）tip 也随之与远端不同（tree 已核对一致，仅哈希漂移）；
 - openspec 文档/records 中 2026-07-13 之前写下的 commit 哈希引用全部与远端不一致，
-  需按 `.git/filter-repo/commit-map` 重映射（本次只修了自己新写的引用，历史文档未批量改动）。
+  已按谱系等价匹配（subject + author date + tree 三重校验；两条 subject 内嵌哈希的退化为
+  「author date 唯一」）全量重映射：**88 个旧引用、57 个文件**。映射表留存于
+  `%TEMP%/hashmap_final.json`。闭合校验：openspec 文档内 7-40 位 hex token 中 186 个可解析为
+  main 上的 commit、151 个本就不是 commit（alembic revision / sha256 片段 / 长数字串）保持原样、
+  **失效引用 0**。
+  例外：`openspec/evidence/**/results/*.json` 里 harness 记录的 `git_revision`/`git_rev` 字段
+  **故意不改写**——那是「本次基准跑在哪个 commit 上」的原始机器证据，改写等于篡改历史记录，
+  代价是这些值在本地 gc 后不再可解析。

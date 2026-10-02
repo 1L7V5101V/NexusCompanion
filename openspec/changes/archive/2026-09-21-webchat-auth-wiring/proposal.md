@@ -1,6 +1,6 @@
 # WebChat 认证接线 — auth-gated channel + session-derived identity + chat bundle
 
-> 承接 C5（`auth-provisioning`，合并 `0753628`，change 归档 `changes/archive/2026-09-07-c5-auth-provisioning-admin/`）与 C4（`webchat-protocol-dev-loop`，归档 `changes/archive/2026-09-20-c4-webchat-protocol-dev-loop/`）之间的**未认领接缝**。
+> 承接 C5（`auth-provisioning`，合并 `98192c1`，change 归档 `changes/archive/2026-09-07-c5-auth-provisioning-admin/`）与 C4（`webchat-protocol-dev-loop`，归档 `changes/archive/2026-09-20-c4-webchat-protocol-dev-loop/`）之间的**未认领接缝**。
 > 输入的已冻结决策（PILOT_ROADMAP §5.9.1 服务端派生身份 / §5.9.3 Cookie+CSRF+Origin / §5.9.4 WS 握手、§5.6 双入口）不在此重复论证，design.md 逐条引用。
 
 ## Why

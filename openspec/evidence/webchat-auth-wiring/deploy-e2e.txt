@@ -46,7 +46,7 @@ E2E PASS: exchange → handshake(负向×2) → hello → 收发一轮（流式+
   服务端正确回 error 帧（`ERR_BAD_CLIENT_MESSAGE_ID`），脚本当时未显式处理
   error 帧导致等待空闲回收；已修复脚本（cmid 用 UUID + error 帧即失败）。
   该轮产生的 canary 账号 `8a297ab8-8394-4f77-8004-8dc170e3d7ab` 同样已撤销。
-- **部署代码版本**：服务器快照包含 webchat-auth-wiring 主体（`3da7f9d5`）；
+- **部署代码版本**：服务器快照包含 webchat-auth-wiring 主体（`4d4d8e02`）；
   与 main 的差异仅为 `chat_api.py` 黑格式化（无语义差异）及 C15
   （`work-queue`）对 `bootstrap/app.py` 的增量（属 C15 部署范围，与本 change
   验收无关）。核心身份/握手/门禁文件（`web_chat_channel.py`、
@@ -56,10 +56,10 @@ E2E PASS: exchange → handshake(负向×2) → hello → 收发一轮（流式+
 
 ---
 
-## 附：重部署至最新 main（2026-09-27 20:44 +0800，commit `57a0c80e`）
+## 附：重部署至最新 main（2026-09-27 20:44 +0800，commit `7c5caaab`）
 
 e2e 验收完成后，同一日将服务器从 tarball 部署改为 **git clone 部署**
-（`/opt/NexusCompanion` = origin/main @ `57a0c80e`，旧目录整体保留于
+（`/opt/NexusCompanion` = origin/main @ `7c5caaab`，旧目录整体保留于
 `/opt/NexusCompanion.bak-20260927-gitpull`），重建镜像 `fbb97639df06`，
 并应用 C15 迁移 `a7f2c9e4b1d8`（work queue lease 列 + work_attempts 审计流）。
 随后在同一镜像上**复跑上表 e2e 全链：E2E PASS**（canary 账号

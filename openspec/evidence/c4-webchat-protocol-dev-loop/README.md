@@ -2,7 +2,7 @@
 
 - 分支：`feature/c4-webchat-protocol-dev-loop`
 - worktree：`D:/Project/NexusCompanion-worktrees/wt-c4`
-- 基线：`main`@`f06854c`（C1 `e124dbf8` / C2 `7ed6897d` / C3 `7c405e8` 均已合入）
+- 基线：`main`@`6c1a0a6`（C1 `061a4334` / C2 `4d3d3d76` / C3 `744860a` 均已合入）
 - 执行日期：2026-09-20
 - 对应 change：`openspec/changes/2026-09-20-c4-webchat-protocol-dev-loop/`
 

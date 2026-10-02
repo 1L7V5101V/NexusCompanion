@@ -1,4 +1,4 @@
-C6 加固 §8.3 全量回归认证（2026-10-02，fix/c6-attachment-hardening @ da172a62（原 5df04209））
+C6 加固 §8.3 全量回归认证（2026-10-02，fix/c6-attachment-hardening @ da172a62）
 
 ## 认证跑（最终提交树，无并发任务）
 命令：NEXUS_REQUIRE_PG=1 pytest -q -W error tests/

@@ -349,7 +349,7 @@ StorageRuntime
 
 ### Phase 1：PostgreSQL + pgvector 存储基础（P0）
 
-**状态：已合并进 main（current-state）——`0a83314d` merge `feature/scaling-phase1-storage`，storage foundation（M0-M4 + M4H-1~M4H-5）已完成；M5-M7 拆为 Phase 1B/1C 在独立分支执行（future-state）。**
+**状态：已合并进 main（current-state）——`98664e02` merge `feature/scaling-phase1-storage`，storage foundation（M0-M4 + M4H-1~M4H-5）已完成；M5-M7 拆为 Phase 1B/1C 在独立分支执行（future-state）。**
 **旧分支：`feature/pg-migration` 已被该分支继承，视为 superseded。**
 
 任务级实施细节与验收证据见 `docs/tasks/phase1-storage/`（历史执行证据，已随 merge 进入 main）；后续 Phase 的任务状态由 OpenSpec changes/specs 承载。
@@ -378,7 +378,7 @@ StorageRuntime
 
 ##### B. 连接与事件循环模型（M4H-3 已完成）
 
-M4H-3 已定案并落地：**同步 pool + 有界 thread executor**（ADR `34c0f4c8`，非 async adapter）。`StorageRuntime.run_db` 经 `loop.run_in_executor(bounded)` 把同步 DB 调用移出 event loop，已接入 retriever/memorizer/engine/worker/session/before_turn/dashboard。资源模型：进程级 `StorageRuntime` 持 pool + bounded executor，request-scoped `TenantStorage` view 不持有连接。
+M4H-3 已定案并落地：**同步 pool + 有界 thread executor**（ADR `1e770892`，非 async adapter）。`StorageRuntime.run_db` 经 `loop.run_in_executor(bounded)` 把同步 DB 调用移出 event loop，已接入 retriever/memorizer/engine/worker/session/before_turn/dashboard。资源模型：进程级 `StorageRuntime` 持 pool + bounded executor，request-scoped `TenantStorage` view 不持有连接。
 
 已满足（有测试证据）：
 
@@ -387,7 +387,7 @@ M4H-3 已定案并落地：**同步 pool + 有界 thread executor**（ADR `34c0f
 - 事务失败后连接可恢复，不留下 aborted transaction；
 - shutdown 显式关闭 pool，不依赖 `__del__`；
 - 不共享一个 cursor/connection 跨并发请求；
-- 同步 DB 调用不阻塞 event loop（`8eddd528` lag probe 证明）。
+- 同步 DB 调用不阻塞 event loop（`e2c19975` lag probe 证明）。
 
 ##### C. 分区生产验证
 
@@ -904,7 +904,7 @@ worker_id, runtime_version, provider, model, attempt, duration_ms
 
 按风险和当前分支状态，推荐紧接着执行：
 
-1. Phase 1 storage foundation（M4H-2~M4H-5）已完成并合并进 `main`（`0a83314d`）；后续 **Phase 1B/1C（M5-M7）** 与 Phase 2+ 在独立 branch/worktree 执行，任务状态与证据由 OpenSpec changes/specs 承载（见 [scaling-docs-baseline](../../openspec/specs/scaling-docs-baseline/spec.md)）。
+1. Phase 1 storage foundation（M4H-2~M4H-5）已完成并合并进 `main`（`98664e02`）；后续 **Phase 1B/1C（M5-M7）** 与 Phase 2+ 在独立 branch/worktree 执行，任务状态与证据由 OpenSpec changes/specs 承载（见 [scaling-docs-baseline](../../openspec/specs/scaling-docs-baseline/spec.md)）。
 2. 在独立低冲突分支完成 **Phase 0 metrics + load harness**，为 Phase 1 M7 和 Phase 2 提供统一证据。
 3. 用小型设计文档定型 **TurnAdmission、IngressQueue envelope、inbox/outbox schema**，再开始 Phase 2/3 编码。
 4. 暂停把 Redis cache 和公网 WebChat 当作当前关键路径；前者等待 PG 基准，后者等待身份与最终投递语义。

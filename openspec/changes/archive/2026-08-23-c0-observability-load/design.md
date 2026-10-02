@@ -2,7 +2,7 @@
 
 ## Context
 
-C1 Storage Foundation 已 merge（`0a83314d`）：`StorageRuntime.for_tenant` 提供 sqlite/postgres 双后端 tenant-bound view（`infra/storage/runtime.py:98`），config `storage.backend` 切换（`agent/config.py:295`，`infra/storage/factory.py:48/65/84`），`test_storage_parity` 已按双后端参数化。动机见 proposal.md - Why。
+C1 Storage Foundation 已 merge（`98664e02`）：`StorageRuntime.for_tenant` 提供 sqlite/postgres 双后端 tenant-bound view（`infra/storage/runtime.py:98`），config `storage.backend` 切换（`agent/config.py:295`，`infra/storage/factory.py:48/65/84`），`test_storage_parity` 已按双后端参数化。动机见 proposal.md - Why。
 
 已存在可复用基础：
 - **turn 诊断**：`core/common/diagnostic_log.py` 的 `diagnostic_context`/`diagnostic_line` 已贯穿 `PassiveTurnPipeline` 各 phase（`agent/core/passive_turn.py:371-596`，含 before_turn/before_reasoning/reasoner/after_reasoning/after_turn + turn_id）；`turn_logging.RoutingTurnLogger` 运行时组装；`bus/events_lifecycle.py` 生命周期事件携带 `turn_id`，`bootstrap/control_execution.py` 已按 turn_id 关联事件。

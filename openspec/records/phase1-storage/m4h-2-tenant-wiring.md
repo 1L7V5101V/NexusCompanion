@@ -3,11 +3,11 @@
 > 状态：已完成（A–F 全部提交，2026-08-21）
 > 归属：M4.5 架构硬化，见 [`m4.5-architecture-hardening.md`](m4.5-architecture-hardening.md)
 > 分支：`feature/scaling-phase1-storage`
-> 证据：A `4ac8d8c8` · B `8bffd85b` · C `597feda3` · D1–D3 `4b27de4b`/`e464e6bb`/`abce3d45` · E `555d7079` · F-1 `c7b5daee`（既有测试同步）· F `cda8af11`（test_tenant_isolation.py + 文档）
+> 证据：A `29ad7d1a` · B `9e318766` · C `facdd3f9` · D1–D3 `a4744d4c`/`17eb27c2`/`d6dd6917` · E `a9cf6a6a` · F-1 `4583549b`（既有测试同步）· F `331e9d2b`（test_tenant_isolation.py + 文档）
 
 ## Context
 
-M4H-0/M4H-1 已完成并提交（`f4697e27`）。M4H-1 定义了 `MemoryStorage`/`SessionStorage`
+M4H-0/M4H-1 已完成并提交（`cc33400a`）。M4H-1 定义了 `MemoryStorage`/`SessionStorage`
 Protocol 与 `TenantContext`/`TenantResolver` seam，但 tenant 尚未真正贯穿运行时：
 `create_store`/`create_session_store` 与两个 PG adapter 仍默认 `tenant_id="default"`，
 生产调用点没有从可信 inbound identity 派生 tenant。当前 parity 证明的是 adapter 行为，

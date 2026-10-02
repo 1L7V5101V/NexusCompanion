@@ -1,7 +1,7 @@
 # C0 基线：main（2026-08-23 清理后）
 
 - 记录日期：2026-08-23
-- main commit：`9455faef39e03fe398ff253027f4d419d90db636`（docs(scaling) 新增 C0 前置 change，等同分支基线的父级）
+- main commit：`4009a7ae615f5097f5df18ef9116427b60adbd0e`（docs(scaling) 新增 C0 前置 change，等同分支基线的父级）
 - 说明：`feature/c0-observability` 分支自该 main commit 创建，仅含 docs 变更（openspec/ 下），不含代码改动；以下基线即 main 基线。
 
 ## pytest

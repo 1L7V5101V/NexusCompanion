@@ -2,7 +2,7 @@
 
 ## Context
 
-Storage Foundation（C1）已 merge（`0a83314d`）：`StorageRuntime.for_tenant(ctx)` → tenant-bound view（`infra/storage/runtime.py`），sync pool + bounded executor，`TenantProvisioningService` 幂等分区 provisioning（`infra/storage/provisioning.py`），分区稳定命名 `partition_name_for_tenant`（`infra/storage/partitioning.py`）。动机见 proposal.md - Why；行为契约见 specs/storage-migration/spec.md。
+Storage Foundation（C1）已 merge（`98664e02`）：`StorageRuntime.for_tenant(ctx)` → tenant-bound view（`infra/storage/runtime.py`），sync pool + bounded executor，`TenantProvisioningService` 幂等分区 provisioning（`infra/storage/provisioning.py`），分区稳定命名 `partition_name_for_tenant`（`infra/storage/partitioning.py`）。动机见 proposal.md - Why；行为契约见 specs/storage-migration/spec.md。
 
 当前差距：`scripts/import_to_pg.py` 逐行 insert（经 `bootstrap.db` async repos），默认落 `default` tenant；迁移校验工具尚不存在（根目录 `verify_migration.py` 是检查 opencode.db 的无关脚本，不可复用）；生产仍 SQLite primary。`session/manager.py` 的 `control_store`（turn 持久化）显式收窄到 SQLite `SessionStore`，PG 后端抛 `RuntimeError` —— 这是 S2 必须定案的边界（见 D6）。
 

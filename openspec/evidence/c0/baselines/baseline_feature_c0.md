@@ -1,7 +1,7 @@
 # C0 基线：feature/c0-observability 分支
 
 - 记录日期：2026-08-23
-- 分支 commit：`9455faef39e03fe398ff253027f4d419d90db636`（HEAD == main，尚未产生代码改动）
+- 分支 commit：`4009a7ae615f5097f5df18ef9116427b60adbd0e`（HEAD == main，尚未产生代码改动）
 - 与 main 基线差异：无（本分支从 main 创建，仅 docs 变更；代码改动将在后续任务中落地）。
 
 ## pytest

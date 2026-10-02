@@ -1,6 +1,6 @@
 # C2 PR diff 范围检查（task 7.2）
 
-基线：main@632d3006（C1 终点）；分支 feature/c2-durable-control-plane（本记录时点 HEAD：4946c9df）
+基线：main@abfa5d41（C1 终点）；分支 feature/c2-durable-control-plane（本记录时点 HEAD：a773af5f）
 
 ```
  alembic/env.py                                     |    9 +

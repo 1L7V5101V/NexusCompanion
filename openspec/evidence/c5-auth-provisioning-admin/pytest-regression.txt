@@ -7,9 +7,9 @@
 - 本次重跑于新增 `test_session_timeout.py` **之后**的当前树，取代早前
   1174 passed / 186 skipped 的记录（该记录取自基线 merge 之前的工作树）。
   两处计数变化均已定位，均非回归：
-  - **+7 passed**：基线 merge（`35fea3d3`）带入 `origin/main` 的新测试
+  - **+7 passed**：基线 merge（`9eb53e2f`）带入 `origin/main` 的新测试
     —— `tests/test_provider_codex_protocol.py` +6、`tests/test_runtime_smoke.py` +1
-    （`git diff f99e2a92 HEAD -- tests/` 新增测试函数恰为 7 个）。
+    （`git diff 91b7758c HEAD -- tests/` 新增测试函数恰为 7 个）。
   - **+6 skipped**：本次新增的 `tests/auth_provisioning/test_session_timeout.py`
     6 项带 `pytest.mark.postgres`，在非 PG 运行下按预期跳过；其真实执行见
     `pytest-pg-integration.txt`（53 passed）。
