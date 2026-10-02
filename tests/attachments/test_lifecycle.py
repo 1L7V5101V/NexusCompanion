@@ -71,12 +71,12 @@ async def test_reconcile_removes_orphan_blob(
     # 写入一个无 metadata 的 blob（孤儿）
     orphan_id = uuid.uuid4()
     key = build_storage_key(orphan_id, ".png")
-    lifecycle._blobs.stage_bytes(orphan_id, b"orphan")
-    lifecycle._blobs.commit(orphan_id, ".png")
-    assert lifecycle._blobs.blob_exists(key)
+    lifecycle.blob_store.stage_bytes(orphan_id, b"orphan")
+    lifecycle.blob_store.commit(orphan_id, ".png")
+    assert lifecycle.blob_store.blob_exists(key)
     report = await lifecycle.reconcile(att_tenant["tenant_id"])
     assert report.removed_orphans >= 1
-    assert not lifecycle._blobs.blob_exists(key)
+    assert not lifecycle.blob_store.blob_exists(key)
 
 
 async def test_cleanup_idempotent_and_skips_referenced(
@@ -116,8 +116,8 @@ async def test_cleanup_idempotent_and_skips_referenced(
         temp_ttl_hours=24,
     )
     exp_key = exp_row.storage_key
-    lifecycle._blobs.stage_bytes(exp_row.id, b"gif")
-    lifecycle._blobs.commit(exp_row.id, ".gif")
+    lifecycle.blob_store.stage_bytes(exp_row.id, b"gif")
+    lifecycle.blob_store.commit(exp_row.id, ".gif")
     # 拨 deadline 到过去
     conn = psycopg.connect(
         "postgresql://nexus:nexus_dev@localhost:5433/nexus_c6test", autocommit=True
@@ -131,7 +131,7 @@ async def test_cleanup_idempotent_and_skips_referenced(
 
     cleanup1: CleanupReport = await lifecycle.cleanup_expired()
     assert cleanup1.deleted_metadata == 1
-    assert not lifecycle._blobs.blob_exists(exp_key)
+    assert not lifecycle.blob_store.blob_exists(exp_key)
     # 已引用项仍在
     fresh = await att_repo.get_owned(
         account_id=att_tenant["account_id"],

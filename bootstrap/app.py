@@ -55,6 +55,7 @@ from infra.control.socket import SocketAppServer, is_tcp_endpoint
 
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
+    from bootstrap.attachments.runtime import AttachmentLifecycleRuntime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -229,6 +230,7 @@ class AppRuntime:
         self.work_queue: WorkQueueRuntime | None = None
         self.work_queue_task: asyncio.Task[None] | None = None
         self.webchat_durable: "WebchatDurableRuntime | None" = None
+        self.attachments_lifecycle: "AttachmentLifecycleRuntime | None" = None
         self.peer_process_manager = None
         self.peer_poller = None
         self.dashboard_server = None
@@ -479,6 +481,11 @@ class AppRuntime:
                         )
                     except Exception:
                         logger.exception("webchat 启动对账异常（跳过，下轮重启重试）")
+                # C6 ADR-10：attachment 生命周期后台任务（进程内清理 + reconciliation）。
+                # 仅在 PG durable 激活且 attachment 配置启用时装配；interval=0 时
+                # 周期循环退化为启动对账 + 手动触发（dry-run 演练）。
+                if self.webchat_durable is not None and self.config.attachments.enabled:
+                    self._start_attachment_lifecycle()
             self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -815,6 +822,39 @@ class AppRuntime:
         if runtime is not None:
             await runtime.aclose()
 
+    def _start_attachment_lifecycle(self) -> None:
+        """C6 ADR-10：装配 attachment 生命周期周期任务（best-effort，不阻断启动）。"""
+        from bootstrap.attachments.blob_store import AttachmentBlobStore
+        from bootstrap.attachments.lifecycle import AttachmentLifecycle
+        from bootstrap.attachments.runtime import AttachmentLifecycleRuntime
+        from bootstrap.db.repository.attachment_repo import AttachmentRepository
+
+        if self.webchat_durable is None:
+            return
+        runtime = AttachmentLifecycleRuntime(
+            AttachmentLifecycle(
+                AttachmentRepository(self.webchat_durable.session_factory),
+                AttachmentBlobStore(Path(self.workspace) / "attachments"),
+            ),
+            cleanup_interval_s=self.config.attachments.cleanup_interval_s,
+            reconcile_interval_s=self.config.attachments.reconcile_interval_s,
+            reconcile_enabled=self.config.attachments.reconcile_enabled,
+        )
+        self.attachments_lifecycle = runtime
+        runtime.start(
+            reconcile_on_startup=self.config.attachments.reconcile_on_startup
+        )
+
+    async def _stop_attachment_lifecycle(self) -> None:
+        runtime = self.attachments_lifecycle
+        if runtime is None:
+            return
+        self.attachments_lifecycle = None
+        try:
+            await runtime.stop()
+        except Exception:
+            logger.exception("attachment lifecycle 停止时异常")
+
     async def _stop_webchat_durable(self) -> None:
         """停止 delivery 循环并释放 webchat durable 网关的 engine（pg-durable-sot-cutover）。
 
@@ -878,6 +918,7 @@ class AppRuntime:
                 # 执行中直接取消它。
                 ("work_queue.drain_and_stop", self._stop_work_queue),
                 ("webchat_durable.close", self._stop_webchat_durable),
+                ("attachments_lifecycle.stop", self._stop_attachment_lifecycle),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 (

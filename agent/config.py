@@ -541,6 +541,14 @@ def _load_attachment_config(data: dict) -> AttachmentConfig:
             raise ValueError(f"agent.attachments.{name} 必须为正，当前: {value!r}")
         return parsed
 
+    def _nonneg_int(name: str) -> int:
+        """interval 类允许 0（禁用周期任务）。"""
+        value = raw.get(name, getattr(defaults, name))
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"agent.attachments.{name} 必须为非负整数，当前: {value!r}")
+        return parsed
+
     return AttachmentConfig(
         enabled=bool(raw.get("enabled", defaults.enabled)),
         max_file_bytes=_int("max_file_bytes"),
@@ -551,6 +559,12 @@ def _load_attachment_config(data: dict) -> AttachmentConfig:
         max_text_chars=_int("max_text_chars"),
         temp_ttl_hours=_int("temp_ttl_hours"),
         referenced_ttl_days=_int("referenced_ttl_days"),
+        cleanup_interval_s=_nonneg_int("cleanup_interval_s"),
+        reconcile_interval_s=_nonneg_int("reconcile_interval_s"),
+        reconcile_enabled=bool(raw.get("reconcile_enabled", defaults.reconcile_enabled)),
+        reconcile_on_startup=bool(
+            raw.get("reconcile_on_startup", defaults.reconcile_on_startup)
+        ),
     )
 
 

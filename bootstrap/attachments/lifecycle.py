@@ -40,8 +40,8 @@ class AttachmentLifecycle:
         *,
         telemetry: Any | None = None,
     ) -> None:
-        self._repo = repo
-        self._blobs = blob_store
+        self.repo = repo
+        self.blob_store = blob_store
         self._telemetry = telemetry
 
     async def cleanup_expired(self) -> CleanupReport:
@@ -50,14 +50,14 @@ class AttachmentLifecycle:
         幂等论证：metadata 删除后 blob delete 幂等返回 False；下一轮 list_expired
         不再返回（行已删）。重复跑删除数为 0。
         """
-        expired = await self._repo.list_expired()
+        expired = await self.repo.list_expired()
         deleted_meta = 0
         deleted_blobs = 0
         tenants: set[str] = set()
         for record in expired:
             try:
-                self._blobs.delete_blob(record.storage_key)
-                ok = await self._repo.delete_attachment(
+                self.blob_store.delete_blob(record.storage_key)
+                ok = await self.repo.delete_attachment(
                     tenant_id=record.tenant_id, attachment_id=record.id
                 )
                 if ok:
@@ -88,18 +88,18 @@ class AttachmentLifecycle:
         - blob 存在但不在 committed 列表（无 metadata）→ 删除孤儿；
         - staging 超龄文件 → 随 temp_ttl 清理。
         """
-        records = await self._repo.list_committed_by_tenant(tenant_id)
+        records = await self.repo.list_committed_by_tenant(tenant_id)
         known_keys = {r.storage_key for r in records}
         marked_missing = 0
         for record in records:
-            if not self._blobs.blob_exists(record.storage_key):
+            if not self.blob_store.blob_exists(record.storage_key):
                 if record.status != "missing":
-                    await self._repo.mark_missing(
+                    await self.repo.mark_missing(
                         tenant_id=tenant_id, attachment_id=record.id
                     )
                     marked_missing += 1
-        removed_orphans = self._blobs.cleanup_orphans(known_keys=known_keys)
-        removed_staging = self._blobs.cleanup_staging(
+        removed_orphans = self.blob_store.cleanup_orphans(known_keys=known_keys)
+        removed_staging = self.blob_store.cleanup_staging(
             older_than=24 * 3600
         )
         report = CleanupReport(

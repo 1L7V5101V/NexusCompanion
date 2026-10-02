@@ -342,6 +342,16 @@ class AttachmentRepository:
             ).scalars().all()
             return [AttachmentRecord.from_row(row) for row in rows]
 
+    async def list_tenant_ids(self) -> list[str]:
+        """全量有附件记录的租户枚举（启动对账用；租户粒度 reconciliation 入口）。"""
+        async with self._sf() as sess:
+            rows = (
+                await sess.execute(
+                    select(AttachmentModel.tenant_id).distinct()
+                )
+            ).scalars().all()
+            return [str(t) for t in rows]
+
     async def _owned_for_update(
         self,
         sess: AsyncSession,

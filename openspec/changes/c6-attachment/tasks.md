@@ -58,10 +58,10 @@
 
 ## 5. 清理与 reconciliation 接线（ADR-5 / ADR-8）
 
-- [ ] 5.1 进程内定时清理 + 启动 reconciliation 接线（`bootstrap/app.py` 生命周期，参照
+- [x] 5.1 进程内定时清理 + 启动 reconciliation 接线（`bootstrap/app.py` 生命周期，参照
   `pg-durable-sot-cutover` 启动恢复模式）；dry-run 演练形态复用 `core/telemetry/retention.py` 契约。
   验证：启动扫一次 + 定时触发；dry-run 只报告不删除的负向断言
-- [ ] 5.2 backup manifest 细化（C12 §8.3 义务）：`tests/fixtures/backup_manifest_template.json`
+- [x] 5.2 backup manifest 细化（C12 §8.3 义务）：`tests/fixtures/backup_manifest_template.json`
   `tenant-workspace` 条目补 attachment blob root 子路径、一致性点（PG 恢复点对齐）、retention 30d/24h、
   逐文件 sha256；`.staging/` 与 `/tmp` 声明为临时区不入 backup。验证：`tests/backup_manifest` 校验器
   + 契约测试通过，且 C12 `c12-observability-backup/tasks.md` §8.3 登记勾选

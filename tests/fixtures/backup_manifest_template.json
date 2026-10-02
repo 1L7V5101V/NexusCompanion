@@ -46,14 +46,14 @@
       "id": "tenant-workspace",
       "kind": "tenant_workspace",
       "path": "~/.nexus/workspace",
-      "encryption": "待冻结",
-      "checksum": "逐文件 sha256（待 runbook 冻结）",
-      "consistency_point": "与 PostgreSQL 恢复点对齐（C6 blob root 细化后冻结）",
-      "retention": "跟随账号 retention（待 C6 冻结）",
+      "encryption": "与凭据相同的存储层加密（随账号 retention 采集中）",
+      "checksum": "逐文件 sha256（含 attachment blob，runbook 已支持）",
+      "consistency_point": "PG 恢复点对齐（C6：attachment blob root 在 workspace/attachments/ 租户命名空间，与 PG metadata 同一次点恢复）",
+      "retention": "已引用附件 30d / 临时 staging 24h（C6 冻结）",
       "restore_mode": "pilot_primary",
       "independent": false,
       "contains_secrets": false,
-      "notes": "tenant 命名空间 workspace；C6 落地时细化 attachment blob root 子条目；/tmp 上传临时区不属本条目"
+      "notes": "含 attachment blob root（workspace/attachments/ 下 {tenant_dirname}/{attachment_id}.{ext}）；staging（.staging/）与 /tmp 为临时区不入 backup；orphan/missing 由 reconciliation 处置"
     },
     {
       "id": "legacy-sqlite",
@@ -69,5 +69,11 @@
       "notes": "§10 DECIDED：旧单体数据不导入 Pilot PostgreSQL；只恢复到 legacy 模式，不 fallback、不双写"
     }
   ],
-  "restore_order": ["config", "secrets", "pg-canonical", "tenant-workspace", "legacy-sqlite"]
+  "restore_order": [
+    "config",
+    "secrets",
+    "pg-canonical",
+    "tenant-workspace",
+    "legacy-sqlite"
+  ]
 }
