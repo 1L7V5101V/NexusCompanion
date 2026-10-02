@@ -2,6 +2,9 @@
 /config.json
 /config.toml
 /config.server.toml
+# 运行期生成的密钥材料（pepper 等），任何情况下不入库
+/secrets/
+**/auth_pepper
 
 # NcatBot 自动生成的配置文件
 config.yaml
