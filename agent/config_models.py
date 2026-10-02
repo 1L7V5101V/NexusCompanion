@@ -264,6 +264,26 @@ class WorkQueueConfig:
 
 
 @dataclass
+class AttachmentConfig:
+    """附件内容边界（C6，openspec/changes/c6-attachment/design.md ADR-2）。
+
+    冻结默认值 = P-1 决策；配置只在显式覆盖时改变行为，默认即冻结值。
+    """
+
+    enabled: bool = True
+    max_file_bytes: int = 20 * 1024 * 1024  # 20 MiB
+    # 图片资源硬上限（§5.9.15 冻结）：总像素 ≤ 4096²、解码内存 ≤64MiB、超时 5s、GIF ≤100 帧
+    max_pixels: int = 4096 * 4096  # 16.8M
+    max_decode_bytes: int = 64 * 1024 * 1024  # 64 MiB
+    max_decode_seconds: float = 5.0
+    max_gif_frames: int = 100
+    max_text_chars: int = 200_000
+    # 生命周期（ADR-5）：临时 staging 24h；已引用 30d（对齐 C12 30d operational 档）
+    temp_ttl_hours: int = 24
+    referenced_ttl_days: int = 30
+
+
+@dataclass
 class PluginRuntimeConfig:
     """C8 hook failure 分层的有界 timeout（§5.9.16，task-08）。
 
@@ -322,6 +342,7 @@ class Config:
     admission: AdmissionConfig = field(default_factory=AdmissionConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     work_queue: WorkQueueConfig = field(default_factory=WorkQueueConfig)
+    attachments: AttachmentConfig = field(default_factory=AttachmentConfig)
     plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -335,6 +356,7 @@ class Config:
 __all__ = [
     "AdmissionConfig",
     "AppServerConfig",
+    "AttachmentConfig",
     "AuthConfig",
     "CacheConfig",
     "ChannelsConfig",

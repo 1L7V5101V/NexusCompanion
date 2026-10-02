@@ -16,8 +16,8 @@ from zoneinfo import ZoneInfo
 
 from agent.config_models import (
     AdmissionConfig,
-    WorkQueueConfig,
     AppServerConfig,
+    AttachmentConfig,
     AuthConfig,
     CacheConfig,
     ChannelsConfig,
@@ -35,6 +35,7 @@ from agent.config_models import (
     StorageConfig,
     TelegramChannelConfig,
     WiringConfig,
+    WorkQueueConfig,
 )
 from bootstrap.work_queue_defaults import DEFAULT_BACKOFF_SECONDS
 
@@ -130,6 +131,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     admission_cfg = _load_admission_config(data)
     auth_cfg = _load_auth_config(data)
     work_queue_cfg = _load_work_queue_config(data)
+    attachment_cfg = _load_attachment_config(data)
     plugin_runtime_cfg = _load_plugin_runtime_config(data)
 
     return Config(
@@ -213,6 +215,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         admission=admission_cfg,
         auth=auth_cfg,
         work_queue=work_queue_cfg,
+        attachments=attachment_cfg,
         plugin_runtime=plugin_runtime_cfg,
         logging=logging_cfg,
         router_mode=str(data.get("router_mode", "rule")),
@@ -516,6 +519,39 @@ def _parse_int_positive(name: str, value: object) -> int:
 _WORK_QUEUE_BACKOFF_STAGES = len(DEFAULT_BACKOFF_SECONDS)
 """[agent.work_queue] `max_attempts` 上限 = 退避表档数（与 `WorkQueueWorkerConfig`
 冻结默认 1m/5m/30m/2h/6h 一致，字面量单一来源 = `bootstrap/work_queue_defaults.py`）。"""
+
+
+def _load_attachment_config(data: dict) -> AttachmentConfig:
+    """[agent.attachments] C6 内容边界参数；未配置即冻结默认（P-1 决策）。"""
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("attachments")) or {}
+    defaults = AttachmentConfig()
+
+    def _int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = int(value)
+        if parsed < 1:
+            raise ValueError(f"agent.attachments.{name} 必须为正整数，当前: {value!r}")
+        return parsed
+
+    def _float(name: str) -> float:
+        value = raw.get(name, getattr(defaults, name))
+        parsed = float(value)
+        if parsed <= 0:
+            raise ValueError(f"agent.attachments.{name} 必须为正，当前: {value!r}")
+        return parsed
+
+    return AttachmentConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        max_file_bytes=_int("max_file_bytes"),
+        max_pixels=_int("max_pixels"),
+        max_decode_bytes=_int("max_decode_bytes"),
+        max_decode_seconds=_float("max_decode_seconds"),
+        max_gif_frames=_int("max_gif_frames"),
+        max_text_chars=_int("max_text_chars"),
+        temp_ttl_hours=_int("temp_ttl_hours"),
+        referenced_ttl_days=_int("referenced_ttl_days"),
+    )
 
 
 def _load_work_queue_config(data: dict) -> WorkQueueConfig:
