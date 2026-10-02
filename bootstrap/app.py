@@ -605,6 +605,7 @@ class AppRuntime:
                     auth_runtime=auth_runtime,
                     allow_public_bind=self.config.channels.chat.allow_public_bind,
                     durable_runtime=self.webchat_durable,
+                    attachment_config=self.config.attachments,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

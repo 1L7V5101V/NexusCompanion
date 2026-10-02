@@ -19,7 +19,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import WebSocket
@@ -31,7 +30,7 @@ from bus.events_lifecycle import (
     ToolCallCompleted,
     ToolCallStarted,
 )
-from infra.channels.base import AttachmentStore, MessageDeduper
+from infra.channels.base import MessageDeduper
 from infra.channels.contract import ChannelContext
 from infra.channels.web_chat_protocol import (
     CLOSE_IDLE_TIMEOUT,
@@ -261,7 +260,6 @@ class WebChatChannel:
         )
         self._deduper = MessageDeduper(_DEDUPER_SIZE)
         self._accepted_frames: dict[str, dict[str, Any]] = {}
-        self._attachments: AttachmentStore | None = None
         self._subscriptions: list[Any] = []
 
     # ── chat_api.py 期望的接口面 ────────────────────────────────
@@ -270,11 +268,6 @@ class WebChatChannel:
         if self._ctx is None:
             raise RuntimeError("WebChatChannel 尚未启动")
         return self._ctx
-
-    def upload_roots(self) -> list[Path]:
-        if self._attachments is None:
-            return []
-        return [self._attachments.root]
 
     async def deliver_frame(self, conversation_id: str, frame: dict[str, Any]) -> int:
         """把一帧投递到指定 canonical 会话的全部在线连接（delivery worker 用，
@@ -293,25 +286,6 @@ class WebChatChannel:
                 delivered += 1
         return delivered
 
-    def has_media(self, path: Path) -> bool:
-        if self._attachments is None:
-            return False
-        try:
-            _ = path.resolve().relative_to(self._attachments.root.resolve())
-            return True
-        except ValueError:
-            return False
-
-    def save_upload(self, data: bytes, filename: str) -> dict[str, str]:
-        attachments = self._attachments
-        assert attachments is not None
-        suffix = Path(filename).suffix or ".bin"
-        path = attachments.write_bytes(data, prefix="chat_", suffix=suffix)
-        return {
-            "path": str(path),
-            "url": f"/api/chat/media?path={quote(str(path))}",
-        }
-
     # ── Channel 生命周期 ────────────────────────────────────────
 
     async def start(self, ctx: ChannelContext) -> None:
@@ -320,8 +294,6 @@ class WebChatChannel:
     def _bind(self, ctx: ChannelContext) -> None:
         """同步装配（测试与 start 共用；当前无真正的异步初始化）。"""
         self._ctx = ctx
-        ws = getattr(ctx.session_manager, "workspace", None)
-        self._attachments = AttachmentStore(Path(ws) / "uploads" if ws else None)
         ctx.bus.subscribe_outbound(self.name, self._on_outbound)
         self._subscriptions = [
             ctx.event_bus.on(StreamDeltaReady, self._on_stream_delta),

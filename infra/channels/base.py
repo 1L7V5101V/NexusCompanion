@@ -13,29 +13,22 @@ _DEFAULT_UPLOAD_DIR = Path.home() / ".nexus" / "workspace" / "uploads"
 
 
 class AttachmentStore:
-    """为 channel 媒体文件提供统一的持久化落盘目录。"""
+    """为 channel 媒体文件提供统一的持久化落盘目录（C6 ADR-3）。
+
+    blob 一律落在调用方传入的 workspace 内根；**无 /tmp fallback**（§5.9.12：
+    /tmp 不属于 durable backup 范围）。
+    """
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or _DEFAULT_UPLOAD_DIR
 
     def _resolve_root(self) -> Path:
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            if os.access(self.root, os.W_OK):
-                return self.root
-        except Exception:
-            pass
-        fallback = Path("/tmp/nexus_uploads")
-        fallback.mkdir(parents=True, exist_ok=True)
-        if os.access(fallback, os.W_OK):
-            return fallback
-        try:
-            test = fallback / ".write_test"
-            test.write_text("", encoding="utf-8")
-            test.unlink(missing_ok=True)
-            return fallback
-        except Exception:
+        self.root.mkdir(parents=True, exist_ok=True)
+        if os.access(self.root, os.W_OK):
             return self.root
+        raise OSError(
+            f"attachment root 不可写（无 /tmp fallback，C6 ADR-3）: {self.root}"
+        )
 
     def create_path(self, prefix: str, suffix: str) -> Path:
         root = self._resolve_root()
@@ -43,15 +36,8 @@ class AttachmentStore:
 
     def write_bytes(self, data: bytes, *, prefix: str, suffix: str) -> Path:
         path = self.create_path(prefix, suffix)
-        try:
-            path.write_bytes(data)
-            return path
-        except Exception:
-            fallback = Path("/tmp/nexus_uploads")
-            fallback.mkdir(parents=True, exist_ok=True)
-            alt = fallback / f"{prefix}{uuid4().hex}{suffix}"
-            alt.write_bytes(data)
-            return alt
+        path.write_bytes(data)
+        return path
 
 
 class SessionIdentityIndex:

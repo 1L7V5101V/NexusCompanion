@@ -47,13 +47,13 @@
 
 ## 4. HTTP 端点改造（ADR-1 / ADR-7）— BREAKING
 
-- [ ] 4.1 `POST /api/chat/uploads`：Content-Length 预检（>20MiB→413）+ 流式读累计超限中断 + 校验 →
+- [x] 4.1 `POST /api/chat/uploads`：Content-Length 预检（>20MiB→413）+ 流式读累计超限中断 + 校验 →
   返回 `{"attachment_id","url"}`；移除本地 path 回显。验证：`tests/attachments/test_http_api.py` 新契约
   （响应无 path、url 按 attachment_id）
-- [ ] 4.2 `GET /api/chat/media`：改按 `?attachment_id=` + session 派生 tenant 校验归属 + blob/checksum 核验
+- [x] 4.2 `GET /api/chat/media`：改按 `?attachment_id=` + session 派生 tenant 校验归属 + blob/checksum 核验
   → FileResponse；旧 `?path=` 参数 400；跨租户/不存在 404；blob 缺失触发 missing 标记并 404。
   验证：跨租户负向、revoked 账号负向（复用 C8/fail-closed 形态）、旧参数拒绝
-- [ ] 4.3 前端适配：`npm run build:chat` 上传/媒体调用改新契约。验证：前端构建通过 + 上传→读取 e2e
+- [x] 4.3 前端适配：`npm run build:chat` 上传/媒体调用改新契约。验证：前端构建通过 + 上传→读取 e2e
   （dev + PG 双模式）
 
 ## 5. 清理与 reconciliation 接线（ADR-5 / ADR-8）

@@ -4,14 +4,19 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import logging
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from urllib.parse import quote
 
 from infra.channels.web_chat_protocol import CLOSE_DEV_ONLY
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
+    from agent.config_models import AttachmentConfig
     from bootstrap.auth.runtime import AuthRuntime
     from infra.channels.web_chat_channel import WebChatChannel
 
@@ -90,11 +95,27 @@ def create_chat_app(
     allow_public_bind: bool = False,
     static_root: Path | None = None,
     durable_runtime: Any = None,
+    attachment_config: "AttachmentConfig | None" = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
     app.state.channel = channel
     app.state.durable_runtime = durable_runtime
+    # C6: attachment 服务（上传/媒体 BREAKING 契约）。durable_runtime 为 None（无
+    # PG durable 控制面）时 uploads/media 返回 503（fail-closed：不落 /tmp、不写
+    # 单用户路径）；auth 未启用时多媒体不可用（dev 模式下端点不存在即回退）。
+    if durable_runtime is not None and attachment_config is not None:
+        from bootstrap.attachments.blob_store import AttachmentBlobStore
+        from bootstrap.attachments.service import AttachmentService
+        from bootstrap.db.repository.attachment_repo import AttachmentRepository
+
+        blob_root = workspace / "attachments"
+        service = AttachmentService(
+            AttachmentRepository(durable_runtime.session_factory),
+            AttachmentBlobStore(blob_root),
+            attachment_config,
+        )
+        app.state.attachment_service = service
     # C4 dev-only 门禁第 3 层（design ADR-3）：默认只接受回环客户端；反向代理后
     # 也不能用公网来源冒充本机。显式 allow_public_bind 才关闭本层。
     # 与 C5 auth 并存（两者都 fail-closed，取交集）：dev 门禁约束来源网络，
@@ -274,23 +295,95 @@ def create_chat_app(
     @app.post("/api/chat/uploads", dependencies=[Depends(_require_user_session)])
     async def upload_file(
         request: Request,
+        session: dict[str, Any] = Depends(_require_user_session),
         filename: str = Query(default="upload.bin"),
     ) -> dict[str, str]:
+        """上传（C6 BREAKING 契约）：返回 ``{"attachment_id", "url"}``。
+
+        成功响应绝不包含本地路径/storage_key；旧 `save_upload` 的本地 path 回显
+        已移除。auth+PG durable 模式才可用；否则 503（fail-closed，不落 /tmp）。
+        """
+        service = getattr(app.state, "attachment_service", None)
+        if service is None:
+            raise HTTPException(503, detail="attachments unavailable")
+        identity = await _resolve_endpoint_identity(auth_runtime, session)
+        if identity is None:
+            raise HTTPException(403, detail="forbidden")
         data = await request.body()
         if not data:
             raise HTTPException(status_code=400, detail="上传内容不能为空")
         clean_name = Path(filename).name or "upload.bin"
-        return channel.save_upload(data, clean_name)
+        from bootstrap.attachments.validation import AttachmentError
+
+        try:
+            result = await service.upload(
+                account_id=identity.account_id,
+                tenant_id=identity.tenant_id,
+                filename=clean_name,
+                data=data,
+            )
+        except AttachmentError as exc:
+            code = getattr(exc, "code", "upload_error")
+            status = _upload_error_status(code)
+            raise HTTPException(status_code=status, detail=code) from None
+        except Exception:
+            logger.exception("attachment upload 失败")
+            raise HTTPException(status_code=500, detail="upload failed") from None
+        app.state.attachment_service.emit(
+            "upload.finished",
+            {
+                "status": "succeeded",
+                "tenant_id": identity.tenant_id,
+                "size_bytes": len(data),
+                "duration_ms": 0,
+            },
+        )
+        return {"attachment_id": result.attachment_id, "url": result.url}
 
     @app.get("/api/chat/media", dependencies=[Depends(_require_user_session)])
-    def read_media(path: str = Query(...)) -> FileResponse:
-        requested = Path(path).expanduser().resolve()
-        if not _can_read_media(channel, requested):
-            raise HTTPException(status_code=404, detail="文件不存在")
-        if not requested.is_file():
-            raise HTTPException(status_code=404, detail="文件不存在")
-        return FileResponse(requested)
+    async def read_media(
+        session: dict[str, Any] = Depends(_require_user_session),
+        attachment_id: str | None = Query(default=None),
+        path: str | None = Query(default=None),
+    ) -> Response:
+        """读取（C6 BREAKING）：按 attachment_id + session 派生租户归属。
 
+        客户端可控的旧 `path` 参数已移除：携带 `path` 直接 400（拒绝旧寻址）；
+        跨租户/不存在 → 404（不泄露存在性）；blob 缺失 → 404 + missing 标记。
+        """
+        if path is not None:
+            raise HTTPException(400, detail="path parameter removed")
+        if not attachment_id:
+            raise HTTPException(422, detail="attachment_id required")
+        service = getattr(app.state, "attachment_service", None)
+        if service is None:
+            raise HTTPException(503, detail="attachments unavailable")
+        identity = await _resolve_endpoint_identity(auth_runtime, session)
+        if identity is None:
+            raise HTTPException(403, detail="forbidden")
+        try:
+            record, data = await service.fetch(
+                account_id=identity.account_id,
+                tenant_id=identity.tenant_id,
+                attachment_id=attachment_id,
+            )
+        except Exception:
+            raise HTTPException(404, detail="file not found") from None
+        service.emit(
+            "fetch.finished",
+            {
+                "status": "succeeded",
+                "tenant_id": identity.tenant_id,
+                "duration_ms": 0,
+            },
+        )
+        filename = record.filename_display or f"attachment{record.server_ext}"
+        _ = filename
+        return Response(
+            content=data,
+            media_type=record.detected_mime,
+            headers={"Content-Disposition": f"inline; filename*=utf-8''{quote(record.filename_display)}"},
+        )
     return app
 
 
@@ -304,6 +397,7 @@ def build_chat_server(
     auth_runtime: "AuthRuntime | None" = None,
     allow_public_bind: bool = False,
     durable_runtime: Any = None,
+    attachment_config: "AttachmentConfig | None" = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -328,6 +422,7 @@ def build_chat_server(
             auth_runtime=auth_runtime,
             allow_public_bind=allow_public_bind,
             durable_runtime=durable_runtime,
+            attachment_config=attachment_config,
         ),
         host=host,
         port=port,
@@ -345,17 +440,38 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _can_read_media(channel: "WebChatChannel", path: Path) -> bool:
-    if any(_is_relative_to(path, root.resolve()) for root in channel.upload_roots()):
-        return True
-    if channel.has_media(path):
-        return True
+async def _resolve_endpoint_identity(
+    auth_runtime: "AuthRuntime | None",
+    session: dict[str, Any],
+) -> Any | None:
+    """HTTP 端点身份派生（与 WS 同一派生点，§5.9.1）。
+
+    auth 未启用（dev 模式）返回 None（组件不可用语义由调用方映射为 503/403）；
+    auth 启用但无法派生（无账号/无 canonical）→ None（fail-closed，不回落 dev
+    默认租户）。返回 WebChatIdentity（含 account_id / tenant_id）。
+    """
+    if auth_runtime is None:
+        return None
+    from bootstrap.auth import WebChatIdentityError, resolve_webchat_identity
+
     try:
-        ctx = channel._require_ctx()
-    except RuntimeError:
-        return False
-    store = ctx.session_manager._store
-    media_path_exists = getattr(store, "media_path_exists", None)
-    if callable(media_path_exists):
-        return bool(media_path_exists(path))
-    return False
+        return await resolve_webchat_identity(auth_runtime, session)
+    except WebChatIdentityError:
+        return None
+
+
+_UPLOAD_ERROR_STATUS: dict[str, int] = {
+    "upload_empty": 400,
+    "upload_too_large": 413,
+    "upload_type_denied": 415,
+    "upload_ext_mismatch": 415,
+    "upload_pixel_limit": 415,
+    "upload_decode_timeout": 415,
+    "upload_frames_limit": 415,
+    "upload_text_limit": 415,
+    "upload_encoding": 415,
+}
+
+
+def _upload_error_status(code: str) -> int:
+    return _UPLOAD_ERROR_STATUS.get(code, 415)

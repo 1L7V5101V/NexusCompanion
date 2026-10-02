@@ -107,23 +107,24 @@ async def test_ws_hello_and_send_roundtrip(tmp_path: Path) -> None:
     _ = channel
 
 
-def test_upload_endpoint_writes_file(tmp_path: Path) -> None:
+def test_upload_endpoint_unavailable_without_durable(tmp_path: Path) -> None:
+    """C6 BREAKING：无 auth+PG durable 时上传不可用（503，不落 /tmp/单用户路径）。
+
+    旧行为（ATTACHMENT）已移除：不再写 workspace/uploads、不再回显本地 path。
+    """
     client, channel, _ = _build(tmp_path)
     resp = client.post("/api/chat/uploads?filename=note.txt", content=b"hello")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert Path(body["path"]).read_bytes() == b"hello"
-    assert body["url"].startswith("/api/chat/media?path=")
-
-    media = client.get("/api/chat/media", params={"path": body["path"]})
-    assert media.status_code == 200
-    assert media.content == b"hello"
+    assert resp.status_code == 503
+    media = client.get("/api/chat/media", params={"attachment_id": "x"})
+    assert media.status_code == 503
+    assert not (tmp_path / "uploads").exists()
     _ = channel
 
 
-def test_media_rejects_path_outside_upload_roots(tmp_path: Path) -> None:
+def test_media_rejects_legacy_path_parameter(tmp_path: Path) -> None:
+    """旧 `path` 寻址参数已移除；携 path 请求直接 400（不再按路径放行）。"""
     client, _, _ = _build(tmp_path)
     outside = tmp_path / "outside.png"
     outside.write_bytes(b"x")
     resp = client.get("/api/chat/media", params={"path": str(outside)})
-    assert resp.status_code == 404
+    assert resp.status_code == 400
