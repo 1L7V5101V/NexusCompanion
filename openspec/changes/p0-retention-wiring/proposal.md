@@ -16,13 +16,15 @@ C12 §8.4"）。后果是观测与重放数据只增不减，P0 长期运行没�
 - 新建 capability **`data-retention`**：把"保留期必须被执行"写成可验收契约（三档归属、分批删除、
   幂等、dry-run 演练、启动不跑、周期任务可停机），并覆盖凭据行的过期处置。
 - **config 接线**：新增 `[agent.retention]` 节与 `RetentionConfig`（`enabled` 默认 true、
-  `interval_s` 默认 86400、三档天数覆盖冻结默认、`batch_size`、`purge_grace_s`）；沿用
+  `interval_s` 默认 86400、三档天数覆盖冻结默认、`batch_size`、`max_batches`、`purge_grace_s`、
+  补发窗口参数 `replay_keep_last_frames` / `replay_max_age_days`）；沿用
   `_load_attachment_config` 的加载期校验模式（非正即报错，未配置即冻结默认）。
 - **进程内定时任务**：新增 `bootstrap/retention/` 周期壳（复用 C6 `AttachmentLifecycleRuntime`
   的形状：`create_task` + 异常隔离 + `stop()` 进 shutdown 序列），启动时不跑首轮以免叠加启动风暴。
 - **PG 行级裁剪**（按 created_at/at，分批 DELETE，不动计数器与 seq 水位）：
-  - `webchat_replay_frames` → operational 30d，经既有 `delete_frames_before` 游标语义删；
-  - `tool_audit_events`、`admin_audit_events`、`work_attempts` → audit 180d；
+  - `webchat_replay_frames` → **按该会话的补发窗口裁剪**（已确认消费可删、每会话保留最近 N 帧为下限、
+    兜底年龄天花板），不再按全局 30d 一刀切（owner 决策，见 design ADR-8）；
+  - `tool_audit_events`、`admin_audit_events`、`work_attempts` → audit 180d（`work_attempts` 归 audit 为 owner 定案）；
   - `outbound_delivery_intents` **不删除**（含 `dead_letter` 终态），dead-letter 保留待人工
     redrive/ignore，属 P3 演练依赖。
 - **凭据过期处置**：对**同时满足**"已撤销 + 已过期 + 超过 `purge_grace_s`"的 `auth_sessions` /
@@ -35,13 +37,16 @@ C12 §8.4"）。后果是观测与重放数据只增不减，P0 长期运行没�
   Pilot 当前没有这类产物，因此内置 root 集为空、由显式 config 指定。不把 `tool_audit.ndjson`
   与 `*.db` 塞进 sweep root（会误删活跃文件），并把"观测产物按日分片改造"记为 Non-Goal。
 - **观测面（C12 协议）**：每轮输出结构化 `SweepReport`（category/root/scanned/deleted/kept/
-  bytes_freed/dry_run/errors）到普通日志；**不新增 metrics label**，不扩事件白名单 fixture；
+  bytes_freed/dry_run/errors），并**区分可恢复与不可恢复的删除量**（派生缓冲 vs 事实记录，
+  owner 要求，避免事后"是不是把数据删丢了"无从判定）；到普通日志；**不新增 metrics label**，不扩事件白名单 fixture；
   自由文本经 `redact_text`。承接并在 `c12-observability-backup/tasks.md` §8.4 登记 retention 半边完成。
 - **备份面**：无新增 manifest kind；`config`/`secrets` 条目不受影响。`admin_audit_events` 归 audit
   档 180d 需在 `tenant_workspace`/PG 一致性说明内自洽（无模板结构变更）。
 
 **BREAKING**：无对外 HTTP/协议契约变化。内部变化是首次让数据真的会被删除（默认开启），因此
 `enabled=false` 与 `dry_run` 手动入口必须同时存在，验收要求先演练后实删。
+- **待 owner 填数**：补发窗口的两个参数（每会话保留下限帧数、兜底年龄天数）与凭据作废前的等待期，
+  见 design Open Questions；实现阶段不得擅自使用默认数值代替决策。
 
 ## Capabilities
 
@@ -69,7 +74,8 @@ C12 §8.4"）。后果是观测与重放数据只增不减，P0 长期运行没�
 - **测试**：新增 `tests/retention/`（config 冻结默认与校验、三档归属矩阵、分批删除与幂等、
   dry-run 零变更、intents 不被删、活跃凭据不被触碰、过期凭据 digest 已清除而 metadata 保留、
   周期任务启停与异常隔离）。
-- **运行影响**：部署后首次会删除历史观测/重放行（默认 30d/180d 窗口之外）；Pilot 当前 PG 数据量极小
+- **运行影响**：部署后默认开启会删除窗口外的历史观测行（审计流 180d；补发缓冲按会话窗口 + 兜底
+  天花板）；Pilot 当前 PG 数据量极小
   （生产 `outbound_delivery_intents` 2 行、`consolidation_events` 0 行），首轮删除量可忽略，但仍要求
   先跑 `dry_run` 并留存报告。
 - **不触碰**：`canonical_messages`/`canonical_conversations`/`inbox_records`/`turns` 的保留期（消息

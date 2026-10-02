@@ -9,6 +9,14 @@
 > 上游义务：C12 伴随落地协议 `openspec/changes/c12-observability-backup/tasks.md` §8.4
 > （本 change 承接其 **retention 半边**；总控台聚合 API 半边不在本 change）。
 
+## 0. 前置：owner 参数确认（阻塞实现）
+
+- [ ] 0.1 取回 owner 对三个数值的决定并写回 design/tasks：`replay_keep_last_frames`（每会话保留
+  下限帧数）、`replay_max_age_days`（补发缓冲兜底年龄）、`purge_grace_s`（凭据作废前等待期，
+  design 暂记 30d）。**未确认前不实现第 2 节及之后**：数值属产品决策，实现不得自定默认值填坑。
+  验证：design.md Open Questions 三条全部移除或改写为"已确认值"；本条勾选。
+  证据：`task-0.1-parameter-decisions.md`
+
 ## 1. 迁移与模型（ADR-4）
 
 - [ ] 1.1 新增 alembic revision（expand-only）：`auth_sessions.session_digest` 与
@@ -30,7 +38,8 @@
 
 - [ ] 2.1 `agent/config_models.py` 新增 `RetentionConfig`：`enabled=True`、`interval_s=86400`、
   `operational_days=30`、`audit_days=180`、`debug_content_days=7`、`batch_size=500`、
-  `max_batches=20`、`purge_grace_s=2592000`；挂到 `Config.retention` 并入 `__all__`。
+  `max_batches=20`、`purge_grace_s`（取 0.1 确认值）、`replay_keep_last_frames` 与
+  `replay_max_age_days`（取 0.1 确认值）；挂到 `Config.retention` 并入 `__all__`。
   三档天数默认值从 `core.telemetry.retention` 常量引用（单一来源，不重复写数字）。
   验证：`tests/retention/test_config.py::test_retention_config_frozen_defaults`（逐项断言 + 与
   `RetentionPolicy()` 默认一致）。证据：`task-2.1-config.md`
@@ -44,31 +53,39 @@
 
 ## 3. PG 行级 sweeper（ADR-2/ADR-5）
 
-- [ ] 3.1 仓储侧新增按时间分批删除方法（每类实体一个，返回删除行数；时间比较用 DB 时钟
-  `func.now()`，`ORDER BY <ts> ASC LIMIT :batch`）：`webchat_replay_frames`（复用
-  `WebchatReplayRepository.delete_frames_before` 的游标语义，按 `created_at` 计算每会话的
-  `before_seq`）、`tool_audit_events`、`admin_audit_events`、`work_attempts`。
+- [ ] 3.1 先核实"已确认消费"的游标来源：现有 hello 游标 / `current_seq()` / `oldest_seq()` 中
+  哪一个语义等于"客户端已收到"，把结论写进证据；若都不是，停下报告而不是凑一个近似值。
+  验证：证据文档给出选定依据 + 该语义的代码出处。证据：`task-3.1-cursor-source.md`
+- [ ] 3.2 仓储侧新增按时间/按会话分批删除方法（每类实体一个，返回删除行数；时间比较用 DB 时钟
+  `func.now()`，`ORDER BY <ts> ASC LIMIT :batch`）：`tool_audit_events`、`admin_audit_events`、
+  `work_attempts` 按 `created_at`；`webchat_replay_frames` **按会话补发窗口**（ADR-8：仅已确认消费
+  游标之前的帧、保留每会话最近 `replay_keep_last_frames` 帧为下限、超过 `replay_max_age_days`
+  的部分作为兜底可裁），复用 `WebchatReplayRepository.delete_frames_before` 的游标删除语义。
   验证：`tests/retention/test_pg_sweeps.py` 逐项断言"窗口内保留 / 窗口外删除 / 计数如实 /
   第二轮为 0"。证据：`task-3.1-pg-sweeps.md`
-- [ ] 3.2 不可删除集写成显式守卫：`outbound_delivery_intents`（含 `dead_letter`）、
+- [ ] 3.3 不可删除集写成显式守卫：`outbound_delivery_intents`（含 `dead_letter`）、
   `canonical_messages`/`canonical_conversations`/`inbox_records`/`turns`、`attachments`
   不进入任何删除清单。验证：负向用例——构造远超任何窗口的死信投递意图与业务消息行，跑完整一轮后
   断言行数不变（spec「死信投递意图不被删除」「业务消息不在保留期执行范围内」）。
   证据：`task-3.2-no-delete-set.md`
-- [ ] 3.3 重放帧删除不回退 seq 水位：删除最旧帧后 `current_seq()`/`oldest_seq()` 与计数器行为符合
-  design ADR-2（水位只增不减；读侧据水位差判"需客户端重建"）。验证：PG 用例 + 复用
+- [ ] 3.4 重放帧裁剪不回退 seq 水位：按会话窗口删除后 `current_seq()`/`oldest_seq()` 与计数器符合
+  design ADR-2/ADR-8（水位只增不减；读侧据水位差走"需客户端重建"而非静默补发不完整历史）。验证：PG 用例 + 复用
   `tests/auth_provisioning/test_webchat_rebuild_reconcile.py` 的 replay_required 语义作对照。
   证据：并入 `task-3.1-pg-sweeps.md`
-- [ ] 3.4 单轮上限与分批收敛：`batch_size`/`max_batches` 生效，超量数据单轮不越界、剩余留待下轮。
+- [ ] 3.5 单轮上限与分批收敛：`batch_size`/`max_batches` 生效，超量数据单轮不越界、剩余留待下轮。
   验证：造 `batch_size*3 + 余数` 条过期行，断言首轮删除 ≤ `batch_size*max_batches`、报告计数与实际
   一致、后续轮次继续收敛。证据：并入 `task-3.1-pg-sweeps.md`
+- [ ] 3.6 补发窗口的四条行为各有用例（spec「会话重放帧按该会话的补发窗口裁剪」四个 Scenario）：
+  未消费的旧帧不删 / 已消费的旧帧可删且保留最近 N 帧 / 长期离线受兜底天花板约束且报告如实计入 /
+  帧全被消费时仍保留下限帧数。验证：`tests/retention/test_replay_window.py` 用例名逐条对应。
+  证据：`task-3.6-replay-window.md`
 
 ## 4. 周期壳与装配（ADR-3）
 
 - [ ] 4.1 新增 `bootstrap/retention/`：`RetentionRuntime`（tick 循环、单实体异常隔离、
   `CancelledError` 正常退出、`run_once(dry_run=...)` 演练入口、`stop()`），形状对齐
   `bootstrap/attachments/runtime.py`；报告形态对齐 `core.telemetry.retention.SweepReport`
-  （`to_dict`/`dry_run`/`errors`）。验证：`tests/retention/test_runtime.py`（启停、异常不阻断下一轮、
+  （`to_dict`/`dry_run`/`errors`）+ 可恢复性分类 `recoverable`/`irrecoverable`（ADR-7）。验证：`tests/retention/test_runtime.py`（启停、异常不阻断下一轮、
   **启动不跑首轮删除**）。证据：`task-4.1-runtime.md`
 - [ ] 4.2 `bootstrap/app.py` 接线：`config.retention.enabled` 为真时装配 runtime 并 `create_task(...,
   name="retention_sweep")` + done callback；停机函数加入现有 shutdown 步骤序列（与
@@ -102,8 +119,10 @@
 ## 7. 观测报告与隐私边界（ADR-6/ADR-7）
 
 - [ ] 7.1 每轮输出每实体一条结构化报告（category/target/scanned/deleted/kept/bytes_freed/dry_run/
-  errors），错误串经 `core.telemetry.redaction.redact_text`。验证：用例断言报告字段集与
-  `SweepReport` 一致、日志中不含被删对象内容片段/凭据摘要。证据：`task-7.1-reports.md`
+  errors），错误串经 `core.telemetry.redaction.redact_text`；**并分别给出可恢复与不可恢复的删除量**
+  （补发缓冲=可恢复，三条审计流与凭据作废=不可恢复），汇总数与分类数一致。
+  验证：用例断言报告字段集与 `SweepReport` 一致、分类计数与实体归属匹配、日志中不含被删对象内容
+  片段/凭据摘要（spec「报告区分可恢复与不可恢复的删除量」）。证据：`task-7.1-reports.md`
 - [ ] 7.2 不新增 metrics label、不扩 `work_queue_telemetry.ALLOWED_EVENT_FIELDS`：
   `tests/observability_privacy/` 既有白名单与 fixture 契约测试保持全绿，且本 change 未新增 label 注册。
   验证：`grep` 证明无新 `validate_label_names` 调用点 + 白名单契约测试通过。证据：并入 `task-7.1-reports.md`
