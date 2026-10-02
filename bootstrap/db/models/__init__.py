@@ -5,6 +5,11 @@ via Base.metadata.
 """
 
 from bootstrap.db.models.base import Base, TenantMixin, TimestampMixin
+from bootstrap.db.models.attachment import (
+    ATTACHMENT_STATUSES,
+    AttachmentModel,
+    MessageAttachmentModel,
+)
 from bootstrap.db.models.extras import AppConfigModel, ScheduledJobModel
 from bootstrap.db.models.memory import (
     ConsolidationEventModel,
@@ -32,13 +37,16 @@ from bootstrap.db.models.session import MessageModel, SessionModel
 from bootstrap.db.models.tenant import TenantModel
 
 __all__ = [
+    "ATTACHMENT_STATUSES",
     "AppConfigModel",
+    "AttachmentModel",
     "Base",
     "ConsolidationEventModel",
     "ContextOnlyTimestampModel",
     "DeliveryModel",
     "MemoryItemModel",
     "MemoryReplacementModel",
+    "MessageAttachmentModel",
     "MessageModel",
     "RachaelActivationEventModel",
     "RachaelEdgeModel",
