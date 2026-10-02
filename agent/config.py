@@ -559,6 +559,7 @@ def _load_attachment_config(data: dict) -> AttachmentConfig:
         max_text_chars=_int("max_text_chars"),
         temp_ttl_hours=_int("temp_ttl_hours"),
         referenced_ttl_days=_int("referenced_ttl_days"),
+        orphan_grace_seconds=_nonneg_int("orphan_grace_seconds"),
         cleanup_interval_s=_nonneg_int("cleanup_interval_s"),
         reconcile_interval_s=_nonneg_int("reconcile_interval_s"),
         reconcile_enabled=bool(raw.get("reconcile_enabled", defaults.reconcile_enabled)),

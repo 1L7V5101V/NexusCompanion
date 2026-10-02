@@ -301,7 +301,8 @@ async def test_cleanup_skips_referenced(
     assert row.id not in [r.id for r in lst]
 
 
-async def test_list_committed_by_tenant_enumerates(att_repo, att_tenant) -> None:
+async def test_list_by_tenant_covers_all_statuses(att_repo, att_tenant) -> None:
+    """对账的 known_keys 依据：staged 与 committed 都要枚举到（漏 staged 即误判孤儿）。"""
     a = await _create(att_repo, att_tenant, storage_key="dev/uuid-a.png")
     b = await _create(att_repo, att_tenant, storage_key="dev/uuid-b.txt", mime="text/plain")
     await att_repo.commit_attachment(
@@ -310,9 +311,10 @@ async def test_list_committed_by_tenant_enumerates(att_repo, att_tenant) -> None
         attachment_id=a.id,
         referenced_ttl_days=30,
     )
-    rows = await att_repo.list_committed_by_tenant(att_tenant["tenant_id"])
-    assert {r.id for r in rows} == {a.id}
-    assert b.id not in {r.id for r in rows}
+    rows = await att_repo.list_by_tenant(att_tenant["tenant_id"])
+    by_id = {r.id: r for r in rows}
+    assert set(by_id) >= {a.id, b.id}
+    assert by_id[a.id].status == "committed"
+    assert by_id[b.id].status == "staged"
     # 跨租户枚举为空
-    rows_other = await att_repo.list_committed_by_tenant("other-tenant")
-    assert rows_other == []
+    assert await att_repo.list_by_tenant("other-tenant") == []

@@ -281,6 +281,8 @@ class AttachmentConfig:
     # 生命周期（ADR-5）：临时 staging 24h；已引用 30d（对齐 C12 30d operational 档）
     temp_ttl_hours: int = 24
     referenced_ttl_days: int = 30
+    # 孤儿判定宽限（ADR-5）：rename 完成到 metadata 提交之间的在途上传不被对账删除
+    orphan_grace_seconds: int = 900
     # 后台清理频率（ADR-10）：0 表示不启用周期任务（仅启动对账 + 手动触发）
     cleanup_interval_s: int = 3600
     reconcile_interval_s: int = 6 * 3600

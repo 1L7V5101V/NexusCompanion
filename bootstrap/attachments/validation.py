@@ -17,15 +17,12 @@ from __future__ import annotations
 
 import asyncio
 import io
-import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import PurePath
 
 from agent.config_models import AttachmentConfig
 from core.telemetry.redaction import redact_text
-
-logger = logging.getLogger(__name__)
 
 # ── 冻结 allowlist（§10 PROPOSED DEFAULT + C6 ADR-2；本模块是唯一冻结点） ──
 
@@ -93,14 +90,6 @@ class ValidatedAttachment:
     filename_display: str
 
 
-@dataclass(frozen=True)
-class ExtensionMismatch(Exception):
-    """扩展名映射 MIME 与服务端 sniff MIME 不一致（upload_ext_mismatch）。"""
-
-    extension_mime: str
-    detected_mime: str
-
-
 def _expected_mime_for_filename(filename: str) -> str | None:
     """客户端文件名 → 期望 MIME（allowlist 内扩展名；其他返回 None）。"""
     ext = PurePath(filename).suffix.lower()
@@ -132,17 +121,6 @@ def _sniff_magic(data: bytes) -> tuple[str | None, str | None]:
     if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
         return "image/gif", None
     return None, None
-
-
-def _pixel_budget_over(data: bytes, config: AttachmentConfig) -> bool:
-    """尺寸/像素预算：Pillow 懒加载取尺寸（不 decode 全图）；超限即拒。"""
-    from PIL import Image
-
-    with Image.open(io.BytesIO(data)) as img:
-        width, height = img.size
-        if width * height > config.max_pixels:
-            return True
-        return False
 
 
 def _count_gif_frames(data: bytes, max_frames: int) -> int:
@@ -234,7 +212,7 @@ async def validate_upload(
         detected_mime = detected_text
 
     if magic_mime in ("image/jpeg", "image/png", "image/webp", "image/gif"):
-        # 图片：Pillow format 印证 + 像素预算 + GIF 帧数
+        # 图片：Pillow format 印证 + 像素预算 + 解码内存预算 + GIF 帧数
         def _probe() -> dict[str, object]:
             from PIL import Image, UnidentifiedImageError
 
@@ -242,13 +220,32 @@ async def validate_upload(
                 with Image.open(io.BytesIO(data)) as img:
                     fmt = (img.format or "").upper()
                     if fmt not in {"JPEG", "PNG", "WEBP", "GIF"}:
-                        raise ValueError(f"pillow format={fmt}")
-                    over = img.width * img.height > config.max_pixels
+                        raise AttachmentError(
+                            "upload_type_denied",
+                            f"内容实际格式不在 allowlist：{fmt or '未知'}",
+                        )
+                    pixels = img.width * img.height
+                    over = pixels > config.max_pixels
+                    # 解码后内存按 RGBA 4 字节/像素估算（§5.9.15 冻结 64 MiB 上限）
+                    over_decode_bytes = pixels * 4 > config.max_decode_bytes
                     frames = 1
                     if fmt == "GIF":
                         frames = _count_gif_frames(data, config.max_gif_frames)
-                    return {"fmt": fmt, "over": over, "frames": frames}
-            except UnidentifiedImageError:
+                    return {
+                        "fmt": fmt,
+                        "over": over,
+                        "over_decode_bytes": over_decode_bytes,
+                        "frames": frames,
+                    }
+            except AttachmentError:
+                raise
+            except Image.DecompressionBombError:
+                raise AttachmentError(
+                    "upload_pixel_limit",
+                    f"总像素触发 Pillow 炸弹护栏（上限 {config.max_pixels}）",
+                ) from None
+            except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+                # 截断/畸形/非图片：Pillow 的解码异常面收口为拒绝，绝不冒 500。
                 raise AttachmentError(
                     "upload_type_denied", "内容无法按 allowlist 图片解码"
                 ) from None
@@ -257,6 +254,11 @@ async def validate_upload(
         if bool(probe["over"]):
             raise AttachmentError(
                 "upload_pixel_limit", f"总像素超过 {config.max_pixels}"
+            )
+        if bool(probe["over_decode_bytes"]):
+            raise AttachmentError(
+                "upload_pixel_limit",
+                f"解码后内存超过 {config.max_decode_bytes} 字节（按 RGBA 估算）",
             )
         frames = probe["frames"]
         frames_n = int(frames) if isinstance(frames, int) else 1
@@ -324,7 +326,6 @@ __all__ = [
     "ALLOWED_MIMES",
     "SERVER_EXT_BY_MIME",
     "AttachmentError",
-    "ExtensionMismatch",
     "ValidatedAttachment",
     "validate_upload",
 ]

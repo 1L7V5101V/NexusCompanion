@@ -836,7 +836,10 @@ class AppRuntime:
         runtime = AttachmentLifecycleRuntime(
             AttachmentLifecycle(
                 AttachmentRepository(self.webchat_durable.session_factory),
-                AttachmentBlobStore(Path(self.workspace) / "attachments"),
+                # 传 workspace 根：blob 根由 tenant_id 派生（tenants/<dirname>/attachments），
+                # 对账因此天然只接触本租户目录，不会删到其他租户的 blob。
+                AttachmentBlobStore(Path(self.workspace), multi_tenant=True),
+                self.config.attachments,
                 telemetry=build_default_attachment_telemetry(),
             ),
             cleanup_interval_s=self.config.attachments.cleanup_interval_s,

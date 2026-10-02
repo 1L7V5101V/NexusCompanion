@@ -1,35 +1,70 @@
-"""C6 附件生命周期服务（design ADR-5）：清理与 reconciliation 编排。
+"""C6 附件生命周期服务（design ADR-5）：清理与 reconciliation 的唯一实现。
 
 职责：
-- ``cleanup_expired``：staged 超龄（temp_ttl）与 committed/missing 到期且
-  referencing_count=0（硬条件）的 metadata + blob 删除，幂等（重复跑删除数=0）；
-- ``reconcile``：missing = committed 但 blob 不存在 → status=missing（读取会 404）；
-  orphan = blob 存在但无 metadata（含 staging 超龄）→ 删除；
-- 全部按 tenant 维度执行；``tenant_filter`` 缺省为全租户扫描（进程内定时任务用）。
+- ``cleanup_expired``：到期 metadata（staged 超 temp_ttl / 已 committed 但
+  referencing_count=0 且 retention_deadline 过期）先删行、再删 blob。顺序刻意为
+  「行先行」：blob 删除失败只留下可被 reconciliation 收敛的孤儿，绝不会留下指向
+  已删 blob 的 metadata 行。每个删除产生 ``delete.finished``（C12 §8.1）。
+- ``reconcile``：missing = 有 metadata 行但 blob 缺失 → status=missing（读取 404）；
+  orphan = blob 存在但无 metadata 行 → 删除（``orphan_grace_seconds`` 内的新写入
+  不视为孤儿，覆盖 rename 与 metadata 提交之间的在途窗口）；超龄 staging 文件清理。
+  ``dry_run=True`` 只统计不变更（对齐 ``core/telemetry/retention.SweepReport`` 契约）。
 
-事件回调（C12 §8.1 伴随落地）：``on_cleanup`` 返回本轮的 (deleted, removed_orphans,
-marked_missing) 供 telemetry 记录点消费（字段 ⊇ 单一来源）。
+已知集合覆盖**全部状态**（含 staged）——「blob 在最终路径 + metadata 尚为 staged」
+是上传成功的正常终态，不是孤儿。作用域按租户 blob root（见 blob_store ADR-3），
+一个租户的对账物理接触不到另一个租户的目录。
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from bootstrap.attachments.blob_store import AttachmentBlobStore
 from bootstrap.db.repository.attachment_repo import AttachmentRepository
+
+if TYPE_CHECKING:
+    from agent.config_models import AttachmentConfig
+    from bootstrap.attachments.telemetry import AttachmentTelemetry
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class CleanupReport:
-    deleted_metadata: int
-    deleted_blobs: int
-    removed_orphans: int
-    marked_missing: int
+class LifecycleReport:
+    """一轮清理/对账的结果（``SweepReport`` 形态：dry_run/to_dict/errors）。"""
+
+    deleted_metadata: int = 0
+    deleted_blobs: int = 0
+    removed_orphans: int = 0
+    marked_missing: int = 0
+    removed_staging: int = 0
     tenant_ids: tuple[str, ...] = ()
+    dry_run: bool = False
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "tenant_ids": list(self.tenant_ids),
+            "deleted_metadata": self.deleted_metadata,
+            "deleted_blobs": self.deleted_blobs,
+            "removed_orphans": self.removed_orphans,
+            "marked_missing": self.marked_missing,
+            "removed_staging": self.removed_staging,
+            "dry_run": self.dry_run,
+            "errors": list(self.errors),
+        }
+
+    @property
+    def changed(self) -> bool:
+        return bool(
+            self.deleted_metadata
+            or self.deleted_blobs
+            or self.removed_orphans
+            or self.marked_missing
+            or self.removed_staging
+        )
 
 
 class AttachmentLifecycle:
@@ -37,93 +72,134 @@ class AttachmentLifecycle:
         self,
         repo: AttachmentRepository,
         blob_store: AttachmentBlobStore,
+        config: "AttachmentConfig",
         *,
-        telemetry: Any | None = None,
+        telemetry: "AttachmentTelemetry | None" = None,
     ) -> None:
         self.repo = repo
         self.blob_store = blob_store
+        self.config = config
         self._telemetry = telemetry
 
-    async def cleanup_expired(self) -> CleanupReport:
-        """加入期附件清理：staged 超 temp_ttl / committed 到期且 refcount=0。
+    # ── 到期清理 ─────────────────────────────────────────────────────
 
-        幂等论证：metadata 删除后 blob delete 幂等返回 False；下一轮 list_expired
-        不再返回（行已删）。重复跑删除数为 0。
-        """
-        expired = await self.repo.list_expired()
+    async def cleanup_expired(self, *, tenant_filter: str | None = None) -> LifecycleReport:
+        """删除到期附件：先删 metadata 行再删 blob；幂等（重复跑删除数=0）。"""
+        expired = await self.repo.list_expired(tenant_filter=tenant_filter)
         deleted_meta = 0
         deleted_blobs = 0
         tenants: set[str] = set()
+        errors: list[str] = []
         for record in expired:
+            tenants.add(record.tenant_id)
             try:
-                self.blob_store.delete_blob(record.storage_key)
-                ok = await self.repo.delete_attachment(
+                removed_row = await self.repo.delete_attachment(
                     tenant_id=record.tenant_id, attachment_id=record.id
                 )
-                if ok:
-                    deleted_meta += 1
-                else:
-                    deleted_blobs += 0
-                tenants.add(record.tenant_id)
-            except Exception:
+                if not removed_row:
+                    continue  # 行已被并发清理删除，幂等
+                deleted_meta += 1
+                if self.blob_store.delete_blob(record.tenant_id, record.storage_key):
+                    deleted_blobs += 1
+                self._emit_delete(record.tenant_id)
+            except Exception as exc:
+                errors.append(f"cleanup {record.id}: {exc}")
                 logger.exception(
                     "attachment cleanup 失败 tenant=%s attachment=%s",
                     record.tenant_id,
                     record.id,
                 )
-        report = CleanupReport(
+        report = LifecycleReport(
             deleted_metadata=deleted_meta,
             deleted_blobs=deleted_blobs,
-            removed_orphans=0,
-            marked_missing=0,
             tenant_ids=tuple(sorted(tenants)),
+            errors=errors,
         )
-        self._emit("cleanup.finished", report)
+        self._emit_cleanup(report)
         return report
 
-    async def reconcile(self, tenant_id: str) -> CleanupReport:
-        """reconciliation（启动 + 可手动触发）：missing 标记 + orphan 清理。
+    # ── reconciliation（唯一实现，runtime.reconcile_now 委托至此） ──────
 
-        - committed/missing 的 metadata → blob 不存在 → status=missing；
-        - blob 存在但不在 committed 列表（无 metadata）→ 删除孤儿；
-        - staging 超龄文件 → 随 temp_ttl 清理。
-        """
-        records = await self.repo.list_committed_by_tenant(tenant_id)
+    async def reconcile(
+        self, tenant_id: str, *, dry_run: bool = False
+    ) -> LifecycleReport:
+        """单租户对账：missing 标记 + orphan 清理 + 超龄 staging 清理。"""
+        errors: list[str] = []
+        try:
+            records = await self.repo.list_by_tenant(tenant_id)
+        except Exception as exc:
+            errors.append(f"list_by_tenant failed: {exc}")
+            return LifecycleReport(tenant_ids=(tenant_id,), dry_run=dry_run, errors=errors)
+
         known_keys = {r.storage_key for r in records}
-        marked_missing = 0
-        for record in records:
-            if not self.blob_store.blob_exists(record.storage_key):
-                if record.status != "missing":
-                    await self.repo.mark_missing(
-                        tenant_id=tenant_id, attachment_id=record.id
-                    )
-                    marked_missing += 1
-        removed_orphans = self.blob_store.cleanup_orphans(known_keys=known_keys)
-        removed_staging = self.blob_store.cleanup_staging(
-            older_than=24 * 3600
+        orphan_keys = self.blob_store.find_orphan_keys(
+            tenant_id, known_keys, grace_seconds=self.config.orphan_grace_seconds
         )
-        report = CleanupReport(
-            deleted_metadata=0,
-            deleted_blobs=0,
-            removed_orphans=removed_orphans,
-            marked_missing=marked_missing,
-            tenant_ids=(tenant_id,),
+        stale_staging = self.blob_store.find_stale_staging(
+            tenant_id, older_than=self.config.temp_ttl_hours * 3600
         )
-        if removed_staging:
-            logger.info(
-                "attachment staging 清理 tenant=%s removed=%d",
-                tenant_id,
-                removed_staging,
+        missing_candidates = [
+            r
+            for r in records
+            if r.status in ("committed", "missing")
+            and not self.blob_store.blob_exists(tenant_id, r.storage_key)
+        ]
+
+        if dry_run:
+            return LifecycleReport(
+                removed_orphans=len(orphan_keys),
+                marked_missing=len(missing_candidates),
+                removed_staging=len(stale_staging),
+                tenant_ids=(tenant_id,),
+                dry_run=True,
+                errors=errors,
             )
-        self._emit("cleanup.finished", report)
+
+        removed_orphans = self.blob_store.delete_keys(tenant_id, orphan_keys)
+        removed_staging = self.blob_store.cleanup_staging(
+            tenant_id, older_than=self.config.temp_ttl_hours * 3600
+        )
+        marked = 0
+        for record in missing_candidates:
+            if record.status == "missing":
+                continue
+            try:
+                updated = await self.repo.mark_missing(
+                    tenant_id=tenant_id, attachment_id=record.id
+                )
+                if updated is not None:
+                    marked += 1
+            except Exception as exc:
+                errors.append(f"mark_missing {record.id}: {exc}")
+
+        report = LifecycleReport(
+            removed_orphans=removed_orphans,
+            marked_missing=marked,
+            removed_staging=removed_staging,
+            tenant_ids=(tenant_id,),
+            errors=errors,
+        )
+        self._emit_cleanup(report)
         return report
 
-    def _emit(self, event_name: str, report: CleanupReport) -> None:
-        if self._telemetry is None:
+    # ── 记录点（C12 §8.1；异常绝不阻断清理） ───────────────────────────
+
+    def _emit_delete(self, tenant_id: str) -> None:
+        t = self._telemetry
+        if t is None:
             return
         try:
-            self._telemetry.cleanup_finished(
-                event_name=event_name,
+            t.delete_finished(tenant_id=tenant_id, status="succeeded")
+        except Exception:
+            logger.exception("attachment delete 记录点异常（不阻断清理）")
+
+    def _emit_cleanup(self, report: LifecycleReport) -> None:
+        t = self._telemetry
+        if t is None:
+            return
+        try:
+            t.cleanup_finished(
+                event_name="cleanup.finished",
                 deleted=report.deleted_metadata,
                 removed_orphans=report.removed_orphans,
                 marked_missing=report.marked_missing,
@@ -133,4 +209,4 @@ class AttachmentLifecycle:
             logger.exception("attachment lifecycle 记录点异常（不阻断清理）")
 
 
-__all__ = ["AttachmentLifecycle", "CleanupReport"]
+__all__ = ["AttachmentLifecycle", "LifecycleReport"]

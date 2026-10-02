@@ -17,7 +17,8 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from bootstrap.attachments.blob_store import AttachmentBlobStore, build_storage_key
 from bootstrap.attachments.validation import AttachmentError, ValidatedAttachment, validate_upload
@@ -85,11 +86,16 @@ class AttachmentService:
         validated: ValidatedAttachment = await validate_upload(data, filename, self._config)
         att_id = uuid.uuid4()
         # 1. staging 落盘（blob 先于 metadata 存在；崩溃只产生 orphan）
-        self._blobs.stage_bytes(att_id, data)
-        # 2. rename 到最终路径（同一文件系统原子操作）
-        self._blobs.commit(att_id, validated.server_ext, staging_name=f"{att_id}.bin")
+        self._blobs.stage_bytes(tenant_id, att_id, data)
+        # 2. rename 到该租户 blob root 下的最终路径（同一文件系统原子操作）
+        self._blobs.commit(
+            tenant_id, att_id, validated.server_ext, staging_name=f"{att_id}.bin"
+        )
         storage_key = build_storage_key(att_id, validated.server_ext)
-        # 3. metadata 提交（staged→committed；blob rename 后才视为可读）
+        # 3. metadata 落库（status=staged）：staged 在此表示「已入库、尚无 message 引用」，
+        #    按 §5.9.15 冻结值享 24h 未引用清理；协议帧接入引用后由 commit_attachment
+        #    推进 committed 并按 referenced_ttl_days 重算 deadline（C6 Non-Goal：v0 帧
+        #    不带附件字段）。因此不可在此 commit——那会把未引用附件的保留期变成 30d。
         await self._repo.create_attachment(
             account_id=account_id,
             tenant_id=tenant_id,
@@ -116,10 +122,11 @@ class AttachmentService:
         account_id: uuid.UUID | str,
         tenant_id: str,
         attachment_id: uuid.UUID | str,
-    ) -> tuple[AttachmentRecord, bytes]:
-        """按 id + ownership 读取；跨租户/不存在 → None 语义（404）；blob 缺失标记 missing。
+    ) -> tuple[AttachmentRecord, Path]:
+        """按 id + ownership 读取，返回 (record, blob 路径) 供调用方流式响应。
 
-        返回 (record, bytes)。blob 缺失时标记 missing 并抛 AttachmentNotFoundError。
+        跨租户/不存在/blob 缺失 → ``AttachmentNotFoundError``（HTTP 层统一 404，
+        不区分三者以免泄露存在性）；blob 缺失同时标记 missing。
         """
         record = await self._repo.get_owned(
             account_id=account_id,
@@ -131,47 +138,29 @@ class AttachmentService:
             self._emit_fetch_error(tenant_id, exc)
             raise exc
         try:
-            data = self._blobs.read_bytes(record.storage_key)
+            path = self._blobs.resolve_blob(tenant_id, record.storage_key)
+            actual_size = path.stat().st_size
         except Exception:
             # blob 缺失：标记 missing（reconciliation 语义），读取按 404 处理
             await self._repo.mark_missing(tenant_id=tenant_id, attachment_id=attachment_id)
             exc = AttachmentNotFoundError("attachment blob missing")
             self._emit_fetch_error(tenant_id, exc)
             raise exc from None
-        if not data:
+        if actual_size != record.size_bytes:
+            # 字节数与 metadata 不符 = blob 被截断或替换：不服务可疑内容，一律 404。
+            # mark_missing 只对 committed 行生效（规格里 missing = 「已提交但 blob 缺失」），
+            # staged 行留给 24h 清理收敛。读取时全量 sha256 复算与流式响应互斥，
+            # 热路径只做 size 校验；checksum 正确性由契约用例保证读出字节可复算比对。
             await self._repo.mark_missing(tenant_id=tenant_id, attachment_id=attachment_id)
-            exc = AttachmentNotFoundError("attachment blob missing")
+            exc = AttachmentNotFoundError("attachment blob size mismatch")
             self._emit_fetch_error(tenant_id, exc)
             raise exc from None
         self._emit_fetch_success(tenant_id)
-        return record, data
+        return record, path
 
     @property
     def config(self) -> AttachmentConfig:
         return self._config
-
-    def emit(self, event_name: str, payload: dict[str, Any]) -> None:
-        """外部事件入口（delete 等；upload/fetch 由 service 内部记录）。"""
-        t = self._telemetry
-        if t is None:
-            return
-        try:
-            if event_name == "delete.finished":
-                if payload.get("status") == "succeeded":
-                    t.delete_finished(
-                        tenant_id=str(payload.get("tenant_id", "")),
-                        status="completed",
-                    )
-                else:
-                    t.delete_finished(
-                        tenant_id=str(payload.get("tenant_id", "")),
-                        status=str(payload.get("status", "failed")),
-                        error=str(payload.get("error", "delete failed")),
-                        error_type=str(payload.get("error_type", "delete_error")),
-                    )
-            # 未知/未实现事件静默忽略（no-op 兼容；不扩事件面）
-        except Exception:
-            logger.exception("attachment telemetry emit 异常（不阻断主流程）")
 
     def _emit_upload_success(self, tenant_id: str, *, size_bytes: int) -> None:
         if self._telemetry is None:

@@ -51,6 +51,7 @@ def test_attachment_config_frozen_defaults() -> None:
     assert cfg.max_text_chars == 200_000
     assert cfg.temp_ttl_hours == 24
     assert cfg.referenced_ttl_days == 30
+    assert cfg.orphan_grace_seconds == 900
 
 
 def test_attachment_config_loads_from_toml(tmp_path: Path) -> None:

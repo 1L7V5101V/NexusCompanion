@@ -49,7 +49,7 @@ class TenantPathResolver:
         """多租户模式返回租户工作区根（按需创建）；单机模式回退 fallback。"""
         if not self._multi_tenant or not tenant_id:
             return fallback
-        root = self._workspace_root / "tenants" / _tenant_dirname(tenant_id) / "workspace"
+        root = self._workspace_root / "tenants" / tenant_dirname(tenant_id) / "workspace"
         root.mkdir(parents=True, exist_ok=True)
         return root
 
@@ -59,7 +59,7 @@ class TenantPathResolver:
         root = (
             self._workspace_root
             / "tenants"
-            / _tenant_dirname(context.tenant_id)
+            / tenant_dirname(context.tenant_id)
             / category
             if self._multi_tenant
             else self._workspace_root / category
@@ -106,7 +106,7 @@ class TenantPathResolver:
         return resolved
 
 
-def _tenant_dirname(tenant_id: str) -> str:
+def tenant_dirname(tenant_id: str) -> str:
     """tenant_id → 目录名：清洗非法字符（Windows 不允许 ":"）并附短哈希保唯一。"""
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", tenant_id)[:48]
     digest = hashlib.sha1(tenant_id.encode("utf-8")).hexdigest()[:8]

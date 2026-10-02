@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from bootstrap.db.models.attachment import (
@@ -288,27 +288,31 @@ class AttachmentRepository:
     async def list_expired(
         self, *, tenant_filter: str | None = None, limit: int = 500
     ) -> list[AttachmentRecord]:
-        """到期扫描（ADR-5 清理任务用）：staged 超 24h，或 committed refcount=0 且
-        retention_deadline 过期。返回记录供调用方删 blob + 删 metadata（幂等）。"""
+        """到期扫描（ADR-5 清理任务用）：staged 超 temp_ttl，或已无引用
+        （referencing_count=0）且 retention_deadline 过期。条件与 limit 下推 SQL，
+        不在应用层全表取回。"""
         now = self._now()
+        stmt = select(AttachmentModel).where(
+            AttachmentModel.status.in_(("staged", "committed", "missing")),
+            AttachmentModel.retention_deadline <= now,
+            or_(
+                AttachmentModel.status == "staged",
+                AttachmentModel.referencing_count == 0,
+            ),
+        )
+        if tenant_filter is not None:
+            stmt = stmt.where(AttachmentModel.tenant_id == tenant_filter)
         async with self._sf() as sess:
-            stmt = select(AttachmentModel).where(
-                AttachmentModel.status.in_(("staged", "committed", "missing"))
+            rows = (
+                (
+                    await sess.execute(
+                        stmt.order_by(AttachmentModel.retention_deadline).limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
             )
-            if tenant_filter is not None:
-                stmt = stmt.where(AttachmentModel.tenant_id == tenant_filter)
-            rows = (await sess.execute(stmt)).scalars().all()
-            out: list[AttachmentRecord] = []
-            for row in rows:
-                record = AttachmentRecord.from_row(row)
-                if record.status == "staged":
-                    if record.retention_deadline <= now:
-                        out.append(record)
-                elif record.referencing_count == 0 and record.retention_deadline <= now:
-                    out.append(record)
-                if len(out) >= limit:
-                    break
-            return out
+            return [AttachmentRecord.from_row(row) for row in rows]
 
     async def delete_attachment(
         self,
@@ -327,16 +331,17 @@ class AttachmentRepository:
             )
             return bool(result.rowcount)
 
-    async def list_committed_by_tenant(self, tenant_id: str) -> list[AttachmentRecord]:
-        """reconciliation：committed 记录枚举（校验 blob 存在性用）。"""
+    async def list_by_tenant(self, tenant_id: str) -> list[AttachmentRecord]:
+        """该租户的全部 attachment 行（含 staged）。
+
+        reconciliation 的「已知集合」用它：blob 在最终路径而 metadata 仍为 staged
+        是上传成功的正常终态，不是孤儿；只取 committed 会把在库附件判为孤儿删除。
+        """
         async with self._sf() as sess:
             rows = (
                 await sess.execute(
                     select(AttachmentModel)
-                    .where(
-                        AttachmentModel.tenant_id == tenant_id,
-                        AttachmentModel.status.in_(("committed", "missing")),
-                    )
+                    .where(AttachmentModel.tenant_id == tenant_id)
                     .order_by(AttachmentModel.created_at)
                 )
             ).scalars().all()

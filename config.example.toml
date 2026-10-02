@@ -84,6 +84,25 @@ memory_window = 40
 [agent.tools]
 search_enabled = true
 
+# 可选：C6 附件内容边界与生命周期（默认即 P-1 冻结值，不建议在演练前调整）。
+# allowlist 本身不可配置：只接受 image/jpeg、image/png、image/webp、image/gif
+# 与 UTF-8 text/plain，且扩展名与服务端嗅探结果必须双一致（fail-closed）。
+# [agent.attachments]
+# enabled = true
+# max_file_bytes = 20971520        # 20 MiB/文件
+# max_pixels = 16777216            # 总像素 ≤ 4096²
+# max_decode_bytes = 67108864      # 解码后内存 ≤ 64 MiB（按 RGBA 估算）
+# max_decode_seconds = 5.0         # 探测/解码超时（线程内，不阻塞事件循环）
+# max_gif_frames = 100
+# max_text_chars = 200000
+# temp_ttl_hours = 24              # 未引用/失败上传的保留期
+# referenced_ttl_days = 30         # 已引用附件自最后引用起保留
+# orphan_grace_seconds = 900       # 刚 rename、metadata 未提交的在途上传不判孤儿
+# cleanup_interval_s = 3600        # 0 = 不启用周期清理（仅启动对账 + 手动触发）
+# reconcile_interval_s = 21600     # 0 = 不周期对账
+# reconcile_enabled = true
+# reconcile_on_startup = true
+
 # 可选：Agentic RAG 检索路由模式（默认 "rule"）。
 # "rule" - 规则打分 + 阈值决策，模糊时 LLM 兜底（默认）
 # "llm"  - 跳过规则打分，完全由 LLM 判断检索源

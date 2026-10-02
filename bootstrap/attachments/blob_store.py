@@ -1,12 +1,18 @@
-"""C6 附件 blob 存储（openspec/changes/c6-attachment/design.md ADR-3）。
+"""C6 附件 blob 存储（openspec/changes/archive/2026-10-02-c6-attachment/design.md ADR-3）。
 
-blob root = C7 ``TenantPathResolver.attachments_root``（租户命名空间物理根，与工具
-读取同一棵树）；``storage_key`` = ``{attachment_id}.{server_ext}``（相对该根）。
-两段式：``stage_bytes`` 落 ``.staging/<session>/`` → ``commit`` 同文件系统原子
-``os.rename`` 到最终路径（rename 成功后 metadata 由调用方同事务提交）；崩溃窗口
-只产生 orphan/missing 一态（staging 超龄由清理、最终路径有 blob 无 metadata 由
-reconciliation 收敛）。``/tmp`` fallback 已移除（§5.9.12：/tmp 不属于 durable
-backup 范围）。路径一律服务端派生，不接收客户端路径。
+blob root **按租户命名空间**解析，与 C7 ``TenantPathResolver._category_root`` 同一棵树：
+多租户模式 ``<workspace>/tenants/<tenant_dirname>/attachments``，单机模式
+``<workspace>/attachments``。``storage_key`` = ``{attachment_id_hex}.{server_ext}``
+（相对该租户根）。
+
+每个公开方法都要求 ``tenant_id``——租户目录之外物理不可见，因此 orphan 扫描与
+staging 清理的作用域天然等于单个租户，不存在「A 的对账删掉 B 的 blob」这类路径。
+
+两段式：``stage_bytes`` 落租户根下 ``.staging/<attachment_id>/`` → ``commit`` 同文件
+系统原子 ``os.replace`` 到最终路径（rename 成功后 metadata 由调用方提交）。崩溃窗口
+只产生「blob 在最终路径但无 metadata」的孤儿，由 reconciliation 收敛；``grace_seconds``
+让刚 rename、metadata 尚未提交的在途上传不被误删。``/tmp`` fallback 已移除
+（§5.9.12：/tmp 不属于 durable backup 范围）。路径一律服务端派生，不接收客户端路径。
 """
 
 from __future__ import annotations
@@ -14,23 +20,26 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Iterable
 
-from bootstrap.attachments.validation import SERVER_EXT_BY_MIME, AttachmentError
+from agent.tools.path_resolver import tenant_dirname
+from bootstrap.attachments.validation import SERVER_EXT_BY_MIME
 
-# storage_key 形态: {uuid4}.{ext}（服务端派生）
+# storage_key 形态: {uuid4.hex}.{ext}（服务端派生，相对租户根的一层文件）
 _STORAGE_KEY_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]+$")
 _SERVER_EXTS = frozenset(SERVER_EXT_BY_MIME.values())
+_STAGING_DIR = ".staging"
 
 
 class AttachmentStorageError(RuntimeError):
-    """blob 存储失败（staging/rename/读取）。"""
+    """blob 存储失败（staging/rename/读取/越界）。"""
 
 
 def build_storage_key(attachment_id: uuid.UUID | str, server_ext: str) -> str:
-    """服务端派生 storage_key（相对 attachments_root）。"""
+    """服务端派生 storage_key（相对租户 attachments_root）。"""
     if server_ext not in _SERVER_EXTS:
         raise AttachmentStorageError(f"非法 server_ext: {server_ext!r}")
     return f"{uuid.UUID(str(attachment_id)).hex}.{server_ext.lstrip('.')}"
@@ -47,30 +56,48 @@ def parse_storage_key(storage_key: str) -> tuple[str, str]:
 
 
 class AttachmentBlobStore:
-    """blob 本体读写（metadata 归 AttachmentRepository；本类只管文件）。"""
+    """blob 本体读写（metadata 归 AttachmentRepository；本类只管文件）。
 
-    def __init__(self, root: Path) -> None:
-        self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+    构造参数是 **workspace 根**而非 blob 根：blob 根由 ``tenant_id`` 派生，
+    调用方无法把 store 指向别人的目录。
+    """
+
+    def __init__(self, workspace_root: Path, *, multi_tenant: bool = True) -> None:
+        self.workspace_root = Path(workspace_root).resolve()
+        self._multi_tenant = multi_tenant
+
+    # ── 租户根 ──────────────────────────────────────────────────────
+
+    def tenant_root(self, tenant_id: str) -> Path:
+        """租户 attachments_root（按需创建）；tenant_id 缺失 fail-closed。"""
+        if not tenant_id:
+            raise AttachmentStorageError("tenant_id 缺失，拒绝解析 blob root")
+        if self._multi_tenant:
+            root = (
+                self.workspace_root
+                / "tenants"
+                / tenant_dirname(tenant_id)
+                / "attachments"
+            )
+        else:
+            root = self.workspace_root / "attachments"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     # ── staging（两次写，ADR-3） ──────────────────────────────────────
 
-    def stage_bytes(self, attachment_id: uuid.UUID | str, data: bytes) -> Path:
-        """blob 写入 staging（未校验前/校验通过后都可先落此）。
-
-        返回 staging 路径；调用方后续 ``commit`` 移至最终路径。
-        """
-        name = f"{attachment_id}.bin"
-        stage_dir = self._staging_dir(attachment_id)
-        target = stage_dir / name
+    def stage_bytes(self, tenant_id: str, attachment_id: uuid.UUID | str, data: bytes) -> Path:
+        """blob 写入该租户的 staging 区，返回 staging 路径（随后 ``commit`` 移至最终路径）。"""
+        target = self._staging_dir(tenant_id, attachment_id) / f"{attachment_id}.bin"
         target.write_bytes(data)
         return target
 
-    def staged_path(self, attachment_id: uuid.UUID | str, name: str) -> Path:
-        return self._staging_dir(attachment_id) / name
+    def staged_path(self, tenant_id: str, attachment_id: uuid.UUID | str, name: str) -> Path:
+        return self._staging_dir(tenant_id, attachment_id) / name
 
     def commit(
         self,
+        tenant_id: str,
         attachment_id: uuid.UUID | str,
         server_ext: str,
         *,
@@ -81,76 +108,125 @@ class AttachmentBlobStore:
         ``server_ext`` 必须为冻结 allowlist 映射；返回最终路径（调用方转存
         storage_key 并同事务提交 metadata）。
         """
-        ext = server_ext.lstrip(".")
         if server_ext not in _SERVER_EXTS:
             raise AttachmentStorageError(f"非法 server_ext: {server_ext!r}")
-        stage = self.staged_path(attachment_id, staging_name or f"{attachment_id}.bin")
+        root = self.tenant_root(tenant_id)
+        stage = self.staged_path(tenant_id, attachment_id, staging_name or f"{attachment_id}.bin")
         if not stage.is_file():
             raise AttachmentStorageError(f"staging 文件缺失: {stage}")
-        final = self.root / f"{uuid.UUID(str(attachment_id)).hex}.{ext}"
-        final.parent.mkdir(parents=True, exist_ok=True)
+        final = root / f"{uuid.UUID(str(attachment_id)).hex}.{server_ext.lstrip('.')}"
         try:
             os.replace(stage, final)
         except OSError as exc:
             raise AttachmentStorageError(f"rename 失败: {stage} -> {final}: {exc}") from exc
         return final
 
-    # ── 读取 / 校验（ownership 由调用方在 metadata 层判定） ─────────────────
+    # ── 读取 / 删除（ownership 由调用方在 metadata 层判定） ─────────────
 
-    def resolve_blob(self, storage_key: str) -> Path:
-        """storage_key → 最终路径（拒绝逃逸：必须恰在 root 内一层的合法形态）。"""
-        raw_id, ext = parse_storage_key(storage_key)
-        path = (self.root / storage_key).resolve()
-        if not path.is_relative_to(self.root):
-            raise AttachmentStorageError(f"storage_key 越出 blob root: {storage_key!r}")
-        if path.parent != self.root:
-            raise AttachmentStorageError(f"storage_key 嵌套非法: {storage_key!r}")
-        if not (path.is_file() or path.exists()):
+    def resolve_blob(self, tenant_id: str, storage_key: str) -> Path:
+        """storage_key → 该租户根下的最终路径（拒绝逃逸与嵌套）。"""
+        parse_storage_key(storage_key)
+        root = self.tenant_root(tenant_id)
+        path = (root / storage_key).resolve()
+        if path.parent != root:
+            raise AttachmentStorageError(f"storage_key 越出租户 blob root: {storage_key!r}")
+        if not path.is_file():
             raise AttachmentStorageError(f"blob 不存在: {storage_key!r}")
-        _ = raw_id  # 形态已由 regex 校验
         return path
 
-    def read_bytes(self, storage_key: str) -> bytes:
-        path = self.resolve_blob(storage_key)
-        return path.read_bytes()
+    def read_bytes(self, tenant_id: str, storage_key: str) -> bytes:
+        return self.resolve_blob(tenant_id, storage_key).read_bytes()
 
-    def delete_blob(self, storage_key: str) -> bool:
+    def delete_blob(self, tenant_id: str, storage_key: str) -> bool:
         """删除最终 blob（清理幂等：不存在返回 False）。"""
         try:
-            path = self.resolve_blob(storage_key)
+            path = self.resolve_blob(tenant_id, storage_key)
         except AttachmentStorageError:
             return False
         try:
             path.unlink()
-            return True
         except FileNotFoundError:
             return False
+        return True
 
-    def blob_exists(self, storage_key: str) -> bool:
+    def blob_exists(self, tenant_id: str, storage_key: str) -> bool:
         try:
-            path = self.resolve_blob(storage_key)
+            parse_storage_key(storage_key)
         except AttachmentStorageError:
             return False
-        return path.is_file()
+        return (self.tenant_root(tenant_id) / storage_key).is_file()
 
-    # ── reconciliation 枚举 ─────────────────────────────────────────
+    # ── reconciliation 枚举（作用域 = 单个租户目录） ────────────────────
 
-    def list_orphan_blobs(self) -> list[str]:
-        """root 下无 metadata 的 blob storage_key（含 staging 目录内文件，不含 .staging）。"""
+    def list_blobs(self, tenant_id: str) -> list[str]:
+        """该租户根下所有合法形态的 blob 文件名（staging 区不在内）。"""
+        root = self.tenant_root(tenant_id)
+        if not root.is_dir():
+            return []
+        return [
+            entry.name
+            for entry in root.iterdir()
+            if entry.is_file() and _STORAGE_KEY_RE.match(entry.name)
+        ]
+
+    def find_orphan_keys(
+        self,
+        tenant_id: str,
+        known_keys: Iterable[str],
+        *,
+        grace_seconds: float = 0.0,
+    ) -> list[str]:
+        """无 metadata 对应的 blob（孤儿）。
+
+        ``grace_seconds`` 内的新写入不算孤儿——覆盖「blob 已 rename、metadata 尚未
+        提交」的在途上传窗口。
+        """
+        known = set(known_keys)
+        root = self.tenant_root(tenant_id)
+        cutoff = time.time() - grace_seconds if grace_seconds > 0 else None
         out: list[str] = []
-        if not self.root.is_dir():
-            return out
-        for entry in self.root.iterdir():
-            if not entry.is_file():
+        for key in self.list_blobs(tenant_id):
+            if key in known:
                 continue
-            if not _STORAGE_KEY_RE.match(entry.name):
-                continue
-            out.append(entry.name)
+            if cutoff is not None:
+                try:
+                    if (root / key).stat().st_mtime > cutoff:
+                        continue
+                except FileNotFoundError:
+                    continue
+            out.append(key)
         return out
 
-    def staging_files(self) -> list[Path]:
-        """所有 staging 文件（超龄由 24h 清理任务删除）。"""
-        stage_root = self.root / ".staging"
+    def delete_keys(self, tenant_id: str, keys: Iterable[str]) -> int:
+        """删除给定 blob 文件名（幂等）；返回实际删除数。"""
+        root = self.tenant_root(tenant_id)
+        removed = 0
+        for key in keys:
+            try:
+                (root / key).unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+            removed += 1
+        return removed
+
+    def cleanup_orphans(
+        self,
+        tenant_id: str,
+        known_keys: Iterable[str],
+        *,
+        grace_seconds: float = 0.0,
+    ) -> int:
+        """删除该租户根下的孤儿 blob；返回删除数。"""
+        return self.delete_keys(
+            tenant_id,
+            self.find_orphan_keys(tenant_id, known_keys, grace_seconds=grace_seconds),
+        )
+
+    def staging_files(self, tenant_id: str) -> list[Path]:
+        """该租户 staging 区内的所有文件（超龄由 24h 清理任务删除）。"""
+        stage_root = self.tenant_root(tenant_id) / _STAGING_DIR
         if not stage_root.is_dir():
             return []
         out: list[Path] = []
@@ -159,27 +235,33 @@ class AttachmentBlobStore:
                 out.extend(p for p in session_dir.iterdir() if p.is_file())
         return out
 
-    def cleanup_staging(self, *, older_than: float) -> int:
-        """删除超过 ``older_than`` 秒的 staging 文件与其空父目录；返回删除文件数。"""
-        import time
-
+    def find_stale_staging(self, tenant_id: str, *, older_than: float) -> list[Path]:
+        """超过 ``older_than`` 秒的 staging 文件（不删除）。"""
         cutoff = time.time() - older_than
-        removed = 0
-        stage_root = self.root / ".staging"
+        out: list[Path] = []
+        for file in self.staging_files(tenant_id):
+            try:
+                if file.stat().st_mtime < cutoff:
+                    out.append(file)
+            except FileNotFoundError:
+                continue
+        return out
+
+    def cleanup_staging(self, tenant_id: str, *, older_than: float) -> int:
+        """删除超龄 staging 文件并回收空目录；返回删除文件数。"""
+        root = self.tenant_root(tenant_id)
+        stage_root = root / _STAGING_DIR
         if not stage_root.is_dir():
             return 0
-        for session_dir in list(stage_root.iterdir()):
-            if not session_dir.is_dir():
+        removed = 0
+        for file in self.find_stale_staging(tenant_id, older_than=older_than):
+            try:
+                file.unlink(missing_ok=True)
+            except FileNotFoundError:
                 continue
-            for file in list(session_dir.iterdir()):
-                try:
-                    if file.stat().st_mtime < cutoff:
-                        file.unlink(missing_ok=True)
-                        removed += 1
-                except FileNotFoundError:
-                    continue
-            # 空目录回收（幂等：第二次不再命中文件）
-            if not any(session_dir.iterdir()):
+            removed += 1
+        for session_dir in list(stage_root.iterdir()):
+            if session_dir.is_dir() and not any(session_dir.iterdir()):
                 with contextlib.suppress(OSError):
                     session_dir.rmdir()
         if not any(stage_root.iterdir()):
@@ -187,22 +269,8 @@ class AttachmentBlobStore:
                 stage_root.rmdir()
         return removed
 
-    def cleanup_orphans(self, known_keys: Iterable[str]) -> int:
-        """删除 metadata 之外的孤儿 blob（root 下文件且不在 known_keys）；返回删除数。"""
-        known = set(known_keys)
-        removed = 0
-        for key in self.list_orphan_blobs():
-            if key in known:
-                continue
-            try:
-                (self.root / key).unlink(missing_ok=True)
-                removed += 1
-            except FileNotFoundError:
-                continue
-        return removed
-
-    def _staging_dir(self, attachment_id: uuid.UUID | str) -> Path:
-        dir_ = self.root / ".staging" / str(attachment_id)
+    def _staging_dir(self, tenant_id: str, attachment_id: uuid.UUID | str) -> Path:
+        dir_ = self.tenant_root(tenant_id) / _STAGING_DIR / str(attachment_id)
         dir_.mkdir(parents=True, exist_ok=True)
         return dir_
 

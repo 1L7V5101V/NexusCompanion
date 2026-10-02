@@ -156,6 +156,32 @@ async def test_pixel_budget_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_decode_memory_budget_rejected() -> None:
+    """max_decode_bytes 是真实闸门（此前只声明不执行）。"""
+    cfg = _cfg(max_pixels=10_000_000, max_decode_bytes=1000)
+    with pytest.raises(AttachmentError) as exc:
+        await validate_upload(_png_bytes(64, 64), "big.png", cfg)
+    assert exc.value.code == "upload_pixel_limit"
+
+
+@pytest.mark.asyncio
+async def test_truncated_image_rejected_not_crash() -> None:
+    """截断/畸形图片：Pillow 的 OSError/SyntaxError 面收口为 upload_type_denied。"""
+    cfg = AttachmentConfig()
+    cases = [
+        ("broken.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32),
+        ("broken.png", b"\x89PNG\r\n\x1a\n" + b"\xff" * 64),
+        ("broken.jpg", b"\xff\xd8\xff" + b"\x00" * 16),
+        ("broken.gif", b"GIF89a" + b"\x00" * 16),
+        ("broken.webp", b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 16),
+    ]
+    for filename, payload in cases:
+        with pytest.raises(AttachmentError) as exc:
+            await validate_upload(payload, filename, cfg)
+        assert exc.value.code == "upload_type_denied", filename
+
+
+@pytest.mark.asyncio
 async def test_gif_frame_limit_rejected() -> None:
     cfg = _cfg(max_gif_frames=5)
     with pytest.raises(AttachmentError) as exc:

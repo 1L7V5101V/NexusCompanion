@@ -110,10 +110,12 @@ def create_chat_app(
         from bootstrap.attachments.telemetry import build_default_attachment_telemetry
         from bootstrap.db.repository.attachment_repo import AttachmentRepository
 
-        blob_root = workspace / "attachments"
+        # 本服务只在 PG durable 模式装配，因此 blob 必落租户命名空间（与 C7
+        # TenantPathResolver 的 attachments_root 同一棵树），不给跨租户共用扁平根留路。
+        blob_store = AttachmentBlobStore(workspace, multi_tenant=True)
         service = AttachmentService(
             AttachmentRepository(durable_runtime.session_factory),
-            AttachmentBlobStore(blob_root),
+            blob_store,
             attachment_config,
             telemetry=build_default_attachment_telemetry(),
         )
@@ -311,6 +313,14 @@ def create_chat_app(
         identity = await _resolve_endpoint_identity(auth_runtime, session)
         if identity is None:
             raise HTTPException(403, detail="forbidden")
+        # ADR-7：先按 Content-Length 快速拒绝超限，避免为注定失败的上传读满 body。
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > service.config.max_file_bytes:
+                    raise HTTPException(413, detail="upload_too_large")
+            except ValueError:
+                raise HTTPException(400, detail="invalid content-length") from None
         data = await request.body()
         if not data:
             raise HTTPException(status_code=400, detail="上传内容不能为空")
@@ -356,7 +366,7 @@ def create_chat_app(
         if identity is None:
             raise HTTPException(403, detail="forbidden")
         try:
-            record, data = await service.fetch(
+            record, blob_path = await service.fetch(
                 account_id=identity.account_id,
                 tenant_id=identity.tenant_id,
                 attachment_id=attachment_id,
@@ -364,12 +374,12 @@ def create_chat_app(
         except Exception:
             raise HTTPException(404, detail="file not found") from None
         # fetch.finished 由 service 内部记录点 emit（C12 §8.1）；此处不再重复。
-        filename = record.filename_display or f"attachment{record.server_ext}"
-        _ = filename
-        return Response(
-            content=data,
+        # FileResponse 流式回传（ADR-7）：20 MiB 附件不再整体读入内存。
+        display = record.filename_display or f"attachment{record.server_ext}"
+        return FileResponse(
+            blob_path,
             media_type=record.detected_mime,
-            headers={"Content-Disposition": f"inline; filename*=utf-8''{quote(record.filename_display)}"},
+            headers={"Content-Disposition": f"inline; filename*=utf-8''{quote(display)}"},
         )
     return app
 
