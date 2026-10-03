@@ -614,6 +614,64 @@ class ToolAuditRepository:
         async with self._sf() as sess, sess.begin():
             sess.add(ToolAuditEventModel(**row))
 
+    async def count_audit_rows(self) -> int:
+        """表内总行数（报告 scanned 用；Pilot 规模全量 count 可接受）。"""
+        async with self._sf() as sess:
+            value = await sess.scalar(
+                select(func.count()).select_from(ToolAuditEventModel)
+            )
+            return int(value or 0)
+
+    async def count_expired_audit(self, older_than_s: int, cap: int) -> tuple[int, int]:
+        """将过期的行数与体量估算（dry-run 用；cap 截断单轮上限）。"""
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    text("""
+                        SELECT count(*), COALESCE(sum(nbytes), 0)
+                        FROM (
+                            SELECT COALESCE(octet_length(arguments_redacted), 0) AS nbytes
+                            FROM tool_audit_events
+                            WHERE created_at < now() - (:seconds * interval '1 second')
+                            ORDER BY created_at ASC
+                            LIMIT :cap
+                        ) s
+                        """),
+                    {"seconds": int(older_than_s), "cap": int(cap)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
+
+    async def delete_expired_audit_batch(
+        self, older_than_s: int, batch_size: int
+    ) -> tuple[int, int]:
+        """按 created_at 升序删除一批过期审计行（ADR-5：DB 时钟 + 分批）。
+
+        返回 (删除行数, 体量估算)。幂等：已删行不再入选。
+        """
+        async with self._sf() as sess, sess.begin():
+            row = (
+                await sess.execute(
+                    text("""
+                        WITH target AS (
+                            SELECT id
+                            FROM tool_audit_events
+                            WHERE created_at < now() - (:seconds * interval '1 second')
+                            ORDER BY created_at ASC
+                            LIMIT :batch
+                        ), dead AS (
+                            DELETE FROM tool_audit_events t
+                            USING target
+                            WHERE t.id = target.id
+                            RETURNING COALESCE(octet_length(t.arguments_redacted), 0) AS nbytes
+                        )
+                        SELECT count(*), COALESCE(sum(nbytes), 0) FROM dead
+                        """),
+                    {"seconds": int(older_than_s), "batch": int(batch_size)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
+
 
 class TurnControlRepository:
     """turn/tool/work 状态推进与 T2 执行完成事务。"""
@@ -1052,6 +1110,153 @@ class WebchatReplayRepository:
                 return None
             frame = _from_json(row.frame_json)
             return frame if isinstance(frame, dict) else None
+
+    async def record_consumed_cursor(
+        self, tenant_id: str, conversation_id: uuid.UUID | str, after_seq: int
+    ) -> None:
+        """持久化客户端「已确认消费」游标（p0-retention-wiring ADR-8 / task 3.1）。
+
+        `consumed_seq = GREATEST(既有, LEAST(after_seq, 水位))`：只进不退；
+        客户端声明超前于水位（异常/篡改）不推高游标。计数器行不存在则不创建
+        （游标只随真实 replay 声明出现，空会话无需游标行）。
+        """
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return
+        async with self._sf() as sess, sess.begin():
+            await sess.execute(
+                text("""
+                    UPDATE webchat_replay_counters c
+                    SET consumed_seq = GREATEST(
+                            COALESCE(c.consumed_seq, 0),
+                            LEAST(:after_seq, c.next_seq - 1)
+                        )
+                    WHERE c.conversation_id = :conversation_id
+                    """),
+                {
+                    "after_seq": int(after_seq),
+                    "conversation_id": conv_id,
+                },
+            )
+
+    async def consumed_seq(
+        self, tenant_id: str, conversation_id: uuid.UUID | str
+    ) -> int:
+        """已确认消费游标；无计数器行或从未声明返回 0（无消费侧删除）。"""
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return 0
+        async with self._sf() as sess:
+            value = await sess.scalar(
+                select(WebchatReplayCounterModel.consumed_seq).where(
+                    WebchatReplayCounterModel.conversation_id == conv_id
+                )
+            )
+            return int(value) if value is not None else 0
+
+    async def list_frame_conversations(self) -> list[tuple[str, str]]:
+        """枚举仍有重放帧的 (tenant_id, conversation_id)（retention 逐会话窗口用）。"""
+        async with self._sf() as sess:
+            rows = await sess.execute(
+                text("""
+                    SELECT tenant_id, conversation_id
+                    FROM webchat_replay_frames
+                    GROUP BY tenant_id, conversation_id
+                    """)
+            )
+            return [(str(r[0]), str(r[1])) for r in rows.fetchall()]
+
+    async def count_replay_frames(self) -> tuple[int, int]:
+        """帧总数与 frame_json 体量估算（报告 scanned 用）。"""
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    text("""
+                        SELECT count(*),
+                               COALESCE(sum(COALESCE(octet_length(frame_json), 0)), 0)
+                        FROM webchat_replay_frames
+                        """)
+                )
+            ).one()
+            return int(row[0]), int(row[1])
+
+    async def delete_frames_window_batch(
+        self,
+        tenant_id: str,
+        conversation_id: uuid.UUID | str,
+        *,
+        keep_last_frames: int,
+        max_age_s: int,
+        batch_size: int,
+        dry_run: bool = False,
+    ) -> tuple[int, int]:
+        """按会话补发窗口删一批帧（ADR-8；单批 LIMIT，返回 (行数, 字节估算)）。
+
+        ``dry_run=True`` 只按同一判据统计 LIMIT batch 内的"将删除"量，零变更。
+        判据（同时约束）：
+        - 不动每会话最近 ``keep_last_frames`` 帧（下限，保重连缓冲）；
+        - 且（seq ≤ 已确认消费游标〔NULL 视 0，即无消费侧删除〕
+          或 created_at 早于兜底年龄天花板）；
+        - 计数器行不动（水位只增不减，task 3.4）。
+        """
+        conv_id = _coerce_uuid(conversation_id)
+        if conv_id is None:
+            return 0, 0
+        predicate = """
+                            WHERE f.tenant_id = :tenant_id
+                              AND f.conversation_id = :conversation_id
+                              AND f.seq < (SELECT COALESCE(MAX(seq), 0) FROM webchat_replay_frames
+                                           WHERE tenant_id = :tenant_id
+                                             AND conversation_id = :conversation_id)
+                                            - :keep_last + 1
+                              AND (
+                                    f.seq <= COALESCE((
+                                        SELECT c.consumed_seq
+                                        FROM webchat_replay_counters c
+                                        WHERE c.conversation_id = :conversation_id
+                                    ), 0)
+                                 OR f.created_at < now() - (:max_age_s * interval '1 second')
+                              )
+        """
+        if dry_run:
+            sql = text(f"""
+                        SELECT count(*), COALESCE(sum(nbytes), 0)
+                        FROM (
+                            SELECT COALESCE(octet_length(f.frame_json), 0) AS nbytes
+                            FROM webchat_replay_frames f{predicate}
+                            ORDER BY f.seq ASC
+                            LIMIT :batch
+                        ) s
+                        """)
+        else:
+            sql = text(f"""
+                        WITH target AS (
+                            SELECT f.id
+                            FROM webchat_replay_frames f{predicate}
+                            ORDER BY f.seq ASC
+                            LIMIT :batch
+                        ), dead AS (
+                            DELETE FROM webchat_replay_frames fr
+                            USING target
+                            WHERE fr.id = target.id
+                            RETURNING COALESCE(octet_length(fr.frame_json), 0) AS nbytes
+                        )
+                        SELECT count(*), COALESCE(sum(nbytes), 0) FROM dead
+                        """)
+        async with self._sf() as sess, sess.begin():
+            row = (
+                await sess.execute(
+                    sql,
+                    {
+                        "tenant_id": tenant_id,
+                        "conversation_id": conv_id,
+                        "keep_last": int(keep_last_frames),
+                        "max_age_s": int(max_age_s),
+                        "batch": int(batch_size),
+                    },
+                )
+            ).one()
+            return int(row[0]), int(row[1])
 
     async def delete_frames_before(
         self, tenant_id: str, conversation_id: uuid.UUID | str, before_seq: int
@@ -1728,6 +1933,65 @@ class WorkItemRepository:
                 .all()
             )
             return [_work_attempt_to_dict(r) for r in rows]
+
+    async def count_work_attempt_rows(self) -> int:
+        """表内总行数（报告 scanned 用；Pilot 规模全量 count 可接受）。"""
+        async with self._sf() as sess:
+            value = await sess.scalar(select(func.count()).select_from(WorkAttemptModel))
+            return int(value or 0)
+
+    async def count_expired_work_attempts(
+        self, older_than_s: int, cap: int
+    ) -> tuple[int, int]:
+        """将过期的尝试流行数与体量估算（dry-run 用；cap 截断单轮上限）。"""
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    text("""
+                        SELECT count(*), COALESCE(sum(nbytes), 0)
+                        FROM (
+                            SELECT COALESCE(octet_length(error), 0) AS nbytes
+                            FROM work_attempts
+                            WHERE started_at < now() - (:seconds * interval '1 second')
+                            ORDER BY started_at ASC
+                            LIMIT :cap
+                        ) s
+                        """),
+                    {"seconds": int(older_than_s), "cap": int(cap)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
+
+    async def delete_expired_work_attempts_batch(
+        self, older_than_s: int, batch_size: int
+    ) -> tuple[int, int]:
+        """按 started_at 升序删除一批过期尝试流行（C15 ADR-2 追加流归 audit 180d）。
+
+        只删审计流行；`background_work_items` 非终态/终态行均不动（ADR-2 不可删除集，
+        避免与 lease/recovery 语义打架）。返回 (删除行数, 体量估算)。
+        """
+        async with self._sf() as sess, sess.begin():
+            row = (
+                await sess.execute(
+                    text("""
+                        WITH target AS (
+                            SELECT id
+                            FROM work_attempts
+                            WHERE started_at < now() - (:seconds * interval '1 second')
+                            ORDER BY started_at ASC
+                            LIMIT :batch
+                        ), dead AS (
+                            DELETE FROM work_attempts w
+                            USING target
+                            WHERE w.id = target.id
+                            RETURNING COALESCE(octet_length(w.error), 0) AS nbytes
+                        )
+                        SELECT count(*), COALESCE(sum(nbytes), 0) FROM dead
+                        """),
+                    {"seconds": int(older_than_s), "batch": int(batch_size)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
 
 
 # ── helpers ─────────────────────────────────────────────────

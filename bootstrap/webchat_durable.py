@@ -117,6 +117,15 @@ class WebchatDurableGateway:
         latest = await self._replay.current_seq(tenant_id, conversation_id)
         if after_seq > latest:
             return None
+        # 消费游标持久化（p0-retention-wiring task 3.1 / ADR-8）：客户端 after_seq
+        # 声明「已收到 ≤ after_seq」，无论后续能否连续补发都成立；失败不阻断补拉
+        # （只延迟 retention 收敛，下次 replay 声明自愈）。
+        try:
+            await self._replay.record_consumed_cursor(
+                tenant_id, conversation_id, after_seq
+            )
+        except Exception:
+            logger.exception("retention 消费游标持久化失败（补拉继续）")
         if after_seq >= latest:
             return []
         oldest = await self._replay.oldest_seq(tenant_id, conversation_id)

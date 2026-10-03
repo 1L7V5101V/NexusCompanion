@@ -22,7 +22,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -517,6 +517,82 @@ class CredentialRepository:
             ).scalars().all()
             return [_session_to_dict(r) for r in rows]
 
+    async def purge_expired_credential_digests(
+        self, *, grace_s: int, batch_size: int
+    ) -> int:
+        """过期凭据摘要抹除（p0-retention-wiring ADR-4）：UPDATE 置 NULL，不删行。
+
+        条件三者同时满足：revoked_at 非空 ∧ 已过期（expires_at < now()，token
+        的 expires_at 为 NULL 视为不过期）∧ revoked_at 早于 purge_grace_s 宽限
+        （以撤销时刻为宽限锚点：撤销即凭据失效，宽限是事后追查窗口）。
+        已清除行（digest IS NULL）不再入选 → 幂等。行本身与归属/时间 metadata
+        保留供审计核验（§5.9.12 不物理删除审计链）。
+        """
+        cleared = 0
+        for table in ("auth_sessions", "access_tokens"):
+            sql = text(f"""
+                WITH target AS (
+                    SELECT id
+                    FROM {table}
+                    WHERE revoked_at IS NOT NULL
+                      AND {'expires_at IS NOT NULL AND ' if table == 'access_tokens' else ''}expires_at < now()
+                      AND revoked_at < now() - (:grace_s * interval '1 second')
+                      AND {'session_digest' if table == 'auth_sessions' else 'token_digest'} IS NOT NULL
+                    ORDER BY revoked_at ASC
+                    LIMIT :batch
+                ), purged AS (
+                    UPDATE {table} t
+                    SET {'session_digest' if table == 'auth_sessions' else 'token_digest'} = NULL
+                    WHERE t.id IN (SELECT id FROM target)
+                    RETURNING t.id
+                )
+                SELECT count(*) FROM purged
+                """)
+            async with self._sf() as sess, sess.begin():
+                value = await sess.scalar(
+                    sql, {"grace_s": int(grace_s), "batch": int(batch_size)}
+                )
+                cleared += int(value or 0)
+        return cleared
+
+    async def count_purgeable_credentials(self, *, grace_s: int, cap: int) -> int:
+        """满足清除条件的凭据行数（dry-run 演练用；cap 截断单轮上限），零变更。
+
+        判据与 :meth:`purge_expired_credential_digests` 逐字一致（维护时两处同改）。
+        """
+        total = 0
+        for table, digest_col, token_extra in (
+            ("auth_sessions", "session_digest", ""),
+            ("access_tokens", "token_digest", "AND expires_at IS NOT NULL"),
+        ):
+            sql = text(f"""
+                SELECT count(*) FROM (
+                    SELECT id FROM {table}
+                    WHERE revoked_at IS NOT NULL
+                      {token_extra} AND expires_at < now()
+                      AND revoked_at < now() - (:grace_s * interval '1 second')
+                      AND {digest_col} IS NOT NULL
+                    ORDER BY revoked_at ASC
+                    LIMIT :cap
+                ) s
+                """)
+            async with self._sf() as sess:
+                value = await sess.scalar(
+                    sql, {"grace_s": int(grace_s), "cap": int(cap)}
+                )
+                total += int(value or 0)
+        return total
+
+    async def count_credential_rows(self) -> tuple[int, int]:
+        """(auth_sessions 总行数, access_tokens 总行数)（报告 scanned 用）。"""
+        async with self._sf() as sess:
+            sessions = await sess.scalar(
+                select(func.count()).select_from(AuthSessionModel)
+            )
+            tokens = await sess.scalar(
+                select(func.count()).select_from(AccessTokenModel)
+            )
+            return int(sessions or 0), int(tokens or 0)
 
 class AdminRepository:
     """单一 admin principal（bootstrap/rotate/enable/disable）+ 审计。"""
@@ -660,6 +736,67 @@ class AdminRepository:
                     detail=detail,
                 )
             )
+
+    async def count_admin_audit_rows(self) -> int:
+        """表内总行数（retention 报告 scanned 用）。"""
+        async with self._sf() as sess:
+            value = await sess.scalar(
+                select(func.count()).select_from(AdminAuditEventModel)
+            )
+            return int(value or 0)
+
+    async def count_expired_admin_audit(
+        self, older_than_s: int, cap: int
+    ) -> tuple[int, int]:
+        """将过期的 admin 审计行数与体量估算（dry-run 用；cap 截断单轮上限）。
+
+        按现有列（actor/action/target_type/target_id/detail）裁剪，不统一字段
+        形状（p0-retention-wiring ADR-6；AdminAccessAuditEvent 对齐归 C12 §8.2）。
+        """
+        async with self._sf() as sess:
+            row = (
+                await sess.execute(
+                    text("""
+                        SELECT count(*), COALESCE(sum(nbytes), 0)
+                        FROM (
+                            SELECT COALESCE(octet_length(detail::text), 0) AS nbytes
+                            FROM admin_audit_events
+                            WHERE created_at < now() - (:seconds * interval '1 second')
+                            ORDER BY created_at ASC
+                            LIMIT :cap
+                        ) s
+                        """),
+                    {"seconds": int(older_than_s), "cap": int(cap)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
+
+    async def delete_expired_admin_audit_batch(
+        self, older_than_s: int, batch_size: int
+    ) -> tuple[int, int]:
+        """按 created_at 升序删除一批过期 admin 审计行（ADR-5）。返回 (行数, 字节估算)。"""
+        async with self._sf() as sess, sess.begin():
+            row = (
+                await sess.execute(
+                    text("""
+                        WITH target AS (
+                            SELECT id
+                            FROM admin_audit_events
+                            WHERE created_at < now() - (:seconds * interval '1 second')
+                            ORDER BY created_at ASC
+                            LIMIT :batch
+                        ), dead AS (
+                            DELETE FROM admin_audit_events a
+                            USING target
+                            WHERE a.id = target.id
+                            RETURNING COALESCE(octet_length(a.detail::text), 0) AS nbytes
+                        )
+                        SELECT count(*), COALESCE(sum(nbytes), 0) FROM dead
+                        """),
+                    {"seconds": int(older_than_s), "batch": int(batch_size)},
+                )
+            ).one()
+            return int(row[0]), int(row[1])
 
     async def list_audit(self, *, limit: int = 100) -> list[dict]:
         async with self._sf() as sess:
