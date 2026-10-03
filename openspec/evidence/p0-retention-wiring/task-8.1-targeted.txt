@@ -1,0 +1,20 @@
+task 8.1 / 8.4 定向回归 & openspec 校验（2026-10-03，feature/p0-retention-wiring）
+
+## 定向回归（真 PG 5433，-W error，NEXUS_REQUIRE_PG=1）
+
+命令：pytest -q -W error tests/retention/ tests/auth_provisioning/
+      tests/control_plane/ tests/observability_privacy/
+结果：267 passed in 310.65s（0 failed / 0 skipped / 0 error）
+构成：tests/retention/ 53 用例（config 18 / pg_sweeps 10 / replay_window 6 /
+      credential_purge 10 / retention_runtime 9）+ auth_provisioning +
+      control_plane + observability_privacy 既有契约全绿。
+
+## openspec 校验（task 8.4）
+
+命令：openspec validate p0-retention-wiring
+结果：Change 'p0-retention-wiring' is valid
+命令：openspec validate c12-observability-backup
+结果：Change 'c12-observability-backup' is valid
+状态：openspec status --change p0-retention-wiring 四件套（proposal/specs/design/tasks）
+      齐全；tasks.md 除 0.1（owner 数值待确认，见 task-0.1-parameter-decisions.md）
+      外全部勾选。

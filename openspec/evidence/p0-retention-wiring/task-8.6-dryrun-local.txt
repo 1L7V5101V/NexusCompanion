@@ -1,0 +1,77 @@
+{
+  "dry_run": true,
+  "started_at": "2026-10-03T16:23:38+00:00",
+  "recoverable_deleted": 0,
+  "irrecoverable_deleted": 0,
+  "recoverable_bytes": 0,
+  "irrecoverable_bytes": 0,
+  "ok": true,
+  "entities": [
+    {
+      "category": "session_replay",
+      "target": "webchat_replay_frames",
+      "scanned": 0,
+      "deleted": 0,
+      "kept": 0,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "recoverable"
+    },
+    {
+      "category": "audit",
+      "target": "tool_audit_events",
+      "scanned": 0,
+      "deleted": 0,
+      "kept": 0,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "irrecoverable"
+    },
+    {
+      "category": "audit",
+      "target": "admin_audit_events",
+      "scanned": 0,
+      "deleted": 0,
+      "kept": 0,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "irrecoverable"
+    },
+    {
+      "category": "audit",
+      "target": "work_attempts",
+      "scanned": 0,
+      "deleted": 0,
+      "kept": 0,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "irrecoverable"
+    },
+    {
+      "category": "credentials",
+      "target": "auth_sessions+access_tokens",
+      "scanned": 2,
+      "deleted": 0,
+      "kept": 2,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "irrecoverable"
+    },
+    {
+      "category": "files",
+      "target": "(no file_roots configured)",
+      "scanned": 0,
+      "deleted": 0,
+      "kept": 0,
+      "bytes_freed": 0,
+      "dry_run": true,
+      "errors": [],
+      "recoverability": "irrecoverable"
+    }
+  ]
+}

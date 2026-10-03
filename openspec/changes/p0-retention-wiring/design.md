@@ -207,6 +207,10 @@ kept/bytes_freed/dry_run/errors），错误串过 `core.telemetry.redaction.reda
 - **按会话裁剪补发缓冲的代价**：判据从单一时间列变成"消费确认 + 每会话下限 +
   兜底上限"三条，实现与测试复杂度上升；且每轮需要按会话取游标，扫描成本高于纯年龄删除。
   Pilot 会话数小可接受，正式放量前与 C1D 一并复评。兜底天花板仍是无界堆积的最后防线。
+- **消费游标为 per-conversation MAX**：同一会话多设备时，落后设备的未消费帧可能因另一设备
+  的 `replay.after_seq` 声明被裁，重连走既有 `replay_required` → REST 重建降级（canonical
+  仍为真源，无数据丢失）。Pilot 以单账号单设备为主；若多设备成为常态，改 per-session
+  MIN 游标属独立小迁移（列在 counters 上加 session 维度或换表），不影响本 change 契约。
 - **表膨胀与 autovacuum**：分批 UPDATE 置 NULL + DELETE 会产生死元组。Pilot 规模可忽略，正式启用前
   与 roadmap C1D 生产规模验证一并复评。
 - **两条腿删同一实体的隐患**：已通过 ADR-2 明确 `attachments` 归 C6、重放帧/审计流归本能力，
@@ -242,16 +246,21 @@ kept/bytes_freed/dry_run/errors），错误串过 `core.telemetry.redaction.reda
 
 ## Open Questions
 
-**需要 owner 给数值（不实现前不得自定）**：
+**owner 数值（2026-10-03 实施期状态）**：owner 已确认四项**结构性**决策（git `adf282d7`），三个
+**数值**在实施开始时仍未答复。处理：按 design 候选值落为**可配置暂定默认**
+（`replay_keep_last_frames=20`、`replay_max_age_days=30`、`purge_grace_s=30d`），`config.example.toml`
+注明"暂定默认、owner 确认前可调"；tasks 0.1 保持未勾直到 owner 确认或改值。三个值均为纯 config
+参数，改值不需要改代码（这正是 ADR-8 把数值放 config 而非代码的原因）。
 
-1. `replay_keep_last_frames`：每个会话至少保留最近几帧（候选 20 / 50 / 100）。
-2. `replay_max_age_days`：补发缓冲的兜底年龄天花板（候选 30 / 60 / 90 天）。
-3. `purge_grace_s`（凭据作废前再等多久）：本 design 暂按 30d 记，若 owner 有异议只改配置。
-
-**实现期需核实的事实（非决策）**：
+**实现期需核实的事实（已核实，见 evidence `task-3.1-cursor-source.md`）**：
 
 - 部署 PostgreSQL 对 UNIQUE 中 NULL 的处理（ADR-4 依赖默认 NULLS DISTINCT，测试固化；不成立则回到
   ADR-4 改 partial unique index 并更新本 design）。
-- `work_attempts` 的时间列准确名称与可空性，决定排序列选择。
-- "已确认消费"的游标来源：现有 hello 游标/`oldest_seq`/`current_seq` 中哪一个能作为裁剪依据，
-  实现前核实其语义是否等于"客户端已收到"。
+- `work_attempts` 的时间列：确认为 `started_at`（NOT NULL，server_default now()），排序用。
+- ~~"已确认消费"的游标来源~~ **已核实（2026-10-03）**：`current_seq`/`oldest_seq`/hello
+  `latest_seq` 均为服务端水位或窗口边界，**不等于**"客户端已收到"；唯一语义匹配的是客户端
+  `replay {after_seq}` 声明，但此前不持久化。落地：`webchat_replay_counters` 增列
+  `consumed_seq BIGINT NULL`（第二个 expand-only revision `d0a9b7c3e1f5`），
+  `WebchatDurableService.replay_after` 服务补拉前持久化 `GREATEST(既有, LEAST(after_seq, 水位))`
+  （声明超前水位不推高；持久化失败不阻断补拉，下次 replay 声明自愈）；NULL = 从未声明 → 消费侧
+  判据不生效，帧只受下限/天花板约束。ADR-8 第 1 条"游标已越过"即指该持久化游标。

@@ -1,0 +1,13 @@
+task 8.2 全量回归（2026-10-03，feature/p0-retention-wiring）
+
+命令：NEXUS_REQUIRE_PG=1 pytest -q -W error tests/
+结果：1902 passed in 645.53s（0 failed / 0 error）
+对照：tasks.md 冻结基线 1849 passed / 0 failed → 本次 1902 = 1849 + 53（tests/retention/
+      新增用例），**无新增失败**。
+
+过程记录（诚实留痕）：首次全量在收集阶段报
+`ERROR tests/retention/test_runtime.py`（import basename 与 tests/attachments/test_runtime.py
+冲突，pytest 根目录扁平导入限制）——修复为改名 `test_retention_runtime.py` 后重跑，
+全量 1902 passed。该冲突只影响测试收集，不涉及产品代码。
+
+非绿采样定性：无（本轮 0 failed / 0 error / 0 warnings-as-error 触发）。
