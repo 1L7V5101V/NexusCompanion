@@ -16,6 +16,11 @@ from bootstrap.work_queue_defaults import (
     DEFAULT_RELEASE_DELAY_SECONDS,
 )
 from proactive_v2.config import ProactiveConfig
+from core.telemetry.retention import (
+    AUDIT_DEFAULT_DAYS,
+    DEBUG_CONTENT_DEFAULT_DAYS,
+    OPERATIONAL_DEFAULT_DAYS,
+)
 
 
 @dataclass
@@ -292,6 +297,34 @@ class AttachmentConfig:
 
 
 @dataclass
+class RetentionConfig:
+    """数据保留期执行（p0-retention-wiring ADR-1/2/5/8）。
+
+    三档天数默认值引用 `core.telemetry.retention` 冻结常量（单一来源）。
+    `purge_grace_s` / `replay_keep_last_frames` / `replay_max_age_days` 为
+    design 候选值的**暂定默认**（task 0.1 owner 确认前不视为冻结值，
+    可直接改 config 调整，无需改代码）。
+    """
+
+    enabled: bool = True
+    # 0 = 不启用周期任务（演练入口 run_once 仍可手动触发）
+    interval_s: int = 86400
+    operational_days: int = OPERATIONAL_DEFAULT_DAYS
+    audit_days: int = AUDIT_DEFAULT_DAYS
+    debug_content_days: int = DEBUG_CONTENT_DEFAULT_DAYS
+    # 分批删除（ADR-5）：单批行数 × 单轮最大批数 = 单轮单实体删除上限
+    batch_size: int = 500
+    max_batches: int = 20
+    # 凭据「已撤销 ∧ 已过期」后再等多久才抹摘要（design 暂记 30d）
+    purge_grace_s: int = 30 * 86400
+    # 重放帧按会话补发窗口（ADR-8）：每会话保留下限帧数 + 兜底年龄天花板
+    replay_keep_last_frames: int = 20
+    replay_max_age_days: int = 30
+    # 文件 sweep root（ADR-1）：内置为空；形如 {operational = ["path"], audit = ["path"]}
+    file_roots: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass
 class PluginRuntimeConfig:
     """C8 hook failure 分层的有界 timeout（§5.9.16，task-08）。
 
@@ -351,6 +384,7 @@ class Config:
     auth: AuthConfig = field(default_factory=AuthConfig)
     work_queue: WorkQueueConfig = field(default_factory=WorkQueueConfig)
     attachments: AttachmentConfig = field(default_factory=AttachmentConfig)
+    retention: RetentionConfig = field(default_factory=RetentionConfig)
     plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -379,6 +413,7 @@ __all__ = [
     "QQChannelConfig",
     "QQBotGroupConfig",
     "QQGroupConfig",
+    "RetentionConfig",
     "StorageConfig",
     "TelegramChannelConfig",
     "WiringConfig",

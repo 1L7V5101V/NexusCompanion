@@ -103,6 +103,25 @@ search_enabled = true
 # reconcile_enabled = true
 # reconcile_on_startup = true
 
+# 可选：数据保留期执行（p0-retention-wiring；默认开启即会删除超窗数据，
+# 上线前先跑一轮 dry-run 演练并存证报告：retention runtime 的 run_once(dry_run=True)）。
+# 三档天数默认 = P-1 冻结值（operational 30 / audit 180 / debug 7）；
+# purge_grace_s 与 replay 两项为 design 候选值的暂定默认（owner 确认前可调整）。
+# [agent.retention]
+# enabled = true                     # false = 周期任务不装配，零删除（一键回退）
+# interval_s = 86400                 # 每天一轮；0 = 不启用周期任务
+# operational_days = 30
+# audit_days = 180
+# debug_content_days = 7
+# batch_size = 500                   # 单批删除行数
+# max_batches = 20                   # 单轮单实体最大批数（超出留待下轮）
+# purge_grace_s = 2592000            # 已撤销+已过期凭据抹摘要前的宽限（30d）
+# replay_keep_last_frames = 20       # 每会话重放帧保留下限（帧 = accepted/终态）
+# replay_max_age_days = 30           # 重放帧兜底年龄天花板（离线会话堆积上限）
+# file_roots = { operational = [] }  # 文件 sweep root（内置为空，须显式指定按日期分片目录；
+#                                    # 严禁把 workspace/logs/*.db 与 tool_audit.ndjson 配进来——
+#                                    # mtime 判据对活跃文件无效且危险）
+
 # 可选：Agentic RAG 检索路由模式（默认 "rule"）。
 # "rule" - 规则打分 + 阈值决策，模糊时 LLM 兜底（默认）
 # "llm"  - 跳过规则打分，完全由 LLM 判断检索源

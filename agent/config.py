@@ -32,12 +32,14 @@ from agent.config_models import (
     PluginRuntimeConfig,
     QQChannelConfig,
     QQGroupConfig,
+    RetentionConfig,
     StorageConfig,
     TelegramChannelConfig,
     WiringConfig,
     WorkQueueConfig,
 )
 from bootstrap.work_queue_defaults import DEFAULT_BACKOFF_SECONDS
+from core.telemetry.retention import RetentionCategory
 
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.config_loader import ProactiveConfigError, load_proactive_config
@@ -133,6 +135,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     work_queue_cfg = _load_work_queue_config(data)
     attachment_cfg = _load_attachment_config(data)
     plugin_runtime_cfg = _load_plugin_runtime_config(data)
+    retention_cfg = _load_retention_config(data)
 
     return Config(
         provider=provider,
@@ -216,6 +219,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         auth=auth_cfg,
         work_queue=work_queue_cfg,
         attachments=attachment_cfg,
+        retention=retention_cfg,
         plugin_runtime=plugin_runtime_cfg,
         logging=logging_cfg,
         router_mode=str(data.get("router_mode", "rule")),
@@ -566,6 +570,80 @@ def _load_attachment_config(data: dict) -> AttachmentConfig:
         reconcile_on_startup=bool(
             raw.get("reconcile_on_startup", defaults.reconcile_on_startup)
         ),
+    )
+
+
+def _load_retention_config(data: dict) -> RetentionConfig:
+    """[agent.retention] p0-retention-wiring 保留期执行参数；未配置即默认。
+
+    加载期校验（spec「非法配置在加载期被拒绝」）：天数/批次/下限帧/天花板
+    必须为正整数；`interval_s` 允许 0 = 不启用周期任务；`purge_grace_s`
+    非负。file_roots 只接受三档类别键，未知类别即报错（打错字不静默失效）。
+    """
+    agent_cfg = _as_dict(data.get("agent"))
+    raw = _as_dict(agent_cfg.get("retention")) or {}
+    defaults = RetentionConfig()
+
+    def _pos_int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"agent.retention.{name} 必须为正整数，当前: {value!r}")
+        parsed = int(value)
+        if parsed != value or parsed < 1:
+            raise ValueError(f"agent.retention.{name} 必须为正整数，当前: {value!r}")
+        return parsed
+
+    def _nonneg_int(name: str) -> int:
+        value = raw.get(name, getattr(defaults, name))
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"agent.retention.{name} 必须为非负整数，当前: {value!r}"
+            )
+        parsed = int(value)
+        if parsed != value or parsed < 0:
+            raise ValueError(
+                f"agent.retention.{name} 必须为非负整数，当前: {value!r}"
+            )
+        return parsed
+
+    raw_roots = raw.get("file_roots")
+    file_roots: dict[str, list[str]] = {}
+    if raw_roots is not None:
+        if not isinstance(raw_roots, dict):
+            raise ValueError(
+                f"agent.retention.file_roots 必须为表（类别 → 路径数组），当前: {raw_roots!r}"
+            )
+        valid_categories = {
+            RetentionCategory.OPERATIONAL,
+            RetentionCategory.AUDIT,
+            RetentionCategory.DEBUG_CONTENT,
+        }
+        for category, roots in raw_roots.items():
+            if category not in valid_categories:
+                raise ValueError(
+                    f"agent.retention.file_roots 类别必须是 "
+                    f"{sorted(valid_categories)} 之一，当前: {category!r}"
+                )
+            if not isinstance(roots, list) or not all(
+                isinstance(root, str) and root.strip() for root in roots
+            ):
+                raise ValueError(
+                    f"agent.retention.file_roots.{category} 必须为非空字符串数组"
+                )
+            file_roots[str(category)] = [str(root) for root in roots]
+
+    return RetentionConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        interval_s=_nonneg_int("interval_s"),
+        operational_days=_pos_int("operational_days"),
+        audit_days=_pos_int("audit_days"),
+        debug_content_days=_pos_int("debug_content_days"),
+        batch_size=_pos_int("batch_size"),
+        max_batches=_pos_int("max_batches"),
+        purge_grace_s=_nonneg_int("purge_grace_s"),
+        replay_keep_last_frames=_pos_int("replay_keep_last_frames"),
+        replay_max_age_days=_pos_int("replay_max_age_days"),
+        file_roots=file_roots,
     )
 
 
