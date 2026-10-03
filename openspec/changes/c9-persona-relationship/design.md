@@ -53,6 +53,13 @@ PostgreSQL 当前记录为准」。现有 seam 已满足全部契约语义（ten
 拒绝的「争夺最终解释权」形态。task-09 冻结 DDL 中的 `tenant_relationship_states` 依此条款
 调整为「复用现 seam」——本 design 即该调整的记录。
 
+**前置事实（实测确认）**：`memory_items` 是 tenant LIST 分区表；分区由 provisioning
+就绪服务（`infra/storage/provisioning.py`）创建。onboarding 以「分区已就绪」为前置——
+真实时序为 provisioning ready → 发 Token → 登录 → onboarding（§5.9.13），种子写入
+不需要（也不得）在 onboarding 内做 DDL。`memory_items.embedding` 为 PG `vector` 列而
+ORM 声明为 Text：同步 psycopg 栈自适应无碍，asyncpg 下 NULL 会被绑成 VARCHAR 拒绝——
+种子用显式列名原生 SQL（不含 embedding 列），两种驱动稳定。
+
 **备选（不选）**：新建 `tenant_relationship_states` 并迁移 `memory_items.self` 数据：
 多一次 expand 迁移 + 数据搬迁 + 双读兼容期，换来的只是表名与 DDL 文字一致，无行为差异。
 
