@@ -77,7 +77,9 @@ class AccessTokenModel(Base):
     # 租户邀请码（invite-code-tenant-registration D1）：签发时未兑现（account_id
     # 为 NULL）携带管理员预指定租户名；注册消费后回填 account_id。旧 token 此列为 NULL。
     tenant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    token_digest: Mapped[str] = mapped_column(String(DIGEST_LENGTH), nullable=False)
+    # NULL = retention purge 已清除（p0-retention-wiring ADR-4）：凭据不可再用，
+    # 行与归属/时间 metadata 保留供审计；校验路径按摘要等值查找天然不命中 NULL。
+    token_digest: Mapped[str | None] = mapped_column(String(DIGEST_LENGTH))
     digest_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=1
     )
@@ -124,7 +126,8 @@ class AuthSessionModel(Base):
             name="fk_auth_sessions_account_id",
         ),
     )
-    session_digest: Mapped[str] = mapped_column(String(DIGEST_LENGTH), nullable=False)
+    # NULL = retention purge 已清除（p0-retention-wiring ADR-4），同 token_digest。
+    session_digest: Mapped[str | None] = mapped_column(String(DIGEST_LENGTH))
     digest_version: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=1
     )

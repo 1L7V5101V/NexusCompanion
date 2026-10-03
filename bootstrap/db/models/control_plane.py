@@ -572,6 +572,10 @@ class WebchatReplayCounterModel(Base):
     next_seq: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("1")
     )
+    # 客户端已确认消费的最高 seq（p0-retention-wiring ADR-8 / task 3.1）：
+    # durable replay 服务时随客户端 `replay {after_seq}` 声明推进
+    # （GREATEST 且封顶于水位）；NULL = 从未有声明，消费侧裁剪判据不生效。
+    consumed_seq: Mapped[int | None] = mapped_column(BigInteger)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
