@@ -231,6 +231,7 @@ class AppRuntime:
         self.work_queue_task: asyncio.Task[None] | None = None
         self.webchat_durable: "WebchatDurableRuntime | None" = None
         self.attachments_lifecycle: "AttachmentLifecycleRuntime | None" = None
+        self.retention_runtime: "RetentionRuntime | None" = None
         self.peer_process_manager = None
         self.peer_poller = None
         self.dashboard_server = None
@@ -486,6 +487,11 @@ class AppRuntime:
                 # 周期循环退化为启动对账 + 手动触发（dry-run 演练）。
                 if self.webchat_durable is not None and self.config.attachments.enabled:
                     self._start_attachment_lifecycle()
+                # p0-retention-wiring ADR-3：保留期周期任务（PG 行级裁剪 + 文件 sweep）。
+                # enabled=false 不装配（零删除一键回退）；interval_s=0 不起周期循环，
+                # run_once(dry_run=...) 演练入口仍可用（scripts/retention_run_once.py）。
+                if self.webchat_durable is not None and self.config.retention.enabled:
+                    self._start_retention_runtime()
             self.ipc, self.channel_host = await start_channels(
                 self.config,
                 bus=self.bus,
@@ -851,6 +857,32 @@ class AppRuntime:
             reconcile_on_startup=self.config.attachments.reconcile_on_startup
         )
 
+    def _start_retention_runtime(self) -> None:
+        """p0-retention-wiring ADR-3：装配保留期周期任务（best-effort，不阻断启动）。"""
+        from bootstrap.retention import RetentionRuntime, RetentionSweeper
+
+        assert self.webchat_durable is not None
+        self.retention_runtime = RetentionRuntime(
+            RetentionSweeper(
+                self.webchat_durable.session_factory,
+                self.config.retention,
+            ),
+            interval_s=self.config.retention.interval_s,
+        )
+        # interval_s=0 = 不启用周期任务（保留 run_once 演练入口）。
+        if self.config.retention.interval_s > 0:
+            self.retention_runtime.start()
+
+    async def _stop_retention_runtime(self) -> None:
+        runtime = self.retention_runtime
+        if runtime is None:
+            return
+        self.retention_runtime = None
+        try:
+            await runtime.stop()
+        except Exception:
+            logger.exception("retention runtime 停止时异常")
+
     async def _stop_attachment_lifecycle(self) -> None:
         runtime = self.attachments_lifecycle
         if runtime is None:
@@ -925,6 +957,7 @@ class AppRuntime:
                 ("work_queue.drain_and_stop", self._stop_work_queue),
                 ("webchat_durable.close", self._stop_webchat_durable),
                 ("attachments_lifecycle.stop", self._stop_attachment_lifecycle),
+                ("retention.stop", self._stop_retention_runtime),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),
                 ("servers.request_shutdown", self._request_server_shutdown),
                 (
