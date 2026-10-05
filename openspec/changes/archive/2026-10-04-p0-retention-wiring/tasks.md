@@ -11,11 +11,14 @@
 
 ## 0. 前置：owner 参数确认（阻塞实现）
 
-- [ ] 0.1 取回 owner 对三个数值的决定并写回 design/tasks：`replay_keep_last_frames`（每会话保留
+- [x] 0.1 取回 owner 对三个数值的决定并写回 design/tasks：`replay_keep_last_frames`（每会话保留
   下限帧数）、`replay_max_age_days`（补发缓冲兜底年龄）、`purge_grace_s`（凭据作废前等待期，
   design 暂记 30d）。**未确认前不实现第 2 节及之后**：数值属产品决策，实现不得自定默认值填坑。
   验证：design.md Open Questions 三条全部移除或改写为"已确认值"；本条勾选。
-  证据：`task-0.1-parameter-decisions.md`
+  证据：`task-0.1-parameter-decisions.md`。
+  **2026-10-06 owner 确认闭环**：三个数值按 design 候选值定为初始值
+  （`replay_keep_last_frames=20`、`replay_max_age_days=30`、`purge_grace_s=30d`），
+  均为纯 config 参数，后续调整只改 `[agent.retention]` 不改代码。
 
 ## 1. 迁移与模型（ADR-4）
 

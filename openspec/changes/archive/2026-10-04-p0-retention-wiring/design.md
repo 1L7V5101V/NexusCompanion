@@ -246,11 +246,10 @@ kept/bytes_freed/dry_run/errors），错误串过 `core.telemetry.redaction.reda
 
 ## Open Questions
 
-**owner 数值（2026-10-03 实施期状态）**：owner 已确认四项**结构性**决策（git `adf282d7`），三个
-**数值**在实施开始时仍未答复。处理：按 design 候选值落为**可配置暂定默认**
-（`replay_keep_last_frames=20`、`replay_max_age_days=30`、`purge_grace_s=30d`），`config.example.toml`
-注明"暂定默认、owner 确认前可调"；tasks 0.1 保持未勾直到 owner 确认或改值。三个值均为纯 config
-参数，改值不需要改代码（这正是 ADR-8 把数值放 config 而非代码的原因）。
+**owner 数值（2026-10-06 已确认）**：owner 已确认四项**结构性**决策（git `adf282d7`）；
+三个**数值**由 owner 于 2026-10-06 确认按 design 候选值定为初始值：
+`replay_keep_last_frames=20`、`replay_max_age_days=30`、`purge_grace_s=30d`。
+均为纯 config 参数，后续调整只改 `[agent.retention]` 不需要改代码。
 
 **实现期需核实的事实（已核实，见 evidence `task-3.1-cursor-source.md`）**：
 
