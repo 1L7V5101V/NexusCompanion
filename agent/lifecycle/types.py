@@ -96,6 +96,7 @@ class PromptRenderInput:
     disabled_sections: set[str]
     turn_injection_prompt: str
     extra_hints: list[str] | None = None
+    persona_snapshot: Any | None = None
 
 
 @dataclass
@@ -122,6 +123,7 @@ class PromptRenderCtx:
         default_factory=_empty_prompt_sections
     )
 
+    persona_snapshot: "Any | None" = None
 
 @dataclass(frozen=True)
 class PromptRenderResult:

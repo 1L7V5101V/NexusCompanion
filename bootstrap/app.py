@@ -541,6 +541,20 @@ class AppRuntime:
                         revocation_gate=getattr(self.core, "revocation_gate", None),
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
+            # c9-persona-relationship ADR-4：PG durable 模式装配 persona 快照
+            # 解析器（prompt 组装 tenant 化）+ RelationshipState PG 写缝。
+            if self.webchat_durable is not None:
+                from bootstrap.persona import build_persona_wiring
+
+                _persona_resolver, _persona_relationship_io = build_persona_wiring(
+                    self.webchat_durable.session_factory
+                )
+                loop_ref = getattr(self.core, "loop", None) or getattr(
+                    self.core, "agent_loop", None
+                )
+                binder = getattr(loop_ref, "bind_persona_resolver", None)
+                if callable(binder):
+                    binder(_persona_resolver)
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
@@ -549,6 +563,13 @@ class AppRuntime:
                 runtime_snapshot_store=(
                     plugin_manager.snapshot_store
                     if plugin_manager is not None
+                    else None
+                ),
+                # c9-persona-relationship ADR-5：PG durable 模式下 RelationshipState
+                # 读写走 tenant PG seam（单事务 + 审计）；dev/SQLite 为 None。
+                relationship_io=(
+                    _persona_relationship_io
+                    if self.webchat_durable is not None
                     else None
                 ),
             )
@@ -619,6 +640,11 @@ class AppRuntime:
                     allow_public_bind=self.config.channels.chat.allow_public_bind,
                     durable_runtime=self.webchat_durable,
                     attachment_config=self.config.attachments,
+                    source_breakdown_provider=(
+                        lambda: self.agent_loop.prompt_breakdown
+                        if self.agent_loop is not None
+                        else []
+                    ),
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

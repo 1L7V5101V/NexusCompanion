@@ -143,6 +143,9 @@ def build_memory_optimizer_task(
     provider: LLMProvider,
     memory_store: "MarkdownMemoryStore",
     runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
+    # c9-persona-relationship ADR-5：PG durable 模式的 tenant RelationshipState
+    # 读写缝（read/write + 审计）；None = 单体文件语义。
+    relationship_io: "Any | None" = None,
 ) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
@@ -156,6 +159,7 @@ def build_memory_optimizer_task(
         default_self_md=persona.self_model or DEFAULT_SELF_MD,
         identity_name=get_identity_name(),
         runtime_snapshot_store=runtime_snapshot_store,
+        relationship_io=relationship_io,
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import logging
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import quote
@@ -96,6 +97,7 @@ def create_chat_app(
     static_root: Path | None = None,
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
+    source_breakdown_provider: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
@@ -273,6 +275,39 @@ def create_chat_app(
         )
         return {"items": items, "total": total}
 
+    @app.get(
+        "/api/persona/source-breakdown",
+        dependencies=[Depends(_require_user_session)],
+    )
+    async def persona_source_breakdown(
+        session: dict[str, Any] = Depends(_require_user_session),
+    ) -> dict[str, Any]:
+        """prompt source breakdown（c9-persona-relationship ADR-6）。
+
+        仅 admin/debug 开放：dev 模式（auth 未启用）即调试面直接可用；
+        认证模式下普通用户一律 404（不泄露能力存在性），admin principal
+        放行。内容只有区块 metadata（label/chars/tokens/is_static），
+        不含 prompt 正文，更不含模型隐藏推理。
+        """
+        if session.get("principal_type") != "admin" and auth_runtime is not None:
+            raise HTTPException(404, detail="not found")
+        provider = source_breakdown_provider
+        if provider is None:
+            raise HTTPException(404, detail="not found")
+        breakdown = provider() or []
+        return {
+            "items": [
+                {
+                    "name": getattr(item, "name", ""),
+                    "chars": int(getattr(item, "chars", 0) or 0),
+                    "est_tokens": int(getattr(item, "est_tokens", 0) or 0),
+                    "is_static": bool(getattr(item, "is_static", False)),
+                    "cache_hit": bool(getattr(item, "cache_hit", False)),
+                }
+                for item in breakdown
+            ]
+        }
+
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:
         identity = None
@@ -310,21 +345,13 @@ def create_chat_app(
 
     # ── C9 persona onboarding（仅 PG durable + auth 模式装配；dev 路径不存在
     #    这些端点，行为不变）。语义见 c9-persona-relationship design ADR-3：
-    #    一次性提交 + 用户侧无任何修改入口（PATCH/PUT/DELETE 无路由 → 404）。"""
+    #    一次性提交 + 用户侧无任何修改入口（PATCH/PUT/DELETE 无路由 → 404）。
+    _user_content_deps = _require_user_session
     if durable_runtime is not None and auth_runtime is not None:
-        from pydantic import BaseModel as _BaseModel, Field as _Field
-
         from bootstrap.db.repository.persona_repo import (
             OnboardingAlreadyCompletedError,
             PersonaRepository,
         )
-
-        class _OnboardingBody(_BaseModel):
-            source: str = _Field(pattern="^(template|custom)$")
-            template_id: str | None = None
-            identity: str = ""
-            personality_rules: str = ""
-            self_model: str = ""
 
         _PERSONA_TEXT_MAX = 20_000
 
@@ -344,6 +371,9 @@ def create_chat_app(
             if not await _persona_repo().has_profile(str(identity.tenant_id)):
                 raise HTTPException(403, detail="persona_onboarding_required")
             return session
+
+        # PG+auth 模式：用户内容面切到 onboarding 门禁（覆盖默认 session 门禁）。
+        _user_content_deps = _require_onboarded
 
         @app.get(
             "/api/persona/status",
@@ -394,7 +424,7 @@ def create_chat_app(
                 ]
             }
 
-        @app.post("/api/persona/onboarding")
+        @app.post("/api/persona/onboarding", status_code=201)
         async def persona_onboarding(
             body: _OnboardingBody,
             session: dict[str, Any] = Depends(_require_user_session),
@@ -450,12 +480,6 @@ def create_chat_app(
 
         # 用户内容面依赖（uploads/media/WS 共用）：PG+auth 模式走 onboarding 门禁，
         # dev 模式维持原 _require_user_session（行为不变）。
-        _user_content_deps = (
-            _require_onboarded
-            if durable_runtime is not None and auth_runtime is not None
-            else _require_user_session
-        )
-
     @app.post("/api/chat/uploads", dependencies=[Depends(_user_content_deps)])
     async def upload_file(
         request: Request,
@@ -504,7 +528,7 @@ def create_chat_app(
         # upload.finished 由 service 内部记录点 emit（C12 §8.1）；此处不再重复。
         return {"attachment_id": result.attachment_id, "url": result.url}
 
-    @app.get("/api/chat/media", dependencies=[Depends(_require_user_session)])
+    @app.get("/api/chat/media", dependencies=[Depends(_user_content_deps)])
     async def read_media(
         session: dict[str, Any] = Depends(_require_user_session),
         attachment_id: str | None = Query(default=None),
@@ -555,6 +579,7 @@ def build_chat_server(
     allow_public_bind: bool = False,
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
+    source_breakdown_provider: Any = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -580,6 +605,7 @@ def build_chat_server(
             allow_public_bind=allow_public_bind,
             durable_runtime=durable_runtime,
             attachment_config=attachment_config,
+            source_breakdown_provider=source_breakdown_provider,
         ),
         host=host,
         port=port,
@@ -595,6 +621,16 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+class _OnboardingBody(BaseModel):
+    """onboarding 提交体（模块级：FastAPI 注解解析需要可全局解析的名字）。"""
+
+    source: str = Field(pattern="^(template|custom)$")
+    template_id: str | None = None
+    identity: str = ""
+    personality_rules: str = ""
+    self_model: str = ""
 
 
 async def _resolve_endpoint_identity(

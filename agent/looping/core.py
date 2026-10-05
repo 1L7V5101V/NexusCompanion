@@ -193,6 +193,18 @@ class AgentLoop:
         )
         self._configure_stream_events()
 
+    @property
+    def prompt_breakdown(self) -> list[Any]:
+        """最近一轮 prompt source breakdown（admin/debug 观测面，ADR-6）。"""
+        return self._context.last_debug_breakdown
+
+    def bind_persona_resolver(self, resolver: Any) -> None:
+        """注入 tenant persona 快照解析器（c9-persona-relationship ADR-4）。"""
+        reasoner = getattr(self, "_reasoner", None)
+        binder = getattr(reasoner, "bind_persona_resolver", None)
+        if callable(binder):
+            binder(resolver)
+
     def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
         if callable(setter):

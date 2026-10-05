@@ -75,6 +75,23 @@ class ContextBundle:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PersonaSnapshot:
+    """本轮 turn 的 tenant 人设与关系状态快照（c9-persona-relationship ADR-4）。
+
+    由 turn 入口在 tenant lane 内解析一次（PG durable 模式读
+    `tenant_persona_profiles` + `memory_items(memory_type='self')`），随
+    ContextRequest 传入 prompt 组装；组装期不再查库。None = 无快照
+    （dev/SQLite 路径或 onboarding 未完成）→ 各 block 走单体回退语义。
+    """
+
+    tenant_id: str
+    source: str
+    identity: str
+    personality_rules: str
+    relationship_state: str
+
+
 @dataclass
 class ContextRequest:
     history: list[dict[str, Any]]
@@ -87,6 +104,7 @@ class ContextRequest:
     retrieved_memory_block: str = ""
     disabled_sections: set[str] | None = None
     turn_injection_prompt: str | None = None
+    persona_snapshot: "PersonaSnapshot | None" = None
 
 
 @dataclass

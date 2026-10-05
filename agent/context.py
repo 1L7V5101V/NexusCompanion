@@ -341,6 +341,7 @@ class ContextBuilder:
             channel=channel,
             chat_id=chat_id,
             retrieved_memory_block=retrieved_memory_block,
+            persona_snapshot=getattr(request, "persona_snapshot", None),
         )
         built = self._system_prompt_builder.build(
             ctx,

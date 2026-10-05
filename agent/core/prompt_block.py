@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from agent.core.types import PersonaSnapshot
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
@@ -29,6 +30,7 @@ class TurnContext:
     channel: str | None
     chat_id: str | None
     retrieved_memory_block: str
+    persona_snapshot: PersonaSnapshot | None = None
 
 
 class PromptBlock(Protocol):
@@ -70,18 +72,48 @@ class PromptBlock(Protocol):
 #                              来源：retrieved_memory_block
 #                              时机：每轮 retrieval 结果都可能不同，最高频
 # ─────────────────────────────────────────────────────────────────────────────
+def _render_persona_identity(ctx: "TurnContext") -> str | None:
+    """tenant PersonaProfile 快照 → 身份块（identity + personality_rules）。
+
+    沿用单体 build_agent_static_identity_prompt 的段落形状，正文换成 tenant
+    快照；来源标签 persona_profile 供 source breakdown 识别（ADR-4/ADR-6）。
+    """
+    snap = ctx.persona_snapshot
+    if snap is None:
+        return None
+    name = snap.identity.split("\n", 1)[0][:32] or "Nexus"
+    return (
+        f"# {name}\n\n"
+        f"{snap.identity}\n\n"
+        f"## Personality\n\n{snap.personality_rules}"
+    )
+
+
 class IdentityPromptBlock:
     priority = 10
     label = "identity"
     is_static = True
 
-    def __init__(self, render_fn=build_agent_static_identity_prompt) -> None:
+    def __init__(
+        self,
+        render_fn=build_agent_static_identity_prompt,
+        persona_render_fn=None,
+    ) -> None:
+        # persona_render_fn: tenant 快照下的身份块渲染（c9-persona-relationship
+        # ADR-4）；缺省延后解析以避免硬依赖。
+        self._persona_render_fn = persona_render_fn or _render_persona_identity
         self._render_fn = render_fn
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        if ctx.persona_snapshot is not None:
+            return self._persona_render_fn(ctx)
         return self._render_fn(workspace=ctx.workspace)
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
+        # 快照存在时禁用 static 缓存：不同 tenant 的快照内容不同，而缓存
+        # scope 是进程级 workspace 路径——缓存会跨 tenant 泄漏（fail-closed）。
+        if ctx.persona_snapshot is not None:
+            return None
         return str(ctx.workspace.expanduser().resolve())
 
 
@@ -125,6 +157,14 @@ class SelfModelPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
+        # C9：tenant 快照优先（RelationshipState 当前值来自 PG seam）；无快照
+        # 回退单体文件语义（行为不变）。
+        if ctx.persona_snapshot is not None:
+            self_content = ctx.persona_snapshot.relationship_state
+            name = ctx.persona_snapshot.identity.split("\n", 1)[0][:32] or "Nexus"
+            if not self_content:
+                return None
+            return f"## {name} Self-Perception\n\n{self_content}"
         self_content = ctx.memory.read_self()
         if not self_content:
             return None
