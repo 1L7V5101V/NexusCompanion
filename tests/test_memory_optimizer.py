@@ -144,7 +144,7 @@ def test_optimize_reports_busy_instead_of_waiting(tmp_path):
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def blocked_optimize() -> None:
+        async def blocked_optimize(*args: Any, **kwargs: Any) -> None:
             started.set()
             await release.wait()
 

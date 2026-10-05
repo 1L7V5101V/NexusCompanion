@@ -164,6 +164,38 @@ def authed_cookies(client: TestClient) -> dict[str, str]:
         return raw
 
     raw = asyncio.run(_make())
+    # C9 onboarding 门禁：本套件只测附件语义，先把该账号 tenant 的 persona
+    # 一次性设置完成（否则 uploads/media 一律 403 persona_onboarding_required）。
+    async def _onboard() -> None:
+        from sqlalchemy import text as _text
+
+        from bootstrap.db.repository.persona_repo import PersonaRepository
+        from infra.storage.partitioning import partition_name_for_tenant
+
+        canonical = getattr(runtime, "canonical_repo", None)
+        convs = await canonical.list_conversations_by_account(
+            "00000000-0000-0000-0000-000000000001"
+        )
+        tenant_id = str(convs[0]["tenant_id"]) if convs else "dev"
+        # memory_items 为租户 LIST 分区表：persona 种子写入前先保证分区存在
+        # （生产时序由 provisioning 就绪服务完成）。
+        pname = partition_name_for_tenant(tenant_id)
+        async with runtime.session_factory() as sess, sess.begin():
+            await sess.execute(
+                _text(
+                    f"CREATE TABLE IF NOT EXISTS {pname} PARTITION OF memory_items "
+                    f"FOR VALUES IN ('{tenant_id}')"
+                )
+            )
+        repo = PersonaRepository(runtime.session_factory)
+        if not await repo.has_profile(tenant_id):
+            await repo.submit_onboarding(
+                tenant_id=tenant_id, source="custom",
+                identity="attachment-test persona", personality_rules="rules",
+                self_model="self",
+            )
+
+    asyncio.run(_onboard())
     # 显式注入 Cookie header（TestClient 的 cookie jar 不自动写入 request headers）
     client.headers["Cookie"] = f"nexus_session={raw}"
     return {"nexus_session": raw}

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -59,7 +60,7 @@ class PersonaRepository:
                     tenant_id="",
                     actor="admin",
                     action="template_create",
-                    detail={"template_id": str(row.id), "name": row.name},
+                    detail=_jsonb({"template_id": str(row.id), "name": row.name}),
                 )
             )
             return _template_to_dict(row)
@@ -77,7 +78,7 @@ class PersonaRepository:
                     tenant_id="",
                     actor="admin",
                     action="template_disable" if not enabled else "template_update",
-                    detail={"template_id": str(tid), "enabled": enabled},
+                    detail=_jsonb({"template_id": str(tid), "enabled": enabled}),
                 )
             )
             return True
@@ -158,13 +159,13 @@ class PersonaRepository:
                     actor=actor,
                     action="onboarding_submit",
                     turn_id=uuid.UUID(turn_id) if turn_id else None,
-                    detail={
+                    detail=_jsonb({
                         "source": source,
                         "template_id": str(tid) if tid else None,
                         "identity_chars": len(identity),
                         "rules_chars": len(personality_rules),
                         "self_chars": len(self_model),
-                    },
+                    }),
                 )
             )
             return _profile_to_dict(profile)
@@ -201,7 +202,7 @@ class PersonaRepository:
                     actor=actor,
                     action=action,
                     turn_id=uuid.UUID(turn_id) if turn_id else None,
-                    detail=detail,
+                    detail=_jsonb(detail) if detail is not None else None,
                 )
             )
 
@@ -218,6 +219,11 @@ class PersonaRepository:
                 )
             )
             return [_audit_to_dict(r) for r in rows.scalars().all()]
+
+
+def _jsonb(value: dict) -> str:
+    """dict → JSONB 兼容字符串（asyncpg 不收 dict 参数，JSONB 列接受 JSON 文本）。"""
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _template_to_dict(row: PersonaTemplateModel) -> dict[str, Any]:

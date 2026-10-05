@@ -710,13 +710,6 @@ class DefaultContextStore(ContextStore):
         self._retrieval = retrieval
         self._context = context
         self._history_window = max(1, int(history_window))
-        # c9-persona-relationship：tenant persona 快照解析器（PG durable 模式由
-        # bootstrap bind_persona_resolver 注入；None = dev 路径回退单体语义）。
-        self._persona_resolver: Any = None
-
-    def bind_persona_resolver(self, resolver: Any) -> None:
-        """注入 persona 快照解析器（bootstrap 在 PG durable 装配后调用）。"""
-        self._persona_resolver = resolver
 
     async def prepare(
         self,
@@ -858,6 +851,9 @@ class DefaultReasoner(Reasoner):
         self._discovery = discovery
         self._tool_search_enabled = tool_search_enabled
         self._memory_window = memory_window
+        # c9-persona-relationship：tenant persona 快照解析器（PG durable 模式由
+        # bootstrap bind_persona_resolver 注入；None = dev 路径回退单体语义）。
+        self._persona_resolver: Any = None
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
@@ -882,6 +878,10 @@ class DefaultReasoner(Reasoner):
             if context is not None
             else None
         )
+
+    def bind_persona_resolver(self, resolver: Any) -> None:
+        """注入 persona 快照解析器（bootstrap 在 PG durable 装配后调用）。"""
+        self._persona_resolver = resolver
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
