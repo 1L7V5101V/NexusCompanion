@@ -14,7 +14,7 @@ import { LoginPanel } from "./LoginPanel";
 import { OnboardingPanel } from "./OnboardingPanel";
 import { fetchPersonaStatus } from "./persona";
 import { PulseBackground } from "./PulseBackground";
-import type { PulseCoreState } from "./pulsecore/PulseCorePipeline";
+import { SpaceBackground } from "./SpaceBackground";
 
 const MOCK_MODE = new URLSearchParams(window.location.search).get("mock") === "1";
 
@@ -129,28 +129,16 @@ function AssistantMessageView({ message }: { message: ChatMessage }) {
   );
 }
 
-/**
- * AI 状态 → PulseCore 背景状态：
- * - 最近一条消息失败 → error（直到下一次发送）
- * - 等待首 token → thinking；正文流式中 → streaming
- * - 其余 → idle
- */
-function deriveAiState(
-  messages: readonly ChatMessage[],
-  isRunning: boolean,
-  awaitingFirstToken: boolean,
-): PulseCoreState {
-  const last = messages[messages.length - 1];
-  if (last?.status === "error") return "error";
-  if (isRunning || awaitingFirstToken) {
-    return awaitingFirstToken ? "thinking" : "streaming";
-  }
-  return "idle";
-}
-
 function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => void }) {
   const { runtime, status, messages, isRunning, awaitingFirstToken } = chat;
-  const aiState = deriveAiState(messages, isRunning, awaitingFirstToken);
+  // 极光只陪伴"思考/调用工具"阶段：正文一旦真正开始输出（越过流光让位用的
+  // 20 字符阈值）就收掉，避免动效与阅读抢注意力。
+  const lastMsg = messages[messages.length - 1];
+  const bodyStarted =
+    !!lastMsg &&
+    lastMsg.role === "assistant" &&
+    lastMsg.parts.some((p) => p.kind === "text" && p.text.length >= 20);
+  const sending = (isRunning || awaitingFirstToken) && !bodyStarted;
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -213,9 +201,9 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
     <AssistantRuntimeProvider runtime={runtime}>
       {/* app-root：overflow 用 clip（见 CSS）——裁掉流光画布向下出界的部分，
           同时不产生滚动容器（hidden 会让画布外伸计入 scrollHeight，
-          焦点滚动把整个界面推上去）。背景为 PulseCore 脉冲核心（fixed 层）。 */}
+          焦点滚动把整个界面推上去）。背景空闲全黑，思考/调用工具时渐显流动极光。 */}
       <div ref={rootRef} className="app-root relative flex h-full flex-col text-fg">
-        <PulseBackground state={aiState} />
+        <SpaceBackground active={sending} />
         <header className="relative z-10 flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
           <div className="flex items-center gap-3">
