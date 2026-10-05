@@ -851,6 +851,9 @@ class DefaultReasoner(Reasoner):
         self._discovery = discovery
         self._tool_search_enabled = tool_search_enabled
         self._memory_window = memory_window
+        # c9-persona-relationship：tenant persona 快照解析器（PG durable 模式由
+        # bootstrap bind_persona_resolver 注入；None = dev 路径回退单体语义）。
+        self._persona_resolver: Any = None
         self._context = context
         self._session_manager = session_manager
         self._event_bus = event_bus
@@ -875,6 +878,10 @@ class DefaultReasoner(Reasoner):
             if context is not None
             else None
         )
+
+    def bind_persona_resolver(self, resolver: Any) -> None:
+        """注入 persona 快照解析器（bootstrap 在 PG durable 装配后调用）。"""
+        self._persona_resolver = resolver
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
@@ -1018,6 +1025,15 @@ class DefaultReasoner(Reasoner):
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
+        # c9-persona-relationship ADR-4：tenant lane 内解析一次 persona 快照
+        # （本 turn 的组装期快照；解析失败回退 None → 单体语义，不阻断 turn）。
+        persona_snapshot = None
+        if self._persona_resolver is not None:
+            try:
+                persona_snapshot = await self._persona_resolver(str(msg.tenant_id))
+            except Exception:
+                logger.exception("persona snapshot 解析失败（回退单体语义）")
+
         attempts = self._build_attempt_plans(total_history)
         for attempt, plan in enumerate(attempts):
             retry_attempts.append(
@@ -1054,6 +1070,7 @@ class DefaultReasoner(Reasoner):
                     disabled_sections=plan["disabled_sections"],
                     turn_injection_prompt=turn_injection_prompt,
                     extra_hints=extra_hints,
+                    persona_snapshot=persona_snapshot,
                 )
             )
             initial_messages = prompt_render.messages

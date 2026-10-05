@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
     from core.memory.markdown import MarkdownMemoryStore
@@ -215,6 +215,9 @@ class MemoryOptimizer:
         identity_name: str = "",
         # C8 §5.9.16：optimizer work-start snapshot lease。
         runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
+        # c9-persona-relationship ADR-5：PG durable 模式注入（read/write 走
+        # memory_items self seam + 审计，单事务）；None = 单体文件语义不变。
+        relationship_io: "Any | None" = None,
     ) -> None:
         self._memory = memory
         self._provider = provider
@@ -223,6 +226,7 @@ class MemoryOptimizer:
         # C3 §5.9.5/§10 DECIDED：optimizer lock 按 tenant 隔离，不引入跨 tenant
         # global maintenance lock；单 tenant 一个 Markdown store 语义不变。
         self._runtime_snapshot_store = runtime_snapshot_store
+        self._relationship_io = relationship_io
         self._locks: dict[str, asyncio.Lock] = {}
         self._default_self_md = default_self_md
         self._identity_name = identity_name
@@ -252,9 +256,9 @@ class MemoryOptimizer:
         # C8 §5.9.16：optimizer work start 取一次 snapshot lease。
         async with work_runtime_lease(self._runtime_snapshot_store):
             async with lock:
-                await self._optimize()
+                await self._optimize(tenant_id)
 
-    async def _optimize(self) -> None:
+    async def _optimize(self, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
         """提交 pending 记忆合并，并随后更新自我认知。"""
 
         # 1. 冻结本轮 pending 并读取当前长期记忆
@@ -270,7 +274,7 @@ class MemoryOptimizer:
             await asyncio.sleep(self._STEP_DELAY_SECONDS)
             merged_memory, _ = await asyncio.gather(
                 self._merge_memory(current_memory, pending),
-                self._update_self(pending),
+                self._update_self(pending, tenant_id=tenant_id),
             )
 
             # 3. 两路都成功，统一处理 snapshot
@@ -307,8 +311,32 @@ class MemoryOptimizer:
             max_tokens=self._max_tokens,
         )
 
-    async def _update_self(self, pending: str) -> None:
-        """只更新 SELF.md 现有保留的三段，不新增 section。"""
+    async def _update_self(self, pending: str, *, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
+        """只更新 SELF.md 现有保留的三段，不新增 section。
+
+        c9-persona-relationship ADR-5：注入 relationship_io 时（PG durable），
+        read/write 走 tenant PG seam（单事务 + 审计）；否则单体文件语义不变。
+        """
+        if self._relationship_io is not None:
+            self_content = (
+                await self._relationship_io.read(tenant_id)
+            ).strip() or DEFAULT_SELF_MD.strip()
+            if not self_content:
+                logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
+                return
+            prompt = _SELF_PROMPT.format(
+                self_content=self_content,
+                pending=pending or "（无新内容）",
+            )
+            updated = await self._request_text_response(
+                system_content=_SELF_SYSTEM,
+                user_content=prompt,
+                max_tokens=2048,
+            )
+            if updated:
+                await self._relationship_io.write(tenant_id, updated)
+                logger.info("[memory_optimizer] SELF.md 已更新（tenant PG seam）")
+            return
         self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
         if not self_content:
             logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")

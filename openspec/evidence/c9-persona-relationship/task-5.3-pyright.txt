@@ -1,0 +1,26 @@
+C9 pyright（2026-10-05，feature/c9-persona-relationship，--level error）
+
+## 改动文件
+命令：pyright --level error bootstrap/persona.py bootstrap/db/models/persona.py
+      bootstrap/db/repository/persona_repo.py bootstrap/chat_api.py bootstrap/app.py
+      agent/core/types.py agent/core/prompt_block.py agent/context.py
+      agent/prompting/assembler.py agent/lifecycle/types.py
+      agent/lifecycle/phases/prompt_render.py agent/core/passive_turn.py
+      agent/looping/core.py proactive_v2/memory_optimizer.py bootstrap/proactive.py
+      scripts/persona_admin.py tests/persona/ tests/admission/test_optimizer_lock.py
+      tests/c8/test_lease_coverage.py tests/test_memory_optimizer.py
+      tests/attachments/test_http_api.py
+结果：0 errors, 0 warnings, 0 informations
+
+## project 全局（C6 基线同口径：11 个既有错误文件）
+命令：pyright --level error agent/core/drift_turn.py agent/core/proactive_turn.py
+      agent/mcp/registry.py agent/model_runtime/transports/responses.py
+      agent/retrieval/default_pipeline.py agent/retrieval/sandbox.py
+      agent/tools/registry.py bootstrap/memory.py bootstrap/setup_main.py
+      bootstrap/tools.py proactive_v2/mcp_sources.py
+结果：38 errors —— 与 C6/p0-retention-wiring 记录基线（38 errors / 11 文件）一致，
+      0 新增；与本 change 触碰文件交集 0。
+
+注：分批执行（一次性全量路径会触发 node 堆溢出，与既有记录一致）。
+过程留痕：回归修复阶段曾出现 bootstrap/app.py `RetentionRuntime` 未定义
+（TYPE_CHECKING 块缺 import）1 error，补 import 后归零——最终态 0 errors。

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import logging
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
+from pydantic import BaseModel, Field
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from urllib.parse import quote
@@ -96,6 +97,7 @@ def create_chat_app(
     static_root: Path | None = None,
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
+    source_breakdown_provider: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
@@ -273,6 +275,39 @@ def create_chat_app(
         )
         return {"items": items, "total": total}
 
+    @app.get(
+        "/api/persona/source-breakdown",
+        dependencies=[Depends(_require_user_session)],
+    )
+    async def persona_source_breakdown(
+        session: dict[str, Any] = Depends(_require_user_session),
+    ) -> dict[str, Any]:
+        """prompt source breakdown（c9-persona-relationship ADR-6）。
+
+        仅 admin/debug 开放：dev 模式（auth 未启用）即调试面直接可用；
+        认证模式下普通用户一律 404（不泄露能力存在性），admin principal
+        放行。内容只有区块 metadata（label/chars/tokens/is_static），
+        不含 prompt 正文，更不含模型隐藏推理。
+        """
+        if session.get("principal_type") != "admin" and auth_runtime is not None:
+            raise HTTPException(404, detail="not found")
+        provider = source_breakdown_provider
+        if provider is None:
+            raise HTTPException(404, detail="not found")
+        breakdown = provider() or []
+        return {
+            "items": [
+                {
+                    "name": getattr(item, "name", ""),
+                    "chars": int(getattr(item, "chars", 0) or 0),
+                    "est_tokens": int(getattr(item, "est_tokens", 0) or 0),
+                    "is_static": bool(getattr(item, "is_static", False)),
+                    "cache_hit": bool(getattr(item, "cache_hit", False)),
+                }
+                for item in breakdown
+            ]
+        }
+
     @app.websocket("/ws")
     async def chat_ws(websocket: WebSocket) -> None:
         identity = None
@@ -294,9 +329,158 @@ def create_chat_app(
             except WebChatIdentityError:
                 await websocket.close(code=4403, reason="no canonical identity")
                 return
+            # C9 ADR-3：PG durable 模式下未完成 onboarding 的 tenant 不放行收发
+            # （先完成一次性人设设置；dev 路径 durable 为 None 不受影响）。
+            if durable_runtime is not None:
+                from bootstrap.db.repository.persona_repo import PersonaRepository
+
+                if not await PersonaRepository(
+                    durable_runtime.session_factory
+                ).has_profile(str(identity.tenant_id)):
+                    await websocket.close(
+                        code=4403, reason="persona_onboarding_required"
+                    )
+                    return
         await channel.handle_websocket(websocket, identity=identity)
 
-    @app.post("/api/chat/uploads", dependencies=[Depends(_require_user_session)])
+    # ── C9 persona onboarding（仅 PG durable + auth 模式装配；dev 路径不存在
+    #    这些端点，行为不变）。语义见 c9-persona-relationship design ADR-3：
+    #    一次性提交 + 用户侧无任何修改入口（PATCH/PUT/DELETE 无路由 → 404）。
+    _user_content_deps = _require_user_session
+    if durable_runtime is not None and auth_runtime is not None:
+        from bootstrap.db.repository.persona_repo import (
+            OnboardingAlreadyCompletedError,
+            PersonaRepository,
+        )
+
+        _PERSONA_TEXT_MAX = 20_000
+
+        def _persona_repo() -> "PersonaRepository":
+            return PersonaRepository(durable_runtime.session_factory)
+
+        async def _require_onboarded(request: Request) -> dict[str, Any]:
+            """用户内容面 onboarding 门禁（uploads/media/WS）：已完成人设设置才放行。
+
+            dev 路径（durable/auth 缺一）不装配本依赖。未 onboarding → 403 +
+            机器可读码 ``persona_onboarding_required``。
+            """
+            session = await _require_user_session(request)
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            if not await _persona_repo().has_profile(str(identity.tenant_id)):
+                raise HTTPException(403, detail="persona_onboarding_required")
+            return session
+
+        # PG+auth 模式：用户内容面切到 onboarding 门禁（覆盖默认 session 门禁）。
+        _user_content_deps = _require_onboarded
+
+        @app.get(
+            "/api/persona/status",
+            dependencies=[Depends(_require_user_session)],
+        )
+        async def persona_status(
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            repo = _persona_repo()
+            onboarded = await repo.has_profile(str(identity.tenant_id))
+            templates = [
+                {"id": t["id"], "name": t["name"]}
+                for t in await repo.list_templates(enabled_only=True)
+            ]
+            return {
+                "onboarding_required": not onboarded,
+                "templates": templates,
+            }
+
+        @app.get(
+            "/api/persona/templates",
+            dependencies=[Depends(_require_user_session)],
+        )
+        async def persona_templates(
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            """启用模板目录（正文仅在 onboarding 未完成时可见——提交后无需再暴露）。"""
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            repo = _persona_repo()
+            if await repo.has_profile(str(identity.tenant_id)):
+                raise HTTPException(404, detail="not found")
+            templates = await repo.list_templates(enabled_only=True)
+            return {
+                "items": [
+                    {
+                        "id": t["id"],
+                        "name": t["name"],
+                        "identity": t["identity"],
+                        "personality_rules": t["personality_rules"],
+                        "self_model": t["self_model"],
+                    }
+                    for t in templates
+                ]
+            }
+
+        @app.post("/api/persona/onboarding", status_code=201)
+        async def persona_onboarding(
+            body: _OnboardingBody,
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            """一次性人设设置提交（原子：profile 抢位 + RelationshipState 种子 + 审计）。"""
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            repo = _persona_repo()
+            identity_text = body.identity
+            rules_text = body.personality_rules
+            self_text = body.self_model
+            template_id: str | None = None
+            if body.source == "template":
+                if not body.template_id:
+                    raise HTTPException(400, detail="template_id required")
+                tpl = await repo.get_template(body.template_id)
+                if tpl is None or not tpl["enabled"]:
+                    raise HTTPException(404, detail="template not found")
+                template_id = tpl["id"]
+                identity_text = tpl["identity"]
+                rules_text = tpl["personality_rules"]
+                self_text = tpl["self_model"]
+            else:
+                if not (identity_text and rules_text and self_text):
+                    raise HTTPException(
+                        400, detail="identity/personality_rules/self_model required"
+                    )
+            for name, value in (
+                ("identity", identity_text),
+                ("personality_rules", rules_text),
+                ("self_model", self_text),
+            ):
+                if len(value) > _PERSONA_TEXT_MAX:
+                    raise HTTPException(413, detail=f"{name}_too_large")
+            try:
+                profile = await repo.submit_onboarding(
+                    tenant_id=str(identity.tenant_id),
+                    source=body.source,
+                    identity=identity_text,
+                    personality_rules=rules_text,
+                    self_model=self_text,
+                    template_id=template_id,
+                )
+            except OnboardingAlreadyCompletedError:
+                raise HTTPException(
+                    409, detail="persona_onboarding_already_completed"
+                ) from None
+            return {
+                "status": "completed",
+                "source": profile["source"],
+            }
+
+        # 用户内容面依赖（uploads/media/WS 共用）：PG+auth 模式走 onboarding 门禁，
+        # dev 模式维持原 _require_user_session（行为不变）。
+    @app.post("/api/chat/uploads", dependencies=[Depends(_user_content_deps)])
     async def upload_file(
         request: Request,
         session: dict[str, Any] = Depends(_require_user_session),
@@ -344,7 +528,7 @@ def create_chat_app(
         # upload.finished 由 service 内部记录点 emit（C12 §8.1）；此处不再重复。
         return {"attachment_id": result.attachment_id, "url": result.url}
 
-    @app.get("/api/chat/media", dependencies=[Depends(_require_user_session)])
+    @app.get("/api/chat/media", dependencies=[Depends(_user_content_deps)])
     async def read_media(
         session: dict[str, Any] = Depends(_require_user_session),
         attachment_id: str | None = Query(default=None),
@@ -395,6 +579,7 @@ def build_chat_server(
     allow_public_bind: bool = False,
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
+    source_breakdown_provider: Any = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -420,6 +605,7 @@ def build_chat_server(
             allow_public_bind=allow_public_bind,
             durable_runtime=durable_runtime,
             attachment_config=attachment_config,
+            source_breakdown_provider=source_breakdown_provider,
         ),
         host=host,
         port=port,
@@ -435,6 +621,16 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+class _OnboardingBody(BaseModel):
+    """onboarding 提交体（模块级：FastAPI 注解解析需要可全局解析的名字）。"""
+
+    source: str = Field(pattern="^(template|custom)$")
+    template_id: str | None = None
+    identity: str = ""
+    personality_rules: str = ""
+    self_model: str = ""
 
 
 async def _resolve_endpoint_identity(

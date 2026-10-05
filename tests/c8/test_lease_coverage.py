@@ -339,7 +339,7 @@ async def test_memory_optimizer_holds_lease() -> None:
     )
     observed: dict[str, object] = {}
 
-    async def fake_optimize() -> None:
+    async def fake_optimize(*args: Any, **kwargs: Any) -> None:
         snap = get_current_runtime_snapshot()
         observed["snapshot_id"] = snap.snapshot_id if snap is not None else None
 
@@ -363,7 +363,7 @@ async def test_memory_optimizer_busy_rejects_concurrent_run() -> None:
     )
     release = asyncio.Event()
 
-    async def slow_optimize() -> None:
+    async def slow_optimize(*args: Any, **kwargs: Any) -> None:
         await release.wait()
 
     optimizer._optimize = slow_optimize  # type: ignore[method-assign]

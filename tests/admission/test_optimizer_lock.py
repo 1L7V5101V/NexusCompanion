@@ -37,7 +37,7 @@ async def test_same_tenant_optimizer_serial(monkeypatch: Any) -> None:
     optimizer = _make_optimizer()
     running = asyncio.Event()
 
-    async def slow_optimize() -> None:
+    async def slow_optimize(*args: Any, **kwargs: Any) -> None:
         running.set()
         await asyncio.sleep(0.05)
 
@@ -53,7 +53,7 @@ async def test_different_tenants_optimizer_parallel(monkeypatch: Any) -> None:
     optimizer = _make_optimizer()
     entered = asyncio.Event()
 
-    async def slow_optimize() -> None:
+    async def slow_optimize(*args: Any, **kwargs: Any) -> None:
         entered.set()
         await asyncio.sleep(0.05)
 

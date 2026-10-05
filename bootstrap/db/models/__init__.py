@@ -16,6 +16,14 @@ from bootstrap.db.models.memory import (
     MemoryItemModel,
     MemoryReplacementModel,
 )
+from bootstrap.db.models.persona import (
+    PERSONA_ACTIONS,
+    PERSONA_ACTORS,
+    PERSONA_SOURCES,
+    PersonaAuditEventModel,
+    PersonaTemplateModel,
+    TenantPersonaProfileModel,
+)
 from bootstrap.db.models.proactive import (
     ContextOnlyTimestampModel,
     DeliveryModel,

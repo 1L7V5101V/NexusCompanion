@@ -11,6 +11,8 @@ import { useSmoothStream } from "./hooks/useSmoothStream";
 import type { ConnectionStatus } from "./connection";
 import { fetchMe, logout, type AuthState } from "./auth";
 import { LoginPanel } from "./LoginPanel";
+import { OnboardingPanel } from "./OnboardingPanel";
+import { fetchPersonaStatus } from "./persona";
 import { PulseBackground } from "./PulseBackground";
 import type { PulseCoreState } from "./pulsecore/PulseCorePipeline";
 
@@ -316,6 +318,7 @@ function Splash({ label }: { label: string }) {
 /** 真实链路：登录 → ChatRender（useChatRuntime 仅在已认证时挂载，避免 4401 重连）。 */
 function RealApp() {
   const [auth, setAuth] = useState<AuthState>({ phase: "checking" });
+  const [onboardingRequired, setOnboardingRequired] = useState(false);
 
   // 刷新/重开浏览器：凭 HttpOnly Cookie 确认会话（不读取任何本地存储）。
   useEffect(() => {
@@ -335,6 +338,23 @@ function RealApp() {
     };
   }, []);
 
+  // 登录后询问 onboarding 状态（C9；端点不存在 = dev 模式 → 不拦截，行为不变）。
+  useEffect(() => {
+    if (auth.phase !== "authenticated") return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const status = await fetchPersonaStatus();
+        if (!cancelled) setOnboardingRequired(status.onboarding_required);
+      } catch {
+        if (!cancelled) setOnboardingRequired(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.phase]);
+
   if (auth.phase === "checking") {
     return <Splash label="正在确认登录状态…" />;
   }
@@ -347,6 +367,14 @@ function RealApp() {
             setAuth(user ? { phase: "authenticated", user } : { phase: "anonymous" })
           }
         />
+      </>
+    );
+  }
+  if (onboardingRequired) {
+    return (
+      <>
+        <PulseBackground state="idle" />
+        <OnboardingPanel onCompleted={() => setOnboardingRequired(false)} />
       </>
     );
   }
