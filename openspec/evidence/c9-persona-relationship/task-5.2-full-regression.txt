@@ -1,0 +1,18 @@
+C9 全量回归（2026-10-05，feature/c9-persona-relationship）
+
+命令：NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=postgresql://nexus:nexus_dev@127.0.0.1:5433/nexus
+      pytest -q -W error tests/
+结果：1921 passed in 659.31s（0 failed / 0 error）
+对照：p0-retention-wiring 后基线 1902 passed → 1921 = 1902 + 19（tests/persona/
+      新增用例），无新增失败。
+
+过程记录（诚实留痕）：回归中发现并修复三类与本 change 相关的问题——
+1. `DefaultReasoner` 缺 `_persona_resolver` 属性（初版误挂 DefaultContextStore 且
+   方法插入截断 `__init__` 赋值链）→ 属性/方法归位后修复；
+2. persona 快照穿线缺 assembler→_build_system_prompt_result 一段
+   （pyright `request is not defined` 暴露）→ 补全穿线；
+3. `_optimize(tenant_id)` 签名演进导致四处零参 monkeypatch mock 抛 TypeError
+   （其中两处使套件挂起而非失败）→ mock 改 *args（语义不变）；
+   attachments 套件因新 onboarding 门禁 403 → 套件内幂等 onboarding 前置 +
+   memory 分区创建（门禁生效后的既有测试适配）。
+全部修复后全量 1921 passed；无遗留失败。

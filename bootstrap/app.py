@@ -56,6 +56,7 @@ from infra.control.socket import SocketAppServer, is_tcp_endpoint
 if TYPE_CHECKING:
     from proactive_v2.loop import ProactiveLoop
     from bootstrap.attachments.runtime import AttachmentLifecycleRuntime
+    from bootstrap.retention import RetentionRuntime
 
 logging.basicConfig(
     level=logging.INFO,

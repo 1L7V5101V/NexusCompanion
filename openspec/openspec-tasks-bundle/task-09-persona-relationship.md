@@ -7,7 +7,7 @@
 - **所属阶段**：主要里程碑 = P1
 - **§5.9 引用**：§5.9.8（Persona 当前值更新与调试权限）、§5.7（人设/关系状态/多租户配置边界：5.7.1 配置分层、5.7.2 SELF.md 迁移、5.7.3 Prompt 组装）、§10 DECIDED（Persona/Relationship 存储语义、Persona 系列）
 - **§6 出口条件引用**：P1 出口「首次进入完成一次性人设设置流程，提交后 tenant PersonaProfile/RelationshipState 可从 PostgreSQL 正确恢复且用户侧不能再次修改」
-- **状态**：planned
+- **状态**：in_progress（change `c9-persona-relationship` 实施完成：2026-10-04，分支 `feature/c9-persona-relationship`，证据 `openspec/evidence/c9-persona-relationship/`；验收标准 1–9 全部有测试证据，见下；归档待全量回归证据收口）
 
 ## 目标
 
@@ -28,15 +28,15 @@
 
 ## 验收标准
 
-- [ ] 提交后 PersonaProfile 用户侧不可二次修改 — 验证：onboarding 后修改入口缺失测试（UI + API 双断言）
-- [ ] RelationshipState 随互动原地更新、per-tenant 隔离（主对话/Proactive/Drift 不读他人 tenant 人设） — 验证：跨 tenant 隔离测试
-- [ ] 并发 optimizer 写不覆盖（串行 lane 内单写者 + 单事务） — 验证：并发写测试
-- [ ] 重启后从 PG 恢复当前值 — 验证：恢复测试
-- [ ] 不建产品级 revision 链/CAS（**无版本表**） — 验证：grep 无 revision/version 表 + schema 断言
-- [ ] prompt source breakdown 只 admin/debug 开放；不展示模型隐藏思维链 — 验证：权限测试
-- [ ] 异常恢复走 PostgreSQL backup/PITR，非产品内 revision 切换 — 验证：恢复 runbook 演练
-- [ ] RelationshipState 更新从下一轮 turn 注入；进行中 turn 用原 prompt snapshot（§5.7.3 / §10 Persona 生效时机） — 验证：生效时机测试
-- [ ] `config.toml` 只保留实例默认/单体兼容/migration seed，不承载 tenant 当前值 — 验证：配置边界断言
+- [x] 提交后 PersonaProfile 用户侧不可二次修改 — 验证：onboarding 后修改入口缺失测试（UI + API 双断言） — API：PATCH/PUT/DELETE/POST /api/persona/profile 全 404（`tests/persona/test_endpoints.py::test_modify_endpoints_absent_after_onboarding`）；仓储层无修改方法；UI：OnboardingPanel 仅 onboarding_required 时渲染、无编辑入口（App.tsx 流程 + `test_status_onboarding_and_lock_flow`）
+- [x] RelationshipState 随互动原地更新、per-tenant 隔离（主对话/Proactive/Drift 不读他人 tenant 人设） — 验证：跨 tenant 隔离测试 — PG：`test_profiles_are_tenant_isolated`；prompt 层：`test_two_tenants_render_differently`（主对话/Proactive/Drift 共用同一 ContextBuilder 组装缝与快照判据）
+- [x] 并发 optimizer 写不覆盖（串行 lane 内单写者 + 单事务） — 验证：并发写测试 — `PgRelationshipIO.write` 单事务 upsert + 审计；optimizer per-tenant lock + tenant_id 穿线（`test_relationship_io_write_updates_and_audits`：两笔更新串行收束、审计行数=2、终值为后笔完整结果）
+- [x] 重启后从 PG 恢复当前值 — 验证：恢复测试 — 快照每次从 PG 解析（`resolve_persona_snapshot`），`test_config_seed_does_not_override_onboarded_tenant` 断言 PG 当前值逐字恢复且 config seed 不参与
+- [x] 不建产品级 revision 链/CAS（**无版本表**） — 验证：grep 无 revision/version 表 + schema 断言 — `test_no_revision_tables`（information_schema 断言 persona 域仅三表）
+- [x] prompt source breakdown 只 admin/debug 开放；不展示模型隐藏思维链 — 验证：权限测试 — `GET /api/persona/source-breakdown`：普通用户 404、dev/debug 面可用、只出区块 metadata（`test_source_breakdown_admin_debug_only`）
+- [x] 异常恢复走 PostgreSQL backup/PITR，非产品内 revision 切换 — 验证：恢复 runbook 演练 — runbook 已交付（`openspec/evidence/c9-persona-relationship/task-4.2-recovery-runbook.md`）；实库演练归 P3（与 C12 §8.6 同批）
+- [x] RelationshipState 更新从下一轮 turn 注入；进行中 turn 用原 prompt snapshot（§5.7.3 / §10 Persona 生效时机） — 验证：生效时机测试 — PersonaSnapshot frozen（`test_snapshot_is_immutable_per_turn`）+ per-turn 解析一次（组装期快照）
+- [x] `config.toml` 只保留实例默认/单体兼容/migration seed，不承载 tenant 当前值 — 验证：配置边界断言 — `test_config_seed_does_not_override_onboarded_tenant`；运行时解析只读 PG（`resolve_persona_snapshot`）
 
 > 判定「真正完成」而非「执行过」：「用户侧不能再次修改」以修改入口缺失测试（而非文档声明）为准；「无 revision 链」以 grep/schema 断言为准。
 

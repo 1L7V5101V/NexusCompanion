@@ -1,0 +1,14 @@
+C9 定向回归 & openspec 校验（2026-10-05，feature/c9-persona-relationship）
+
+## 定向回归（真 PG 5433，-W error，NEXUS_REQUIRE_PG=1）
+命令：pytest -q -W error tests/persona/ tests/retention/ tests/auth_provisioning/
+      tests/control_plane/ tests/observability_privacy/
+结果：286 passed in 407.59s（0 failed / 0 skipped / 0 error）
+构成：tests/persona/ 19 用例（repository 6 / prompt_blocks 7 / endpoints 6）+
+      tests/retention/ 53 + auth_provisioning / control_plane /
+      observability_privacy 既有契约全绿。
+
+## openspec 校验（task 5.6）
+命令：openspec validate c9-persona-relationship
+结果：Change 'c9-persona-relationship' is valid
+状态：四件套 done；tasks.md 全部勾选（本文件为 5.1/5.6 证据）。
