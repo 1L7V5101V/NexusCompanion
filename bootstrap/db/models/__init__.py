@@ -42,6 +42,12 @@ from bootstrap.db.models.rachael import (
     RachaelSourceSessionSnapshotModel,
 )
 from bootstrap.db.models.session import MessageModel, SessionModel
+from bootstrap.db.models.telegram import (
+    BINDING_STATUSES,
+    BINDING_VIAS,
+    TelegramBindingCodeModel,
+    TelegramIdentityBindingModel,
+)
 from bootstrap.db.models.tenant import TenantModel
 
 __all__ = [
@@ -49,6 +55,8 @@ __all__ = [
     "AppConfigModel",
     "AttachmentModel",
     "Base",
+    "BINDING_STATUSES",
+    "BINDING_VIAS",
     "ConsolidationEventModel",
     "ContextOnlyTimestampModel",
     "DeliveryModel",
@@ -67,6 +75,8 @@ __all__ = [
     "ScheduledJobModel",
     "SessionModel",
     "SessionStateModel",
+    "TelegramBindingCodeModel",
+    "TelegramIdentityBindingModel",
     "TenantMixin",
     "TenantModel",
     "TickLogModel",
