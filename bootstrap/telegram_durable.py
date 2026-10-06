@@ -50,6 +50,26 @@ __all__ = [
 _ENQUEUE_WAIT_SECONDS = 30.0
 
 
+def telegram_pilot_prereq_error(*, storage_backend: str, auth_enabled: bool) -> str | None:
+    """Pilot Telegram 绑定同步的前置条件检查（ADR-6 fail-fast）。
+
+    返回 None 表示满足；否则返回用户可见的失败原因（启动时 raise）。
+    """
+    if storage_backend != "postgres":
+        return (
+            "[channels.telegram].pilot_identity_binding=true 要求"
+            " [storage].backend=postgres（PG durable source of truth）；"
+            "当前后端不满足，拒绝启动。"
+        )
+    if not auth_enabled:
+        return (
+            "[channels.telegram].pilot_identity_binding=true 要求"
+            " [auth].enabled=true（绑定码签发与身份门禁依赖认证体系）；"
+            "请先启用认证。"
+        )
+    return None
+
+
 class TelegramDurableGateway:
     """Telegram 入站的 durable 接受网关（绑定解析在通道侧完成）。"""
 
@@ -64,6 +84,11 @@ class TelegramDurableGateway:
         self._sf = session_factory
         self._bus = bus
         self._enqueue_wait = enqueue_wait_seconds
+        self._webchat_channel: Any | None = None
+
+    def bind_webchat_channel(self, channel: Any) -> None:
+        """绑定 WebChat 通道引用（T1 accepted 帧实时推送用，C10 ADR-5）。"""
+        self._webchat_channel = channel
 
     async def accept_message(
         self,
@@ -127,6 +152,8 @@ class TelegramDurableGateway:
                 source_message_id,
             )
             return "duplicate"
+        if result.replay_frame is not None:
+            self._push_accepted_live(conversation_id, result.replay_frame)
 
         # 3. 入队执行（T1 已提交；metadata 携带 pg 身份键贯穿到 T2）。
         inbound = InboundMessage(
@@ -182,6 +209,26 @@ class TelegramDurableGateway:
             logger.error(
                 "telegram durable turn 收束失败终态异常 turn=%s", turn_id, exc_info=True
             )
+
+    def _push_accepted_live(self, conversation_id: str, frame: dict[str, Any]) -> None:
+        """T1 提交后的 accepted 帧实时推送 WebChat 在线连接（尽力而为）。
+
+        失败仅记日志：durable 权威在重放帧表，断线补拉/REST 重建兜底。
+        """
+        if self._webchat_channel is None or not conversation_id:
+            return
+        try:
+            delivered = self._webchat_channel.deliver_frame(
+                conversation_id, dict(frame)
+            )
+            if delivered:
+                logger.info(
+                    "telegram 消息 accepted 帧已实时推送 webchat conv=%s conns=%s",
+                    conversation_id,
+                    delivered,
+                )
+        except Exception:
+            logger.exception("webchat 实时推送 telegram accepted 帧失败 conv=%s", conversation_id)
 
 
 class TelegramDeliveryAdapter:
@@ -280,6 +327,10 @@ class TelegramPilotIngress:
     def __init__(self, binding_service: Any, gateway: TelegramDurableGateway) -> None:
         self._binding = binding_service
         self._gateway = gateway
+
+    def bind_webchat_channel(self, channel: Any) -> None:
+        """绑定 WebChat 通道引用（透传给 durable 网关，accepted 帧实时推送）。"""
+        self._gateway.bind_webchat_channel(channel)
 
     async def resolve(self, telegram_user_id: str, telegram_chat_id: str) -> Any | None:
         """active 绑定解析（fail-closed：无绑定/账号非 active → None）。"""

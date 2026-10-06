@@ -441,6 +441,31 @@ class AppRuntime:
                     " agent.dev_mode=true：WebChat 未启用认证时只能走 dev 回退，"
                     "不得静默放行。"
                 )
+            # C10（c10-telegram-binding-sync ADR-6）：Pilot Telegram 绑定同步的
+            # fail-fast 前置检查（在 durable/webchat 装配之前，任何组合都拦得住）。
+            _tg_cfg = self.config.channels.telegram
+            _tg_pilot_requested = (
+                _tg_cfg is not None
+                and _tg_cfg.pilot_identity_binding
+                and bool(_tg_cfg.token)
+            )
+            if _tg_pilot_requested:
+                from bootstrap.telegram_durable import telegram_pilot_prereq_error
+
+                _prereq_err = telegram_pilot_prereq_error(
+                    storage_backend=self.config.storage.backend,
+                    auth_enabled=self.config.auth.enabled,
+                ) or (
+                    None
+                    if chat_config.enabled
+                    else (
+                        "[channels.telegram].pilot_identity_binding=true 要求"
+                        " [channels.chat].enabled=true（跨通道同步以 WebChat 为"
+                        "正式客户端）；请先启用 WebChat。"
+                    )
+                )
+                if _prereq_err:
+                    raise RuntimeError(_prereq_err)
             if chat_config.enabled:
                 from infra.channels.web_chat_channel import (
                     WebChatChannel,
@@ -453,23 +478,7 @@ class AppRuntime:
                 self.webchat_durable = build_webchat_durable_runtime(
                     self.config, bus=self.bus, channel_name=chat_config.channel_name
                 )
-                # C10（c10-telegram-binding-sync ADR-6）：Pilot Telegram 绑定
-                # 同步的装配与 fail-fast。开关开启但前置不满足 → 启动失败，
-                # 不回落旧路径、不半启用。
-                _tg_cfg = self.config.channels.telegram
-                if _tg_cfg is not None and _tg_cfg.pilot_identity_binding and _tg_cfg.token:
-                    if self.webchat_durable is None:
-                        raise RuntimeError(
-                            "[channels.telegram].pilot_identity_binding=true 要求"
-                            " [storage].backend=postgres（PG durable source of"
-                            " truth）；当前后端不满足，拒绝启动。"
-                        )
-                    if not self.config.auth.enabled:
-                        raise RuntimeError(
-                            "[channels.telegram].pilot_identity_binding=true 要求"
-                            " [auth].enabled=true（绑定码签发与身份门禁依赖认证"
-                            "体系）；请先启用认证。"
-                        )
+                if _tg_pilot_requested:
                     from bootstrap.telegram_binding import TelegramBindingService
                     from bootstrap.telegram_durable import (
                         TelegramDurableGateway,
@@ -561,6 +570,11 @@ class AppRuntime:
                             self.webchat_durable.session_factory, _tg_channel
                         ),
                     )
+                    # accepted 帧实时推送面（T1 后同步给 WebChat 在线连接）。
+                    if self._telegram_pilot_ingress is not None and self.web_chat_channel is not None:
+                        self._telegram_pilot_ingress.bind_webchat_channel(
+                            self.web_chat_channel
+                        )
                     logger.info(
                         "telegram delivery 路由已注册（channel=%s）",
                         self.config.channels.telegram.channel_name,
