@@ -247,6 +247,8 @@ class AppRuntime:
         self.workspace_mcp_watcher_task: asyncio.Task[None] | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
+        self._telegram_binding_service: Any = None
+        self._telegram_pilot_ingress: Any = None
         self._shutdown = False
         self._started = False
         self.auth_runtime = None
@@ -439,6 +441,31 @@ class AppRuntime:
                     " agent.dev_mode=true：WebChat 未启用认证时只能走 dev 回退，"
                     "不得静默放行。"
                 )
+            # C10（c10-telegram-binding-sync ADR-6）：Pilot Telegram 绑定同步的
+            # fail-fast 前置检查（在 durable/webchat 装配之前，任何组合都拦得住）。
+            _tg_cfg = self.config.channels.telegram
+            _tg_pilot_requested = (
+                _tg_cfg is not None
+                and _tg_cfg.pilot_identity_binding
+                and bool(_tg_cfg.token)
+            )
+            if _tg_pilot_requested:
+                from bootstrap.telegram_durable import telegram_pilot_prereq_error
+
+                _prereq_err = telegram_pilot_prereq_error(
+                    storage_backend=self.config.storage.backend,
+                    auth_enabled=self.config.auth.enabled,
+                ) or (
+                    None
+                    if chat_config.enabled
+                    else (
+                        "[channels.telegram].pilot_identity_binding=true 要求"
+                        " [channels.chat].enabled=true（跨通道同步以 WebChat 为"
+                        "正式客户端）；请先启用 WebChat。"
+                    )
+                )
+                if _prereq_err:
+                    raise RuntimeError(_prereq_err)
             if chat_config.enabled:
                 from infra.channels.web_chat_channel import (
                     WebChatChannel,
@@ -451,6 +478,26 @@ class AppRuntime:
                 self.webchat_durable = build_webchat_durable_runtime(
                     self.config, bus=self.bus, channel_name=chat_config.channel_name
                 )
+                if _tg_pilot_requested:
+                    from bootstrap.telegram_binding import TelegramBindingService
+                    from bootstrap.telegram_durable import (
+                        TelegramDurableGateway,
+                        TelegramPilotIngress,
+                    )
+
+                    self._telegram_binding_service = TelegramBindingService(
+                        self.webchat_durable.session_factory
+                    )
+                    self._telegram_pilot_ingress = TelegramPilotIngress(
+                        self._telegram_binding_service,
+                        TelegramDurableGateway(
+                            self.webchat_durable.session_factory, self.bus
+                        ),
+                    )
+                    logger.info(
+                        "telegram Pilot 绑定同步已装配（channel=%s）",
+                        _tg_cfg.channel_name,
+                    )
                 if self.webchat_durable is not None:
                     # 终态收束先于通道订阅（dispatch 按订阅顺序 await）：finisher
                     # 先落 durable 终态并把 seq 盖回 metadata，通道随后以同 seq
@@ -505,8 +552,33 @@ class AppRuntime:
                 ),
                 interrupt_controller=self.conversation_runtime,
                 plugin_channels=plugin_channels,
+                pilot_ingress=self._telegram_pilot_ingress,
             )
             await self.channel_host.start_all()
+            # C10：telegram delivery 路由注册（start_delivery 先于 start_channels
+            # 装配，通道实例此时才存在；在首条消息前注册完成，无竞态窗口）。
+            if self._telegram_pilot_ingress is not None and self.webchat_durable is not None:
+                from bootstrap.telegram_durable import TelegramDeliveryAdapter
+
+                _tg_channel = self.channel_host.get(
+                    self.config.channels.telegram.channel_name
+                )
+                if _tg_channel is not None:
+                    self.webchat_durable.register_delivery_route(
+                        self.config.channels.telegram.channel_name,
+                        TelegramDeliveryAdapter(
+                            self.webchat_durable.session_factory, _tg_channel
+                        ),
+                    )
+                    # accepted 帧实时推送面（T1 后同步给 WebChat 在线连接）。
+                    if self._telegram_pilot_ingress is not None and self.web_chat_channel is not None:
+                        self._telegram_pilot_ingress.bind_webchat_channel(
+                            self.web_chat_channel
+                        )
+                    logger.info(
+                        "telegram delivery 路由已注册（channel=%s）",
+                        self.config.channels.telegram.channel_name,
+                    )
             if plugin_manager is not None:
                 channel_bindings = (
                     {
@@ -577,6 +649,10 @@ class AppRuntime:
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()
             self.auth_runtime = auth_runtime
+            # C10：注入绑定服务（admin API 的 telegram-bindings 路由随之激活；
+            # None 时路由 404 不泄露能力）。
+            if auth_runtime is not None and self._telegram_binding_service is not None:
+                auth_runtime.telegram_binding = self._telegram_binding_service
             if (
                 self.provisioning_worker is not None
                 and self.provisioning_service is not None
@@ -646,6 +722,7 @@ class AppRuntime:
                         if self.agent_loop is not None
                         else []
                     ),
+                    telegram_binding=self._telegram_binding_service,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),

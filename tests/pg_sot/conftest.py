@@ -108,6 +108,7 @@ def sot_reset(sot_pg_url) -> Callable[[], None]:
             "message_deduplication_keys, outbound_delivery_intents, "
             "delivery_attempts, tool_calls, tool_audit_events, "
             "webchat_replay_frames, webchat_replay_counters, "
+            "telegram_identity_bindings, telegram_binding_codes, "
             "canonical_messages, canonical_conversations, test_accounts CASCADE"
         )
         conn.close()

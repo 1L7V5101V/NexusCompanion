@@ -86,12 +86,17 @@ class TelegramChannel:
         interrupt_controller: InterruptController | None = None,
         channel_name: str = _CHANNEL,
         api_base_url: str | None = None,
+        pilot_ingress: Any | None = None,
     ) -> None:
         self._bus = bus
         self._session_manager = session_manager
         self._interrupt_controller = interrupt_controller
         self._channel = channel_name
         self.name = channel_name
+        # C10 Pilot 模式（pilot_identity_binding=true）：私聊消息经绑定门禁 +
+        # durable 接受进 canonical 流；outbound 不再直接订阅（由 delivery worker
+        # 投递），流式 live-edit 事件也不订阅（无在线连接语义，final-only）。
+        self._pilot = pilot_ingress
         self._allow_from: set[str] = set(allow_from) if allow_from else set()
         self._message_deduper = MessageDeduper(_SEEN_MSG_MAXSIZE)
         ws = getattr(session_manager, "workspace", None)
@@ -207,10 +212,12 @@ class TelegramChannel:
         logger.info(f"TelegramChannel 已启动  已知用户: {len(self.user_map)}")
 
     def _bind_runtime(self) -> None:
-        if not self._outbound_bound:
+        # Pilot 模式：outbound 由 delivery worker 投递、流式事件不参与
+        # （ADR-4 final-only），两者都只属于旧单体路径。
+        if self._pilot is None and not self._outbound_bound:
             self._bus.subscribe_outbound(self._channel, self._on_response)
             self._outbound_bound = True
-        if self._event_bus is not None and not self._events_bound:
+        if self._pilot is None and self._event_bus is not None and not self._events_bound:
             self._event_bus.on(TurnStarted, self._on_turn_started)
             self._event_bus.on(StreamDeltaReady, self._on_stream_delta)
             self._event_bus.on(ToolCallStarted, self._on_tool_call_started)
@@ -267,6 +274,11 @@ class TelegramChannel:
         user = update.effective_user
 
         if not msg or not msg.text or not chat or not user:
+            return
+
+        # ── C10 Pilot 分支：绑定门禁 + durable 接受（群聊一律忽略）。──
+        if self._pilot is not None:
+            await self._pilot_on_text(msg, chat, user, context)
             return
 
         if not self._is_allowed(user):
@@ -355,6 +367,12 @@ class TelegramChannel:
 
         if not msg or not chat or not user:
             return
+
+        # ── C10 Pilot 分支：按绑定解析后的会话键请求中断。──
+        if self._pilot is not None:
+            await self._pilot_on_stop(msg, chat, user)
+            return
+
         if not self._is_allowed(user):
             logger.warning(
                 f"[telegram] 拒绝未授权 /stop  id={user.id}  username=@{user.username}"
@@ -391,6 +409,13 @@ class TelegramChannel:
 
         if not msg or not chat or not user:
             return
+
+        # ── C10 Pilot 分支：/start [code] 兑换入口；其他命令作为普通文本
+        #    经绑定门禁转投 agent（保持 mono 的插件命令语义）。──
+        if self._pilot is not None:
+            await self._pilot_on_command(msg, chat, user, context)
+            return
+
         if not self._is_allowed(user):
             logger.warning(
                 f"[telegram] 拒绝未授权命令  id={user.id}  username=@{user.username}"
@@ -416,6 +441,11 @@ class TelegramChannel:
         user = update.effective_user
 
         if not msg or not msg.photo or not chat or not user:
+            return
+
+        # ── C10 Pilot 分支：首版只接受私聊文本。──
+        if self._pilot is not None:
+            await self._pilot_on_media(msg, chat, user, context)
             return
 
         if not self._is_allowed(user):
@@ -489,6 +519,11 @@ class TelegramChannel:
         if not msg or not msg.document or not chat or not user:
             return
 
+        # ── C10 Pilot 分支：首版只接受私聊文本。──
+        if self._pilot is not None:
+            await self._pilot_on_media(msg, chat, user, context)
+            return
+
         if not self._is_allowed(user):
             logger.warning(
                 f"[telegram] 拒绝未授权用户  id={user.id}  username=@{user.username}"
@@ -534,6 +569,105 @@ class TelegramChannel:
                 },
             )
         )
+
+    # ── C10 Pilot 分支实现（pilot_identity_binding=true 时生效） ─────
+
+    async def _pilot_on_text(
+        self, msg: Any, chat: Any, user: Any, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if str(getattr(chat, "type", "")) != "private":
+            return  # 群聊一律忽略（首版只绑定私聊身份，§5.9.2）
+        text = str(msg.text or "")
+        if not text.strip():
+            return
+        inbound_text, reply_meta = _build_inbound_text_with_reply(
+            text, msg.reply_to_message
+        )
+        reply = await self._pilot.handle_text(
+            chat_id=str(chat.id),
+            user_id=str(user.id),
+            username=user.username or "",
+            message_id=str(msg.message_id),
+            raw_text=text,
+            agent_text=inbound_text,
+            metadata=reply_meta or None,
+        )
+        if reply is None:
+            # 已受理（回复来自 durable delivery）；只保留 typing 活性提示。
+            await self._safe_send_typing(context, chat.id)
+            return
+        await send_markdown(
+            self._app.bot, str(chat.id), reply, self._telegram_outbound_limiter
+        )
+
+    async def _pilot_on_command(
+        self, msg: Any, chat: Any, user: Any, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if str(getattr(chat, "type", "")) != "private":
+            return
+        command_text = str(getattr(msg, "text", "") or "")
+        if command_text.startswith("/start"):
+            parts = command_text.split(maxsplit=1)
+            code_argument = parts[1] if len(parts) > 1 else ""
+            reply = await self._pilot.handle_command_start(
+                chat_id=str(chat.id),
+                user_id=str(user.id),
+                code_argument=code_argument,
+            )
+            if reply:
+                await send_markdown(
+                    self._app.bot, str(chat.id), reply, self._telegram_outbound_limiter
+                )
+            return
+        # 其他命令：与文本同路径转投 agent（durable 接受）。
+        await self._pilot_on_text(msg, chat, user, context)
+
+    async def _pilot_on_stop(
+        self, msg: Any, chat: Any, user: Any
+    ) -> None:
+        if str(getattr(chat, "type", "")) != "private":
+            return
+        identity = await self._pilot.resolve(str(user.id), str(chat.id))
+        if identity is None:
+            await send_markdown(
+                self._app.bot,
+                str(chat.id),
+                "尚未绑定账号，无法中断对话。请先发送绑定码完成绑定。",
+                self._telegram_outbound_limiter,
+            )
+            return
+        if self._interrupt_controller is None:
+            await send_markdown(
+                self._app.bot,
+                str(chat.id),
+                "当前未启用中断功能。",
+                self._telegram_outbound_limiter,
+            )
+            return
+        result = self._interrupt_controller.request_interrupt(
+            session_key=identity.session_key,
+            sender=str(user.id),
+            command="/stop",
+        )
+        await send_markdown(
+            self._app.bot,
+            str(chat.id),
+            result.message,
+            self._telegram_outbound_limiter,
+        )
+
+    async def _pilot_on_media(
+        self, msg: Any, chat: Any, user: Any, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        if str(getattr(chat, "type", "")) != "private":
+            return
+        reply = await self._pilot.media_unsupported(
+            user_id=str(user.id), chat_id=str(chat.id)
+        )
+        if reply:
+            await send_markdown(
+                self._app.bot, str(chat.id), reply, self._telegram_outbound_limiter
+            )
 
     def _resolve_chat_id(self, chat_id: str) -> str:
         resolved = chat_id.lstrip("@").lower()

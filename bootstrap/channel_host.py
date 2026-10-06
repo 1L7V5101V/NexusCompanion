@@ -34,6 +34,10 @@ class ChannelHost:
     def add(self, channel: Channel) -> None:
         self._channels.append(channel)
 
+    def get(self, name: str) -> Channel | None:
+        """按 channel 名取已注册通道（C10 装配：telegram delivery 路由注册用）。"""
+        return next((c for c in self._channels if c.name == name), None)
+
     async def start_all(self) -> None:
         failures: list[str] = []
         try:

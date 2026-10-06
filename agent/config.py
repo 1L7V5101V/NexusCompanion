@@ -243,6 +243,7 @@ def _load_channels_config(data: dict) -> ChannelsConfig:
                     str(tg.get("api_base_url", ""))
                 )
                 or None,
+                pilot_identity_binding=bool(tg.get("pilot_identity_binding", False)),
             )
 
     qq = None
