@@ -487,12 +487,10 @@ def create_chat_app(
     #    明文只在签发响应出现一次，digest 不落 API/日志（ADR-2）。──
     if telegram_binding is not None:
         from bootstrap.db.repository.telegram_repo import (
+            TelegramBindingConflictError,
             TelegramCodeLimitError,
         )
         from bootstrap.telegram_binding import TelegramAccountNotReadyError
-
-        class _IssueCodeBody(BaseModel):
-            note: str = Field(default="", max_length=255)
 
         @app.get("/api/telegram/binding", dependencies=[Depends(_require_user_session)])
         async def telegram_binding_status(
@@ -523,6 +521,10 @@ def create_chat_app(
             except TelegramCodeLimitError:
                 raise HTTPException(
                     429, detail="too many open binding codes"
+                ) from None
+            except TelegramBindingConflictError:
+                raise HTTPException(
+                    409, detail="telegram binding conflict"
                 ) from None
             except TelegramAccountNotReadyError as exc:
                 raise HTTPException(409, detail=str(exc)) from None
@@ -686,6 +688,12 @@ class _OnboardingBody(BaseModel):
     identity: str = ""
     personality_rules: str = ""
     self_model: str = ""
+
+
+class _IssueCodeBody(BaseModel):
+    """绑定码签发请求体（模块级：同 _OnboardingBody 的注解解析约束）。"""
+
+    note: str = Field(default="", max_length=255)
 
 
 async def _resolve_endpoint_identity(

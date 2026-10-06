@@ -1,0 +1,23 @@
+# task 8.1 — 全量回归（2026-10-07）
+
+## 命令
+
+```
+$ NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=postgresql://nexus:nexus_dev@localhost:5433/nexus \
+  uv run --no-sync pytest tests/ -q --ignore=tests/test_web_chat_e2e_dev.py
+1929 passed in 804.19s (0:13:24)
+
+$ NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=postgresql://nexus:nexus_dev@localhost:5433/nexus \
+  uv run --no-sync pytest tests/test_web_chat_e2e_dev.py -q
+6 passed in 4.13s
+```
+
+## 结论
+
+- 全量 **1935 passed / 0 failed**（本地 PG 5433 Docker 实例可达，
+  `NEXUS_REQUIRE_PG=1` 守卫生效，无静默 skip）。
+- 对比 C9 基线 1921 passed：净增 14 条（C10 新测试
+  `tests/pg_sot/test_telegram_binding_e2e.py` 2 +
+  `tests/pg_sot/test_telegram_binding_api.py` 1 +
+  `tests/test_telegram_pilot_channel.py` 11），零回归。
+- pyright：新增/改动模块 0 errors（见 task-7.8-scope-check.md §6）。

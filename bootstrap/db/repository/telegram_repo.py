@@ -278,6 +278,7 @@ class TelegramBindingRepository:
             return _code_to_dict(row)
 
     async def count_open_codes(self, account_id: uuid.UUID | str) -> int:
+        """在途（未消费且未过期）码数——过期码不计入签发上限。"""
         acc_id = _coerce_uuid(account_id)
         if acc_id is None:
             return 0
@@ -288,6 +289,7 @@ class TelegramBindingRepository:
                 .where(
                     TelegramBindingCodeModel.account_id == acc_id,
                     TelegramBindingCodeModel.consumed_at.is_(None),
+                    TelegramBindingCodeModel.expires_at > _UTC_NOW(),
                 )
             )
             return int(value or 0)

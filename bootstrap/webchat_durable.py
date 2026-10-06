@@ -64,6 +64,15 @@ PG_SEQUENCE_KEY = "nexus_pg_sequence"
 PG_CONVERSATION_ID_KEY = "nexus_pg_conversation_id"
 
 
+def _log_live_push_failure(task: "asyncio.Task[Any]") -> None:
+    """telegram 终态帧实时推送任务失败记录（fire-and-forget，不中断主流程）。"""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning("webchat 实时推送 telegram 终态帧失败: %s", error)
+
+
 def _is_uuid(value: str) -> bool:
     try:
         _ = uuid.UUID(value)
@@ -351,16 +360,10 @@ class WebchatDurableTurnFinisher:
         """
         if self._webchat_channel is None or not conversation_id:
             return
-        try:
-            delivered = self._webchat_channel.deliver_frame(conversation_id, dict(frame))
-            if delivered:
-                logger.info(
-                    "telegram turn 终态帧已实时推送 webchat conv=%s conns=%s",
-                    conversation_id,
-                    delivered,
-                )
-        except Exception:
-            logger.exception("webchat 实时推送 telegram 终态帧失败 conv=%s", conversation_id)
+        task = asyncio.create_task(
+            self._webchat_channel.deliver_frame(conversation_id, dict(frame))
+        )
+        task.add_done_callback(_log_live_push_failure)
 
     def subscribe(self, bus: MessageBus) -> None:
         for name in sorted(self._channel_names):

@@ -156,6 +156,8 @@ class TelegramDurableGateway:
             self._push_accepted_live(conversation_id, result.replay_frame)
 
         # 3. 入队执行（T1 已提交；metadata 携带 pg 身份键贯穿到 T2）。
+        # session_key_override：turn 执行会话键与 WebChat 完全一致（ADR-3，
+        # 共享 tenant 派生视图），否则 channel:chat_id 会分裂出第二个 session。
         inbound = InboundMessage(
             channel="telegram",
             sender=sender,
@@ -166,6 +168,7 @@ class TelegramDurableGateway:
                 **(metadata or {}),
                 "client_message_id": client_ack["client_message_id"],
                 "username": sender,
+                "session_key_override": f"chat:{tenant_id}",
                 "nexus_pg_turn_id": result.turn_id or "",
                 "nexus_pg_inbox_id": result.inbox_id,
                 "nexus_pg_message_id": result.message_id,
@@ -174,7 +177,6 @@ class TelegramDurableGateway:
                 "nexus_pg_tenant_id": tenant_id,
             },
             tenant_id=tenant_id,
-            session_key=f"chat:{tenant_id}",
         )
         try:
             await asyncio.wait_for(
@@ -217,18 +219,10 @@ class TelegramDurableGateway:
         """
         if self._webchat_channel is None or not conversation_id:
             return
-        try:
-            delivered = self._webchat_channel.deliver_frame(
-                conversation_id, dict(frame)
-            )
-            if delivered:
-                logger.info(
-                    "telegram 消息 accepted 帧已实时推送 webchat conv=%s conns=%s",
-                    conversation_id,
-                    delivered,
-                )
-        except Exception:
-            logger.exception("webchat 实时推送 telegram accepted 帧失败 conv=%s", conversation_id)
+        task = asyncio.create_task(
+            self._webchat_channel.deliver_frame(conversation_id, dict(frame))
+        )
+        task.add_done_callback(_log_push_failure)
 
 
 class TelegramDeliveryAdapter:
@@ -314,6 +308,15 @@ _UNBOUND_GUIDE = (
     "然后把绑定码直接发给我完成绑定。\n\n"
     "绑定码 10 分钟内有效且只能使用一次。"
 )
+
+
+def _log_push_failure(task: "asyncio.Task[Any]") -> None:
+    """实时推送 fire-and-forget 任务的失败记录（不中断主流程）。"""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.warning("webchat 实时推送 telegram 帧失败: %s", error)
 
 
 class TelegramPilotIngress:

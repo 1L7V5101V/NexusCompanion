@@ -90,6 +90,15 @@ class TenantInviteRequest(BaseModel):
     tenant_name: str = Field(min_length=1, max_length=255)
 
 
+class TelegramPrebindRequest(BaseModel):
+    """管理员预绑定请求体（C10；模块级：FastAPI 注解解析需全局可解析名字）。"""
+
+    account_id: str = Field(min_length=1, max_length=64)
+    telegram_user_id: str = Field(min_length=1, max_length=64)
+    telegram_chat_id: str = Field(min_length=1, max_length=64)
+    note: str = Field(default="", max_length=255)
+
+
 def build_auth_api(runtime: AuthRuntime) -> APIRouter:
     """普通测试用户面：``/api/auth/*``（挂 WebChat Gateway）。"""
     router = APIRouter()
@@ -381,12 +390,6 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
         def _admin_actor(session: dict) -> str:
             return f"admin-api:{str(session.get('id') or '')[:8]}"
 
-        class PrebindRequest(BaseModel):
-            account_id: str = Field(min_length=1, max_length=64)
-            telegram_user_id: str = Field(min_length=1, max_length=64)
-            telegram_chat_id: str = Field(min_length=1, max_length=64)
-            note: str = Field(default="", max_length=255)
-
         @router.get("/api/admin/telegram-bindings")
         async def list_telegram_bindings(
             active_only: bool = False,
@@ -396,7 +399,7 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
 
         @router.post("/api/admin/telegram-bindings", status_code=201)
         async def prebind_telegram_identity(
-            body: PrebindRequest, ctx: _AdminSession = Depends(_admin_mutation)
+            body: TelegramPrebindRequest, ctx: _AdminSession = Depends(_admin_mutation)
         ) -> dict[str, Any]:
             try:
                 binding = await binding_service.prebind(
