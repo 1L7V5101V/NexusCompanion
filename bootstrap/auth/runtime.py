@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -77,6 +78,9 @@ class AuthRuntime:
         # 供 WS 入口按 session 派生 tenant/conversation 归属（§5.9.1）。
         # check_ws_handshake 返回 session dict 正是为此预留（其 docstring）。
         self.canonical_repo = canonical_repo
+        # C10：pilot_identity_binding 开启时由 app 装配注入（TelegramBindingService）；
+        # 关闭时保持 None，admin API 的 telegram-binding 路由返回 404（不泄露能力）。
+        self.telegram_binding: Any | None = None
         self._session_factory = session_factory
         self._engine = engine
 

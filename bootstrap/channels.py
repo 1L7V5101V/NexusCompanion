@@ -25,6 +25,7 @@ async def start_channels(
     bot_commands: list[tuple[str, str]] | None = None,
     interrupt_controller: InterruptController | None = None,
     plugin_channels: list[Channel] | None = None,
+    pilot_ingress: object | None = None,
 ) -> tuple[object, ChannelHost]:
     from infra.channels.ipc_server import IPCServerChannel
 
@@ -67,6 +68,8 @@ async def start_channels(
             interrupt_controller=interrupt_controller,
             channel_name=tg.channel_name,
             api_base_url=tg.api_base_url,
+            # C10：Pilot 绑定门禁入口（None = 旧单体 allowlist 路径，行为不变）。
+            pilot_ingress=pilot_ingress,
         ))
 
     if config.channels.qq and config.channels.qq.bot_uin:

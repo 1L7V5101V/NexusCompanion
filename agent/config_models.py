@@ -31,6 +31,12 @@ class TelegramChannelConfig:
     api_base_url: str | None = None
     """自定义 Telegram Bot API 地址，用于国内反代等场景。
     例如：https://tg.i-c.top/bot（无需尾随 /）"""
+    # C10（c10-telegram-binding-sync）：Pilot 身份绑定 + durable 同步路径。
+    # 开启后：私聊消息经 telegram_identity_bindings 门禁入 canonical 流（PG
+    # durable），回复经 delivery worker 投递；旧单体 allowlist 路径停用。
+    # 前置：storage.backend=postgres 且 [auth].enabled（不满足启动 fail-fast）。
+    # ⚠️ 同一 Bot token 的更新流不得被旧单体与 Pilot 同时消费（§5.9.2）。
+    pilot_identity_binding: bool = False
 
 
 @dataclass

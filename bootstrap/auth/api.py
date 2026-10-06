@@ -368,6 +368,65 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
         await runtime.auth.revoke_token(token_id, reason="admin:revoke_token")
         return {"status": "revoked"}
 
+    # ── C10 Telegram binding 管理（pilot_identity_binding 开启时由 app 注入
+    #    runtime.telegram_binding；关闭时这些路由 404，不泄露能力存在性）。──
+    binding_service = getattr(runtime, "telegram_binding", None)
+
+    if binding_service is not None:
+        from bootstrap.db.repository.telegram_repo import (
+            TelegramBindingConflictError,
+        )
+        from bootstrap.telegram_binding import TelegramAccountNotReadyError
+
+        def _admin_actor(session: dict) -> str:
+            return f"admin-api:{str(session.get('id') or '')[:8]}"
+
+        class PrebindRequest(BaseModel):
+            account_id: str = Field(min_length=1, max_length=64)
+            telegram_user_id: str = Field(min_length=1, max_length=64)
+            telegram_chat_id: str = Field(min_length=1, max_length=64)
+            note: str = Field(default="", max_length=255)
+
+        @router.get("/api/admin/telegram-bindings")
+        async def list_telegram_bindings(
+            active_only: bool = False,
+            _: _AdminSession = Depends(_admin_session),
+        ) -> dict[str, Any]:
+            return {"items": await binding_service.list_bindings(active_only=active_only)}
+
+        @router.post("/api/admin/telegram-bindings", status_code=201)
+        async def prebind_telegram_identity(
+            body: PrebindRequest, ctx: _AdminSession = Depends(_admin_mutation)
+        ) -> dict[str, Any]:
+            try:
+                binding = await binding_service.prebind(
+                    account_id=body.account_id,
+                    telegram_user_id=body.telegram_user_id,
+                    telegram_chat_id=body.telegram_chat_id,
+                    admin_actor=_admin_actor(ctx.session),
+                    note=body.note,
+                )
+            except TelegramBindingConflictError:
+                raise HTTPException(
+                    409, detail="telegram binding conflict"
+                ) from None
+            except TelegramAccountNotReadyError:
+                raise HTTPException(
+                    409, detail="account not ready for binding"
+                ) from None
+            return {"binding": binding}
+
+        @router.post("/api/admin/telegram-bindings/{binding_id}/unbind")
+        async def unbind_telegram_identity(
+            binding_id: str, ctx: _AdminSession = Depends(_admin_mutation)
+        ) -> dict[str, Any]:
+            binding = await binding_service.unbind(
+                binding_id=binding_id, admin_actor=_admin_actor(ctx.session)
+            )
+            if binding is None:
+                raise HTTPException(404, detail="binding not found")
+            return {"binding": binding}
+
     return router
 
 

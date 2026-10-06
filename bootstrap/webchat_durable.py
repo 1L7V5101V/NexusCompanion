@@ -36,6 +36,7 @@ from bootstrap.db.repository.control_plane_repo import (
     WebchatReplayRepository,
 )
 from bootstrap.delivery_worker import OutboundDeliveryWorker
+from bootstrap.telegram_durable import ChannelRoutingDeliveryAdapter
 from bootstrap.work_queue import async_pg_url
 from bus.events import InboundMessage
 from bus.queue import MessageBus
@@ -318,11 +319,20 @@ class WebchatDurableTurnFinisher:
         session_factory: async_sessionmaker,
         *,
         channel_name: str = "chat",
+        channel_names: frozenset[str] | None = None,
+        webchat_channel: Any = None,
         telemetry: Any = None,
     ) -> None:
         self._turns = TurnControlRepository(session_factory)
         self._ingress = IngressRepository(session_factory)
         self._channel_name = channel_name
+        # C10：Pilot Telegram 同步时订阅多 channel（{"chat","telegram"}）；T2 的
+        # delivery channel/target 取自出站消息自身（telegram → chat_id）。缺省
+        # （None）保持单 channel 行为不变。
+        self._channel_names = frozenset(channel_names) if channel_names else frozenset({channel_name})
+        # WebChat 在线连接推送面（telegram 出站的 turn.completed 实时帧经
+        # deliver_frame 下发；chat 出站仍走既有 broadcast + worker 双路径）。
+        self._webchat_channel = webchat_channel
         self._telemetry = telemetry
         self._wake: Callable[[], None] | None = None
 
@@ -330,8 +340,31 @@ class WebchatDurableTurnFinisher:
         """绑定 T2 提交后的 delivery 唤醒回调（task 4.1；未绑定为 no-op）。"""
         self._wake = wake
 
+    def bind_webchat_channel(self, channel: Any) -> None:
+        """绑定 WebChat 通道引用（telegram 出站终态帧实时推送用，C10 ADR-4）。"""
+        self._webchat_channel = channel
+
+    def _push_webchat_live(self, conversation_id: str, frame: dict[str, Any]) -> None:
+        """telegram 入口 turn 的终态帧实时推送 WebChat 在线连接（尽力而为）。
+
+        失败仅记日志：durable 权威在重放帧表，断线重连/补拉/REST 重建兜底。
+        """
+        if self._webchat_channel is None or not conversation_id:
+            return
+        try:
+            delivered = self._webchat_channel.deliver_frame(conversation_id, dict(frame))
+            if delivered:
+                logger.info(
+                    "telegram turn 终态帧已实时推送 webchat conv=%s conns=%s",
+                    conversation_id,
+                    delivered,
+                )
+        except Exception:
+            logger.exception("webchat 实时推送 telegram 终态帧失败 conv=%s", conversation_id)
+
     def subscribe(self, bus: MessageBus) -> None:
-        bus.subscribe_outbound(self._channel_name, self._on_outbound)
+        for name in sorted(self._channel_names):
+            bus.subscribe_outbound(name, self._on_outbound)
 
     async def _on_outbound(self, msg: Any) -> None:
         try:
@@ -347,11 +380,14 @@ class WebchatDurableTurnFinisher:
     async def _finish(self, msg: Any) -> None:
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         turn_id = str(metadata.get("nexus_pg_turn_id") or "")
-        if not turn_id or msg.channel != self._channel_name:
+        if (
+            turn_id == ""
+            or msg.channel not in self._channel_names
+        ):
             logger.info(
                 "webchat durable 终态收束跳过: channel=%s expected=%s pg_turn_id=%s meta_keys=%s",
                 msg.channel,
-                self._channel_name,
+                sorted(self._channel_names),
                 turn_id or "<空>",
                 sorted(metadata),
             )
@@ -364,6 +400,12 @@ class WebchatDurableTurnFinisher:
         inbox_id = str(metadata.get("nexus_pg_inbox_id") or "")
         is_error = bool(metadata.get("nexus_error"))
         fail_reason = str(metadata.get("nexus_fail_reason") or "turn_failed")
+        # delivery 归属：telegram 出站投给 Bot API（target=chat_id）；
+        # webchat 出站维持既有语义（target=tenant_id，adapter 只按会话投递）。
+        delivery_channel = str(msg.channel)
+        delivery_target = (
+            str(msg.chat_id) if msg.channel != self._channel_name else tenant_id
+        )
         if is_error:
             # 失败终态：无 final message、无投递意图；原因与 wire 文案可查。
             row = await self._turns.transition_turn(
@@ -377,6 +419,7 @@ class WebchatDurableTurnFinisher:
                 ),
             )
             replay_seq = row.get("replay_seq")
+            replay_frame: dict[str, Any] | None = None
         else:
             result = await self._turns.complete_turn_with_delivery(
                 tenant_id,
@@ -384,8 +427,8 @@ class WebchatDurableTurnFinisher:
                 turn_id,
                 expected_status="queued",
                 response_content=str(msg.content),
-                delivery_channel=self._channel_name,
-                delivery_target=tenant_id,
+                delivery_channel=delivery_channel,
+                delivery_target=delivery_target,
                 delivery_payload={
                     "turn_id": turn_id,
                     "media": [str(m) for m in (msg.media or [])],
@@ -404,10 +447,17 @@ class WebchatDurableTurnFinisher:
                 },
             )
             replay_seq = result.replay_seq
+            replay_frame = result.replay_frame
         if inbox_id:
             await self._ingress.mark_inbox_processed(tenant_id, inbox_id)
         if replay_seq is not None:
             metadata["nexus_replay_seq"] = int(replay_seq)
+        if replay_frame is not None and msg.channel != self._channel_name:
+            # 非 WebChat 入口的 turn（telegram）：WebChat 在线连接实时推送该
+            # 终态帧（durable 权威在重放帧表；前端按 turn_id 幂等渲染）。
+            self._push_webchat_live(
+                str(metadata.get("nexus_pg_conversation_id") or ""), replay_frame
+            )
         if not is_error and self._wake is not None:
             # T2 已产出 pending intent：唤醒 delivery worker 立即投递（task 4.1）。
             self._wake()
@@ -418,7 +468,7 @@ class WebchatDurableTurnFinisher:
                     turn_id=turn_id,
                     tenant_id=tenant_id,
                     status="failed" if is_error else "completed",
-                    channel=self._channel_name,
+                    channel=str(msg.channel),
                     error=str(msg.content)[:200] if is_error else None,
                     error_type=(
                         str(metadata.get("nexus_fail_reason"))
@@ -612,6 +662,7 @@ class WebchatDurableRuntime:
     telemetry: Any = None
     delivery_loop: "WebchatDeliveryLoop | None" = None
     delivery_task: "asyncio.Task[None] | None" = None
+    delivery_routes: dict[str, Any] | None = None
 
     async def aclose(self) -> None:
         await self.engine.dispose()
@@ -621,13 +672,16 @@ class WebchatDurableRuntime:
 
         通道与网关互为构造前置（通道要注入 gateway、适配器要读通道连接表），
         因此 delivery 装配独立于 runtime 构造，由 app 在通道建成后调用。
+        C10：adapter 层按 ``envelope.channel`` 分发（``chat`` → WebChat，
+        其他 channel 经 :meth:`register_delivery_route` 注册；claim 不分 channel）。
         """
         if self.delivery_task is not None:
             return
         telemetry = self.telemetry
+        self.delivery_routes = {"chat": WebchatDeliveryAdapter(self.session_factory, channel)}
         worker = OutboundDeliveryWorker(
             DeliveryRepository(self.session_factory),
-            WebchatDeliveryAdapter(self.session_factory, channel),
+            ChannelRoutingDeliveryAdapter(self.delivery_routes),
             on_delivery_finished=(
                 (lambda payload: telemetry.delivery_finished(
                     message_id=str(payload["intent"]["message_id"]),
@@ -642,6 +696,7 @@ class WebchatDurableRuntime:
                 else None
             ),
         )
+        self.finisher.bind_webchat_channel(channel)
         loop = WebchatDeliveryLoop(worker)
         self.finisher.bind_wake(loop.wake)
         self.delivery_loop = loop
@@ -650,6 +705,15 @@ class WebchatDurableRuntime:
         )
         self.delivery_task.add_done_callback(self._delivery_done)
         logger.info("webchat delivery worker 已装配（wake+poll 混合循环）")
+
+    def register_delivery_route(self, channel: str, adapter: Any) -> None:
+        """注册额外 channel 的 delivery adapter（C10：telegram → Bot API 投递）。
+
+        仅在 delivery 装配后可调用；重复注册覆盖（测试重建场景）。
+        """
+        if self.delivery_routes is None:
+            raise RuntimeError("delivery 尚未装配（先调用 start_delivery）")
+        self.delivery_routes[str(channel)] = adapter
 
     def stop_delivery(self) -> None:
         if self.delivery_loop is not None:
@@ -698,8 +762,17 @@ def build_webchat_durable_runtime(
     except Exception:
         logger.exception("webchat lifecycle 指标注册失败（降级为仅日志）")
         telemetry = None
+    # C10：pilot_identity_binding 开启且 Telegram 通道将运行时，终态收束器
+    # 订阅多 channel（telegram 出站的 delivery channel/target 取自出站自身）。
+    finisher_channel_names: frozenset[str] | None = None
+    tg = config.channels.telegram
+    if tg is not None and tg.pilot_identity_binding and tg.token:
+        finisher_channel_names = frozenset({channel_name, tg.channel_name})
     finisher = WebchatDurableTurnFinisher(
-        session_factory, channel_name=channel_name, telemetry=telemetry
+        session_factory,
+        channel_name=channel_name,
+        channel_names=finisher_channel_names,
+        telemetry=telemetry,
     )
     logger.info(
         "webchat durable 接受网关已装配（channel=%s, PG durable source of truth）",

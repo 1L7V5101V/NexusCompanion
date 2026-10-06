@@ -112,6 +112,9 @@ class TelegramBindingService:
         account = await self._canonical.get_account(account_id)
         if account is None or str(account.get("status")) != "active":
             raise TelegramAccountNotReadyError("account is not active")
+        if await self._repo.get_active_binding_by_account(account_id) is not None:
+            # 已绑定账号不签发新码（重绑前须先解绑，语义对兑换侧一致）。
+            raise TelegramBindingConflictError("account already bound")
         open_count = await self._repo.count_open_codes(account_id)
         if open_count >= MAX_OPEN_CODES_PER_ACCOUNT:
             raise TelegramCodeLimitError("too many open binding codes")
@@ -167,6 +170,18 @@ class TelegramBindingService:
 
     async def list_bindings(self, *, active_only: bool = False) -> list[dict]:
         return await self._repo.list_bindings(active_only=active_only)
+
+    async def binding_status_for_account(self, account_id: str) -> dict:
+        """账号侧绑定状态摘要（用户面端点用；不含任何凭据/明文码）。"""
+        binding = await self._repo.get_active_binding_by_account(account_id)
+        open_codes = await self._repo.count_open_codes(account_id)
+        return {
+            "bound": binding is not None,
+            "telegram_user_id": str(binding["telegram_user_id"]) if binding else None,
+            "bound_via": str(binding["bound_via"]) if binding else None,
+            "bound_at": str(binding["bound_at"]) if binding else None,
+            "open_codes": open_codes,
+        }
 
     # ── 身份解析（入站门禁） ────────────────────────────────────
 

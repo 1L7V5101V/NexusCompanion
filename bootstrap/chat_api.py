@@ -98,6 +98,7 @@ def create_chat_app(
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
     source_breakdown_provider: Any = None,
+    telegram_binding: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
@@ -480,6 +481,58 @@ def create_chat_app(
 
         # 用户内容面依赖（uploads/media/WS 共用）：PG+auth 模式走 onboarding 门禁，
         # dev 模式维持原 _require_user_session（行为不变）。
+
+    # ── C10 Telegram binding 用户面（pilot_identity_binding 开启时由 app 注入
+    #    telegram_binding；关闭时不挂路由，行为与现状一致）。绑定码是账号凭据：
+    #    明文只在签发响应出现一次，digest 不落 API/日志（ADR-2）。──
+    if telegram_binding is not None:
+        from bootstrap.db.repository.telegram_repo import (
+            TelegramCodeLimitError,
+        )
+        from bootstrap.telegram_binding import TelegramAccountNotReadyError
+
+        class _IssueCodeBody(BaseModel):
+            note: str = Field(default="", max_length=255)
+
+        @app.get("/api/telegram/binding", dependencies=[Depends(_require_user_session)])
+        async def telegram_binding_status(
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            status = await telegram_binding.binding_status_for_account(
+                str(identity.account_id)
+            )
+            return status
+
+        @app.post("/api/telegram/binding-codes", status_code=201)
+        async def issue_telegram_binding_code(
+            body: _IssueCodeBody,
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            try:
+                issued = await telegram_binding.issue_code(
+                    account_id=str(identity.account_id),
+                    issued_by=f"user:{str(identity.account_id)[:8]}",
+                    note=body.note,
+                )
+            except TelegramCodeLimitError:
+                raise HTTPException(
+                    429, detail="too many open binding codes"
+                ) from None
+            except TelegramAccountNotReadyError as exc:
+                raise HTTPException(409, detail=str(exc)) from None
+            return {
+                "code": issued["code"],
+                "expires_at": issued["expires_at"],
+                "tenant_id": issued["tenant_id"],
+                "note": issued["note"],
+            }
+
     @app.post("/api/chat/uploads", dependencies=[Depends(_user_content_deps)])
     async def upload_file(
         request: Request,
@@ -580,6 +633,7 @@ def build_chat_server(
     durable_runtime: Any = None,
     attachment_config: "AttachmentConfig | None" = None,
     source_breakdown_provider: Any = None,
+    telegram_binding: Any = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -606,6 +660,7 @@ def build_chat_server(
             durable_runtime=durable_runtime,
             attachment_config=attachment_config,
             source_breakdown_provider=source_breakdown_provider,
+            telegram_binding=telegram_binding,
         ),
         host=host,
         port=port,
