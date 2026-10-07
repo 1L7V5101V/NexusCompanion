@@ -2,6 +2,7 @@ from agent.tools.meta.catalog import META_TOOLBOX_NAMES, build_meta_toolbox_prom
 from agent.tools.meta.register import (
     register_common_meta_tools,
     register_memory_meta_tools,
+    register_memory_tools_for_engines,
 )
 
 __all__ = [
@@ -9,4 +10,5 @@ __all__ = [
     "build_meta_toolbox_prompt",
     "register_common_meta_tools",
     "register_memory_meta_tools",
+    "register_memory_tools_for_engines",
 ]

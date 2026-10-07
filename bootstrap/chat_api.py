@@ -99,6 +99,7 @@ def create_chat_app(
     attachment_config: "AttachmentConfig | None" = None,
     source_breakdown_provider: Any = None,
     telegram_binding: Any = None,
+    memory_engines: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Nexus Chat API")
     app.state.workspace = workspace
@@ -535,6 +536,56 @@ def create_chat_app(
                 "note": issued["note"],
             }
 
+    # ── C14 memory engine selector 用户面（PG durable 模式由 app 注入
+    #    memory_engines；未装配时不挂路由 → 404 不泄露能力）。目录为服务端
+    #    冻结常量（inspector 不入目录），客户端字段只是设置请求：切换的授权、
+    #    目录成员、opt-in 放行与 readiness 全部服务端判定（ADR-1/ADR-2）。──
+    if memory_engines is not None:
+        from bootstrap.memory_binding import (
+            EngineNotReadyError,
+            EngineNotSelectableError,
+            UnknownEngineError,
+        )
+
+        @app.get(
+            "/api/memory/engines",
+            dependencies=[Depends(_require_user_session)],
+        )
+        async def memory_engines_status(
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            return await memory_engines.describe(str(identity.tenant_id))
+
+        @app.put("/api/memory/engines/active")
+        async def select_memory_engine(
+            body: _EngineSelectionBody,
+            session: dict[str, Any] = Depends(_require_user_session),
+        ) -> dict[str, Any]:
+            identity = await _resolve_endpoint_identity(auth_runtime, session)
+            if identity is None:
+                raise HTTPException(403, detail="forbidden")
+            try:
+                record = await memory_engines.switch(
+                    str(identity.tenant_id),
+                    body.engine_id,
+                    actor=f"user:{str(identity.account_id)[:8]}",
+                )
+            except UnknownEngineError:
+                raise HTTPException(404, detail="unknown_engine") from None
+            except EngineNotSelectableError:
+                raise HTTPException(
+                    403, detail="engine_not_selectable"
+                ) from None
+            except EngineNotReadyError:
+                raise HTTPException(409, detail="engine_not_ready") from None
+            return {
+                "active_engine": str(record["engine_id"]),
+                "tenant_policy_revision": int(record["tenant_policy_revision"]),
+            }
+
     @app.post("/api/chat/uploads", dependencies=[Depends(_user_content_deps)])
     async def upload_file(
         request: Request,
@@ -636,6 +687,7 @@ def build_chat_server(
     attachment_config: "AttachmentConfig | None" = None,
     source_breakdown_provider: Any = None,
     telegram_binding: Any = None,
+    memory_engines: Any = None,
 ) -> uvicorn.Server:
     """构造 WebChat 服务器（design ADR-3 三态门禁）。
 
@@ -663,6 +715,7 @@ def build_chat_server(
             attachment_config=attachment_config,
             source_breakdown_provider=source_breakdown_provider,
             telegram_binding=telegram_binding,
+            memory_engines=memory_engines,
         ),
         host=host,
         port=port,
@@ -694,6 +747,16 @@ class _IssueCodeBody(BaseModel):
     """绑定码签发请求体（模块级：同 _OnboardingBody 的注解解析约束）。"""
 
     note: str = Field(default="", max_length=255)
+
+
+class _EngineSelectionBody(BaseModel):
+    """memory engine 选择请求体（C14：客户端字段只是设置请求，不参与授权）。
+
+    额外字段被忽略（目录/权限/readiness 全部由服务端判定）；engine_id 只与
+    服务端冻结目录比对。
+    """
+
+    engine_id: str = Field(min_length=1, max_length=64)
 
 
 async def _resolve_endpoint_identity(

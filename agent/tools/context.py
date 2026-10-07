@@ -62,6 +62,9 @@ class ToolExecutionContext:
     # 每 turn 运行时提示（非授权字段）：记忆召回的时间锚点与写入溯源。
     current_timestamp: str = ""
     current_user_source_ref: str = ""
+    # C14：本 work 的 active memory engine（服务端从 PG binding 解析，work-start
+    # 冻结；空串 = dev/未接线路径）。memory 工具据此把调用分发到租户的引擎实例。
+    memory_engine: str = ""
 
     def __post_init__(self) -> None:
         # fail-closed：tenant 是资源边界，缺失即拒绝构造（不回落默认租户）。
@@ -83,4 +86,7 @@ class ToolExecutionContext:
             "principal_type": self.principal_type,
             "current_timestamp": self.current_timestamp,
             "current_user_source_ref": self.current_user_source_ref,
+            # C14：memory 工具按本 work 冻结的 active engine 分发；空串由分发器
+            # 回退 primary。
+            "memory_engine": self.memory_engine,
         }

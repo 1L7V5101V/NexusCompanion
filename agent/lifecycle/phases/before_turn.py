@@ -101,6 +101,8 @@ class _PrepareContextModule:
             msg=state.msg,
             session_key=state.session_key,
             session=session,
+            # C14：本 work 冻结的 active memory engine（work-start 解析一次）。
+            engine_binding=state.memory_engine,
         )
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
         return frame

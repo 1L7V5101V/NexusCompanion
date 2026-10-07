@@ -282,8 +282,14 @@ reason = "quiet_hours"
 
 [memory]
 enabled = true
-# 语义记忆 engine 选择。留空等同 default。
+# 语义记忆 engine 选择（进程内构建/安装的引擎，逗号分隔多值）。
+# 留空等同 default；Pilot 预装 default 与 rachael（§5.9.16 固定表）。
+# WebChat selector（C14）要求初始绑定引擎 default 在列：
+#   engine = "default,rachael"
 engine = ""
+# 用户侧切换总开关（PUT /api/memory/engines/active）。false 时用户只读目录，
+# 切换由管理员改本配置完成；opt_in 引擎（rachael）的放行 = 本开关 ∧ 已构建。
+user_engine_selection = true
 
 [memory.embedding]
 model = "text-embedding-v3"

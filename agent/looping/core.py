@@ -33,6 +33,7 @@ from agent.looping.ports import (
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
 from agent.retrieval.protocol import MemoryRetrievalPipeline
 from agent.turns.outbound import BusOutboundPort
+from agent.work_binding import bind_work_engine, reset_work_engine
 
 # Re-export for backward-compat: existing callers import these from core.py
 __all__ = [
@@ -154,6 +155,9 @@ class AgentLoop:
         # （PluginManager 依赖 loop 周边的构造顺序，无法走构造参数）。
         self._runtime_snapshot_store = deps.runtime_snapshot_store
         self._revocation_gate = deps.revocation_gate
+        # C14 §5.9.16：work-start 解析 tenant active memory engine（PG binding）。
+        # resolver 由 bootstrap 在 binding 服务就绪后接线（同 persona resolver）。
+        self._memory_engine_resolver = deps.memory_engine_resolver
 
         # ── 中断控制面（纯内存态） ──
         self._active_tasks: dict[str, asyncio.Task] = {}
@@ -204,6 +208,14 @@ class AgentLoop:
         binder = getattr(reasoner, "bind_persona_resolver", None)
         if callable(binder):
             binder(resolver)
+
+    def bind_memory_engine_resolver(self, resolver: Any) -> None:
+        """注入 tenant active memory engine 解析器（C14 ADR-3）。
+
+        在 work start（snapshot lease 作用域内）解析一次并绑定 work 作用域；
+        bootstrap 在 PG binding 服务就绪后调用（构造期尚不可用）。
+        """
+        self._memory_engine_resolver = resolver
 
     def set_stream_sink_factory(self, factory: StreamSinkFactory | None) -> None:
         setter = getattr(self._reasoner, "set_stream_sink_factory", None)
@@ -744,20 +756,30 @@ class AgentLoop:
             from agent.plugins.snapshot import work_runtime_lease
 
             async with work_runtime_lease(self._runtime_snapshot_store):
+                tenant = str(getattr(msg, "tenant_id", "") or "").strip()
                 # C8 §5.9.16：副作用前 revocation recheck（当前 recheck，不读 snapshot
                 # 捕获状态）——work 未启动，旧 snapshot lease 不能绕过 revocation。
                 if self._revocation_gate is not None:
-                    tenant = str(getattr(msg, "tenant_id", "") or "").strip()
                     await self._revocation_gate.check(
                         tenant or DEFAULT_TENANT,
                         action="passive_work",
                     )
-                return await self._process(
-                msg,
-                session_key=session_key,
-                busy_session_key=busy_session_key,
-                dispatch_outbound=dispatch_outbound,
-            )
+                # C14 §5.9.16：work-start 解析一次 tenant active memory engine 并
+                # 绑定 work 作用域——进行中 work 不换引擎，下个 work 重新解析。
+                work_engine_token: object | None = None
+                try:
+                    if self._memory_engine_resolver is not None and tenant:
+                        engine_id = await self._memory_engine_resolver(tenant)
+                        work_engine_token = bind_work_engine(engine_id)
+                    return await self._process(
+                        msg,
+                        session_key=session_key,
+                        busy_session_key=busy_session_key,
+                        dispatch_outbound=dispatch_outbound,
+                    )
+                finally:
+                    if work_engine_token is not None:
+                        reset_work_engine(work_engine_token)
 
     async def process_direct_message(
         self,

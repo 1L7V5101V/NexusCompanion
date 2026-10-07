@@ -142,6 +142,7 @@ def _register_memory_tool(
     *,
     risk: str,
     search_hint: str | None = None,
+    engine_id: str = "",
 ) -> None:
     _validate_memory_tool_name(tool.name)
     if tools.has_tool(tool.name):
@@ -153,42 +154,124 @@ def _register_memory_tool(
         search_hint=search_hint,
         # C7（ADR-3 类别规则）：memory engine tool_profile 注入的工具以注册来源
         # 标记，租户目录按来源放行（启用该引擎的租户可见），不按静态 id 枚举。
+        # C14：source_name 承载 engine_id，租户目录按 active engine 过滤。
         source_type="memory_engine",
+        source_name=engine_id,
     )
+
+
+class _EngineDispatchTool(Tool):
+    """同名 memory 工具的租户引擎分发器（C14 ADR-5）。
+
+    多引擎并存时同一工具名（如 ``recall_memory``）被多个引擎声明：registry 只
+    注册一个分发器（schema 取 primary 引擎声明），执行时按 ``tool_kwargs()``
+    注入的 ``memory_engine``（work-start 冻结的租户 active engine）分发到对应
+    引擎实例；缺省/未知回退 primary。进行中 work 的 engine 已冻结，分发结果
+    与检索路径一致。
+    """
+
+    name = "memory_engine_dispatch"
+    description = "由租户 active memory engine 的 tool_profile 注入工具描述。"
+    parameters: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+
+    def __init__(
+        self,
+        *,
+        impls: dict[str, Tool],
+        primary: Tool,
+    ) -> None:
+        self._impls = impls
+        self._primary = primary
+        self.name = primary.name
+        self.description = primary.description
+        self.parameters = primary.parameters
+
+    async def execute(self, **kwargs: Any) -> str:
+        engine_id = str(kwargs.pop("memory_engine", "") or "")
+        impl = self._impls.get(engine_id)
+        if impl is None:
+            impl = self._primary
+        return await impl.execute(**kwargs)
 
 
 def register_memory_meta_tools(
     tools: ToolRegistry,
     engine: MemoryEngine,
 ) -> None:
-    profile = engine.tool_profile()
-    if profile.memorize is not None:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, profile.memorize, MemorizeTool),
-            risk=profile.memorize.risk,
-            search_hint=profile.memorize.search_hint or None,
+    register_memory_tools_for_engines(tools, {"": engine})
+
+
+def register_memory_tools_for_engines(
+    tools: ToolRegistry,
+    engines: dict[str, MemoryEngine],
+) -> None:
+    """跨引擎合并注册 memory 工具（C14 ADR-5）。
+
+    - 仅单引擎声明的工具 → 直注（绑定该引擎实例，``source_name=engine_id``）；
+    - 多引擎同名工具（如 ``recall_memory``）→ 注册一个
+      :class:`_EngineDispatchTool`（schema 取 primary=首个引擎声明；执行按租户
+      active engine 分发，缺省/未知回退 primary）。
+    修复双引擎并存时 ``recall_memory`` 重复注册的启动崩溃（roadmap §4 已知缺陷）。
+    """
+    if not engines:
+        return
+    ordered = list(engines.items())
+    primary_id, _primary_engine = ordered[0]
+    # tool name → [(engine_id, Tool, risk, search_hint), ...]（保序，primary 在前）。
+    declared: dict[str, list[tuple[str, Tool, str, str | None]]] = {}
+    for engine_id, engine in ordered:
+        profile = engine.tool_profile()
+        entries: list[tuple[Tool, str, str | None]] = []
+        if profile.memorize is not None:
+            entries.append((
+                _build_tool(engine, profile.memorize, MemorizeTool),
+                profile.memorize.risk,
+                profile.memorize.search_hint or None,
+            ))
+        if profile.forget is not None:
+            entries.append((
+                _build_tool(engine, profile.forget, ForgetMemoryTool),
+                profile.forget.risk,
+                profile.forget.search_hint or None,
+            ))
+        if profile.recall is not None:
+            entries.append((
+                _build_tool(engine, profile.recall, RecallMemoryTool),
+                profile.recall.risk,
+                profile.recall.search_hint or None,
+            ))
+        for spec in profile.tools:
+            entries.append((
+                _build_tool(engine, spec, _MemorySignalTool),
+                spec.risk,
+                spec.search_hint or None,
+            ))
+        for tool, risk, hint in entries:
+            declared.setdefault(tool.name, []).append((engine_id, tool, risk, hint))
+
+    for name, impls in declared.items():
+        _validate_memory_tool_name(name)
+        if tools.has_tool(name):
+            raise ValueError(f"memory 工具重复注册: {name}")
+        if len(impls) == 1:
+            engine_id, tool, risk, hint = impls[0]
+            _register_memory_tool(
+                tools, tool, risk=risk, search_hint=hint, engine_id=engine_id
+            )
+            continue
+        # 多引擎同名：分发器。schema/risk/hint 取 primary（ordered[0]）的声明；
+        # source_name 留空 = 对所有启用 engine 的租户可见（分发器本身多归属）。
+        impl_map = {engine_id: tool for engine_id, tool, _r, _h in impls}
+        primary_tool = impl_map[primary_id]
+        primary_risk = next(r for eid, _t, r, _h in impls if eid == primary_id)
+        primary_hint = next(
+            h for eid, _t, _r, h in impls if eid == primary_id
         )
-    if profile.forget is not None:
         _register_memory_tool(
             tools,
-            _build_tool(engine, profile.forget, ForgetMemoryTool),
-            risk=profile.forget.risk,
-            search_hint=profile.forget.search_hint or None,
-        )
-    if profile.recall is not None:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, profile.recall, RecallMemoryTool),
-            risk=profile.recall.risk,
-            search_hint=profile.recall.search_hint or None,
-        )
-    for spec in profile.tools:
-        _register_memory_tool(
-            tools,
-            _build_tool(engine, spec, _MemorySignalTool),
-            risk=spec.risk,
-            search_hint=spec.search_hint or None,
+            _EngineDispatchTool(impls=impl_map, primary=primary_tool),
+            risk=primary_risk,
+            search_hint=primary_hint,
         )
 
 

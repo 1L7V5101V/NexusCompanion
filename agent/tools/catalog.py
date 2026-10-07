@@ -7,8 +7,9 @@ registry，由本模块按记忆工具同类放行（不按静态 id 枚举）�
 可见性三层防线中的第一道（schema 不可见）——执行前仍由 pre-tool hook 重新校验
 （task 3.2），schema 可见性 SHALL NOT 被当作唯一防线（§5.8.2）。
 
-引擎绑定过滤：当前 Pilot 运行时为单 active engine（registry 中只存在该引擎注入
-的工具），多引擎并存时的 engine_binding 过滤随 C14 落地。
+引擎绑定过滤：C14 落地——多引擎并存时 registry 含全部已构建引擎的工具，
+本模块按租户 active engine（``context.memory_engine``，work-start 冻结）过滤
+``source_name`` 标注了引擎的工具；同名分发器（source_name 为空）恒可见。
 """
 
 from __future__ import annotations
@@ -77,15 +78,19 @@ def tenant_visible_names(
       ``None`` 表示不过滤（现状全量视图，保持 C4/C5 既有行为）；
     - principal 为 ``user`` → 返回 白名单 ∩ registry 已注册 − 关闭清单 ∪
       **engine 注入工具**（``source_type="memory_engine"``，按注册来源归类）。
-      租户未启用该引擎时 registry 中不存在该工具，自然不可见。
+      C14：多引擎并存时 engine 工具按租户 active engine 过滤——
+      ``source_name`` 为空（同名分发器/未标引擎）恒可见，``source_name`` 非空
+      时仅当等于 ``context.memory_engine``（work-start 冻结的租户引擎）可见。
     """
     if context is None or context.principal_type != "user":
         return None
     registered = registry.get_registered_names()
+    active_engine = context.memory_engine
     engine_tools = {
         doc.name
         for doc in registry.get_documents()
         if doc.source_type == ENGINE_TOOL_SOURCE
+        and (not doc.source_name or not active_engine or doc.source_name == active_engine)
     }
     return ((registered & TENANT_ALLOWED_TOOL_IDS) - TENANT_CLOSED_TOOL_IDS) | (
         engine_tools & registered

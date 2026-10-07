@@ -20,6 +20,9 @@ class RetrievalRequest:
     session_metadata: dict[str, object]
     timestamp: datetime | None = None
     extra: dict[str, object] = field(default_factory=dict[str, object])
+    # C14：本 work 冻结的 active memory engine（work-start 从 PG binding 解析）。
+    # 非空时管线直查该引擎（租户单 active engine）；空串回退既有选择行为。
+    engine_binding: str = ""
 
 
 @dataclass

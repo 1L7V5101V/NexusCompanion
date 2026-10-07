@@ -76,10 +76,38 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
         if not self._memory.engines:
             return RetrievalResult(block="", trace=None)
 
-        # ── 1. 单引擎 → 旧行为（直接调 engine.query()，跳过 Agentic RAG 管线） ──
-        #     双引擎（如 "default,rachael"）才走完整的 Agentic RAG 管线。
-        if len(self._memory.engines) == 1:
-            engine = next(iter(self._memory.engines.values()))
+        engines = self._memory.engines
+
+        # ── 0.5 C14（§4.2 / §5.9.16）：work binding 解析出的 active engine 优先。
+        #     每 tenant 恰一个 active engine → 单引擎直查；绑定引擎未构建时回退
+        #     primary 并记日志（readiness 校验保证正常流不出现），不阻断检索。
+        bound_engine = (
+            engines.get(request.engine_binding)
+            if request.engine_binding
+            else None
+        )
+        if bound_engine is not None:
+            try:
+                result = await bound_engine.query(self._build_query(request))
+                return RetrievalResult(
+                    block=result.text_block,
+                    trace=_build_trace(result),
+                )
+            except Exception as e:
+                logger.error(
+                    "active engine %s 检索失败: %s", request.engine_binding, e
+                )
+                return RetrievalResult(block="", trace=None)
+
+        # ── 1. 单引擎/绑定缺失回退 → 直接调 engine.query()，跳过 Agentic RAG 管线 ──
+        #     双引擎且无绑定（dev/未接线路径）才走完整的 Agentic RAG 管线。
+        if request.engine_binding:
+            logger.warning(
+                "active engine %s 未在本进程构建，回退 primary 检索",
+                request.engine_binding,
+            )
+        if len(engines) == 1 or request.engine_binding:
+            engine = next(iter(engines.values()))
             try:
                 result = await engine.query(self._build_query(request))
                 return RetrievalResult(

@@ -13,6 +13,7 @@ import { fetchMe, logout, type AuthState } from "./auth";
 import { LoginPanel } from "./LoginPanel";
 import { OnboardingPanel } from "./OnboardingPanel";
 import { fetchPersonaStatus } from "./persona";
+import { MemoryEngineSelector } from "./MemoryEngineSelector";
 import { PulseBackground } from "./PulseBackground";
 import { SpaceBackground } from "./SpaceBackground";
 
@@ -207,6 +208,7 @@ function ChatRender({ chat, onSignOut }: { chat: ChatBundle; onSignOut: () => vo
         <header className="relative z-10 flex items-center justify-between border-b border-border px-4 py-3">
           <h1 className="text-sm font-semibold tracking-tight">Nexus Chat</h1>
           <div className="flex items-center gap-3">
+            <MemoryEngineSelector />
             <ConnectionBadge status={status} />
             <button
               type="button"

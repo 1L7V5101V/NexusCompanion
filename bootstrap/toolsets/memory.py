@@ -39,6 +39,7 @@ class MemoryToolsetProvider(ToolsetProvider):
             http_resources,
             event_publisher=deps.event_publisher,
             storage_runtime=deps.storage_runtime,
+            engine_ingest_gate=deps.engine_ingest_gate,
         )
         return build_registration_result(
             registry=registry,
