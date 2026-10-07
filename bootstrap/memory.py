@@ -21,7 +21,7 @@ from core.net.http import SharedHttpResources
 
 if TYPE_CHECKING:
     from bootstrap.memory_binding import EngineIngestGate
-    from bus.event_bus import EventBus
+    from bus.event_bus import EventBus, Handler
     from core.memory.markdown import MarkdownMemoryRuntime
     from infra.storage.runtime import StorageRuntime
 
@@ -56,7 +56,9 @@ class _EngineScopedEventBus:
 
     def on(self, event_type: type[object], handler: object) -> object:
         if event_type not in _GATED_EVENT_TYPES:
-            return self._inner.on(event_type, handler)
+            return self._inner.on(
+                event_type, cast("Handler[object]", handler)
+            )
 
         import inspect
 
@@ -78,7 +80,9 @@ class _EngineScopedEventBus:
                 return None
 
             wrapped = _gated_sync
-        return self._inner.on(event_type, wrapped)
+        return self._inner.on(
+            event_type, cast("Handler[object]", wrapped)
+        )
 
     def __getattr__(self, name: str) -> object:
         inner = self.__dict__.get("_inner")
@@ -182,16 +186,20 @@ def build_memory_runtime(
         engine_names = config.memory.engine_names
         # C14 ADR-5：多引擎并存时按租户 active engine 门控自动 ingest（快照
         # reader 由 bootstrap 后绑定）；单引擎不包装，行为逐字节不变。
-        gate_engines = engine_ingest_gate is not None and len(engine_names) > 1
+        gate = engine_ingest_gate if engine_ingest_gate is not None else None
         for engine_name in engine_names:
             publisher_for_engine: "EventBus | None" = event_publisher
-            if gate_engines and event_publisher is not None:
+            if (
+                gate is not None
+                and event_publisher is not None
+                and len(engine_names) > 1
+            ):
                 publisher_for_engine = cast(
                     "EventBus",
                     _EngineScopedEventBus(
                         event_publisher,
                         engine_id=engine_name,
-                        gate=engine_ingest_gate,
+                        gate=gate,
                     ),
                 )
             plugin_runtime = _build_memory_plugin_runtime(

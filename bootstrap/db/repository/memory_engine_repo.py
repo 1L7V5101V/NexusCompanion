@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -68,37 +68,41 @@ class MemoryEngineBindingRepository:
     ) -> dict[str, Any]:
         """创建初始绑定（幂等）：已存在则原样回读，不提升 revision。
 
-        并发竞态以主键冲突回读收束（单 active 约束兜底）。
+        并发竞态以主键冲突回读收束（单 active 约束兜底）：IntegrityError 后
+        回读既有行（ensure 语义 = 调用方无需区分「谁先建」）。
         """
         tid = _require_tenant(tenant_id)
         eid = _require_engine(engine_id)
-        async with self._sf() as sess, sess.begin():
-            existing = await sess.get(TenantMemoryEngineBindingModel, tid)
-            if existing is not None:
-                return _binding_to_dict(existing)
-            row = TenantMemoryEngineBindingModel(
-                tenant_id=tid,
-                engine_id=eid,
-                tenant_policy_revision=0,
-                updated_by=actor[:64],
-            )
-            sess.add(row)
+        async with self._sf() as sess:
             try:
-                await sess.flush()
+                async with sess.begin():
+                    existing = await sess.get(TenantMemoryEngineBindingModel, tid)
+                    if existing is not None:
+                        return _binding_to_dict(existing)
+                    row = TenantMemoryEngineBindingModel(
+                        tenant_id=tid,
+                        engine_id=eid,
+                        tenant_policy_revision=0,
+                        updated_by=actor[:64],
+                    )
+                    sess.add(row)
+                    await sess.flush()
+                    sess.add(
+                        TenantMemoryEngineEventModel(
+                            tenant_id=tid,
+                            engine_id=eid,
+                            action="initial",
+                            tenant_policy_revision=0,
+                            actor=actor[:64],
+                        )
+                    )
+                    return _binding_to_dict(row)
             except IntegrityError:
-                raise _BindingConflictError(
-                    "memory engine binding conflict"
-                ) from None
-            sess.add(
-                TenantMemoryEngineEventModel(
-                    tenant_id=tid,
-                    engine_id=eid,
-                    action="initial",
-                    tenant_policy_revision=0,
-                    actor=actor[:64],
-                )
-            )
-            return _binding_to_dict(row)
+                await sess.rollback()
+                row = await sess.get(TenantMemoryEngineBindingModel, tid)
+                if row is None:
+                    raise
+                return _binding_to_dict(row)
 
     async def switch_binding(
         self,
@@ -107,34 +111,40 @@ class MemoryEngineBindingRepository:
         engine_id: str,
         actor: str = "",
     ) -> dict[str, Any]:
-        """切换 active engine（单事务）：revision +1 + switch 事件。
+        """切换 active engine（单事务）：revision 原子 +1 + switch 事件。
 
-        返回更新后的 binding；binding 不存在时抛 :class:`_BindingMissingError`
+        revision 用 ``UPDATE ... SET revision = revision + 1`` 原子递增（并发
+        切换不丢失更新）；binding 不存在时抛 :class:`_BindingMissingError`
         （调用方先 ensure）。
         """
         tid = _require_tenant(tenant_id)
         eid = _require_engine(engine_id)
         async with self._sf() as sess, sess.begin():
-            row = await sess.get(TenantMemoryEngineBindingModel, tid)
-            if row is None:
-                raise _BindingMissingError(
-                    "memory engine binding missing"
+            result = await sess.execute(
+                update(TenantMemoryEngineBindingModel)
+                .where(TenantMemoryEngineBindingModel.tenant_id == tid)
+                .values(
+                    engine_id=eid,
+                    tenant_policy_revision=(
+                        TenantMemoryEngineBindingModel.tenant_policy_revision + 1
+                    ),
+                    updated_by=actor[:64],
+                    updated_at=_utc_now(),
                 )
-            new_revision = int(row.tenant_policy_revision) + 1
-            row.engine_id = eid
-            row.tenant_policy_revision = new_revision
-            row.updated_by = actor[:64]
-            row.updated_at = _utc_now()
+            )
+            if result.rowcount == 0:
+                raise _BindingMissingError("memory engine binding missing")
+            row = await sess.get(TenantMemoryEngineBindingModel, tid)
+            assert row is not None  # rowcount>0 ⇒ 行存在
             sess.add(
                 TenantMemoryEngineEventModel(
                     tenant_id=tid,
                     engine_id=eid,
                     action="switch",
-                    tenant_policy_revision=new_revision,
+                    tenant_policy_revision=int(row.tenant_policy_revision),
                     actor=actor[:64],
                 )
             )
-            await sess.flush()
             return _binding_to_dict(row)
 
     async def list_events(
@@ -167,10 +177,6 @@ class MemoryEngineBindingRepository:
                 }
                 for row in rows
             ]
-
-
-class _BindingConflictError(RuntimeError):
-    """主键竞态冲突（并发 ensure/switch）。"""
 
 
 class _BindingMissingError(RuntimeError):

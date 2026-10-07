@@ -86,12 +86,26 @@ def tenant_visible_names(
         return None
     registered = registry.get_registered_names()
     active_engine = context.memory_engine
-    engine_tools = {
-        doc.name
+    engine_docs = {
+        doc.name: doc
         for doc in registry.get_documents()
         if doc.source_type == ENGINE_TOOL_SOURCE
-        and (not doc.source_name or not active_engine or doc.source_name == active_engine)
     }
-    return ((registered & TENANT_ALLOWED_TOOL_IDS) - TENANT_CLOSED_TOOL_IDS) | (
-        engine_tools & registered
-    )
+    # C14：engine 注入的工具以租户 active engine 过滤为准——即使名字同时命中
+    # 静态白名单（如 memorize/forget_memory），也只在 active engine 声明它时
+    # 可见（source_name 空 = 同名分发器/未标引擎，恒可见；无绑定 dev 路径全量）。
+    static_visible = (registered & TENANT_ALLOWED_TOOL_IDS) - TENANT_CLOSED_TOOL_IDS
+    if active_engine:
+        static_visible = {
+            name
+            for name in static_visible
+            if name not in engine_docs
+            or not engine_docs[name].source_name
+            or engine_docs[name].source_name == active_engine
+        }
+    engine_tools = {
+        name
+        for name, doc in engine_docs.items()
+        if not doc.source_name or not active_engine or doc.source_name == active_engine
+    }
+    return static_visible | (engine_tools & registered)

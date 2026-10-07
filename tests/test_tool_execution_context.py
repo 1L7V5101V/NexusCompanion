@@ -50,6 +50,9 @@ def test_tool_kwargs_expose_identity_keys_only() -> None:
         "principal_type": "user",
         "current_timestamp": "",
         "current_user_source_ref": "",
+        # C14：本 work 的 active memory engine（服务端从 PG binding 解析，
+        # work-start 冻结；空串 = 未接线）。memory 工具按它分发到租户引擎。
+        "memory_engine": "",
     }
     # 其余可信字段不经 kwargs 暴露（避免 LLM 上下文泄漏与参数面伪造）。
     assert "account_id" not in kwargs

@@ -191,7 +191,7 @@ class _EngineDispatchTool(Tool):
         impl = self._impls.get(engine_id)
         if impl is None:
             impl = self._primary
-        return await impl.execute(**kwargs)
+        return cast(str, await impl.execute(**kwargs))
 
 
 def register_memory_meta_tools(

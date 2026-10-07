@@ -23,7 +23,7 @@ from agent.retrieval.protocol import (
     RetrievalResult,
 )
 from agent.retrieval.sandbox import RetrievalSandbox
-from core.memory.engine import MemoryQueryFilters, MemoryScope
+from core.memory.engine import MemoryQuery, MemoryQueryFilters, MemoryScope
 
 if TYPE_CHECKING:
     from agent.provider import LLMProvider
@@ -212,8 +212,6 @@ class AgenticRAGPipeline(MemoryRetrievalPipeline):
 
     @staticmethod
     def _build_query(request: RetrievalRequest) -> MemoryQuery:
-        from core.memory.engine import MemoryQuery, MemoryQueryFilters, MemoryScope
-
         return MemoryQuery(
             text=request.message,
             tenant=request.tenant,

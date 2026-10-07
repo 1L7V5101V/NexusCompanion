@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, TypeVar, cast
 
@@ -91,19 +92,31 @@ class _PrepareContextModule:
 
     def __init__(self, context_store: ContextStore) -> None:
         self._context_store = context_store
+        # C14：engine_binding 是带默认值的新增 kwarg——按实现是否声明决定传参，
+        # 保持既有 ContextStore 实现（测试 stub/第三方）零改动兼容。
+        self._passes_engine_binding = (
+            "engine_binding"
+            in inspect.signature(context_store.prepare).parameters
+        )
 
     async def run(self, frame: BeforeTurnFrame) -> BeforeTurnFrame:
         if _CTX_SLOT in frame.slots:
             return frame
         state = frame.input
         session = cast(SessionLike, frame.slots[_SESSION_SLOT])
-        bundle = await self._context_store.prepare(
-            msg=state.msg,
-            session_key=state.session_key,
-            session=session,
-            # C14：本 work 冻结的 active memory engine（work-start 解析一次）。
-            engine_binding=state.memory_engine,
-        )
+        if self._passes_engine_binding:
+            bundle = await self._context_store.prepare(
+                msg=state.msg,
+                session_key=state.session_key,
+                session=session,
+                engine_binding=state.memory_engine,
+            )
+        else:
+            bundle = await self._context_store.prepare(
+                msg=state.msg,
+                session_key=state.session_key,
+                session=session,
+            )
         frame.slots[_CONTEXT_BUNDLE_SLOT] = bundle
         return frame
 

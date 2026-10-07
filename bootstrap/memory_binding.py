@@ -257,7 +257,7 @@ class TenantMemoryEngineBindingService:
 
     async def list_events(self, tenant_id: str, *, limit: int = 50) -> list[dict]:
         """binding 变更历史（initial/switch），按 (tenant_id, engine_id) 可追踪。"""
-        return await self._repo.list_events(tenant_id, limit=limit)
+        return await self._repo.list_events(tenant_id=tenant_id, limit=limit)
 
     # ── ingest 门控快照（同步读）────────────────────────────────
 

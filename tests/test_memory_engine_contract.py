@@ -807,7 +807,7 @@ def test_build_memory_runtime_uses_memory_plugin(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(
         memory_module,
-        "register_memory_meta_tools",
+        "register_memory_tools_for_engines",
         lambda *args, **kwargs: None,
     )
 
@@ -860,7 +860,7 @@ def test_build_memory_runtime_exposes_default_memory_engine(
 
     monkeypatch.setattr(
         memory_module,
-        "register_memory_meta_tools",
+        "register_memory_tools_for_engines",
         lambda *args, **kwargs: None,
     )
 

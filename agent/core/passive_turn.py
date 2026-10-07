@@ -1031,9 +1031,10 @@ class DefaultReasoner(Reasoner):
                 session_manager=self._session_manager,
                 session=session,
             ),
-            # C14 ADR-3：本 work 的 active memory engine（服务端解析，模型不可写），
-            # 经 tool_kwargs() 注入 memory 工具实现按租户引擎分发。
-            memory_engine=state.memory_engine,
+            # C14 ADR-3：本 work 的 active memory engine（服务端在 work start
+            # 解析并冻结到 work 作用域，模型不可写），经 tool_kwargs() 注入
+            # memory 工具实现按租户引擎分发。
+            memory_engine=current_work_engine(),
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
