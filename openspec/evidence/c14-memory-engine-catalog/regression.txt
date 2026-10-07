@@ -1,0 +1,33 @@
+全量回归（2026-10-07，feature/c14-memory-engine-catalog）
+
+命令：
+NEXUS_REQUIRE_PG=1 NEXUS_TEST_PG_URL=postgresql://nexus:nexus_dev@localhost:5433/nexus \
+  uv run --no-sync pytest tests/ -q --ignore=tests/test_web_chat_e2e_dev.py
+
+结果：1952 passed in 783.86s (0:13:03)，0 failed / 0 error
+
+对比基线：1935 passed / 0 failed（c10-telegram-binding-sync 归档基线，2026-10-07）
+净增：+23（全部为 tests/memory_engines/ 新验收测试，0 skip 异常）
+
+首跑曾出现 14 failed（1938 passed），全部为 C14 新增接缝的测试兼容性问题，
+修复后复跑归零：
+1. StubContextStore.prepare 不接受新 kwarg → _PrepareContextModule 签名探测
+   （engine_binding 为带默认值 kwarg，未声明的 ContextStore 实现零改动兼容）；
+2. object.__new__(AgentLoop) 最小 harness 缺 _memory_engine_resolver → 按 C8
+   先例补接线位（tests/test_turn_pipelines.py）；
+3. test_tool_kwargs_expose_identity_keys_only 契约扩展 memory_engine 键；
+4. test_runtime_smoke 的 build_core_runtime monkeypatch 收 **kwargs。
+
+pyright（13 个触碰模块）：0 errors / 461 warnings（既有 Unknown 类告警，与 main 相当）。
+
+依赖范围检查（验收 7）：
+grep -rn -iE "import.*(paradedb|pg_search|jieba|reranker)|from.*(paradedb|pg_search|jieba)" \
+  bootstrap/memory_binding.py bootstrap/db/repository/memory_engine_repo.py \
+  bootstrap/db/models/memory_engine.py agent/work_binding.py \
+  agent/tools/meta/register.py agent/tools/catalog.py agent/retrieval/default_pipeline.py \
+  bootstrap/memory.py agent/retrieval/protocol.py alembic/versions/c7e9a3f1b5d4_*.py
+→ 0 命中（仅文档注释提及 C13 解耦）。
+
+PR diff 范围（验收 9）：git diff main --stat = 43 files，无 plugins/*/engine.py、
+agent/plugins/snapshot.py 改动；agent/retrieval/ 仅 protocol.py（+engine_binding 字段）
+与 default_pipeline.py（binding 优先选择分支）。

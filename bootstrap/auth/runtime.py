@@ -58,6 +58,7 @@ class AuthRuntime:
         session_factory: async_sessionmaker,
         canonical_repo: CanonicalIdentityRepository,
         partition_step: Callable[[str], Awaitable[None]] | None = None,
+        binding_ensure: Callable[[str], Awaitable[None]] | None = None,
         engine: AsyncEngine | None = None,
     ) -> None:
         self.config = config
@@ -68,7 +69,9 @@ class AuthRuntime:
 
         self.provisioning = ProvisioningService(
             prov_repo,
-            executor=CanonicalAgentExecutor(canonical_repo, partition_step),
+            executor=CanonicalAgentExecutor(
+                canonical_repo, partition_step, binding_ensure
+            ),
             admin_audit=admin_repo,
         )
         self.auth = AuthService(
@@ -112,6 +115,7 @@ def create_auth_runtime(
     workspace: Path,
     canonical_repo: CanonicalIdentityRepository | None = None,
     partition_step: Callable[[str], Awaitable[None]] | None = None,
+    binding_ensure: Callable[[str], Awaitable[None]] | None = None,
 ) -> AuthRuntime:
     """按 ``config.storage.postgres_url`` 自建引擎/会话工厂并装配服务单例。
 
@@ -132,5 +136,6 @@ def create_auth_runtime(
         session_factory=session_factory,
         canonical_repo=canonical_repo,
         partition_step=partition_step,
+        binding_ensure=binding_ensure,
         engine=engine,
     )

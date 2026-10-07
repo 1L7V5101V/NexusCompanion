@@ -400,26 +400,32 @@ class ProvisioningExecutor(Protocol):
 
 
 class CanonicalAgentExecutor:
-    """内置执行器：canonical agent（C1 表）+ 可选分区 provisioning hook。
+    """内置执行器：canonical agent（C1 表）+ 可选分区/binding provisioning hook。
 
     `partition_step` 为 None 时只建 canonical agent（测试/最小部署）；生产
     wiring 传入 ``lambda tid: partitions.request_provisioning(tid)``（入队，
     DDL 由既有分区 worker 异步完成；turn 入口 ``require_ready()`` 是纵深
     防御，§5.9.13 禁止第一轮 turn 隐式触发正常开户流程）。
+    `binding_ensure`（C14 §5.9.16 规则 1/3）：tenant 创建时幂等建立 memory
+    engine slot 初始绑定（``default``）；None 时由 work-start/GET 懒补齐兜底。
     """
 
     def __init__(
         self,
         canonical_repo,
         partition_step: Callable[[str], Awaitable[None]] | None = None,
+        binding_ensure: Callable[[str], Awaitable[None]] | None = None,
     ):
         self._canonical = canonical_repo
         self._partition_step = partition_step
+        self._binding_ensure = binding_ensure
 
     async def provision(self, *, account_id: UUID, tenant_id: str) -> None:
         if self._partition_step is not None:
             await self._partition_step(tenant_id)
         await self._canonical.create_agent(account_id, tenant_id)
+        if self._binding_ensure is not None:
+            await self._binding_ensure(tenant_id)
 
 
 class ProvisioningService:

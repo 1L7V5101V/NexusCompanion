@@ -16,6 +16,11 @@ from bootstrap.db.models.memory import (
     MemoryItemModel,
     MemoryReplacementModel,
 )
+from bootstrap.db.models.memory_engine import (
+    ENGINE_ACTIONS,
+    TenantMemoryEngineBindingModel,
+    TenantMemoryEngineEventModel,
+)
 from bootstrap.db.models.persona import (
     PERSONA_ACTIONS,
     PERSONA_ACTORS,
@@ -60,6 +65,7 @@ __all__ = [
     "ConsolidationEventModel",
     "ContextOnlyTimestampModel",
     "DeliveryModel",
+    "ENGINE_ACTIONS",
     "MemoryItemModel",
     "MemoryReplacementModel",
     "MessageAttachmentModel",
@@ -77,6 +83,8 @@ __all__ = [
     "SessionStateModel",
     "TelegramBindingCodeModel",
     "TelegramIdentityBindingModel",
+    "TenantMemoryEngineBindingModel",
+    "TenantMemoryEngineEventModel",
     "TenantMixin",
     "TenantModel",
     "TickLogModel",

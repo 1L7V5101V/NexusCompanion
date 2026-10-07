@@ -95,6 +95,10 @@ class MemoryEmbeddingConfig:
 class MemoryConfig:
     enabled: bool = False
     engine: str = ""
+    # C14 ADR-2：用户侧切换总开关（PUT /api/memory/engines/active）。关闭时
+    # 用户只能查看目录，切换由管理员改配置完成；opt_in 引擎的「管理员允许」
+    # = 本开关 ∧ 引擎已构建（engine 含该引擎）。
+    user_engine_selection: bool = True
     embedding: MemoryEmbeddingConfig = field(default_factory=MemoryEmbeddingConfig)
 
     @property

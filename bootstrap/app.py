@@ -249,6 +249,9 @@ class AppRuntime:
         self._memory_optimizer = None
         self._telegram_binding_service: Any = None
         self._telegram_pilot_ingress: Any = None
+        # C14 §5.9.16：memory engine binding（ingest 门控 + binding 服务）。
+        self._engine_ingest_gate: Any = None
+        self._memory_engine_binding: Any = None
         self._shutdown = False
         self._started = False
         self.auth_runtime = None
@@ -269,6 +272,11 @@ class AppRuntime:
                 if self.restart_coordinator is not None
                 else {}
             )
+            if self._engine_ingest_gate is None:
+                from bootstrap.memory_binding import EngineIngestGate
+
+                self._engine_ingest_gate = EngineIngestGate()
+            core_kwargs["engine_ingest_gate"] = self._engine_ingest_gate
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
@@ -478,6 +486,34 @@ class AppRuntime:
                 self.webchat_durable = build_webchat_durable_runtime(
                     self.config, bus=self.bus, channel_name=chat_config.channel_name
                 )
+                if self.webchat_durable is not None:
+                    # C14 §5.9.16：PG durable 模式装配 memory engine binding 服务
+                    # （目录/单 active binding/revision 提升）；绑定 ingest 门控
+                    # reader 并向 loop 接线 work-start 解析器。
+                    from bootstrap.memory_binding import (
+                        TenantMemoryEngineBindingService,
+                    )
+
+                    self._memory_engine_binding = TenantMemoryEngineBindingService(
+                        self.webchat_durable.session_factory,
+                        ready_engines=tuple(self.memory_runtime.engines.keys())
+                        if self.memory_runtime is not None
+                        else (),
+                        user_selection_allowed=self.config.memory.user_engine_selection,
+                    )
+                    if self._engine_ingest_gate is not None:
+                        self._engine_ingest_gate.bind_reader(
+                            self._memory_engine_binding.snapshot_active
+                        )
+                    _loop_ref = getattr(self.core, "loop", None)
+                    _resolver_binder = getattr(
+                        _loop_ref, "bind_memory_engine_resolver", None
+                    )
+                    if callable(_resolver_binder):
+                        _resolver_binder(
+                            self._memory_engine_binding.resolve_active_engine
+                        )
+                    logger.info("memory engine binding 服务已装配（PG durable）")
                 if _tg_pilot_requested:
                     from bootstrap.telegram_binding import TelegramBindingService
                     from bootstrap.telegram_durable import (
@@ -723,6 +759,7 @@ class AppRuntime:
                         else []
                     ),
                     telegram_binding=self._telegram_binding_service,
+                    memory_engines=self._memory_engine_binding,
                 )
                 self.chat_task = asyncio.create_task(
                     self.chat_server.serve(),
@@ -1179,10 +1216,21 @@ class AppRuntime:
                 _ = await self.provisioning_service.request_provisioning(tenant_id)  # type: ignore[union-attr]
 
             partition_step = _enqueue_partition
+        binding_ensure = None
+        if self._memory_engine_binding is not None:
+            # C14 §5.9.16 规则 1/3：tenant 创建时幂等建立 memory engine slot
+            # 初始绑定（default）；未装配（dev/SQLite）由 work-start 懒补齐兜底。
+            _binding_service = self._memory_engine_binding
+
+            async def _ensure_engine_binding(tenant_id: str) -> None:
+                await _binding_service.ensure_binding(tenant_id)
+
+            binding_ensure = _ensure_engine_binding
         return create_auth_runtime(
             config=self.config,
             workspace=self.workspace,
             partition_step=partition_step,
+            binding_ensure=binding_ensure,
         )
 
     def _remove_plugin_reload_signal(self) -> None:

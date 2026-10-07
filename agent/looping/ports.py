@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from agent.context import ContextBuilder
@@ -102,6 +102,16 @@ class AgentLoopDeps:
     # C8 §5.9.16：work-start snapshot lease 与副作用前 revocation recheck。
     runtime_snapshot_store: "RuntimeSnapshotStore | None" = None
     revocation_gate: "RevocationGate | None" = None
+    # C14 §5.9.16：work-start 解析 tenant active memory engine（PG binding）。
+    # 异步 callable：tenant_id -> engine_id；bootstrap 可经
+    # AgentLoop.bind_memory_engine_resolver() 后接线（同 bind_persona_resolver）。
+    memory_engine_resolver: "MemoryEngineResolver | None" = None
+
+
+class MemoryEngineResolver(Protocol):
+    """tenant → active memory engine 的 work-start 解析契约（C14）。"""
+
+    async def __call__(self, tenant_id: str) -> str: ...
 
 @dataclass
 class AgentLoopConfig:

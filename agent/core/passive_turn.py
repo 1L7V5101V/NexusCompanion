@@ -29,6 +29,7 @@ from agent.tool_runtime import (
 from agent.tools.base import normalize_tool_result
 from agent.tools.catalog import tenant_visible_names
 from agent.tools.context import ToolExecutionContext
+from agent.work_binding import current_work_engine
 from agent.core.passive_support import predict_current_user_source_ref
 from agent.turns.outbound import OutboundDispatch, OutboundPort
 from bus.event_bus import EventBus
@@ -379,6 +380,9 @@ class PassiveTurnPipeline:
             session_key=key,
             dispatch_outbound=dispatch_outbound,
         )
+        # C14 ADR-3：work-start 已解析并绑定本 work 的 active memory engine
+        # （agent.work_binding）；此处冻结进 turn state，全程显式穿线。
+        state.memory_engine = current_work_engine()
         with diagnostic_context(session=key, flow="passive", turn=turn_id):
             logger.info(
                 diagnostic_line(
@@ -695,8 +699,10 @@ class ContextStore(ABC):
         msg: "InboundMessage",
         session_key: str,
         session: "SessionLike",
+        engine_binding: str = "",
     ) -> ContextBundle:
-        """准备本轮对话需要的上下文。"""
+        """准备本轮对话需要的上下文。``engine_binding`` = 本 work 的 active
+        memory engine（C14；空串 = dev/未接线路径，管线回退 primary）。"""
 
 
 class DefaultContextStore(ContextStore):
@@ -717,6 +723,7 @@ class DefaultContextStore(ContextStore):
         msg: "InboundMessage",
         session_key: str,
         session: "SessionLike",
+        engine_binding: str = "",
     ) -> ContextBundle:
         # 1. 先读取 session history，并转换成 retrieval pipeline 需要的结构。
         raw_history = list(session.get_history())
@@ -740,6 +747,8 @@ class DefaultContextStore(ContextStore):
                         session.metadata if isinstance(session.metadata, dict) else {}
                     ),
                     timestamp=msg.timestamp,
+                    # C14：work-start 冻结的 active engine（进行中 work 不换引擎）。
+                    engine_binding=engine_binding,
                 )
             )
 
@@ -1022,6 +1031,10 @@ class DefaultReasoner(Reasoner):
                 session_manager=self._session_manager,
                 session=session,
             ),
+            # C14 ADR-3：本 work 的 active memory engine（服务端在 work start
+            # 解析并冻结到 work 作用域，模型不可写），经 tool_kwargs() 注入
+            # memory 工具实现按租户引擎分发。
+            memory_engine=current_work_engine(),
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。

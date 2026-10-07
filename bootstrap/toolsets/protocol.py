@@ -31,6 +31,8 @@ class ToolsetDeps:
     memory_engine: object | None = None
     event_publisher: "EventBus | None" = None
     storage_runtime: "StorageRuntime | None" = None
+    # C14 ADR-5：多引擎并存时自动 ingest 的租户 active engine 门控（reader 后绑定）。
+    engine_ingest_gate: object | None = None
 
 
 @dataclass

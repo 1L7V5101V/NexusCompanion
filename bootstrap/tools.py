@@ -422,6 +422,7 @@ def build_registered_tools(
     restart_coordinator: "RestartCoordinator | None" = None,
     storage_runtime: "StorageRuntime | None" = None,
     revocation_gate: "RevocationGate | None" = None,
+    engine_ingest_gate: object | None = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -465,6 +466,7 @@ def build_registered_tools(
             http_resources=http_resources,
             event_publisher=event_publisher,
             storage_runtime=storage_runtime,
+            engine_ingest_gate=engine_ingest_gate,
         ),
     )
     memory_runtime = memory_result.extras["memory_runtime"]
@@ -658,8 +660,13 @@ def build_core_runtime(
     workspace: Path,
     http_resources: SharedHttpResources,
     restart_coordinator: "RestartCoordinator | None" = None,
+    engine_ingest_gate: object | None = None,
 ) -> CoreRuntime:
-    """构造核心运行时及其插件快照依赖。"""
+    """构造核心运行时及其插件快照依赖。
+
+    ``engine_ingest_gate``（C14 ADR-5）：多引擎并存时自动 ingest 的租户 active
+    engine 门控 holder（reader 由 bootstrap 在 binding 服务就绪后绑定）。
+    """
 
     # 1. 创建总线、provider 和由 CoreRuntime.stop 负责关闭的 session owner。
     # C3：global interactive ingress queue 有界（§10 DECIDED 初始值，可配置）；
@@ -717,6 +724,7 @@ def build_core_runtime(
             restart_coordinator=restart_coordinator,
             storage_runtime=storage_runtime,
             revocation_gate=revocation_gate,
+            engine_ingest_gate=engine_ingest_gate,
         )
     )
     # C7 task 7.1（ADR-6）：审计双 adapter 装配（多租户 PG → control-plane 表

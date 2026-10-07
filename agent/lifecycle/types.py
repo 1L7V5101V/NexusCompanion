@@ -32,6 +32,9 @@ class TurnState:
     dispatch_outbound: bool
     session: SessionLike | None = None
     extra_metadata: dict[str, Any] = field(default_factory=_empty_metadata)
+    # C14：本 work 的 active memory engine（work-start 解析一次后冻结；空串 =
+    # dev/未接线路径，消费方回退进程 primary）。
+    memory_engine: str = ""
 
     @property
     def tenant_id(self) -> str:
