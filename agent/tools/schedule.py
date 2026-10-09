@@ -1,7 +1,9 @@
 """
 定时任务工具：ScheduleTool / ListSchedulesTool / CancelScheduleTool
++ SuspendScheduleTool / ResumeScheduleTool（C11 状态联动）
 
-AI 通过这三个工具注册、查询、取消定时任务。
+AI 通过这些工具注册、查询、暂停/恢复、取消定时任务。后端由 `ScheduleManager` 契约
+隔离（legacy JSON 与 PG durable 两个实现），工具面不感知存储。
 """
 
 from datetime import datetime, timedelta
@@ -9,8 +11,11 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.scheduler import (
+    SCHEDULE_NO_DELIVERY_BINDING_REJECT,
+    JobRef,
+    ScheduleDeliveryUnresolvedError,
+    ScheduleManager,
     ScheduledJob,
-    SchedulerService,
     compute_fire_at,
     is_cron_expr,
     parse_duration,
@@ -92,7 +97,7 @@ class ScheduleTool(Tool):
         "required": ["tier", "trigger", "when", "channel", "chat_id"],
     }
 
-    def __init__(self, service: SchedulerService, default_tz: str = "Asia/Shanghai") -> None:
+    def __init__(self, service: ScheduleManager, default_tz: str = "Asia/Shanghai") -> None:
         self._service = service
         self._default_tz = default_tz
 
@@ -118,8 +123,10 @@ class ScheduleTool(Tool):
             return "错误：tier=instant 时 message 为必填项"
         if tier == "soft" and not prompt:
             return "错误：tier=soft 时 prompt 为必填项"
+        # user principal 的 channel/chat_id 由 registry 从 ToolExecutionContext 注入
+        # （模型提交值已被剥离）；两者仍为空即无服务端授权目标——直接拒绝。
         if not channel or not chat_id:
-            return "错误：channel 和 chat_id 为必填项"
+            return SCHEDULE_NO_DELIVERY_BINDING_REJECT
 
         try:
             ZoneInfo(tz)
@@ -133,6 +140,7 @@ class ScheduleTool(Tool):
             return f"错误：{e}"
 
         # ── apply advance_minutes offset ──
+        advance_applied: int | None = None
         if advance_minutes is not None:
             try:
                 offset = int(advance_minutes)
@@ -141,6 +149,7 @@ class ScheduleTool(Tool):
             if offset <= 0:
                 return f"错误：advance_minutes 须为正整数，收到 {offset}"
             fire_at = fire_at - timedelta(minutes=offset)
+            advance_applied = offset
 
         # ── parse every spec ──
         interval_seconds = None
@@ -168,10 +177,16 @@ class ScheduleTool(Tool):
             prompt=prompt,
             name=name,
             timezone=tz,
+            when=when,
+            advance_minutes=advance_applied,
             # C7 task 6.2（ADR-7）：所有者 = 调用方租户（context 注入，模型不可覆盖）。
             owner_tenant_id=kwargs.get("tenant_id") or None,
         )
-        self._service.add_job(job)
+        try:
+            # durable 后端在此冻结 delivery binding 并落 PG；legacy 后端落 JSON。
+            job = await self._service.create_job(job)
+        except ScheduleDeliveryUnresolvedError:
+            return SCHEDULE_NO_DELIVERY_BINDING_REJECT
 
         # 优先用 fire_at 自带的时区（来自 request_time 的 offset），
         # 让用户看到本地时间而不是 UTC
@@ -200,18 +215,14 @@ class ListSchedulesTool(Tool):
     description = "列出所有待执行的定时任务（仅当前租户）"
     parameters = {"type": "object", "properties": {}}
 
-    def __init__(self, service: SchedulerService) -> None:
+    def __init__(self, service: ScheduleManager) -> None:
         self._service = service
 
     async def execute(self, **kwargs: Any) -> str:
         # C7 task 6.2（ADR-7）：普通账号只能查看自己租户的任务；
         # dev/owner（及无上下文的直调）保持全量可见。
-        scope = (
-            kwargs.get("tenant_id") or None
-            if kwargs.get("principal_type") == "user"
-            else None
-        )
-        jobs = self._service.list_jobs(tenant_id=scope)
+        scope = _user_scope(kwargs)
+        jobs = await self._service.fetch_jobs(tenant_id=scope)
         if not jobs:
             return "当前没有待执行的定时任务"
 
@@ -238,9 +249,47 @@ class ListSchedulesTool(Tool):
         return "\n".join(lines)
 
 
-class CancelScheduleTool(Tool):
-    name = "cancel_schedule"
-    description = "取消定时任务。可按任务 ID 或名称取消"
+def _user_scope(kwargs: dict[str, Any]) -> str | None:
+    """principal=user 时按调用方租户隔离；dev/owner/无上下文直调保持全量（ADR-7）。"""
+    return (
+        kwargs.get("tenant_id") or None
+        if kwargs.get("principal_type") == "user"
+        else None
+    )
+
+
+async def _resolve_targets(
+    service: ScheduleManager,
+    *,
+    job_id: str,
+    name: str,
+    scope: str | None,
+    verb: str,
+) -> tuple[list[JobRef], str | None]:
+    """按 id 前缀或名称命中候选任务，并做跨租户拒绝判定。
+
+    返回 ``(候选, 直接回给模型的拒绝串)``：命中为空或存在外租户任务时后者非 None。
+    判定只看归属（`JobRef` 的 id/名称/租户），不外泄任务内容。
+    """
+    if job_id:
+        refs = await service.find_job_refs(id_prefix=job_id)
+        empty = f"未找到 ID 为 {job_id!r} 的任务"
+    else:
+        refs = await service.find_job_refs(name=name)
+        empty = f"未找到名称为 {name!r} 的任务"
+    if not refs:
+        return [], empty
+    if scope is not None and any(ref.owner_tenant_id != scope for ref in refs):
+        return [], (
+            f"错误：存在不属于当前租户的任务，已拒绝{verb}"
+            "（code=task_foreign_tenant）"
+        )
+    return refs, None
+
+
+class _IdOrNameTool(Tool):
+    """cancel/suspend/resume 共用参数面：任务 id（或其前缀）与名称二选一。"""
+
     parameters = {
         "type": "object",
         "properties": {
@@ -255,57 +304,78 @@ class CancelScheduleTool(Tool):
         },
     }
 
-    def __init__(self, service: SchedulerService) -> None:
+    def __init__(self, service: ScheduleManager) -> None:
         self._service = service
+
+
+class CancelScheduleTool(_IdOrNameTool):
+    name = "cancel_schedule"
+    description = "取消定时任务。可按任务 ID 或名称取消"
 
     async def execute(self, **kwargs: Any) -> str:
         job_id = kwargs.get("id", "")
         name = kwargs.get("name", "")
-        # C7 task 6.2（ADR-7）：普通账号只能取消自己租户的任务；
-        # dev/owner（及无上下文的直调）不受限。
-        scope = (
-            kwargs.get("tenant_id") or None
-            if kwargs.get("principal_type") == "user"
-            else None
-        )
+        scope = _user_scope(kwargs)
 
         if not job_id and not name:
             return "错误：id 或 name 至少提供一个"
 
+        refs, refusal = await _resolve_targets(
+            self._service, job_id=job_id, name=name, scope=scope, verb="取消"
+        )
+        if refusal:
+            return refusal
         if job_id:
-            all_ids = list(self._service._jobs.keys())
-            matches = [
-                jid for jid in all_ids if jid == job_id or jid.startswith(job_id)
-            ]
-            if not matches:
-                return f"未找到 ID 为 {job_id!r} 的任务"
-            if scope is not None and any(
-                self._service._jobs[jid].owner_tenant_id != scope for jid in matches
-            ):
-                return (
-                    "错误：存在不属于当前租户的任务，已拒绝取消"
-                    "（code=task_foreign_tenant）"
-                )
-            for jid in matches:
-                self._service.cancel_job(jid)
-            return f"已取消 {len(matches)} 个任务"
+            cancelled = await self._service.cancel_jobs(
+                [ref.id for ref in refs], tenant_id=scope
+            )
+            return f"已取消 {len(cancelled)} 个任务"
+        cancelled = await self._service.cancel_by_name(name, tenant_id=scope)
+        return f"已取消 {len(cancelled)} 个名为 {name!r} 的任务"
 
-        if name:
-            if scope is not None:
-                all_matching = [
-                    jid for jid, j in self._service._jobs.items() if j.name == name
-                ]
-                if all_matching and any(
-                    self._service._jobs[jid].owner_tenant_id != scope
-                    for jid in all_matching
-                ):
-                    return (
-                        "错误：存在不属于当前租户的任务，已拒绝取消"
-                        "（code=task_foreign_tenant）"
-                    )
-            cancelled = self._service.cancel_job_by_name(name, tenant_id=scope)
-            if not cancelled:
-                return f"未找到名称为 {name!r} 的任务"
-            return f"已取消 {len(cancelled)} 个名为 {name!r} 的任务"
 
-        return "未指定有效的取消条件"
+class SuspendScheduleTool(_IdOrNameTool):
+    name = "suspend_schedule"
+    description = (
+        "暂停定时任务：保留计划与归属，暂停期间不产生新执行；"
+        "之后可用 resume_schedule 恢复"
+    )
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _dispose_jobs(self._service, verb="暂停", **kwargs)
+
+
+class ResumeScheduleTool(_IdOrNameTool):
+    name = "resume_schedule"
+    description = (
+        "恢复已暂停的定时任务：按 misfire 规则从到期态继续（宽限内补执行，"
+        "超宽限记 missed/skipped，不静默丢弃）"
+    )
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _dispose_jobs(self._service, verb="恢复", **kwargs)
+
+
+async def _dispose_jobs(service: ScheduleManager, *, verb: str, **kwargs: Any) -> str:
+    """suspend/resume 的公共处置：命中 → 归属校验 → 逐个迁移状态。"""
+    job_id = kwargs.get("id", "")
+    name = kwargs.get("name", "")
+    scope = _user_scope(kwargs)
+    if not job_id and not name:
+        return "错误：id 或 name 至少提供一个"
+
+    refs, refusal = await _resolve_targets(
+        service, job_id=job_id, name=name, scope=scope, verb=verb
+    )
+    if refusal:
+        return refusal
+    dispose = service.suspend_job if verb == "暂停" else service.resume_job
+    disposed: list[str] = []
+    for ref in refs:
+        if await dispose(ref.id, tenant_id=scope):
+            disposed.append(ref.id)
+    if not disposed:
+        # 取消/封禁是终态：处置失败不谎报成功。
+        return f"未{verb}任何任务（已取消或已封禁的任务不可{verb}）"
+    done = "已暂停" if verb == "暂停" else "已恢复"
+    return f"{done} {len(disposed)} 个任务"

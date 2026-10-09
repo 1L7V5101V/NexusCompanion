@@ -42,7 +42,7 @@ from agent.mcp.registry import McpServerRegistry
 from agent.mcp.watcher import WorkspaceMcpWatcher
 from agent.provider import LLMProvider
 from agent.retrieval.default_pipeline import DefaultMemoryRetrievalPipeline
-from agent.scheduler import SchedulerService
+from agent.scheduler import ScheduleManager, SchedulerService
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tool_hooks.executor import ToolExecutor
@@ -99,7 +99,7 @@ class CoreRuntime:
     tools: ToolRegistry
     push_tool: MessagePushTool
     session_manager: SessionManager
-    scheduler: SchedulerService
+    scheduler: ScheduleManager
     provider: LLMProvider
     light_provider: LLMProvider | None
     mcp_registry: McpServerRegistry
@@ -369,11 +369,26 @@ class CoreRuntime:
             if engine is not None:
                 await engine.dispose()
 
+        async def _stop_scheduler() -> None:
+            """调度服务收尾：legacy 只有同步 `stop()`，durable 还自持 engine 需释放。
+
+            tick 协程已由 `AppRuntime.shutdown` 的 `runtime_tasks.cancel` 先一步取消
+            （该步骤早于 `core.stop`），这里只置停位标记并 dispose 连接池；在途
+            execution 保留 `running`，由下次启动的恢复扫描收束（C11 ADR-4）。
+            """
+            stop = getattr(self.scheduler, "stop", None)
+            if callable(stop):
+                stop()
+            aclose = getattr(self.scheduler, "aclose", None)
+            if callable(aclose):
+                await cast(Awaitable[object], aclose())
+
         # 2. 由统一 cleanup runner 完成全部步骤并保留失败。
         await run_cleanup_steps(
             ("workspace_mcp_watcher.stop", _stop_workspace_mcp_watcher),
             ("mcp_registry.shutdown", _shutdown_mcp_registry),
             ("tool_audit_engine.dispose", _close_tool_audit_engine),
+            ("scheduler.stop", _stop_scheduler),
             ("spawn.shutdown", _stop_spawn),
             ("event_bus.aclose", self.event_bus.aclose),
             (
@@ -426,7 +441,7 @@ def build_registered_tools(
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
-    SchedulerService,
+    ScheduleManager,
     McpServerRegistry,
     MemoryRuntime,
     PeerProcessManager | None,
@@ -473,6 +488,7 @@ def build_registered_tools(
     scheduler = build_scheduler(
         workspace,
         push_tool,
+        config=config,
         agent_loop_provider=agent_loop_provider,
         revocation_gate=revocation_gate,
     )

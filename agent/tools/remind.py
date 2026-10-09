@@ -11,8 +11,10 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from agent.scheduler import (
+    SCHEDULE_NO_DELIVERY_BINDING_REJECT,
+    ScheduleDeliveryUnresolvedError,
+    ScheduleManager,
     ScheduledJob,
-    SchedulerService,
     compute_fire_at,
 )
 from agent.tools.base import Tool
@@ -76,7 +78,7 @@ class RemindTool(Tool):
         "required": ["when", "description", "channel", "chat_id"],
     }
 
-    def __init__(self, service: SchedulerService, default_tz: str = "Asia/Shanghai") -> None:
+    def __init__(self, service: ScheduleManager, default_tz: str = "Asia/Shanghai") -> None:
         self._service = service
         self._default_tz = default_tz
 
@@ -94,8 +96,10 @@ class RemindTool(Tool):
             return "错误：when（事件时间）为必填项"
         if not description:
             return "错误：description（事件描述）为必填项"
+        # user principal 的 channel/chat_id 由 registry 从 ToolExecutionContext 注入
+        # （模型提交值已被剥离）；两者仍为空即无服务端授权目标——直接拒绝。
         if not channel or not chat_id:
-            return "错误：channel 和 chat_id 为必填项"
+            return SCHEDULE_NO_DELIVERY_BINDING_REJECT
 
         try:
             ZoneInfo(tz)
@@ -169,10 +173,16 @@ class RemindTool(Tool):
                 message=msg,
                 name=job_name,
                 timezone=tz,
+                # 事件时间原串 + 本条的提前量：durable 后端据此落 schedule_spec_json。
+                when=when,
+                advance_minutes=offset,
                 # C7 task 6.2（ADR-7）：所有者 = 调用方租户（context 注入）。
                 owner_tenant_id=kwargs.get("tenant_id") or None,
             )
-            self._service.add_job(job)
+            try:
+                await self._service.create_job(job)
+            except ScheduleDeliveryUnresolvedError:
+                return SCHEDULE_NO_DELIVERY_BINDING_REJECT
             created.append({"offset": offset, "fire_at": fire_at})
 
         if not created:
