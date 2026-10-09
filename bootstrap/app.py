@@ -689,6 +689,11 @@ class AppRuntime:
             # None 时路由 404 不泄露能力）。
             if auth_runtime is not None and self._telegram_binding_service is not None:
                 auth_runtime.telegram_binding = self._telegram_binding_service
+            # C11：misfire/execution 查看与 suspend/resume/revoke 处置面。只有 durable
+            # 调度服务（PG 后端）在位时注入，legacy JSON 路径不挂这些路由。
+            schedule_repo = getattr(self.core.scheduler, "repo", None)
+            if auth_runtime is not None and schedule_repo is not None:
+                auth_runtime.schedule_admin = schedule_repo
             if (
                 self.provisioning_worker is not None
                 and self.provisioning_service is not None

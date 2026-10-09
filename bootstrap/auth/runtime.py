@@ -84,6 +84,9 @@ class AuthRuntime:
         # C10：pilot_identity_binding 开启时由 app 装配注入（TelegramBindingService）；
         # 关闭时保持 None，admin API 的 telegram-binding 路由返回 404（不泄露能力）。
         self.telegram_binding: Any | None = None
+        # C11：durable 调度服务在位（storage.backend=postgres）时由 app 装配注入
+        # （ScheduleRepository）；None 时 admin API 的 /api/admin/schedules* 不挂路由。
+        self.schedule_admin: Any | None = None
         self._session_factory = session_factory
         self._engine = engine
 
