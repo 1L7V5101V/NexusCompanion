@@ -21,14 +21,16 @@ import statistics
 import time
 import uuid
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from zoneinfo import ZoneInfo
 
 from agent.admission.revocation import RevocationGate
+from bootstrap.schedule_defaults import DEFAULT_MISFIRE_GRACE_SECONDS
 from core.common.timekit import parse_iso as _parse_iso
 from infra.persistence.json_store import load_json, save_json
 from infra.storage.tenancy import tenant_id_for_channel
@@ -89,13 +91,13 @@ def parse_when_at(
         dt = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
         if dt <= now:
             dt += timedelta(days=1)
-        return dt
+        return resolve_local_wall(dt.replace(tzinfo=None), tz)
 
     # ISO datetime 格式
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=tzinfo)
+            return resolve_local_wall(dt, tz)
         return dt
     except ValueError:
         pass
@@ -107,6 +109,39 @@ def is_cron_expr(s: str) -> bool:
     """判断字符串是否是 cron 表达式（5 或 6 字段）。"""
     parts = s.strip().split()
     return len(parts) in (5, 6)
+
+
+def resolve_local_wall(naive: datetime, tz: str) -> datetime:
+    """把「本地墙上时刻」解释成瞬时，并按 §5.9.14 DST contract 处理跳时/重复。
+
+    PEP 495 的 fold 语义只保证不抛异常，不保证本地这一时刻真的存在：spring-forward
+    缺失的 02:30 会被 fold=0 解释成 02:30 EST，也就是 03:30 EDT 的瞬时——比「下一
+    有效本地时刻」（03:00 EDT）晚了 30 分钟。这里显式检测墙上回环，不等即二分定位
+    到转换瞬时本身；fall-back 的重复时刻 fold=0 天然取首次出现（不双触发）。
+
+    回环必须经 UTC 中转：`dt.astimezone(同一个 ZoneInfo)` 对缺失时刻是原样返回，
+    不做墙上钟面归一，直接比较会漏判。
+    """
+    zone = ZoneInfo(tz)
+
+    def wall(dt: datetime) -> datetime:
+        return dt.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None)
+
+    candidate = naive.replace(tzinfo=zone)
+    if wall(candidate) == naive:
+        return candidate
+
+    # 缺失时刻：转换瞬时落在 [candidate - 2h, candidate]，二分取首个满足墙上时刻的瞬时。
+    low, high = candidate - timedelta(hours=2), candidate
+    while (high - low) > timedelta(seconds=1):
+        mid = low + (high - low) / 2
+        if wall(mid) < naive:
+            low = mid
+        else:
+            high = mid
+    # 归一到转换之后的偏移量表示：瞬时相同，但 02:00-05:00 这种「缺失墙上钟面 + 跳变前
+    # 偏移」的写法会让下游展示与日志读起来像提前了半小时。
+    return high.astimezone(timezone.utc).astimezone(zone)
 
 
 def _parse_cron_field(field: str, minimum: int, maximum: int) -> set[int]:
@@ -169,7 +204,9 @@ def _next_cron_fire_fallback(cron_expr: str, tz: str, after: datetime) -> dateti
             and current.month in month_values
             and cron_dow in dow_values
         ):
-            return current.astimezone(timezone.utc)
+            return resolve_local_wall(current.replace(tzinfo=None), tz).astimezone(
+                timezone.utc
+            )
         current += step
     raise ValueError(f"无法在合理范围内解析 cron 表达式: {cron_expr!r}")
 
@@ -195,7 +232,10 @@ def next_cron_fire(cron_expr: str, tz: str, after: datetime) -> datetime:
     # Normalize to UTC-aware datetime
     if result.tzinfo is None:
         result = result.replace(tzinfo=timezone.utc)
-    return result
+    # pytz 的 localize 把缺失的本地时刻（如 spring-forward 当天的 02:30）折成
+    # 偏移量仍为 EST 的瞬时，墙上钟面却已是 03:30；按本地墙上时刻重新解析才符合
+    # §5.9.14「缺失时刻前进到下一有效本地时刻」。
+    return resolve_local_wall(result.replace(tzinfo=None), tz)
 
 
 # ── fire_at Computation ──────────────────────────────────────────
@@ -275,6 +315,11 @@ class ScheduledJob:
     name: str | None = None
     timezone: str = "UTC"
 
+    # C11：`when` 原串与提前量随 job 一起交给 durable 后端做规格留痕
+    # （schedule_spec_json）。legacy JSON 路径不读它们，旧文件缺键即取默认值。
+    when: str = ""
+    advance_minutes: int | None = None
+
     # C7 task 6.2（ADR-7）：创建方租户归属。list/cancel 的租户隔离与触发前重校验
     # 的依据；旧数据/直调无上下文的任务为 None（视为无主，普通账号不可见）。
     owner_tenant_id: str | None = None
@@ -283,6 +328,78 @@ class ScheduledJob:
     run_count: int = 0
     enabled: bool = True
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass(frozen=True)
+class JobRef:
+    """cancel/suspend 判定用的最小归属面（id/名称/所属租户），不含任务内容。"""
+
+    id: str
+    name: str | None
+    owner_tenant_id: str | None
+
+
+class ScheduleDeliveryUnresolvedError(RuntimeError):
+    """后端解析不出可信投递归属（无 tenant 上下文 / tenant 无 canonical conversation）。
+
+    durable 后端必须拒绝而不是落一条归属不明的 job（§5.9.14 fail-closed）；工具层把
+    它映射成 ``code=schedule_no_delivery_binding`` 的拒绝串，让审计能看到拒绝原因码。
+    """
+
+
+# 工具面共用拒绝串：单一出处，避免 schedule/remind 两侧码文漂移。
+# 尾随必须是全角「）」——registry._classify_tool_result 以它截断 error_code。
+SCHEDULE_NO_DELIVERY_BINDING_REJECT = (
+    "错误：无法确定服务端授权的推送目标，任务未创建（code=schedule_no_delivery_binding）"
+)
+
+
+class ScheduleManager(Protocol):
+    """工具面依赖的调度后端契约（c11-explicit-schedules ADR-4）。
+
+    方法名刻意与 legacy 的同步 API 区分（`create_job` vs `add_job`、`fetch_jobs` vs
+    `list_jobs`）：同一实现要同时保留同步入口给既有调用方与 legacy 测试，而工具面
+    必须 await——durable 后端的创建/收束是 PG 事务，legacy 的是 JSON 写盘。
+
+    两个实现：`SchedulerService`（JSON store，dev/单机）与
+    `bootstrap/schedule_durable.py::DurableSchedulerService`（PG，tenant/account/
+    conversation owned）。
+    """
+
+    async def create_job(self, job: ScheduledJob) -> ScheduledJob:
+        """登记一个任务并返回带最终 id/归属的任务对象。"""
+        ...
+
+    async def fetch_jobs(self, *, tenant_id: str | None = None) -> list[ScheduledJob]:
+        """列出**有待执行 occurrence** 的任务；`tenant_id` 非空时按租户隔离。"""
+        ...
+
+    async def find_job_refs(
+        self, *, id_prefix: str = "", name: str = ""
+    ) -> list[JobRef]:
+        """按 id 前缀或名称命中候选任务（跨租户可见，仅用于拒绝判定与归属核对）。"""
+        ...
+
+    async def cancel_jobs(
+        self, ids: Sequence[str], *, tenant_id: str | None = None
+    ) -> list[str]:
+        """取消给定 id 的任务，返回实际取消的 id；`tenant_id` 非空时只动本租户。"""
+        ...
+
+    async def cancel_by_name(
+        self, name: str, *, tenant_id: str | None = None
+    ) -> list[str]:
+        """按名称批量取消（remind 的三条提前量共用一个名字）。"""
+        ...
+
+    async def suspend_job(self, job_id: str, *, tenant_id: str | None = None) -> bool:
+        """暂停：保留归属与计划，不再产生新执行。"""
+        ...
+
+    async def resume_job(self, job_id: str, *, tenant_id: str | None = None) -> bool:
+        """恢复：按 misfire 规则从到期态继续（补执行或记账，不静默丢弃）。"""
+        ...
+
 
 
 # ── JobStore ─────────────────────────────────────────────────────
@@ -342,7 +459,7 @@ class SchedulerService:
     - 持久化到 JSON，重启后自动恢复
     """
 
-    GRACE_SECONDS = 300  # 5分钟内的 misfire 仍执行
+    GRACE_SECONDS = DEFAULT_MISFIRE_GRACE_SECONDS  # 5分钟内的 misfire 仍执行
 
     def __init__(
         self,
@@ -425,6 +542,61 @@ class SchedulerService:
             jobs = [j for j in jobs if j.owner_tenant_id == tenant_id]
         return jobs
 
+    # ── ScheduleManager（async 工具面，ADR-4）────────────────────────────
+    # 内部仍走 JSON store；同步 API 原样保留，工具只面向 Protocol 的两个实现。
+
+    async def create_job(self, job: ScheduledJob) -> ScheduledJob:
+        self.add_job(job)
+        return job
+
+    async def fetch_jobs(self, *, tenant_id: str | None = None) -> list[ScheduledJob]:
+        return [j for j in self.list_jobs(tenant_id=tenant_id) if j.enabled]
+
+    async def find_job_refs(
+        self, *, id_prefix: str = "", name: str = ""
+    ) -> list[JobRef]:
+        refs: list[JobRef] = []
+        for job_id, job in self._jobs.items():
+            if id_prefix and not job_id.startswith(id_prefix):
+                continue
+            if name and job.name != name:
+                continue
+            refs.append(
+                JobRef(id=job_id, name=job.name, owner_tenant_id=job.owner_tenant_id)
+            )
+        return refs
+
+    async def cancel_jobs(
+        self, ids: Sequence[str], *, tenant_id: str | None = None
+    ) -> list[str]:
+        return [jid for jid in ids if self.cancel_job(jid, tenant_id=tenant_id)]
+
+    async def cancel_by_name(
+        self, name: str, *, tenant_id: str | None = None
+    ) -> list[str]:
+        return self.cancel_job_by_name(name, tenant_id=tenant_id)
+
+    async def suspend_job(self, job_id: str, *, tenant_id: str | None = None) -> bool:
+        """dev 路径的暂停 = `enabled=False` 并落盘（不删任务，可 resume）。
+
+        与 durable 的 `suspended` 对应：单机 dev 后端没有账号状态机，但暂停必须可逆，
+        所以不退化成 cancel（cancel 会删除行、令 resume 无从命中）。
+        """
+        job = self._jobs.get(job_id)
+        if job is None or (tenant_id is not None and job.owner_tenant_id != tenant_id):
+            return False
+        job.enabled = False
+        self.store.save(self._jobs)
+        return True
+
+    async def resume_job(self, job_id: str, *, tenant_id: str | None = None) -> bool:
+        job = self._jobs.get(job_id)
+        if job is None or (tenant_id is not None and job.owner_tenant_id != tenant_id):
+            return False
+        job.enabled = True
+        self.store.save(self._jobs)
+        return True
+
     def load_and_recover(self) -> None:
         """启动时加载持久化 jobs，处理 misfire。"""
         now = self._now()
@@ -432,11 +604,16 @@ class SchedulerService:
         count_loaded = 0
 
         for job in jobs:
-            if not job.enabled:
-                continue
-
             if job.fire_at.tzinfo is None:
                 job.fire_at = job.fire_at.replace(tzinfo=timezone.utc)
+
+            if not job.enabled:
+                # 暂停中的任务必须留在 store 里：任何一次 save() 都会按 self._jobs
+                # 全量重写 JSON，跳过加载等于静默删除该任务（tick 与 fetch_jobs 已按
+                # enabled 过滤，不需要在此丢弃）。
+                self._jobs[job.id] = job
+                count_loaded += 1
+                continue
 
             if job.fire_at <= now:
                 age = (now - job.fire_at).total_seconds()

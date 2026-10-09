@@ -73,6 +73,8 @@ __all__ = [
     "WebchatReplayRepository",
     "WorkItemNotFoundError",
     "WorkItemRepository",
+    # C11：seq 分配 + 帧白名单的唯一实现，schedule 收束事务复用（不复制取号逻辑）。
+    "record_replay_frame",
 ]
 
 # 单事务认领批量（`FOR UPDATE SKIP LOCKED`：多扫描器互不阻塞；stale lease 由
@@ -466,7 +468,7 @@ class IngressRepository:
             replay_seq: int | None = None
             stamped_frame: dict[str, Any] | None = None
             if replay_frame is not None:
-                replay_seq = await _record_replay_frame(
+                replay_seq = await record_replay_frame(
                     sess,
                     tenant_id,
                     conv_id,
@@ -715,7 +717,7 @@ class TurnControlRepository:
             row.updated_at = datetime.now(UTC)
             result = _turn_to_dict(row)
             if replay_frame is not None:
-                seq = await _record_replay_frame(
+                seq = await record_replay_frame(
                     sess,
                     tenant_id,
                     row.conversation_id,
@@ -825,7 +827,7 @@ class TurnControlRepository:
             replay_seq: int | None = None
             stamped_frame: dict[str, Any] | None = None
             if replay_frame is not None:
-                replay_seq = await _record_replay_frame(
+                replay_seq = await record_replay_frame(
                     sess,
                     tenant_id,
                     conv_id,
@@ -1004,7 +1006,7 @@ class TurnControlRepository:
 class WebchatReplayRepository:
     """durable 重放帧读取面（pg-durable-sot-cutover ADR-3；只读，不分配 seq）。
 
-    帧写入只发生在 T1/T2/终态收束事务内（`_record_replay_frame`）；本仓储
+    帧写入只发生在 T1/T2/终态收束事务内（`record_replay_frame`）；本仓储
     服务重连补拉与 hello 游标。retention/清理归 C12 §8.4（本类预留删除入口）。
     """
 
@@ -2009,7 +2011,7 @@ _REPLAY_FRAME_TYPES = frozenset(
 )
 
 
-async def _record_replay_frame(
+async def record_replay_frame(
     sess: Any,
     tenant_id: str,
     conversation_id: uuid.UUID,
