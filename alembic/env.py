@@ -56,7 +56,11 @@ from bootstrap.db.models.rachael import (  # noqa: E402, F401
     RachaelSalienceStateModel,
     RachaelSourceSessionSnapshotModel,
 )
-from bootstrap.db.models.extras import AppConfigModel, ScheduledJobModel  # noqa: E402, F401
+from bootstrap.db.models.extras import AppConfigModel  # noqa: E402, F401
+from bootstrap.db.models.schedule import (  # noqa: E402, F401
+    ScheduleExecutionModel,
+    ScheduledJobModel,
+)
 from bootstrap.db.models.canonical import (  # noqa: E402, F401
     CanonicalConversationModel,
     CanonicalMessageModel,

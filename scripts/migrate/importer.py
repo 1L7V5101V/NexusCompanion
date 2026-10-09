@@ -1,9 +1,9 @@
 """批量导入编排：表规格、FK 顺序、checkpoint 续传、幂等、tenant mapping、结果入库。
 
-覆盖 Phase 1 全部有 SQLite 源的目标表（12 张）：
+覆盖 Phase 1 全部有 SQLite 源的目标表（11 张）：
 sessions → messages → memory_items → memory_replacements →
 consolidation_events / deliveries / session_state / context_only_timestamps /
-tick_log / tick_step_log / scheduled_jobs / app_configs。
+tick_log / tick_step_log / app_configs。
 
 - FK 顺序：sessions 先于 messages；memory_items 先于 memory_replacements。
 - 幂等：BulkPgWriter COPY + ON CONFLICT DO NOTHING。
@@ -221,29 +221,6 @@ def _tick_step_transform(row: dict[str, Any], tenant_id: str) -> dict[str, Any]:
     return out
 
 
-def _job_transform(row: dict[str, Any], tenant_id: str) -> dict[str, Any]:
-    now = datetime.now(timezone.utc).isoformat()
-    return {
-        "tenant_id": tenant_id,
-        "id": str(row.get("id") or ""),
-        "trigger": str(row.get("trigger") or "at"),
-        "tier": str(row.get("tier") or "instant"),
-        "fire_at": canon_ts(row.get("fire_at")),
-        "channel": str(row.get("channel") or ""),
-        "chat_id": str(row.get("chat_id") or ""),
-        "interval_seconds": row.get("interval_seconds"),
-        "cron_expr": row.get("cron_expr"),
-        "message": row.get("message"),
-        "prompt": row.get("prompt"),
-        "name": row.get("name"),
-        "timezone": str(row.get("timezone") or "UTC"),
-        "run_count": int(row.get("run_count") or 0),
-        "enabled": bool(row.get("enabled", True)),
-        "created_at": now,
-        "updated_at": now,
-    }
-
-
 def _app_config_transform(row: dict[str, Any], tenant_id: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     return {
@@ -253,10 +230,6 @@ def _app_config_transform(row: dict[str, Any], tenant_id: str) -> dict[str, Any]
         "created_at": now,
         "updated_at": now,
     }
-
-
-def _ident_job(row: dict[str, Any]) -> str:
-    return str(row.get("channel") or "")
 
 
 # ── 表规格注册表（FK 顺序）───────────────────────────────────────────────────
@@ -350,16 +323,11 @@ TABLE_SPECS: list[TableSpec] = [
         identity=None,  # tenant 经 tick_id → tick_log.session_key 解析
         transform=_tick_step_transform,
     ),
-    TableSpec(
-        name="scheduled_jobs", db="json", source="schedules",
-        columns=["tenant_id", "id", "trigger", "tier", "fire_at", "channel",
-                 "chat_id", "interval_seconds", "cron_expr", "message",
-                 "prompt", "name", "timezone", "run_count", "enabled",
-                 "created_at", "updated_at"],
-        pkey=["tenant_id", "id"], source_order=["id"],
-        required=("fire_at",),
-        identity=_ident_job, transform=_job_transform,
-    ),
+    # C11 ADR-7：`scheduled_jobs` 不在此表内。旧 JSON 行只有 channel/chat_id，
+    # 无法可信映射到 tenant/account/conversation 归属三元组（猜测归属违反
+    # fail-closed）；且规范 `scheduled_jobs` 已换成 durable owner 模型（旧表由
+    # e8b4c2a6d9f1 重命名为 scheduled_jobs_import_legacy 保留）。存量任务由用户或
+    # 管理员经 schedule 工具重建。
     TableSpec(
         name="app_configs", db="json", source="app_configs",
         columns=["tenant_id", "key", "value_json", "created_at", "updated_at"],
@@ -370,13 +338,8 @@ TABLE_SPECS: list[TableSpec] = [
 
 
 def _json_rows(source: SqliteSource, spec: TableSpec) -> list[dict[str, Any]]:
-    """JSON 源行（schedules.json / mcp_servers.json / proactive_quota.json）。"""
+    """JSON 源行（mcp_servers.json / proactive_quota.json）。"""
     ws = source.workspace
-    if spec.source == "schedules":
-        path = ws / "schedules.json"
-        if not path.exists():
-            return []
-        return list(json.loads(path.read_text(encoding="utf-8")))
     if spec.source == "app_configs":
         rows: list[dict[str, Any]] = []
         mcp = ws / "mcp_servers.json"

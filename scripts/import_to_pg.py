@@ -143,26 +143,11 @@ async def import_proactive(repo: AsyncProactiveRepository, workspace: Path, tena
 
 
 async def import_json(sf: Any, workspace: Path, tenant_id: str) -> None:
-    from bootstrap.db.models.extras import AppConfigModel, ScheduledJobModel
+    from bootstrap.db.models.extras import AppConfigModel
 
-    sched_path = workspace / "schedules.json"
-    if sched_path.exists():
-        data = json.loads(sched_path.read_text())
-        print(f"  {len(data)} scheduled jobs...")
-        async with sf() as sess:
-            for item in data:
-                sess.add(ScheduledJobModel(
-                    tenant_id=tenant_id, id=item.get("id", ""),
-                    trigger=item.get("trigger", "at"), tier=item.get("tier", "instant"),
-                    fire_at=datetime.fromisoformat(item["fire_at"]).replace(tzinfo=timezone.utc),
-                    channel=item.get("channel", ""), chat_id=item.get("chat_id", ""),
-                    interval_seconds=item.get("interval_seconds"),
-                    cron_expr=item.get("cron_expr"), message=item.get("message"),
-                    prompt=item.get("prompt"), name=item.get("name"),
-                    timezone=item.get("timezone", "UTC"), run_count=item.get("run_count", 0),
-                    enabled=item.get("enabled", True),
-                ))
-            await sess.commit()
+    # C11 ADR-7：schedules.json 不再导入 PG——旧行只有 channel/chat_id，无法可信
+    # 映射到 tenant/account/conversation 归属三元组（猜测归属违反 fail-closed）。
+    # 存量任务由用户/管理员经 schedule 工具重建。
     mcp_path = workspace / "mcp_servers.json"
     if mcp_path.exists():
         servers = json.loads(mcp_path.read_text()).get("servers", {})

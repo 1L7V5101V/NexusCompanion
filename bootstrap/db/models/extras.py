@@ -2,31 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text
+from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from bootstrap.db.models.base import Base, TenantMixin, TimestampMixin
-
-
-class ScheduledJobModel(Base, TenantMixin, TimestampMixin):
-    """Persistent scheduled jobs for the APScheduler."""
-
-    __tablename__ = "scheduled_jobs"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    trigger: Mapped[str] = mapped_column(String(32), nullable=False)  # at / after / every
-    tier: Mapped[str] = mapped_column(String(32), nullable=False)  # instant / soft
-    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    channel: Mapped[str] = mapped_column(String(64), nullable=False)
-    chat_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    interval_seconds: Mapped[int | None] = mapped_column(Integer)
-    cron_expr: Mapped[str | None] = mapped_column(String(128))
-    message: Mapped[str | None] = mapped_column(Text)
-    prompt: Mapped[str | None] = mapped_column(Text)
-    name: Mapped[str | None] = mapped_column(String(255))
-    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
-    run_count: Mapped[int] = mapped_column(Integer, default=0)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class AppConfigModel(Base, TenantMixin, TimestampMixin):
@@ -40,3 +19,9 @@ class AppConfigModel(Base, TenantMixin, TimestampMixin):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+# 旧 ScheduledJobModel（d6e1cd9205cd，String PK + channel/chat_id 模型）已随 C11
+# 移除：其表由 e8b4c2a6d9f1 重命名为 scheduled_jobs_import_legacy（一次性导入
+# 脚本的派生拷贝，无运行时读取方），规范 schedule 存储见 bootstrap/db/models/
+# schedule.py（c11-explicit-schedules design ADR-1/ADR-7）。

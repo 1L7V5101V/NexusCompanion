@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from bootstrap.schedule_defaults import DEFAULT_MISFIRE_GRACE_SECONDS
 from bootstrap.work_queue_defaults import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_ERROR_BACKOFF_SECONDS,
@@ -347,6 +348,20 @@ class PluginRuntimeConfig:
 
 
 @dataclass
+class SchedulerConfig:
+    """C11 显式用户 schedule 运行参数（openspec/changes/c11-explicit-schedules ADR-3）。
+
+    仅 `storage.backend = "postgres"` 的 durable 调度服务读取；legacy JSON 路径
+    沿用 `SchedulerService.GRACE_SECONDS`（两者同源，字面量单一出处 =
+    `bootstrap/schedule_defaults.py`）。
+    """
+
+    misfire_grace_seconds: int = DEFAULT_MISFIRE_GRACE_SECONDS
+    """one-shot 迟到补执行的宽限。超过即记 `missed` 终态（admin 可查、不静默删除），
+    recurring 则记 `skipped` 并前进到下一未来 occurrence。必须为正数。"""
+
+
+@dataclass
 class Config:
     provider: str
     model: str
@@ -396,6 +411,7 @@ class Config:
     attachments: AttachmentConfig = field(default_factory=AttachmentConfig)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
     plugin_runtime: PluginRuntimeConfig = field(default_factory=PluginRuntimeConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -424,6 +440,7 @@ __all__ = [
     "QQBotGroupConfig",
     "QQGroupConfig",
     "RetentionConfig",
+    "SchedulerConfig",
     "StorageConfig",
     "TelegramChannelConfig",
     "WiringConfig",
