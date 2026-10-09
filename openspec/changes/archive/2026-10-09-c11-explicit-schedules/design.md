@@ -118,14 +118,33 @@ tick 每秒扫描 `status='active' AND next_scheduled_for <= now` 的 job（
    - soft：`agent_loop.process_direct(...)`（既有参数：`session_key=scheduler:<job_id>`
      等；耗时 AI 调用，绝不持 DB 事务）。
 3. **收束**（事务 2，单事务原子）：分配 `conversation.next_sequence` → 插
-   canonical message（role=assistant，metadata 标 `scheduler`）→ 插
+   canonical message（role=assistant，metadata 标 `scheduler`）→ 插 durable
+   `turn.completed` 重放帧（`WebchatDeliveryAdapter` 从帧表取内容投递，缺帧会退避到
+   死信；seq 复用 C2 唯一的 `record_replay_frame` 取号实现，`turn_id` 列为 NULL、
+   帧内 `turn_id=sched:<execution_id>` 作前端幂等键）→ 插
    `outbound_delivery_intents`（`idempotency_key='sched:<execution_id>'`，channel/
    target 取 job 冻结 binding，status=pending）→ execution 置 `succeeded`
    （AI 返回空内容则 `failed`，error 记录）→ job `last_outcome` 更新；
-   recurring 同事务推进 `next_scheduled_for`（以 `max(now, scheduled_for)` 为基准
-   算下一 occurrence，沿用 legacy 防重复边界语义）。sequence/message/intent/
-   execution/job 五者原子；收束失败 → execution `failed`（error 记录），消息与
-   intent 不落。
+   sequence/message/frame/intent/execution/job 六者原子；收束失败 → execution
+   `failed`（error 记录），消息与 intent 不落。
+
+补充三条落地期确立的不变量：
+
+- **recurring 的 `next_scheduled_for` 在认领事务内前进**，不等收束。收束时推进会让
+  失败的 occurrence 把 job 永久卡在到期态（下轮撞上唯一约束、既不执行也不前进）；
+  认领时前进则「一个 occurrence 最多一次副作用」由唯一约束与调度态共同保证。
+- **跳过边界必须落到严格未来**：cron 的 `get_next_fire_time` 对整点当刻是闭区间
+  （`after=12:00:00` → `12:00:00`），用 `now` 作基准会原地不前进、下个 tick 立即
+  重认领同一时刻。前进基准取 `now + 1µs`。
+- **`skipped` 有两条入边**：认领事务的 recurring 前进（直落终态、`attempt_count=0`）
+  与触发时 fail-closed 重验不过（RevocationGate / binding 失效，从 `running` 收束为
+  `skipped` 并写原因）。后者已经占用了 occurrence，因此不再补投。
+- **工具面在同一 job 上不并发执行**：认领扫描排除进程内 in-flight 的 job id（legacy
+  `_in_flight` 同语义），长耗时 soft 任务的下一个 occurrence 留待完成后按 misfire 规则
+  判定，不叠跑。
+- **SOFT 预触发**保留 legacy 语义：到期判据按 tier 分别取阈值（soft 为
+  `next_scheduled_for <= now + P90`），提前量向 `compute_actual_trigger` 要值，
+  不在仓储里重述 `fire_at - lead`。
 
 幂等保证：副作用入口是 execution 行的插入，唯一约束使同一 occurrence 的重复触发
 （双 tick、恢复扫描竞态）最多一次进入 side effect；投递层幂等由
@@ -143,17 +162,26 @@ tick 每秒扫描 `status='active' AND next_scheduled_for <= now` 的 job（
   （该次已终态，job 无待执行）；随后对 `next_scheduled_for <= now` 的到期态走正常
   tick 规则（grace 内执行 / 超 grace missed/skipped）。`(job_id, scheduled_for)` 去重
   由唯一约束与「running 不重放」共同保证。
-- **工具面 Protocol**：`agent/scheduler.py` 新增 `ScheduleManager` Protocol（async
-  `create_job`/`list_jobs`/`cancel_jobs`/`suspend_job`/`resume_job`），legacy
-  `SchedulerService` 增加对应 async 包装（内部仍 JSON store），durable 服务直接实现。
-  工具按 Protocol 面向两个实现。legacy `add_job`/`cancel_job` 等同步 API 原样保留
-  （既有测试不回归）。
-- **装配门控**：`build_scheduler`（`bootstrap/toolsets/schedule.py`）在
-  `config.storage.backend == "postgres"` 时构造 `DurableSchedulerService`
-  （engine 独立、`misfire_grace_seconds` 来自配置），否则回退 legacy JSON 路径
+- **工具面 Protocol**：`agent/scheduler.py` 新增 `ScheduleManager` Protocol，方法名与
+  legacy 同步 API **刻意区分**（`create_job`/`fetch_jobs`/`cancel_jobs`/`cancel_by_name`/
+  `find_job_refs`/`suspend_job`/`resume_job` 为 async；`SchedulerService` 原有
+  `add_job`/`list_jobs`/`cancel_job`/`_jobs` 等同步 API 与 JSON store 原样保留）。
+  同名无法两用：同一实现要同时提供同步入口（legacy 测试与调用方直接
+  `svc.list_jobs(...)`）与 await 入口（durable 是 PG 事务）。工具改为只面向 Protocol，
+  跨租户拒绝判定经 `find_job_refs` 返回的 `JobRef`（id/名称/租户三列，不外泄任务内容），
+  取代原先直取 `service._jobs` 私有字典。
+  `account_id`/`conversation_id` 不在 `ToolExecutionContext.tool_kwargs()` 里，
+  由服务端从 tenant 的 canonical conversation 派生（不改 C7 的 context 契约）。
+- **装配门控**：`build_scheduler`（`bootstrap/toolsets/schedule.py`）新增 `config` 形参，
+  在 `config.storage.backend == "postgres"` 时构造 `DurableSchedulerService`
+  （engine 独立、`misfire_grace_seconds` 来自 `[scheduler]`），否则回退 legacy JSON 路径
   （dev 单用户，零改动）。与 `pg-durable-sot-cutover` 的后端门控同哲学。
-- 非 PG 模式下 suspend/resume 工具语义退化：legacy 实现把 suspend 当 cancel
-  同义处理（dev 路径无账号状态机），admin 端点仅在 PG 后端注册。
+  durable 服务自持 engine，`CoreRuntime.stop()` 经新增的 `scheduler.stop` 清理步骤
+  调 `aclose()` 释放（tick 协程已由 `AppRuntime.shutdown` 的 `runtime_tasks.cancel`
+  先一步取消；在途 execution 保留 `running` 交给下次启动的恢复扫描）。
+- 非 PG 模式下 suspend/resume 语义：legacy 实现落到 `ScheduledJob.enabled`
+  （暂停可逆、任务留在 JSON），**不退化成 cancel**——cancel 会删行并令 resume
+  永远命中不到，那才是真的语义破损。admin 端点仅在 PG 后端注册。
 
 ## ADR-5 — 工具面与 admin 面
 
@@ -173,15 +201,22 @@ tick 每秒扫描 `status='active' AND next_scheduled_for <= now` 的 job（
 
 ## ADR-6 — 时区与 DST contract
 
-- cron/at：按时区本地时间解析（`next_cron_fire` 走 APScheduler `CronTrigger` +
-  ZoneInfo/pytz；`compute_fire_at` 同）；interval（`every '1h'`）：绝对时间推进
-  （`timedelta`，不随 DST 漂移）——legacy 行为原样保留并写入 contract test。
+- cron/at：按时区**本地墙上时间**解析（`next_cron_fire` 走 APScheduler `CronTrigger` +
+  pytz/ZoneInfo；`compute_fire_at` 同）；interval（`every '1h'`）：绝对时间推进
+  （`timedelta`，不随 DST 漂移）。
+- **墙上时间 → 瞬时经 `resolve_local_wall` 归一**（不是「legacy 行为原样保留」）：
+  pytz 的 `localize` 对 spring-forward 当天不存在的 02:30 折成 `02:30-05:00`，
+  等效瞬时是本地 **03:30 EDT**——既不等于缺失时刻，也不等于「下一有效本地时刻」
+  （03:00 EDT）。归一函数检测墙上钟面回环（比较必须经 UTC 中转：对同一个
+  `ZoneInfo` 对象调 `astimezone` 是空操作，会掩盖缺失钟面），不等即二分定位到
+  转换瞬时本身；fall-back 的重复时刻 `fold=0` 天然取首次出现。
 - Contract test 固化（`America/New_York` 2026 年边界）：
   - spring-forward（2026-03-08，本地 02:00→03:00）：指定不存在的本地 02:30 →
-    下一有效时刻（03:00 本地）单次触发；
+    跳变瞬时本身（本地 03:00 EDT / 07:00Z）单次触发，下一次回到 03-09 的 02:30；
   - fall-back（2026-11-01，本地 01:00-01:59 重复）：指定 01:30 → 取首次出现
-    （fold=0），不双触发；
-  - UTC 无 DST 时区（Asia/Shanghai）作对照。
+    （EDT，05:30Z），不双触发；
+  - 无 DST 时区（Asia/Shanghai）与 UTC 作对照；interval 跨跳变日逐次恰好 +1h，
+    墙上钟面从 01:30 直接到 03:30。
 - 时区名非法（非 IANA）→ 创建拒绝（既有 `ZoneInfo` 校验保留）。
 
 ## ADR-7 — `schedules.json` 的派生物地位
@@ -189,8 +224,28 @@ tick 每秒扫描 `status='active' AND next_scheduled_for <= now` 的 job（
 PG 后端下 scheduler **不读取** `schedules.json`（不自动迁移存量 JSON 任务——旧
 owner 模型只有 channel/chat，无法可信映射到 account/conversation 三元组，猜测归属
 违反 §5.9.14 fail-closed 精神）；文件仅非 PG dev 路径继续使用。`check_schedules.py`
-改为按存储后端选择查询（PG 查询面 / JSON 兜底），供运维查看。该语义写入
+改为按存储后端选择查询面（PG：`scheduled_jobs` + `schedule_executions` 终态分布 +
+最近 missed/skipped/failed；JSON 兜底读 `schedules.json`），供运维查看。该语义写入
 §5.9.12「旧文件只作可重建派生物」的落地注记。
+
+同名字段的清场（同一 change 内完成，避免留下两套 `scheduled_jobs`）：
+
+- `d6e1cd9205cd` 建过的旧 `scheduled_jobs`（String PK + channel/chat_id，全库零运行时
+  读取方）由 `e8b4c2a6d9f1` **重命名**为 `scheduled_jobs_import_legacy` 保留，
+  downgrade 对称回退——不静默销毁数据，DROP 属运维决策。
+- `bootstrap/db/models/extras.py` 删除旧 `ScheduledJobModel`（规范模型移到
+  `bootstrap/db/models/schedule.py`，并挂入 models 包与 `alembic/env.py` 的 metadata）。
+- `scripts/import_to_pg.py` 不再把 `schedules.json` 导入 PG：旧行无法可信映射到
+  owner 三元组，导入即等于凭空猜测归属；存量任务由用户/管理员经工具重建。
+- **批量导入面同步收口**（`scripts/migrate/importer.py` 的 `TABLE_SPECS`、
+  `scripts/migrate/verify.py` 的列期望表、`tests/migration/helpers.py` 的
+  `MIGRATION_TABLES`、`tests/migration/test_results_evidence.py`）：这套工具里
+  `scheduled_jobs` 的 `TableSpec` 描述的是**旧 schema**（`id/trigger/tier/fire_at/
+  channel/chat_id/run_count/enabled`）。同名字段被 durable 表占用后，该 spec 会把旧
+  JSON 行 COPY 进结构完全不同的新表（列缺失 + 类型不符），而 `TRUNCATE scheduled_jobs`
+  也因 `schedule_executions` 的外键引用直接报 `FeatureNotSupported`。因此该 spec 与
+  其 `_job_transform`/`_ident_job`/`_json_rows["schedules"]` 分支一并移除，导入目标表
+  计数 12 → 11，并在移除处写明理由（不是漏改，是 ADR-7 的同一决定在两个导入器上落地）。
 
 ## 门禁与验收映射
 
