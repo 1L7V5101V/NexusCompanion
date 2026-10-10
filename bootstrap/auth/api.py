@@ -430,6 +430,71 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
                 raise HTTPException(404, detail="binding not found")
             return {"binding": binding}
 
+    # ── C11 显式 schedule 的 misfire 查看与处置（durable 调度服务在位时由 app 注入
+    #    runtime.schedule_admin；非 PG 后端不挂这些路由 → 404，不泄露能力存在性）。──
+    schedule_admin = getattr(runtime, "schedule_admin", None)
+
+    if schedule_admin is not None:
+        from bootstrap.db.repository.schedule_repo import ScheduleTransitionError
+
+        @router.get("/api/admin/schedules")
+        async def list_scheduled_jobs(
+            status: str | None = None,
+            tenant_id: str | None = None,
+            limit: int = 100,
+            _: _AdminSession = Depends(_admin_session),
+        ) -> dict[str, Any]:
+            """jobs 列表（可按 `active|suspended|revoked` 过滤）。"""
+            return {
+                "items": await schedule_admin.list_jobs(
+                    tenant_id=tenant_id, status=status, limit=limit
+                )
+            }
+
+        @router.get("/api/admin/schedules/executions")
+        async def list_schedule_executions(
+            status: str | None = None,
+            tenant_id: str | None = None,
+            job_id: str | None = None,
+            limit: int = 100,
+            _: _AdminSession = Depends(_admin_session),
+        ) -> dict[str, Any]:
+            """执行留痕（含 `missed`/`skipped`）：曾经的静默丢弃在这里是可查事实。"""
+            return {
+                "items": await schedule_admin.list_executions(
+                    status=status, tenant_id=tenant_id, job_id=job_id, limit=limit
+                )
+            }
+
+        async def _dispose(job_id: str, new_status: str) -> dict[str, Any]:
+            try:
+                row = await schedule_admin.set_job_status(job_id, new_status)
+            except ScheduleTransitionError:
+                raise HTTPException(
+                    409, detail=f"schedule status transition not allowed: {new_status}"
+                ) from None
+            if row is None:
+                raise HTTPException(404, detail="schedule not found")
+            return {"schedule": row}
+
+        @router.post("/api/admin/schedules/{job_id}/suspend")
+        async def suspend_scheduled_job(
+            job_id: str, _: _AdminSession = Depends(_admin_mutation)
+        ) -> dict[str, Any]:
+            return await _dispose(job_id, "suspended")
+
+        @router.post("/api/admin/schedules/{job_id}/resume")
+        async def resume_scheduled_job(
+            job_id: str, _: _AdminSession = Depends(_admin_mutation)
+        ) -> dict[str, Any]:
+            return await _dispose(job_id, "active")
+
+        @router.post("/api/admin/schedules/{job_id}/revoke")
+        async def revoke_scheduled_job(
+            job_id: str, _: _AdminSession = Depends(_admin_mutation)
+        ) -> dict[str, Any]:
+            return await _dispose(job_id, "revoked")
+
     return router
 
 

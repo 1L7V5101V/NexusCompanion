@@ -6,6 +6,9 @@
 /secrets/
 **/auth_pepper
 
+# docker compose 运行时凭据（POSTGRES_PASSWORD 等）；只提交 .env.example
+/.env
+
 # NcatBot 自动生成的配置文件
 config.yaml
 /docker/.env
@@ -87,7 +90,6 @@ stdout*.log
 # Local Obsidian notes & AI agent runtime state (not for remote)
 .NexusCompanion.ObsidianNotes/
 .claude/
-.github/workflows/
 .nova/
 .omo/
 .pi/

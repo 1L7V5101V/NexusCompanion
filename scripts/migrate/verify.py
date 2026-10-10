@@ -73,10 +73,6 @@ HASH_COLS: dict[str, tuple[str, ...]] = {
         "tool_call_id", "tool_args_json", "tool_result_text",
         "terminal_action_after", "skip_reason_after", "interesting_ids_after",
         "discarded_ids_after", "cited_ids_after", "final_message_after"),
-    "scheduled_jobs": (
-        "tenant_id", "id", "trigger", "tier", "fire_at", "channel", "chat_id",
-        "interval_seconds", "cron_expr", "message", "prompt", "name",
-        "timezone", "run_count", "enabled"),
     "app_configs": ("tenant_id", "key", "value_json"),
 }
 

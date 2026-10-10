@@ -3,11 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from agent.scheduler import LatencyTracker, SchedulerService
+from agent.scheduler import (
+    LatencyTracker,
+    ScheduleManager,
+    SchedulerService,
+)
 from agent.tools.message_push import MessagePushTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.remind import RemindTool
-from agent.tools.schedule import CancelScheduleTool, ListSchedulesTool, ScheduleTool
+from agent.tools.schedule import (
+    CancelScheduleTool,
+    ListSchedulesTool,
+    ResumeScheduleTool,
+    ScheduleTool,
+    SuspendScheduleTool,
+)
 from bootstrap.toolsets.protocol import (
     ToolsetDeps,
     ToolsetProvider,
@@ -41,6 +51,17 @@ class SchedulerToolsetProvider(ToolsetProvider):
             risk="write",
             search_hint="日程提醒 会议提醒 出门提醒 提前通知",
         )
+        # C11：暂停/恢复是工具层的显式状态入口（取消是终态删除，暂停可逆）。
+        registry.register(
+            SuspendScheduleTool(scheduler),
+            risk="write",
+            search_hint="暂停提醒 暂时停用 稍后再说",
+        )
+        registry.register(
+            ResumeScheduleTool(scheduler),
+            risk="write",
+            search_hint="恢复提醒 取消暂停 重新启用",
+        )
         return build_registration_result(
             registry=registry,
             source_name="schedule",
@@ -53,9 +74,25 @@ def build_scheduler(
     workspace: Path,
     push_tool: MessagePushTool,
     *,
+    config: Any = None,
     agent_loop_provider: Callable[[], Any] | None = None,
     revocation_gate: "Any | None" = None,
-) -> SchedulerService:
+) -> ScheduleManager:
+    """按存储后端装配调度服务（c11-explicit-schedules ADR-4）。
+
+    `storage.backend == "postgres"` → `DurableSchedulerService`（tenant/account/
+    conversation owned 的 PG job + execution，投递经 C2 outbox）；否则保持 legacy
+    JSON 路径不变（dev 单用户：`schedules.json` + 内存 task），`push_tool` 只在
+    legacy 分支使用。
+    """
+    if getattr(getattr(config, "storage", None), "backend", "sqlite") == "postgres":
+        from bootstrap.schedule_durable import build_durable_scheduler
+
+        return build_durable_scheduler(
+            config,
+            agent_loop_provider=agent_loop_provider,
+            revocation_gate=revocation_gate,
+        )
     return SchedulerService(
         store_path=workspace / "schedules.json",
         push_tool=push_tool,
@@ -68,7 +105,7 @@ def build_scheduler(
 
 def register_scheduler_tools(
     tools: ToolRegistry,
-    scheduler: SchedulerService,
+    scheduler: ScheduleManager,
 ) -> None:
     SchedulerToolsetProvider().register(
         tools,

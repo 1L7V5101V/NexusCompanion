@@ -3,8 +3,12 @@
 # ============================================================
 # 使用方法：
 #   1. 在宿主机上准备好 config.toml（从 config.example.toml 复制修改）
-#   2. docker compose up -d
-#   3. docker compose logs -f  # 查看日志
+#   2. 在宿主机上准备 .env（从 .env.example 复制填写；本文件不含凭据）
+#   3. docker compose up -d --build
+#   4. docker compose logs -f  # 查看日志
+#
+# 端口绑定一律走 127.0.0.1：Dashboard 与 WebChat 均不直接对公网暴露，
+# 由宿主机 Caddy（认证 + 按 Host 分流）前置。
 # ============================================================
 
 services:
@@ -12,6 +16,9 @@ services:
     build: .
     container_name: NexusCompanion
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       - PYTHONUNBUFFERED=1
       - TZ=Asia/Shanghai
@@ -20,5 +27,32 @@ services:
       - ./config.toml:/app/config.toml
       # 运行时数据持久化（会话、记忆、向量库等）
       - ~/.nexus:/root/.nexus
+      - ~/.nexus-plugin:/root/.nexus-plugin
     ports:
-      - "2236:2236"   # Dashboard
+      - "127.0.0.1:2236:2236"   # Dashboard（管理台，经 admin.* + Caddy 门禁）
+      - "127.0.0.1:6322:6322"   # WebChat（用户面，经 nexus.*；应用自带 session 认证）
+
+  postgres:
+    # C5 认证/身份控制面库（pgvector 供后续记忆向量使用）
+    image: pgvector/pgvector:pg16
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      # 凭据来自宿主机 .env（已 gitignore）；缺失即拒绝启动而不是静默用空口令。
+      # 注意：POSTGRES_PASSWORD 只在数据卷首次初始化时生效，改值不会改已有库的口令，
+      # 需要另走 ALTER USER。
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?缺少 POSTGRES_PASSWORD，请从 .env.example 复制出 .env 并填写}"
+      POSTGRES_DB: nexus
+    volumes:
+      - nexus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # 不发布端口：仅在 compose 网络内可达
+
+volumes:
+  nexus-pgdata:
+    name: nexus-pgdata

@@ -33,6 +33,7 @@ from agent.config_models import (
     QQChannelConfig,
     QQGroupConfig,
     RetentionConfig,
+    SchedulerConfig,
     StorageConfig,
     TelegramChannelConfig,
     WiringConfig,
@@ -136,6 +137,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
     attachment_cfg = _load_attachment_config(data)
     plugin_runtime_cfg = _load_plugin_runtime_config(data)
     retention_cfg = _load_retention_config(data)
+    scheduler_cfg = _load_scheduler_config(data)
 
     return Config(
         provider=provider,
@@ -221,6 +223,7 @@ def load_config(path: str | Path = "config.toml") -> Config:
         attachments=attachment_cfg,
         retention=retention_cfg,
         plugin_runtime=plugin_runtime_cfg,
+        scheduler=scheduler_cfg,
         logging=logging_cfg,
         router_mode=str(data.get("router_mode", "rule")),
     )
@@ -704,6 +707,18 @@ def _load_work_queue_config(data: dict) -> WorkQueueConfig:
         error_backoff_seconds=error_backoff,
         max_error_backoff_seconds=max_error_backoff,
     )
+
+
+def _load_scheduler_config(data: dict) -> SchedulerConfig:
+    """[scheduler] C11 显式 schedule 的 misfire 宽限；未配置即 300s 冻结默认。"""
+    raw = _as_dict(data.get("scheduler"))
+    defaults = SchedulerConfig()
+    value = raw.get("misfire_grace_seconds", defaults.misfire_grace_seconds)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"scheduler.misfire_grace_seconds 必须为整数秒，当前: {value!r}")
+    if value <= 0:
+        raise ValueError(f"scheduler.misfire_grace_seconds 必须为正数，当前: {value!r}")
+    return SchedulerConfig(misfire_grace_seconds=value)
 
 
 def _load_plugin_runtime_config(data: dict) -> PluginRuntimeConfig:

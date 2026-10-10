@@ -12,7 +12,9 @@ from scripts.migrate.source import SqliteSource
 MIGRATION_TABLES = [
     "tick_step_log", "tick_log", "context_only_timestamps", "session_state",
     "deliveries", "memory_replacements", "consolidation_events",
-    "memory_items", "messages", "sessions", "scheduled_jobs", "app_configs",
+    "memory_items", "messages", "sessions", "app_configs",
+    # C11：scheduled_jobs 退出导入面（旧 JSON 行无法映射 owner 三元组），
+    # 且该名字现在是 durable 表，被 schedule_executions 外键引用，不能随意 TRUNCATE。
 ]
 
 

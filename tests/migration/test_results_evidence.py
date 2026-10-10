@@ -30,8 +30,10 @@ def test_import_writes_results_json(make_cfg, mig_pg_url, truncate_all):
     }
     assert set(data["tables"]) >= {
         "sessions", "messages", "memory_items", "memory_replacements",
-        "tick_log", "scheduled_jobs", "app_configs",
+        "tick_log", "app_configs",
     }
+    # C11：schedules 不再进入导入面（旧 JSON 行无法映射 owner 三元组）。
+    assert "scheduled_jobs" not in data["tables"]
     # 返回的 report 与落盘一致。
     assert data["tables"] == report["tables"]
 

@@ -33,6 +33,9 @@ def test_scheduler_toolset_provider_registers_expected_tools(tmp_path: Path):
         "list_schedules",
         "cancel_schedule",
         "remind",
+        # C11：暂停/恢复是显式状态入口（取消是终态删除，暂停可逆）。
+        "suspend_schedule",
+        "resume_schedule",
     }
     assert result.always_on_names == []
 

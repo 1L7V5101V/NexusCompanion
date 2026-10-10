@@ -164,6 +164,14 @@ search_enabled = true
 # error_backoff_seconds = 5.0                 # 轮询级异常（DB 抖动）退避起点
 # max_error_backoff_seconds = 60.0            # 轮询级异常退避封顶
 
+# 可选：C11 显式用户 schedule（reminder/cron）的 misfire 宽限。
+# 仅在 storage.backend = "postgres" 时生效——非 PG 后端走 legacy JSON 调度服务，
+# 宽限固定为同一冻结默认值。misfire 只决定「补执行还是记账」，不决定「是否留痕」：
+# 无论数值多少，one-shot 超宽限记 missed、recurring 记 skipped 并前进到下一未来
+# occurrence，两者都可在 /api/admin/schedules/executions 查到。
+# [scheduler]
+# misfire_grace_seconds = 300                 # 默认 5 分钟（§10 PROPOSED DEFAULT）
+
 # 可选：控制加载哪些工具集（默认值适合大多数场景）
 # [agent.wiring]
 # toolsets = ["meta_common", "spawn", "schedule", "mcp"]

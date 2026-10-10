@@ -10,7 +10,14 @@ from bootstrap.db.models.attachment import (
     AttachmentModel,
     MessageAttachmentModel,
 )
-from bootstrap.db.models.extras import AppConfigModel, ScheduledJobModel
+from bootstrap.db.models.extras import AppConfigModel
+from bootstrap.db.models.schedule import (
+    SCHEDULE_EXECUTION_STATUSES,
+    SCHEDULE_JOB_STATUSES,
+    SCHEDULE_SKIP_REASONS,
+    ScheduleExecutionModel,
+    ScheduledJobModel,
+)
 from bootstrap.db.models.memory import (
     ConsolidationEventModel,
     MemoryItemModel,
@@ -78,6 +85,10 @@ __all__ = [
     "RachaelQueryLogModel",
     "RachaelSalienceStateModel",
     "RachaelSourceSessionSnapshotModel",
+    "SCHEDULE_EXECUTION_STATUSES",
+    "SCHEDULE_JOB_STATUSES",
+    "SCHEDULE_SKIP_REASONS",
+    "ScheduleExecutionModel",
     "ScheduledJobModel",
     "SessionModel",
     "SessionStateModel",
