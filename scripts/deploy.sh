@@ -44,9 +44,20 @@ cd "$COMPOSE_PROJECT_DIR" 2>/dev/null || die "compose 项目目录不存在：$C
 mkdir -p "$STATE_DIR" "$BACKUP_DIR"
 
 # 迁移需要同步驱动（alembic env.py 走 SQLAlchemy 同步 engine），端口/主机按容器网络写。
+# 口令优先取环境变量或 .env：compose 文件里现在放的是 ${POSTGRES_PASSWORD} 占位符，
+# 从它回读只会拿到字面量而不是口令，所以占位符一律视为「未取到」。
+read_pg_password() {
+  [[ -n "${POSTGRES_PASSWORD:-}" ]] && { printf '%s' "$POSTGRES_PASSWORD"; return; }
+  local v=""
+  [[ -f .env ]] && v="$(sed -n 's/^POSTGRES_PASSWORD=\(.*\)$/\1/p' .env | tail -1)"
+  [[ -z "$v" ]] && v="$(sed -n 's/^[[:space:]]*POSTGRES_PASSWORD:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' docker-compose.yml | head -1)"
+  case "$v" in ''|'${'*) printf '' ;; *) printf '%s' "$v" ;; esac
+}
+
 migrate_database_url() {
-  local pw="${POSTGRES_PASSWORD:-}"
-  [[ -n "$pw" ]] || pw="$(sed -n 's/^[[:space:]]*POSTGRES_PASSWORD:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' docker-compose.yml | head -1)"
+  local pw
+  pw="$(read_pg_password)"
+  [[ -n "$pw" ]] || die "取不到 POSTGRES_PASSWORD：请在 $COMPOSE_PROJECT_DIR/.env 里配置（参见 .env.example）"
   printf 'postgresql+psycopg://%s:%s@postgres:5432/%s' "$PG_USER" "$pw" "$PG_DB"
 }
 
@@ -64,7 +75,8 @@ s=ScriptDirectory.from_config(Config('alembic.ini')); print(','.join(s.get_heads
 preflight() {
   [[ -f docker-compose.yml ]] || die "不在 compose 项目目录"
   [[ -f config.toml ]] || die "缺少 config.toml（应用配置）"
-  [[ -f .env ]] || log "提示：没有 .env，compose 渲染会因缺 POSTGRES_PASSWORD 而失败"
+  [[ -n "$(read_pg_password)" ]] \
+    || die "取不到 POSTGRES_PASSWORD：compose 渲染与 alembic 都会失败，请先准备 .env"
   command -v docker >/dev/null || die "无 docker"
   docker compose config >/dev/null 2>&1 || die "docker compose config 渲染失败（先看 .env）"
 
