@@ -90,7 +90,6 @@ stdout*.log
 # Local Obsidian notes & AI agent runtime state (not for remote)
 .NexusCompanion.ObsidianNotes/
 .claude/
-.github/workflows/
 .nova/
 .omo/
 .pi/

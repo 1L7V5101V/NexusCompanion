@@ -1,0 +1,196 @@
+name: Deploy
+
+# 一条流水线做两件事：先验证（pyright 两套配置 + 全量 pytest 打真 PG），
+# 再把服务发到部署机。部署本身不在 YAML 里内联命令，只调用仓库内的
+# scripts/deploy.sh —— 流水线与人工运维共用同一份发版逻辑，不会出现两套会漂移的步骤。
+#
+# 需要的 secrets（Settings → Secrets and variables → Actions）：
+#   DEPLOY_SSH_HOST  部署机地址
+#   DEPLOY_SSH_USER  登录用户
+#   DEPLOY_SSH_KEY   只授权到该机的私钥（公钥进 authorized_keys）
+#   DEPLOY_SSH_FINGERPRINT  可选但强烈建议：主机密钥指纹，防首次连接的中间人信任
+#
+# 还需要一次性的人工准备（不属于流水线）：
+#   部署机 /opt/NexusCompanion/.env 必须存在（POSTGRES_PASSWORD=...），
+#   否则 compose 渲染与 alembic 都会被 deploy.sh 直接拒绝。
+#
+# ⚠️ 触发即上线的边界：deploy job 依赖 environment: production。GitHub 上新建的
+# environment 默认**没有** required reviewers，因此 push 到 main 会在验证通过后直接
+# 发版。若不希望如此，请在 Settings → Environments → production 加上 required
+# reviewers，或把下面的 push 触发去掉、只用 workflow_dispatch。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 要发布到的分支
+        type: string
+        default: main
+      mode:
+        description: 动作（preflight 只检查不改任何东西）
+        type: choice
+        default: deploy
+        options: [preflight, deploy, rollback]
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_DIR: /opt/NexusCompanion
+
+jobs:
+  verify:
+    name: 验证（pyright + 全量 pytest / 真 PG）
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # 与生产同镜像；宿主端口用 5433 正对 tests/conftest.py 的默认 URL，
+        # 于是测试侧不需要任何额外配置。
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus_dev
+          POSTGRES_DB: nexus
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install -r requirements-dev.txt
+
+      - name: Run pyright
+        run: .venv/bin/pyright --level error
+
+      - name: Run pyright for tests
+        run: .venv/bin/pyright --project pyrightconfig.tests.json --level error
+
+      # NEXUS_REQUIRE_PG=1 是这里的关键：PG 连不上就让作业红，而不是把上百条
+      # 集成测试静默 skip 掉——被 skip 的回归看起来全绿，比没有回归更危险。
+      - name: Run tests against PostgreSQL
+        timeout-minutes: 35
+        env:
+          PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
+          NEXUS_REQUIRE_PG: "1"
+          NEXUS_TEST_PG_URL: "postgresql://nexus:nexus_dev@localhost:5433/nexus"
+        run: .venv/bin/pytest -q -W error tests/
+
+  deploy:
+    name: ${{ inputs.mode || 'deploy' }} → ${{ inputs.ref || github.ref_name }}
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # workflow_dispatch 时按选定的 ref 取，保证 deploy.sh 与要发布的代码同源。
+          ref: ${{ inputs.ref || github.ref_name }}
+
+      - name: Require deploy secrets
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          missing=
+          [ -n "$DEPLOY_SSH_HOST" ] || missing="$missing DEPLOY_SSH_HOST"
+          [ -n "$DEPLOY_SSH_USER" ] || missing="$missing DEPLOY_SSH_USER"
+          [ -n "$DEPLOY_SSH_KEY" ] || missing="$missing DEPLOY_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "缺少 secrets:$missing —— 配置后再派发；未配置时请人工执行 scripts/deploy.sh" >&2
+            echo "此处刻意不静默跳过：静默通过的部署 job 会让人以为已经发过了" >&2
+            exit 1
+          fi
+
+      - name: Install SSH key and pin host key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_FINGERPRINT: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          scanned="$(ssh-keyscan -t ed25519,rsa,ecdsa "$DEPLOY_SSH_HOST" 2>/dev/null)"
+          [ -n "$scanned" ] || { echo "ssh-keyscan 未取到主机密钥"; exit 1; }
+          if [ -n "$DEPLOY_SSH_FINGERPRINT" ]; then
+            got="$(printf '%s\n' "$scanned" | ssh-keygen -lf - | awk '{print $2}')"
+            if [ "$got" != "$DEPLOY_SSH_FINGERPRINT" ]; then
+              echo "主机密钥指纹不匹配：期望 $DEPLOY_SSH_FINGERPRINT 实得 $got" >&2
+              exit 1
+            fi
+          else
+            echo "::warning::未配置 DEPLOY_SSH_FINGERPRINT，本次以首次所见信任主机密钥"
+          fi
+          printf '%s\n' "$scanned" >> ~/.ssh/known_hosts
+
+      # 把当前 ref 的 deploy.sh 传到远端临时路径执行：服务器上的代码此刻还是上一版，
+      # 直接用它的脚本会跑成旧流程；传完再跑，脚本与被发布的代码同源。
+      - name: Ship deploy script to target
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          scp -i ~/.ssh/id_deploy -o BatchMode=yes scripts/deploy.sh \
+            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST:/tmp/nexus-deploy-${GITHUB_RUN_ID}.sh"
+
+      - name: Preflight on target
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+            "COMPOSE_PROJECT_DIR='$PROJECT_DIR' bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh preflight"
+
+      - name: ${{ inputs.mode || 'deploy' }}
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
+          MODE: ${{ inputs.mode || 'deploy' }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+            "COMPOSE_PROJECT_DIR='$PROJECT_DIR' DEPLOY_REF='$DEPLOY_REF' \
+             bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh $MODE" \
+          || {
+            echo "部署失败。回滚命令：ssh ... bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh rollback" >&2
+            echo "（回滚只回代码不回库：本仓库迁移是 expand-only，旧代码可在新库上运行）" >&2
+            exit 1
+          }
+
+      - name: Remove uploaded script
+        if: always()
+        env:
+          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
+            "rm -f /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh" || true
