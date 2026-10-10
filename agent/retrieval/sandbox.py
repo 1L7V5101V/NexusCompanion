@@ -14,15 +14,13 @@ RetrievalSandbox — 隔离的检索沙箱
 
 from __future__ import annotations
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from agent.retrieval.fusion import FusionEngine, ScoredItem
+from agent.retrieval.fusion import FusedItem, FusionEngine, ScoredItem
 from core.memory.engine import MemoryQuery, MemoryQueryFilters, MemoryScope
 from infra.storage.interfaces import TenantContext
 
@@ -102,7 +100,7 @@ class RetrievalSandbox:
             return ""
 
         # 2. 并行执行（各自带超时）
-        results: dict[str, list[ScoredItem] | None] = {}
+        results: dict[str, list[ScoredItem]] = {}
         for src, task in coros.items():
             timeout = _WEB_SEARCH_TIMEOUT_S if src == "web" else 5.0
             try:
@@ -121,8 +119,14 @@ class RetrievalSandbox:
         if len(results) == 1:
             src, items = next(iter(results.items()))
             return self._fusion.format_block([
-                ScoredItem(source=src, content=item.content, score=item.score)
-                for item in items  # type: ignore[union-attr]
+                FusedItem(
+                    source=src,
+                    content=item.content,
+                    fused_score=item.score,
+                    original_score=item.score,
+                    rank=index + 1,
+                )
+                for index, item in enumerate(items)
             ])
 
         return self._fusion.format_block(self._fusion.fuse(results))

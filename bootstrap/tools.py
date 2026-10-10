@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
+    from bootstrap.memory_binding import EngineIngestGate
     from core.memory.engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
 )
-from turn_logging import RoutingTurnLogger, TurnLogger
+from turn_logging import RoutingTurnLogger
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -435,7 +436,7 @@ def build_registered_tools(
     agent_loop_provider: Callable[[], Any] | None = None,
     storage_runtime: "StorageRuntime | None" = None,
     revocation_gate: "RevocationGate | None" = None,
-    engine_ingest_gate: object | None = None,
+    engine_ingest_gate: "EngineIngestGate | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -654,7 +655,7 @@ def build_core_runtime(
     workspace: Path,
     http_resources: SharedHttpResources,
     *,
-    engine_ingest_gate: object | None = None,
+    engine_ingest_gate: "EngineIngestGate | None" = None,
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。
 

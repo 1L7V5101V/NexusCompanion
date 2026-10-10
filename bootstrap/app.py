@@ -267,21 +267,17 @@ class AppRuntime:
         self._workspace_lock.acquire()
         try:
             configure_default_shared_http_resources(self.http_resources)
-            core_kwargs = (
-                {"restart_coordinator": self.restart_coordinator}
-                if self.restart_coordinator is not None
-                else {}
-            )
             if self._engine_ingest_gate is None:
                 from bootstrap.memory_binding import EngineIngestGate
 
                 self._engine_ingest_gate = EngineIngestGate()
-            core_kwargs["engine_ingest_gate"] = self._engine_ingest_gate
+            # build_core_runtime 不接收 restart_coordinator：自重启的接缝在控制层
+            # （ControlService/AgentControlRuntime），核心 runtime 与此无关。
             self.core = build_core_runtime(
                 self.config,
                 self.workspace,
                 self.http_resources,
-                **core_kwargs,
+                engine_ingest_gate=self._engine_ingest_gate,
             )
             self.agent_loop = self.core.loop
             self.bus = self.core.bus

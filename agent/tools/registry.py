@@ -201,11 +201,16 @@ class ToolRegistry:
         requires_compensation: bool = False,
     ) -> None:
         self._tools[tool.name] = tool
+        resolved_effect = (
+            RISK_TO_EFFECT.get(risk, ToolEffect.READ_ONLY)
+            if effect is None
+            else ToolEffect(effect)
+        )
         meta = ToolMeta(
             risk=risk,
             always_on=always_on,
             search_hint=search_hint,
-            effect=effect if effect is not None else RISK_TO_EFFECT.get(risk, ToolEffect.READ_ONLY),
+            effect=resolved_effect,
             requires_compensation=requires_compensation,
         )
         self._metadata[tool.name] = meta

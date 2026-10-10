@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from agent.scheduler import ScheduleManager
     from agent.tools.message_push import MessagePushTool
     from agent.tools.registry import ToolRegistry
+    from bootstrap.memory_binding import EngineIngestGate
     from bus.event_bus import EventBus
     from bus.queue import MessageBus
     from core.net.http import SharedHttpResources
@@ -32,7 +33,7 @@ class ToolsetDeps:
     event_publisher: "EventBus | None" = None
     storage_runtime: "StorageRuntime | None" = None
     # C14 ADR-5：多引擎并存时自动 ingest 的租户 active engine 门控（reader 后绑定）。
-    engine_ingest_gate: object | None = None
+    engine_ingest_gate: "EngineIngestGate | None" = None
 
 
 @dataclass
