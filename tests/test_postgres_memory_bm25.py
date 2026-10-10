@@ -258,7 +258,9 @@ def test_keyword_search_bm25_time_filter_enlarges_batch_and_filters_rows() -> No
     assert "happened_at >= %s" in sql
     assert "happened_at < %s" in sql
     # 时间过滤时 batch_size 放大到候选上限。
-    assert int(params[-1]) >= 8
+    batch_size = params[-1]
+    assert isinstance(batch_size, int)
+    assert batch_size >= 8
 
 
 def test_keyword_search_bm25_time_filter_excludes_out_of_range() -> None:

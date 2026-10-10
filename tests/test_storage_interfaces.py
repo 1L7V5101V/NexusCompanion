@@ -4,6 +4,8 @@ PG adapter 的结构性符合由 pyright（factory 返回注解）与契约矩�
 覆盖；本文件只做无 PG 依赖的 runtime 结构检查。
 """
 
+from pathlib import Path
+
 import pytest
 
 from infra.storage.interfaces import (
@@ -16,7 +18,7 @@ from memory2.store import MemoryStore2
 from session.store import SessionStore
 
 
-def test_memory_sqlite_adapter_satisfies_protocol(tmp_path: object) -> None:
+def test_memory_sqlite_adapter_satisfies_protocol(tmp_path: Path) -> None:
     store = MemoryStore2(tmp_path / "mem.db", vec_dim=8)
     try:
         assert isinstance(store, MemoryStorage)
@@ -24,7 +26,7 @@ def test_memory_sqlite_adapter_satisfies_protocol(tmp_path: object) -> None:
         store.close()
 
 
-def test_session_sqlite_adapter_satisfies_protocol(tmp_path: object) -> None:
+def test_session_sqlite_adapter_satisfies_protocol(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "sessions.db")
     try:
         assert isinstance(store, SessionStorage)

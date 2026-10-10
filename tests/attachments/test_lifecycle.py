@@ -8,6 +8,7 @@ missing 标记、orphan 清理、幂等、已引用不误删，以及关键回�
 from __future__ import annotations
 
 import uuid
+from typing import cast
 
 import psycopg
 import pytest
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from agent.config_models import AttachmentConfig
 from bootstrap.attachments.blob_store import AttachmentBlobStore, build_storage_key
 from bootstrap.attachments.lifecycle import AttachmentLifecycle, LifecycleReport
+from bootstrap.attachments.telemetry import AttachmentTelemetry
 from bootstrap.db.repository.attachment_repo import AttachmentRepository
 
 from tests.attachments.test_attachment_repo import _insert_canonical_message
@@ -200,7 +202,7 @@ async def test_cleanup_emits_delete_events(
         repo,
         blobs,
         AttachmentConfig(orphan_grace_seconds=0),
-        telemetry=_SpyTelemetry(),
+        telemetry=cast(AttachmentTelemetry, _SpyTelemetry()),
     )
     report = await lifecycle.cleanup_expired()
     assert report.deleted_metadata == 1

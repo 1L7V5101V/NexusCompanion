@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -32,7 +32,11 @@ from agent.plugins.snapshot import (
     work_runtime_lease,
 )
 from bus.events import InboundMessage, OutboundMessage
-from core.memory.markdown import MarkdownMemoryMaintenance
+from core.memory.markdown import (
+    MarkdownMemoryMaintenance,
+    MarkdownMemoryStore,
+    MemoryLifecycleBindRequest,
+)
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerBusy
@@ -292,7 +296,7 @@ async def test_maintenance_background_worker_holds_lease() -> None:
     """MarkdownMemoryMaintenance 后台队列 worker 逐条 maintenance 取 lease。"""
     store = make_store("snap-bg")
     maintenance = MarkdownMemoryMaintenance(
-        store=cast(object, object()),  # refresh 分支被 spy，store 不被触达
+        store=cast(MarkdownMemoryStore, object()),  # refresh 分支被 spy，store 不被触达
         provider=MagicMock(),
         model="m",
         keep_count=20,
@@ -302,7 +306,7 @@ async def test_maintenance_background_worker_holds_lease() -> None:
     session = SimpleNamespace(key="sess-a", messages=[], last_consolidated=0)
     maintenance.bind_lifecycle(
         cast(
-            object,
+            MemoryLifecycleBindRequest,
             SimpleNamespace(
                 get_session=lambda _tenant_id, key: session,
                 save_session=AsyncMock(return_value=None),

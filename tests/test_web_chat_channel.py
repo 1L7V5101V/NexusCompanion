@@ -6,10 +6,11 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, cast
 from uuid import uuid4
 
 import pytest
+from fastapi import WebSocket
 
 from bus.event_bus import EventBus
 from bus.events import InboundMessage
@@ -43,14 +44,15 @@ class _SessionManagerStub:
 
 
 def _start_channel(
-    channel: WebChatChannel, session_manager: Any = None
+    channel: WebChatChannel, session_manager: SessionManager | None = None
 ) -> tuple[MessageBus, EventBus]:
     bus = MessageBus()
     event_bus = EventBus()
     channel._bind(
         ChannelContext(
             bus=bus,
-            session_manager=session_manager or _SessionManagerStub(),
+            session_manager=session_manager
+            or cast(SessionManager, _SessionManagerStub()),
             event_bus=event_bus,
             push_tool=None,  # type: ignore[arg-type]
             attachment_store=None,  # type: ignore[arg-type]
@@ -92,8 +94,9 @@ class _DyingWebSocket(_FakeWebSocket):
 
 
 def _register(channel: WebChatChannel, ws: _FakeWebSocket) -> _Connection:
-    conn = _Connection(ws, uuid4().hex)
-    channel._connections[ws] = conn
+    socket = cast(WebSocket, ws)
+    conn = _Connection(socket, uuid4().hex)
+    channel._connections[socket] = conn
     return conn
 
 
@@ -146,7 +149,9 @@ def test_replay_buffer_stamps_monotonic_seq():
     assert [f["seq"] for f in (f1, f2, f3, f4)] == [1, 2, 3, 4]
     # max_size=3：seq=1 已被挤出，after_seq=0 无法覆盖。
     assert buffer.frames_after(0) is None
-    assert [f["seq"] for f in buffer.frames_after(1)] == [2, 3, 4]
+    after_first = buffer.frames_after(1)
+    assert after_first is not None
+    assert [f["seq"] for f in after_first] == [2, 3, 4]
     assert buffer.frames_after(4) == []
 
 
@@ -326,12 +331,13 @@ async def test_handle_websocket_lifecycle_and_hello():
     class _BlockingWebSocket(_FakeWebSocket):
         started = asyncio.Event()
 
-        async def receive_text(self) -> str:
+        async def receive_text(self) -> NoReturn:
             self.started.set()
             await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
 
     ws = _BlockingWebSocket()
-    task = asyncio.create_task(channel.handle_websocket(ws))
+    task = asyncio.create_task(channel.handle_websocket(cast(WebSocket, ws)))
     try:
         await asyncio.wait_for(_BlockingWebSocket.started.wait(), timeout=2)
         await asyncio.sleep(0.05)

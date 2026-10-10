@@ -124,6 +124,7 @@ async def test_basic_remind_messages_contain_description(tmp_path):
         chat_id="123",
     )
     for j in svc._jobs.values():
+        assert j.message is not None
         assert "组会" in j.message
         assert "提醒" in j.message
 
@@ -143,6 +144,7 @@ async def test_remind_with_location(tmp_path):
     )
     assert len(svc._jobs) == 3
     for j in svc._jobs.values():
+        assert j.message is not None
         assert "4211" in j.message
         assert "座谈会" in j.message
 
@@ -182,6 +184,7 @@ async def test_travel_remind_messages_are_departure_style(tmp_path):
         chat_id="123",
     )
     for j in svc._jobs.values():
+        assert j.message is not None
         assert "出门提醒" in j.message
         if j.fire_at.minute == 9:  # 1min offset
             assert "该出发了" in j.message

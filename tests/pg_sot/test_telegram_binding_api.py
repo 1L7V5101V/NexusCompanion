@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +17,9 @@ from fastapi.testclient import TestClient
 from bootstrap.auth.api import build_admin_api
 from bootstrap.chat_api import create_chat_app
 from bootstrap.telegram_binding import TelegramBindingService
+
+if TYPE_CHECKING:
+    from infra.channels.web_chat_channel import WebChatChannel
 from tests.auth_provisioning.test_http_contract import (
     DEV_ORIGIN,
     admin_authed,
@@ -35,7 +38,9 @@ def _build_app(runtime: Any, binding: Any, tmp_path: Any) -> TestClient:
     runtime.telegram_binding = binding
     app = create_chat_app(
         workspace=tmp_path,
-        channel=SimpleNamespace(name="chat", _require_ctx=lambda: None),
+        channel=cast(
+            "WebChatChannel", SimpleNamespace(name="chat", _require_ctx=lambda: None)
+        ),
         auth_runtime=runtime,
         static_root=tmp_path / "chat",
         telegram_binding=binding,

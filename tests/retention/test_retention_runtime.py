@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -141,10 +141,13 @@ def test_app_wiring_gates_and_shutdown_step() -> None:
     async def _scenario() -> None:
         factory = SimpleNamespace()  # 装配只传引用，不触库
         enabled_cfg = RetentionConfig(enabled=True, interval_s=3600)
-        stub = SimpleNamespace(
-            webchat_durable=SimpleNamespace(session_factory=factory),
-            config=SimpleNamespace(retention=enabled_cfg),
-            retention_runtime=None,
+        stub = cast(
+            AppRuntime,
+            SimpleNamespace(
+                webchat_durable=SimpleNamespace(session_factory=factory),
+                config=SimpleNamespace(retention=enabled_cfg),
+                retention_runtime=None,
+            ),
         )
         AppRuntime._start_retention_runtime(stub)
         assert stub.retention_runtime is not None
@@ -153,10 +156,13 @@ def test_app_wiring_gates_and_shutdown_step() -> None:
         assert stub.retention_runtime is None
 
         # interval_s=0：runtime 保留（run_once 演练入口可用），周期循环不起。
-        stub2 = SimpleNamespace(
-            webchat_durable=SimpleNamespace(session_factory=factory),
-            config=SimpleNamespace(retention=RetentionConfig(interval_s=0)),
-            retention_runtime=None,
+        stub2 = cast(
+            AppRuntime,
+            SimpleNamespace(
+                webchat_durable=SimpleNamespace(session_factory=factory),
+                config=SimpleNamespace(retention=RetentionConfig(interval_s=0)),
+                retention_runtime=None,
+            ),
         )
         AppRuntime._start_retention_runtime(stub2)
         assert stub2.retention_runtime is not None

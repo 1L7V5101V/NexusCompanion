@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 
 import psycopg
 import pytest
@@ -172,7 +172,7 @@ def set_account_status(c11_pg_url) -> Callable[[str, str], None]:
 def exec_sql(c11_pg_url) -> Callable[..., Any]:
     """直连执行 SQL（模拟崩溃残留、回填时间等不可经仓储表达的状态）。"""
 
-    def _run(sql: str, params: tuple = ()) -> list[tuple]:
+    def _run(sql: LiteralString, params: tuple = ()) -> list[tuple]:
         conn = psycopg.connect(c11_pg_url)
         try:
             cur = conn.execute(sql, params)

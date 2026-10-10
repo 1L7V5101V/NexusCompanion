@@ -12,7 +12,7 @@ LLMProvider Codex（Responses API）协议路径单元测试。
 import asyncio
 import tomllib
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -28,6 +28,9 @@ from agent.model_runtime.transports.responses_converters import (
     _responses_input,
     _responses_tools,
 )
+
+if TYPE_CHECKING:
+    from agent.config_models import Config
 
 
 # ── 测试工具 ──────────────────────────────────────────────────────────────────
@@ -608,7 +611,7 @@ def test_build_providers_wires_protocol(monkeypatch):
         multimodal = True
         vl_model = ""
 
-    bp.build_providers(Cfg())
+    bp.build_providers(cast("Config", Cfg()))
     assert captured[0]["protocol"] == "codex"
 
 
@@ -624,7 +627,9 @@ def test_build_proactive_provider_follows_main_protocol():
         protocol = "codex"
 
     sentinel = object()
-    provider = _build_proactive_provider(Cfg(), sentinel)
+    provider = _build_proactive_provider(
+        cast("Config", Cfg()), cast(LLMProvider, sentinel)
+    )
     assert provider is not sentinel
     assert provider._protocol == "codex"
 

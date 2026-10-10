@@ -8,7 +8,7 @@ engine 过滤、ingest 独占门控（非 active 引擎不处理 TurnCommitted�
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -27,6 +27,9 @@ from agent.work_binding import (
 from bootstrap.memory_binding import EngineIngestGate
 from core.memory.engine import MemoryToolProfile, MemoryToolSpec
 from infra.storage.interfaces import TenantContext
+
+if TYPE_CHECKING:
+    from core.memory.engine import MemoryEngine
 
 pytestmark = pytest.mark.postgres
 
@@ -144,7 +147,10 @@ async def test_pipeline_routes_by_engine_binding() -> None:
     rachael_engine = _FakeEngine("rachael")
     pipeline = AgenticRAGPipeline(
         memory=MemoryServices(
-            engines={"default": default_engine, "rachael": rachael_engine}
+            engines=cast(
+                "dict[str, MemoryEngine]",
+                {"default": default_engine, "rachael": rachael_engine},
+            )
         ),
     )
     result = await pipeline.retrieve(_request("rachael"))
@@ -160,7 +166,9 @@ async def test_pipeline_binding_fallback_to_primary() -> None:
     """绑定引擎未构建 → 回退 primary 并直查（不进融合路径、不阻断检索）。"""
     primary = _FakeEngine("default")
     pipeline = AgenticRAGPipeline(
-        memory=MemoryServices(engines={"default": primary}),
+        memory=MemoryServices(
+            engines=cast("dict[str, MemoryEngine]", {"default": primary})
+        ),
     )
     result = await pipeline.retrieve(_request("ghost-engine"))
     assert result.block == "[default] block"
@@ -170,7 +178,11 @@ async def test_pipeline_binding_fallback_to_primary() -> None:
 async def test_pipeline_no_binding_single_engine() -> None:
     """无绑定（dev 路径）单引擎 → 旧行为直查 primary。"""
     primary = _FakeEngine("default")
-    pipeline = AgenticRAGPipeline(memory=MemoryServices(engines={"default": primary}))
+    pipeline = AgenticRAGPipeline(
+        memory=MemoryServices(
+            engines=cast("dict[str, MemoryEngine]", {"default": primary})
+        )
+    )
     result = await pipeline.retrieve(_request())
     assert result.block == "[default] block"
 

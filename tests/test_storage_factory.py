@@ -87,7 +87,9 @@ def test_create_store_probe_missing_schema(pg_url: str) -> None:
     """指向未跑 migration 的空库，断言工厂抛含 alembic upgrade head 的错误。"""
     dbname = f"nexus_probe_{os.getpid()}_{uuid.uuid4().hex[:6]}"
     admin = psycopg.connect(pg_url, autocommit=True)
-    admin.execute(f"CREATE DATABASE {dbname}")
+    admin.execute(
+        psycopg.sql.SQL("CREATE DATABASE {}").format(psycopg.sql.Identifier(dbname))
+    )
     admin.close()
     scratch_url = _swap_db(pg_url, dbname)
     try:
@@ -95,5 +97,9 @@ def test_create_store_probe_missing_schema(pg_url: str) -> None:
             create_store(_pg_cfg(scratch_url), "unused.db")
     finally:
         admin = psycopg.connect(pg_url, autocommit=True)
-        admin.execute(f"DROP DATABASE IF EXISTS {dbname}")
+        admin.execute(
+            psycopg.sql.SQL("DROP DATABASE IF EXISTS {}").format(
+                psycopg.sql.Identifier(dbname)
+            )
+        )
         admin.close()

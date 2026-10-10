@@ -7,7 +7,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -44,6 +44,9 @@ from plugins.rachael.store import (
     SourceMessage,
 )
 from scripts.build_akasha_db import _iter_replay_turns, _load_embeddings_from_cache, _skip_message
+
+if TYPE_CHECKING:
+    from agent.plugins.scope import ScopedEventBus
 
 
 QUERY_TS = datetime.fromtimestamp(1_700_000_000.0, timezone.utc)
@@ -1131,7 +1134,7 @@ def test_undo_removes_rachael_turn_state_after_session_delete(tmp_path: Path) ->
 def test_rachael_last_command_only_registers_for_rachael_engine(tmp_path: Path) -> None:
     rachael = RachaelPlugin()
     rachael.context = PluginContext(
-        event_bus=None,
+        event_bus=cast("ScopedEventBus", None),
         tool_registry=None,
         plugin_id="rachael",
         plugin_dir=tmp_path,
@@ -1142,7 +1145,7 @@ def test_rachael_last_command_only_registers_for_rachael_engine(tmp_path: Path) 
     )
     default = RachaelPlugin()
     default.context = PluginContext(
-        event_bus=None,
+        event_bus=cast("ScopedEventBus", None),
         tool_registry=None,
         plugin_id="rachael",
         plugin_dir=tmp_path,
@@ -1217,7 +1220,7 @@ def test_rachael_last_renders_latest_query_log(tmp_path: Path) -> None:
 
     plugin = RachaelPlugin()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast("ScopedEventBus", None),
         tool_registry=None,
         plugin_id="rachael",
         plugin_dir=tmp_path,

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from bootstrap.channel_host import ChannelHost
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from infra.channels.contract import Channel, ChannelContext
 
 
 def _make_context_factory():
@@ -21,7 +27,7 @@ def _make_context_factory():
             log=SimpleNamespace(),
         )
 
-    return ctx_factory
+    return cast("Callable[[Channel], ChannelContext]", ctx_factory)
 
 
 class _Channel:

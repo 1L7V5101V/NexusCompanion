@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import pytest
 
 from agent.config_models import AuthConfig
 
+from bootstrap.auth.runtime import AuthRuntime
 from bootstrap.auth.service import cookie_name
 from bootstrap.auth.ws_guard import (
     WSHandshakeRejected,
@@ -22,7 +24,7 @@ from bootstrap.auth.ws_guard import (
 
 @dataclass
 class _FakeAuthService:
-    valid: dict
+    valid: dict | None
     """原样返回的 session dict（None 表示校验失败→SessionInvalidError）。"""
     calls: list[str] = field(default_factory=list)
 
@@ -50,10 +52,10 @@ class _FakeRuntime:
     admin: _FakeAuthService
 
 
-def _runtime(*, origin_allowlist, valid: dict | None) -> _FakeRuntime:
+def _runtime(*, origin_allowlist, valid: dict | None) -> AuthRuntime:
     cfg = AuthConfig(cookie_secure=False, origin_allowlist=origin_allowlist)
     svc = _FakeAuthService(valid=valid)
-    return _FakeRuntime(config=cfg, auth=svc, admin=svc)
+    return cast(AuthRuntime, _FakeRuntime(config=cfg, auth=svc, admin=svc))
 
 
 ORIGIN = "https://chat.example.com"

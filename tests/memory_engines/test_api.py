@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from bootstrap.chat_api import create_chat_app
 from bootstrap.memory_binding import TenantMemoryEngineBindingService
+
+if TYPE_CHECKING:
+    from infra.channels.web_chat_channel import WebChatChannel
 from tests.auth_provisioning.test_http_contract import (
     DEV_ORIGIN,
     make_runtime,
@@ -33,7 +36,9 @@ def _build_app(
 ) -> TestClient:
     app = create_chat_app(
         workspace=tmp_path,
-        channel=SimpleNamespace(name="chat", _require_ctx=lambda: None),
+        channel=cast(
+            "WebChatChannel", SimpleNamespace(name="chat", _require_ctx=lambda: None)
+        ),
         auth_runtime=runtime,
         static_root=tmp_path / "chat",
         memory_engines=engines_service,

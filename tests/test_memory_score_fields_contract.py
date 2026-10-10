@@ -177,19 +177,27 @@ def test_keyword_only_hit_in_real_pipeline_carries_sparse_fields() -> None:
     ]
     hits = _retrieve(items, "Redis 缓存配置")
     assert hits, "应至少命中（keyword-only 或 dense）"
-    sparse_hits = [h for h in hits if isinstance(h.get("_lane_ranks"), dict) and "dense" not in h["_lane_ranks"]]
+    sparse_hits = []
+    for h in hits:
+        ranks = h.get("_lane_ranks")
+        if isinstance(ranks, dict) and "dense" not in ranks:
+            sparse_hits.append(h)
     assert sparse_hits, "存在 keyword-only 命中"
     for hit in sparse_hits:
-        assert hit.get("bm25_raw") is None or isinstance(hit.get("bm25_raw"), float)
-        assert isinstance(hit.get("bm25_normalized"), float)
-        assert 0.0 <= float(hit.get("bm25_normalized", 0.0)) < 1.0
+        bm25_raw = hit.get("bm25_raw")
+        assert bm25_raw is None or isinstance(bm25_raw, float)
+        bm25_normalized = hit.get("bm25_normalized")
+        assert isinstance(bm25_normalized, float)
+        assert 0.0 <= bm25_normalized < 1.0
         assert isinstance(hit.get("hotness"), (int, float))
-        assert 0.0 <= float(hit.get("sparse_final", 0.0)) < 1.0
+        sparse_final = hit.get("sparse_final")
+        assert isinstance(sparse_final, float)
+        assert 0.0 <= sparse_final < 1.0
         assert hit.get("sparse_source") in {"bm25", "like_fallback"}
         # keyword-only 命中不携带 dense 分数。
         assert hit.get("_score_debug") is None
         # score 回填为 sparse_final（取代旧 keyword_score 回填）。
-        assert float(hit.get("score", -1.0)) == float(hit.get("sparse_final", -2.0))
+        assert hit.get("score") == sparse_final
 
 
 def test_fused_items_carry_rrf_score_and_lane_ranks() -> None:
