@@ -38,8 +38,11 @@ on:
   push:
     branches: [main]
 
+# 按 ref 分组，而不是全局一组：全局组会把 PR 的验证排在「生产部署」后面 —— 本 PR 连推
+# 几次后，后来的 run 确实整排队列等前一个跑完（GitHub 只给出 queued，不解释原因）。
+# 验证彼此不该互相阻塞；真正必须串行的只有对同一条分支（main）的部署与验证。
 concurrency:
-  group: deploy-production
+  group: pipeline-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
