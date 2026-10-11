@@ -49,12 +49,15 @@ export function OnboardingPanel({ onCompleted }: { onCompleted: () => void }) {
 
   const pickTemplate = (id: string) => setSelected(id === selected ? null : id);
 
+  const showTemplates = (status?.templates.length ?? 0) > 0;
+  const usingTemplate = showTemplates && mode === "template";
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      if (mode === "template") {
+      if (usingTemplate) {
         if (!selected) throw new Error("请先选择一个 Persona。");
         await submitOnboarding({ source: "template", template_id: selected });
       } else {
@@ -96,7 +99,7 @@ export function OnboardingPanel({ onCompleted }: { onCompleted: () => void }) {
           这里修改）；你们的相处方式会随后续对话自然演化。
         </p>
 
-        {status.templates.length > 0 && (
+        {showTemplates && (
           <div className="mt-5">
             <div className="flex items-center gap-3">
               <button
@@ -116,7 +119,7 @@ export function OnboardingPanel({ onCompleted }: { onCompleted: () => void }) {
               </button>
             </div>
 
-            {mode === "template" && (
+            {usingTemplate && (
               <div className="mt-3 space-y-2">
                 {status.templates.map((t) => (
                   <div key={t.id} className="rounded-xl border border-white/10">
@@ -142,7 +145,7 @@ export function OnboardingPanel({ onCompleted }: { onCompleted: () => void }) {
           </div>
         )}
 
-        {mode === "custom" && (
+        {!usingTemplate && (
           <div className="mt-4 space-y-3">
             <TextField label="身份（TA 是谁）" value={identity} onChange={setIdentity} />
             <TextField
