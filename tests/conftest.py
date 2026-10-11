@@ -262,6 +262,43 @@ def test_pg_reachable() -> bool:
     return True
 
 
+def _ensure_base_schema() -> None:
+    """把基线库升到 alembic head，让「基线表已存在、只是本租户分区没建」成立。
+
+    一批集成测试（partition_readiness / dashboard_undo_readiness / provisioning /
+    storage_parity / trace_backend_parity / storage_runtime / memory_undo /
+    dashboard_api）直接连基线库，指望公共表在、tenant 分区不在。在跑过迁移的开发库上
+    这个前提一直成立，因此 2026-10-11 之前从没暴露过：CI 全新容器里的 nexus 库是空的，
+    这一批用例当场整组 UndefinedTable，并连带把连接池耗干成 PoolTimeout。
+    迁移是幂等的，所以已迁移的库上重跑没有副作用。
+    """
+    import logging
+
+    import psycopg
+    from alembic.config import Config
+
+    from scripts.migrate.alembic_util import upgrade_head
+
+    url = test_pg_url()
+    # 迁移链里只有 b6e9d2c4a8f1 自己 CREATE EXTENSION pg_trgm，vector 没人建 ——
+    # 全新库上直接 upgrade 会在 memory_items 的 embedding 列上炸（实测 2026-10-11）。
+    # 与各集成 conftest 的做法保持一致：先备好扩展再迁移。
+    conn = psycopg.connect(url, connect_timeout=5)
+    conn.autocommit = True
+    conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+    conn.close()
+
+    logging.getLogger("alembic").setLevel(logging.CRITICAL)
+    # 不传 alembic.ini：env.py 会对 config_file_name 调 fileConfig()，把日志配置重新
+    # 拉回 INFO。pytest_configure 阶段输出还没被捕获，那几十行迁移 INFO 会直接喷在
+    # 控制台顶上，所以这里用内存 Config 并自己给 script_location。
+    cfg = Config()
+    cfg.set_main_option("script_location", str(Path(__file__).resolve().parents[1] / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", url.replace("postgresql://", "postgresql+psycopg://"))
+    upgrade_head(cfg)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """``NEXUS_REQUIRE_PG=1`` 时，PG 不可达直接 fail 而非静默跳过。
 
@@ -281,13 +318,13 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     if os.environ.get("NEXUS_REQUIRE_PG") != "1":
         return
-    if test_pg_reachable():
-        return
-    raise pytest.UsageError(
-        "NEXUS_REQUIRE_PG=1 但本地 PostgreSQL 不可达："
-        f"{test_pg_url()}\n"
-        "请先起 pgvector 开发库：\n"
-        "  docker compose -f docker/debug/docker-compose.yml up -d postgres\n"
-        "或用 NEXUS_TEST_PG_URL 指向可用的 pgvector 实例。\n"
-        "若确实要在无 PG 环境跑（结果不可作为回归证据），去掉 NEXUS_REQUIRE_PG。"
-    )
+    if not test_pg_reachable():
+        raise pytest.UsageError(
+            "NEXUS_REQUIRE_PG=1 但本地 PostgreSQL 不可达："
+            f"{test_pg_url()}\n"
+            "请先起 pgvector 开发库：\n"
+            "  docker compose -f docker/debug/docker-compose.yml up -d postgres\n"
+            "或用 NEXUS_TEST_PG_URL 指向可用的 pgvector 实例。\n"
+            "若确实要在无 PG 环境跑（结果不可作为回归证据），去掉 NEXUS_REQUIRE_PG。"
+        )
+    _ensure_base_schema()

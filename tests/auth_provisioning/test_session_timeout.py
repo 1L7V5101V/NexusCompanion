@@ -60,7 +60,13 @@ def _backdate(
     conn = psycopg.connect(pg_url, autocommit=True)
     try:
         cur = conn.execute(
-            f"UPDATE auth_sessions SET {', '.join(assignments)} WHERE id = %s::uuid",
+            psycopg.sql.SQL(
+                "UPDATE auth_sessions SET {} WHERE id = %s::uuid"
+            ).format(
+                psycopg.sql.SQL(", ").join(
+                    psycopg.sql.SQL(clause) for clause in assignments
+                )
+            ),
             params,
         )
         assert cur.rowcount == 1, "回拨未命中会话行"

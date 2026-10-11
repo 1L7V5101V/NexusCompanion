@@ -11,7 +11,7 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 
 import psycopg
 import pytest
@@ -99,7 +99,11 @@ def _clean_slate(persona_pg_url) -> Iterator[None]:
             "'00000000-0000-0000-0000-000000000001', 'active')"
         )
         for name in parts:
-            conn.execute(f"DROP TABLE IF EXISTS {name}")
+            conn.execute(
+                psycopg.sql.SQL("DROP TABLE IF EXISTS {}").format(
+                    psycopg.sql.Identifier(name)
+                )
+            )
         conn.execute(
             "CREATE TABLE memory_items_pt_dev PARTITION OF memory_items "
             "FOR VALUES IN ('pt_dev')"
@@ -149,7 +153,7 @@ def persona_repo(persona_factory):
 
 @pytest.fixture
 def exec_sql(persona_pg_url) -> Callable[..., Any]:
-    def _run(sql: str, params: tuple = ()) -> list[tuple]:
+    def _run(sql: LiteralString, params: tuple = ()) -> list[tuple]:
         conn = psycopg.connect(persona_pg_url)
         try:
             cur = conn.execute(sql, params)

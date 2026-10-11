@@ -90,7 +90,7 @@ def enrich_keyword_hits(
     return hits
 
 
-def sparse_final_of(item: dict) -> float:
+def sparse_final_of(item: object) -> float:
     """取 sparse_final 排名键；字段缺失返回 0.0（stable sort 保持 lane 原序）。"""
     if not isinstance(item, dict):
         return 0.0

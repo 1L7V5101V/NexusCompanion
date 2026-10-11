@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 if TYPE_CHECKING:
     from agent.plugins.manager import PluginManager
-    from agent.restart import RestartCoordinator
+    from bootstrap.memory_binding import EngineIngestGate
     from core.memory.engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,7 @@ from bootstrap.toolsets.schedule import (
     SchedulerToolsetProvider,
     build_scheduler,
 )
-from turn_logging import RoutingTurnLogger, TurnLogger
+from turn_logging import RoutingTurnLogger
 from bootstrap.wiring import (
     wire_turn_lifecycle,
     resolve_context_factory,
@@ -434,10 +434,9 @@ def build_registered_tools(
     tools: ToolRegistry | None = None,
     event_publisher=None,
     agent_loop_provider: Callable[[], Any] | None = None,
-    restart_coordinator: "RestartCoordinator | None" = None,
     storage_runtime: "StorageRuntime | None" = None,
     revocation_gate: "RevocationGate | None" = None,
-    engine_ingest_gate: object | None = None,
+    engine_ingest_gate: "EngineIngestGate | None" = None,
 ) -> tuple[
     ToolRegistry,
     MessagePushTool,
@@ -532,26 +531,6 @@ def build_registered_tools(
             config_path=workspace / "mcp_servers.json",
             tool_registry=tools,
         )
-
-    # 3. 自重启只在 supervisor 与 tool_search 两个边界都成立时注册。
-    if (
-        restart_coordinator is not None
-        and restart_coordinator.supervised
-        and config.tool_search_enabled
-    ):
-        try:
-            from agent.tools.agent_restart import AgentRestartTool
-
-            tools.register(
-                AgentRestartTool(restart_coordinator),
-                risk="external-side-effect",
-                always_on=False,
-                preloadable=False,
-                requires_turn_search=True,
-                search_hint="重启 nexus agent 服务 重新加载核心配置",
-            )
-        except ImportError:
-            logger.debug("AgentRestartTool 不可用，跳过注册")
 
     return (
         tools,
@@ -675,8 +654,8 @@ def build_core_runtime(
     config: Config,
     workspace: Path,
     http_resources: SharedHttpResources,
-    restart_coordinator: "RestartCoordinator | None" = None,
-    engine_ingest_gate: object | None = None,
+    *,
+    engine_ingest_gate: "EngineIngestGate | None" = None,
 ) -> CoreRuntime:
     """构造核心运行时及其插件快照依赖。
 
@@ -737,7 +716,6 @@ def build_core_runtime(
             session_store=session_manager._store,
             event_publisher=event_bus,
             agent_loop_provider=lambda: loop_ref.get("loop"),
-            restart_coordinator=restart_coordinator,
             storage_runtime=storage_runtime,
             revocation_gate=revocation_gate,
             engine_ingest_gate=engine_ingest_gate,
@@ -835,40 +813,11 @@ def build_core_runtime(
         workspace / "mcp" / "servers",
         mcp_root=workspace / "mcp",
     )
-    if config.tool_search_enabled:
-        try:
-            from agent.mcp.admin import WorkspaceMcpAdmin
-            from agent.tools.workspace_mcp import (
-                WorkspaceMcpApplyTool,
-                WorkspaceMcpRemoveTool,
-                WorkspaceMcpStatusTool,
-            )
-
-            workspace_mcp_admin = WorkspaceMcpAdmin(workspace, workspace_mcp_watcher)
-            tools.register(
-                WorkspaceMcpApplyTool(workspace_mcp_admin),
-                risk="external-side-effect",
-                always_on=False,
-                preloadable=False,
-                requires_turn_search=True,
-                search_hint="安装 注册 更新 添加 MCP server 常驻服务 热重载",
-            )
-            tools.register(
-                WorkspaceMcpRemoveTool(workspace_mcp_admin),
-                risk="external-side-effect",
-                always_on=False,
-                preloadable=False,
-                requires_turn_search=True,
-                search_hint="删除 卸载 移除 MCP server 停止常驻服务",
-            )
-            tools.register(
-                WorkspaceMcpStatusTool(workspace_mcp_admin),
-                risk="read-only",
-                always_on=False,
-                search_hint="查看 列出 诊断 MCP server generation 热加载错误",
-            )
-        except ImportError:
-            logger.debug("WorkspaceMcpAdmin tools 不可用，跳过注册")
+    # 声明式 workspace MCP 的**工具面**随 `refactor(mcp): remove workspace MCP owner`
+    # (b18e876e9) 移除，`agent/tools/workspace_mcp.py` 已不存在；此前这里仍留着
+    # try-import + 三个 register，被 `except ImportError` 静默吞掉——注册从未成功过，
+    # 且 `ToolRegistry.register()` 也早已没有 preloadable/requires_turn_search 参数。
+    # watcher 本身仍在（由 `agent/mcp/admin.py` + registry 驱动声明式配置热加载）。
 
     return CoreRuntime(
         config=config,
@@ -903,9 +852,9 @@ def build_core_runtime(
 def _build_turn_logger(
     logging_cfg: Any,
     workspace: Path,
-) -> TurnLogger:
-    """根据配置创建 TurnLogger 实例。三条链路共用一个 logger，
-    内部通过 turn_type 字段区分写入哪个库。"""
+) -> RoutingTurnLogger:
+    """按配置创建 turn 日志器：passive/proactive/drift 各一个 db_path，
+    由 `RoutingTurnLogger` 按链路分流写入（`TurnLogger` 是单库实现）。"""
     from turn_logging.turn_logger import TurnLoggerConfig
 
     log_dir = (workspace / "logs").expanduser().resolve()

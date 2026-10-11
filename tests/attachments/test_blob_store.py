@@ -10,9 +10,11 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
+from agent.tools.path_resolver import tenant_dirname
 from bootstrap.attachments.blob_store import (
     AttachmentBlobStore,
     AttachmentStorageError,
@@ -159,8 +161,13 @@ def test_parse_build_storage_key_roundtrip() -> None:
         parse_storage_key("../evil.png")
 
 
-def test_no_tmp_fallback_semantics(store: AttachmentBlobStore) -> None:
-    """blob root 恒在调用方传入的 workspace 内；/tmp 不参与任何路径。"""
-    root = str(store.tenant_root(TENANT))
-    assert not root.startswith("/tmp")
-    assert "nexus_uploads" not in root
+def test_no_tmp_fallback_semantics(store: AttachmentBlobStore, tmp_path: Path) -> None:
+    """blob root 由传入的 workspace + tenant_id 派生，不是另起一个临时目录。
+
+    原来这条写的是 `assert not root.startswith("/tmp")`。在 Linux runner 上 pytest 的
+    tmp_path 本来就在 /tmp 下（2026-10-11 CI 必炸），在 Windows 上又永远空过 —— 它从未
+    真的验证过「不 fallback」。改成正面断言派生关系。
+    """
+    root = store.tenant_root(TENANT)
+    assert root == tmp_path / "tenants" / tenant_dirname(TENANT) / "attachments"
+    assert "nexus_uploads" not in str(root)

@@ -131,20 +131,43 @@ deploy() {
 
   backup_db
   log "取代码（远端 $DEPLOY_REF）"
-  git fetch --prune origin
+  # 部署机到 github.com:443 的连接不稳定（实测多次半开超时），有界重试而不是让
+  # 整条发版挂在一次网络抖动上。
+  fetched=0
+  for attempt in 1 2 3; do
+    if timeout 90 git fetch --prune origin 2>/dev/null; then
+      fetched=1
+      break
+    fi
+    log "第 $attempt 次 git fetch 失败，重试"
+    sleep 10
+  done
+  [[ "$fetched" == "1" ]] || die "git fetch 连续 3 次失败：本次发版中止，容器与库都未改动"
   git checkout "$DEPLOY_REF" >> "$STATE_DIR/deploy-$TS.log" 2>&1
   git reset --hard "origin/$DEPLOY_REF" >> "$STATE_DIR/deploy-$TS.log" 2>&1
   log "HEAD=$(git rev-parse --short HEAD)"
 
-  local before after
+  # 必须先按新代码构建镜像：compose run 用的是「当前已构建的那个镜像」，不 build 就
+  # 还是上一版的代码。2026-10-11 检查时发现这一步顺序错了 —— 迁移会跑在旧镜像的
+  # alembic/versions 里（没有本次新增的 revision），表现为 upgrade 静默走完、库却停在
+  # 旧版本，接着新代码起来发现表不存在。构建只做一次，后面的 run / up 复用同一镜像。
+  log "构建新镜像"
+  docker compose build nexus >> "$STATE_DIR/deploy-$TS.log" 2>&1
+
+  local before after head_rev
   before="$(db_version)"
-  log "迁移前库版本：$before → head=$(head_revision)"
+  head_rev="$(head_revision)"
+  log "迁移前库版本：$before → 代码 head=$head_rev"
   docker compose run --rm -e DATABASE_URL="$(migrate_database_url)" nexus alembic upgrade head
   after="$(db_version)"
   log "迁移后库版本：$after"
+  # 库没跟上代码就中止：此刻容器还没重建，跑的仍是旧镜像，生产不受影响；
+  # 已经落好的 pg_dump 与 state 文件可以直接回滚。
+  [[ "$after" == "$head_rev" ]] \
+    || die "迁移后库版本 $after ≠ 代码 head $head_rev：镜像或迁移链有问题，已中止（未重建容器）"
 
-  log "重建并启动容器"
-  docker compose up -d --build >> "$STATE_DIR/deploy-$TS.log" 2>&1
+  log "启动新容器"
+  docker compose up -d >> "$STATE_DIR/deploy-$TS.log" 2>&1
   sleep 8
   verify
   log "发版完成：$before_sha → $(git rev-parse --short HEAD)，日志在 $STATE_DIR/deploy-$TS.log"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -11,6 +12,9 @@ from agent.plugins.context import PluginContext, PluginKVStore
 from plugins.default_memory.dashboard import RecallInspectorDashboardReader
 from plugins.default_memory.engine import DefaultMemoryEngine
 from plugins.default_memory.plugin import DefaultMemoryInspector
+
+if TYPE_CHECKING:
+    from agent.plugins.scope import ScopedEventBus
 
 
 @pytest.mark.asyncio
@@ -21,7 +25,7 @@ async def test_recall_inspector_records_context_and_recall(tmp_path: Path) -> No
 
     plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast("ScopedEventBus", None),
         tool_registry=None,
         plugin_id="default_memory",
         plugin_dir=plugin_dir,
@@ -87,7 +91,7 @@ async def test_recall_inspector_uses_workspace_data_path(tmp_path: Path) -> None
 
     plugin = DefaultMemoryInspector()
     plugin.context = PluginContext(
-        event_bus=None,
+        event_bus=cast("ScopedEventBus", None),
         tool_registry=None,
         plugin_id="default_memory",
         plugin_dir=plugin_dir,

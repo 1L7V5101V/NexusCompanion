@@ -3,17 +3,46 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, Mapping, Protocol
 
 from agent.mcp.declarations import (
     declarations_input_revision,
     load_workspace_mcp_declarations,
 )
 
-if TYPE_CHECKING:
-    from agent.plugins.manager import PluginManager
-
 logger = logging.getLogger(__name__)
+
+
+class WorkspaceMcpCatalogView(Protocol):
+    """watcher 需要读取的代际目录表面。"""
+
+    @property
+    def servers(self) -> Mapping[str, object]: ...
+
+    @property
+    def tool_names(self) -> tuple[str, ...]: ...
+
+
+class WorkspaceMcpGenerationView(Protocol):
+    """watcher 需要读取的已发布代际表面。"""
+
+    @property
+    def generation_id(self) -> str: ...
+
+    @property
+    def catalog(self) -> WorkspaceMcpCatalogView: ...
+
+
+class WorkspaceMcpManager(Protocol):
+    """watcher 对 manager 的最小要求：PluginManager 或本地适配器都满足。"""
+
+    async def prepare_workspace_mcp(
+        self, server_specs: dict[str, Any], /, *, revision: str
+    ) -> WorkspaceMcpGenerationView | None: ...
+
+    async def publish_workspace_mcp(self) -> WorkspaceMcpGenerationView: ...
+
+    async def discard_workspace_mcp_candidate(self) -> None: ...
 
 
 class WorkspaceMcpWatcher:
@@ -21,7 +50,7 @@ class WorkspaceMcpWatcher:
 
     def __init__(
         self,
-        manager: PluginManager,
+        manager: WorkspaceMcpManager,
         declarations_dir: Path,
         *,
         mcp_root: Path | None = None,

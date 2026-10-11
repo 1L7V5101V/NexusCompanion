@@ -10,7 +10,7 @@ import logging
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 
 import psycopg
 import pytest
@@ -99,7 +99,7 @@ def _clean_slate(me_pg_url) -> Iterator[None]:
 
 @pytest.fixture
 def exec_sql(me_pg_url) -> Callable[..., Any]:
-    def _run(sql: str, params: tuple = ()) -> list[tuple]:
+    def _run(sql: LiteralString, params: tuple = ()) -> list[tuple]:
         conn = psycopg.connect(me_pg_url)
         try:
             cur = conn.execute(sql, params)

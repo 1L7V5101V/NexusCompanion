@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from fastapi import WebSocket
 
 from bootstrap.auth.identity import (
     WebChatIdentityError,
@@ -161,8 +162,8 @@ async def test_connection_identity_overrides_channel_identity() -> None:
         )
     )
     bus = channel._require_ctx().bus
-    conn = _Connection(  # type: ignore[arg-type]
-        _FakeWebSocket(),
+    conn = _Connection(
+        cast(WebSocket, _FakeWebSocket()),
         uuid4().hex,
         identity=WebChatIdentity(
             account_id="acct-conn",

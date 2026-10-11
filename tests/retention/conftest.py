@@ -11,7 +11,7 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, LiteralString
 
 import psycopg
 import pytest
@@ -21,6 +21,9 @@ from sqlalchemy.pool import NullPool
 from alembic.config import Config
 
 from scripts.migrate.alembic_util import upgrade_head
+
+if TYPE_CHECKING:
+    from bootstrap.retention import RetentionSweeper
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ADMIN_URL = os.environ.get(
@@ -157,7 +160,7 @@ def sweeper_rt(rt_factory: "async_sessionmaker") -> "RetentionSweeper":
 def exec_sql(rt_pg_url) -> Callable[..., Any]:
     """直连执行 SQL（backdate 时间戳 / 造崩溃残留等不可经仓储表达的状态）。"""
 
-    def _run(sql: str, params: tuple = ()) -> list[tuple]:
+    def _run(sql: LiteralString, params: tuple = ()) -> list[tuple]:
         conn = psycopg.connect(rt_pg_url)
         try:
             cur = conn.execute(sql, params)

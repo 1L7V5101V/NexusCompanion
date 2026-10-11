@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -26,6 +27,10 @@ from agent.plugins.snapshot import (
 
 from tests.c8._helpers import make_snapshot
 
+if TYPE_CHECKING:
+    from agent.plugins.scope import PluginScope
+    from infra.channels.contract import Channel
+
 
 def _generation_with_channel(plugin_id: str, channel_name: str) -> PluginGeneration:
     return PluginGeneration(
@@ -35,10 +40,10 @@ def _generation_with_channel(plugin_id: str, channel_name: str) -> PluginGenerat
         source_revision="rev0",
         config_revision="cfg0",
         instance=SimpleNamespace(),
-        scope=SimpleNamespace(),
+        scope=cast("PluginScope", SimpleNamespace()),
         contributions=PluginContributions(
             manifest={},
-            channels=(SimpleNamespace(name=channel_name),),
+            channels=(cast("Channel", SimpleNamespace(name=channel_name)),),
         ),
         gate_result=GateResult(
             gate_id=f"{plugin_id}-gate",

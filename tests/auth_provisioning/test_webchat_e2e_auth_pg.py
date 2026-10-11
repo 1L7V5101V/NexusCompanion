@@ -25,6 +25,7 @@ import httpx
 import pytest
 import websockets
 import websockets.exceptions
+from websockets.typing import Origin
 
 from agent.config_models import AuthConfig, Config
 from bootstrap.auth import create_auth_runtime
@@ -45,7 +46,7 @@ from tests.test_web_chat_e2e_dev import (
 
 pytestmark = pytest.mark.postgres
 
-ORIGIN = "http://localhost:5173"
+ORIGIN = Origin("http://localhost:5173")
 
 
 async def _make_runtime(c5_pg_url: str, workspace: Path) -> Any:

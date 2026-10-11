@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+from typing import TYPE_CHECKING, cast
 
 from bootstrap.auth import api as auth_api
 from bootstrap.auth.service import (
@@ -23,6 +24,9 @@ from bootstrap.auth.service import (
     AuthService,
     ProvisioningService,
 )
+
+if TYPE_CHECKING:
+    from bootstrap.db.repository.provisioning_repo import ProvisioningRepository
 
 # api.py 中以 runtime.<svc>.<method> 形式触达 service 的调用点。
 _RUNTIME_CALL = re.compile(r"runtime\.(auth|admin|provisioning)\.([A-Za-z_][A-Za-z0-9_]*)")
@@ -73,7 +77,7 @@ def test_api_runtime_calls_exist_on_services() -> None:
 
 async def test_get_job_delegates_to_repository() -> None:
     """``ProvisioningService.get_job`` 必须存在并委派给 repo（失败可见性依赖它）。"""
-    repo = _StubProvisioningRepo()
+    repo = cast("ProvisioningRepository", _StubProvisioningRepo())
     service = ProvisioningService(repo, executor=_StubExecutor())
 
     job_id = "20000000-0000-0000-0000-0000000000c3"

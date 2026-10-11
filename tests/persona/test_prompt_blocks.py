@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from agent.core.prompt_block import (
     IdentityPromptBlock,
@@ -11,6 +11,10 @@ from agent.core.prompt_block import (
     TurnContext,
 )
 from agent.core.types import PersonaSnapshot
+
+if TYPE_CHECKING:
+    from agent.skills import SkillsLoader
+    from core.memory.markdown import MemoryProfileApi
 
 
 def _ctx(
@@ -29,8 +33,8 @@ def _ctx(
 
     return TurnContext(
         workspace=tmp_path,
-        memory=_Mem(),
-        skills=Any,
+        memory=cast("MemoryProfileApi", _Mem()),
+        skills=cast("SkillsLoader", Any),
         skill_names=[],
         channel="chat",
         chat_id="c1",
@@ -81,6 +85,7 @@ def test_identity_block_cache_disabled_with_snapshot(tmp_path: Path) -> None:
 def test_self_block_uses_snapshot_relationship_state(tmp_path: Path) -> None:
     block = SelfModelPromptBlock()
     rendered = block.render(_ctx(tmp_path, SNAP_A, self_file_content="单体 SELF 内容"))
+    assert rendered is not None
     assert "A 的关系状态" in rendered
     assert "单体 SELF 内容" not in rendered  # 快照优先，不读文件
 
@@ -88,6 +93,7 @@ def test_self_block_uses_snapshot_relationship_state(tmp_path: Path) -> None:
 def test_self_block_falls_back_to_file_without_snapshot(tmp_path: Path) -> None:
     block = SelfModelPromptBlock()
     rendered = block.render(_ctx(tmp_path, None, self_file_content="单体 SELF 内容"))
+    assert rendered is not None
     assert "单体 SELF 内容" in rendered
 
 

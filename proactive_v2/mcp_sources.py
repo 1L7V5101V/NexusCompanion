@@ -42,11 +42,9 @@ class SharedMcpGateway:
         registered_name = tool_name if tool_name in names else f"mcp_{server}__{tool_name}"
         if registered_name not in names:
             raise RuntimeError(f"MCP tool 不可用: {server}.{tool_name}")
-        result = await self._tools.execute(
-            registered_name,
-            args,
-            raise_errors=True,
-            execution_timeout=timeout,
+        pending = self._tools.execute(registered_name, args)
+        result = await (
+            pending if timeout is None else asyncio.wait_for(pending, timeout)
         )
         text = result.text if isinstance(result, ToolResult) else str(result)
         if text.strip().startswith(("[", "{")):

@@ -13,7 +13,7 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 
 import psycopg
 import pytest
@@ -164,7 +164,7 @@ def make_tenant(c2_factory) -> Callable[..., Awaitable[dict[str, Any]]]:
 def exec_sql(c2_pg_url) -> Callable[..., Any]:
     """直连执行 SQL（模拟时间流逝 / 崩溃残留等不可经仓储表达的状态）。"""
 
-    def _run(sql: str, params: tuple = ()) -> list[tuple]:
+    def _run(sql: LiteralString, params: tuple = ()) -> list[tuple]:
         conn = psycopg.connect(c2_pg_url)
         try:
             cur = conn.execute(sql, params)

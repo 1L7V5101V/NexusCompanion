@@ -12,8 +12,9 @@ import uuid
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
+import httpx2
 import pytest
 
 with warnings.catch_warnings():
@@ -25,6 +26,12 @@ from bus.event_bus import EventBus
 from infra.channels.contract import ChannelContext
 from infra.channels.web_chat_channel import WebChatChannel
 from session.manager import SessionManager
+
+if TYPE_CHECKING:
+    from agent.tools.message_push import MessagePushTool
+    from bootstrap.auth.runtime import AuthRuntime
+    from core.net.http import SharedHttpResources
+    from infra.channels.base import AttachmentStore
 
 pytestmark = pytest.mark.postgres
 
@@ -51,9 +58,9 @@ def _build_app(
             bus=bus,
             session_manager=SessionManager(tmp_path),
             event_bus=event_bus,
-            push_tool=None,
-            attachment_store=None,
-            http_resources=None,
+            push_tool=cast("MessagePushTool", None),
+            attachment_store=cast("AttachmentStore", None),
+            http_resources=cast("SharedHttpResources", None),
             interrupt_controller=None,
             bot_commands=[],
             log=logging.getLogger("test"),
@@ -62,7 +69,7 @@ def _build_app(
     durable = (
         SimpleNamespace(session_factory=persona_factory) if with_durable else None
     )
-    auth_runtime = None
+    auth_runtime: "AuthRuntime | None" = None
     if with_auth:
         # stub auth runtime：cookie 校验/身份派生按调用点协议返回。
         session_row = {
@@ -87,10 +94,13 @@ def _build_app(
                     }
                 ]
 
-        auth_runtime = SimpleNamespace(
-            config=SimpleNamespace(cookie_secure=False),
-            auth=_Auth(),
-            canonical_repo=_CanonicalRepo(),
+        auth_runtime = cast(
+            "AuthRuntime",
+            SimpleNamespace(
+                config=SimpleNamespace(cookie_secure=False),
+                auth=_Auth(),
+                canonical_repo=_CanonicalRepo(),
+            ),
         )
     from bootstrap.chat_api import create_chat_app
 
@@ -110,7 +120,7 @@ def _headers() -> dict[str, str]:
     return {"cookie": f"{COOKIE}=good-cookie"}
 
 
-def _onboard(client: TestClient) -> None:
+def _onboard(client: TestClient) -> httpx2.Response:
     resp = client.post(
         "/api/persona/onboarding",
         headers=_headers(),

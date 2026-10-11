@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,6 +28,7 @@ from agent.plugins.jobs import (
     PluginJobContext,
     PluginJobRuntime,
     PluginJobSpec,
+    PluginLlmService,
     RegisteredPluginJob,
 )
 from agent.plugins.snapshot import (
@@ -235,7 +237,7 @@ async def test_plugin_job_rejected_before_handler() -> None:
     store = make_store("snap-job", jobs=MappingProxyType({key: job}))
     runtime = PluginJobRuntime(
         event_bus=EventBus(),
-        llm=object(),
+        llm=cast(PluginLlmService, object()),
         snapshot_store=store,
         revocation_gate=RevocationGate(
             make_status_provider([TenantStatus.REVOKED]),
@@ -267,7 +269,7 @@ async def test_plugin_job_passes_when_active_and_binds_snapshot() -> None:
     store = make_store("snap-job", jobs=MappingProxyType({key: job}))
     runtime = PluginJobRuntime(
         event_bus=EventBus(),
-        llm=object(),
+        llm=cast(PluginLlmService, object()),
         snapshot_store=store,
         revocation_gate=RevocationGate(make_active_provider(), source="pilot"),
     )

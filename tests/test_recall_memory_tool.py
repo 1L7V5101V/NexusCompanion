@@ -1,4 +1,4 @@
-﻿# pyright: reportPrivateUsage=false, reportUnusedCallResult=false
+# pyright: reportPrivateUsage=false, reportUnusedCallResult=false
 
 import asyncio
 import json

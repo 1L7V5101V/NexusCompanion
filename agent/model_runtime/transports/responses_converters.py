@@ -1,16 +1,14 @@
 """Responses 协议纯转换函数。
 
-从 transports/responses.py 抽出,保持无 auth/fcntl 依赖(Windows 可导入),
-供 CodexResponsesTransport 与 agent.provider 的 Codex 协议路径共用。
+保持无 auth/fcntl 依赖（Windows 可导入），供 agent.provider 的 Codex 协议路径使用。
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any, cast
 
 from agent.model_runtime.errors import TransportError
-from agent.model_runtime.types import ModelUsage, ToolCall, UsageCoverage
+from agent.model_runtime.types import ModelUsage, UsageCoverage
 
 
 def _responses_input(
@@ -141,37 +139,6 @@ def _normalize_tool_choice(
     return "required", selected
 
 
-def _responses_lite_input(
-    messages: list[dict], instructions: str, tools: list[dict]
-) -> list[dict]:
-    """按 Codex Responses Lite 契约内嵌工具和开发者指令。"""
-    prefix: list[dict] = [
-        {"type": "additional_tools", "role": "developer", "tools": tools}
-    ]
-    if instructions:
-        prefix.append(
-            {
-                "type": "message",
-                "role": "developer",
-                "content": [{"type": "input_text", "text": instructions}],
-            }
-        )
-    return [*prefix, *_strip_image_details(messages)]
-
-
-def _strip_image_details(items: list[dict]) -> list[dict]:
-    """复制 Lite input,并移除后端不接受的图片 detail。"""
-    copied = json.loads(json.dumps(items, ensure_ascii=False))
-    for item in copied:
-        content = item.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "input_image":
-                _ = block.pop("detail", None)
-    return cast(list[dict], copied)
-
-
 def _sanitize_replay_item(item: dict[str, Any]) -> dict[str, Any]:
     """只保留 reasoning 重放契约允许的字段。"""
     if item.get("type") != "reasoning":
@@ -195,16 +162,6 @@ def _dump(value: Any) -> dict[str, Any]:
         return {}
     dumped = value.model_dump(mode="json")
     return cast(dict[str, Any], dumped)
-
-
-def _tool_call(raw: dict[str, str]) -> ToolCall:
-    try:
-        arguments = json.loads(raw.get("arguments") or "{}")
-    except json.JSONDecodeError as exc:
-        raise TransportError("Codex 工具调用参数不是有效 JSON") from exc
-    if not isinstance(arguments, dict):
-        raise TransportError("Codex 工具调用参数必须是 JSON 对象")
-    return ToolCall(id=raw.get("id", ""), name=raw["name"], arguments=arguments)
 
 
 def _parse_usage(raw: Any) -> ModelUsage | None:

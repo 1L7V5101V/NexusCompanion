@@ -16,9 +16,10 @@ import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 
 from bootstrap.chat_api import create_chat_app
@@ -57,9 +58,9 @@ pytestmark = pytest.mark.postgres
 
 
 def _ws_connection(channel: WebChatChannel, identity: WebChatIdentity) -> _Connection:
-    ws = _FakeWebSocket()
+    ws = cast(WebSocket, _FakeWebSocket())
     conn = _Connection(  # type: ignore[assignment]
-        ws,  # type: ignore[arg-type]
+        ws,
         uuid.uuid4().hex,
         identity=identity,
     )

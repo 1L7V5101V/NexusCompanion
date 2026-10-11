@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -18,6 +19,9 @@ from agent.plugins.generation import GateResult, PluginContributions, PluginGene
 from agent.plugins.jobs import PluginJobSpec, RegisteredPluginJob
 from agent.plugins.snapshot import RuntimeSnapshot
 from agent.plugins.specs import ProactiveSourceSpec, RegisteredProactiveSource
+
+if TYPE_CHECKING:
+    from agent.plugins.scope import PluginScope
 from agent.plugins.tenant_plan import (
     ContributionMeta,
     PluginInvocationContext,
@@ -48,7 +52,7 @@ def _make_generation(
         source_revision="rev0",
         config_revision="cfg0",
         instance=instance if instance is not None else SimpleNamespace(),
-        scope=SimpleNamespace(),
+        scope=cast("PluginScope", SimpleNamespace()),
         contributions=PluginContributions(
             manifest={},
             before_turn_modules=modules,

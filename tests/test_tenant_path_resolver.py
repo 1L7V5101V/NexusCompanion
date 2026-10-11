@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,20 @@ from agent.tools.registry import ToolRegistry
 def test_rejects_absolute_and_tilde() -> None:
     resolver = TenantPathResolver(Path("/ws"), multi_tenant=True)
     root = Path("/ws/tenants/t1/workspace")
-    for bad in ("/etc/passwd", "~/secret", "C:\\x"):
+    for bad in ("/etc/passwd", "~/secret"):
         with pytest.raises(PathResolveError):
             resolver.resolve_relative(root, bad)
+
+    # `C:\x` 只在 Windows 上是绝对路径；POSIX 下它是一个（名字很怪的）合法相对路径，
+    # 拼出来的结果仍在租户根内。2026-10-11 CI（Linux runner）正是败在这里 —— 原先把
+    # 三种形态并列断言「一律拒绝」，等于用一条只在开发机成立的规则当契约。
+    # 这里要守住的性质是「不逃逸出租户根」，两种平台上分别断言。
+    if os.name == "nt":
+        with pytest.raises(PathResolveError):
+            resolver.resolve_relative(root, "C:\\x")
+    else:
+        resolved = resolver.resolve_relative(root, "C:\\x")
+        assert resolved.is_relative_to(root.resolve())
 
 
 def test_rejects_dotdot_escape() -> None:
