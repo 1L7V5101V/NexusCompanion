@@ -153,7 +153,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Require deploy secrets
         env:
