@@ -152,7 +152,9 @@ deploy() {
   # alembic/versions 里（没有本次新增的 revision），表现为 upgrade 静默走完、库却停在
   # 旧版本，接着新代码起来发现表不存在。构建只做一次，后面的 run / up 复用同一镜像。
   log "构建新镜像"
-  docker compose build nexus >> "$STATE_DIR/deploy-$TS.log" 2>&1
+  # 构建输出直接进管道而不是日志文件：这一步动辄几分钟，静默的 SSH 通道会被中间网络
+  # 掐掉（2026-10-11 实测 4 分半后 broken pipe），持续有字节流动本身就是保活。
+  docker compose build nexus
 
   local before after head_rev
   before="$(db_version)"

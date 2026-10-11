@@ -197,6 +197,19 @@ jobs:
             echo "::warning::未配置 DEPLOY_SSH_FINGERPRINT，本次以首次所见信任主机密钥"
           fi
           printf '%s\n' "$scanned" >> ~/.ssh/known_hosts
+          # 长动作期间 SSH 通道必须有心跳：2026-10-11 第一次自动发版就死在这里 ——
+          # docker compose build 的输出被重定向到服务器上的日志文件，通道静默 4 分半，
+          # 阿里云侧把连接掐了（client_loop: send disconnect: Broken pipe）。
+          # 结果是发版在「构建新镜像」后被判定失败，生产还跑旧容器（未半途状态）。
+          cat > ~/.ssh/config <<'SSHC'
+          Host *
+              ServerAliveInterval 15
+              ServerAliveCountMax 8
+              TCPKeepAlive yes
+          SSHC
+          chmod 600 ~/.ssh/config
+          # 后续步骤的 run 块拿不到上一步的 shell 变量，用 GITHUB_ENV 传路径。
+          echo "SSH_CONFIG=$HOME/.ssh/config" >> "$GITHUB_ENV"
 
       # 远端命令面是锁死的：服务器 root 的 authorized_keys 对这把密钥强制
       # command=/usr/local/bin/nexus-deploy-gate，只认 'preflight|deploy|verify <ref>'
@@ -209,8 +222,8 @@ jobs:
           DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
           DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
         run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
-            "preflight $DEPLOY_REF"
+          ssh -F "$SSH_CONFIG" -i ~/.ssh/id_deploy -o BatchMode=yes \
+            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" "preflight $DEPLOY_REF"
 
       - name: ${{ inputs.mode || 'deploy' }}
         env:
@@ -224,8 +237,8 @@ jobs:
           else
             cmd="$MODE $DEPLOY_REF"
           fi
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
-            "$cmd" \
+          ssh -F "$SSH_CONFIG" -i ~/.ssh/id_deploy -o BatchMode=yes \
+            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" "$cmd" \
           || {
             echo "发版失败（$cmd）。回滚：workflow_dispatch 选 mode=rollback" >&2
             echo "（回滚只回代码不回库：本仓库迁移是 expand-only，旧代码可在新库上运行）" >&2
