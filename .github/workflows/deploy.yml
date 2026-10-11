@@ -1,18 +1,20 @@
 name: Deploy
 
-# 一条流水线做两件事：先验证（pyright 两套配置 + 全量 pytest 打真 PG），
+# 一条流水线做两件事：先验证（pyright 两套配置 + 全量 pytest 打真 PG，回归按四片并行），
 # 再把服务发到部署机。部署本身不在 YAML 里内联命令，只调用仓库内的
 # scripts/deploy.sh —— 流水线与人工运维共用同一份发版逻辑，不会出现两套会漂移的步骤。
 #
 # 需要的 secrets（Settings → Secrets and variables → Actions）：
 #   DEPLOY_SSH_HOST  部署机地址
-#   DEPLOY_SSH_USER  登录用户
-#   DEPLOY_SSH_KEY   只授权到该机的私钥（公钥进 authorized_keys）
+#   DEPLOY_SSH_USER  登录用户（当前为 root）
+#   DEPLOY_SSH_KEY   专用部署私钥；公钥在 authorized_keys 里带 forced command，
+#                    只能触发 nexus-deploy-gate 认的那几个动作（见 scripts/deploy_gate.sh）
 #   DEPLOY_SSH_FINGERPRINT  可选但强烈建议：主机密钥指纹，防首次连接的中间人信任
 #
 # 还需要一次性的人工准备（不属于流水线）：
 #   部署机 /opt/NexusCompanion/.env 必须存在（POSTGRES_PASSWORD=...），
 #   否则 compose 渲染与 alembic 都会被 deploy.sh 直接拒绝。
+#   以及 /usr/local/bin/nexus-deploy-gate（本仓库 scripts/deploy_gate.sh 的安装副本）。
 #
 # ⚠️ 触发即上线的边界：deploy job 依赖 environment: production。GitHub 上新建的
 # environment 默认**没有** required reviewers，因此 push 到 main 会在验证通过后直接
@@ -27,10 +29,10 @@ on:
         type: string
         default: main
       mode:
-        description: 动作（preflight 只检查不改任何东西）
+        description: 动作（preflight 只检查不改任何东西；verify 只探活）
         type: choice
         default: deploy
-        options: [preflight, deploy, rollback]
+        options: [preflight, deploy, verify, rollback]
   pull_request:
     branches: [main]
   push:
@@ -43,18 +45,46 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  PROJECT_DIR: /opt/NexusCompanion
-
 jobs:
-  verify:
-    name: 验证（pyright + 全量 pytest / 真 PG）
+  types:
+    name: 类型门禁（pyright 两套配置）
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip install -r requirements-dev.txt
+
+      - name: Run pyright
+        run: .venv/bin/pyright --level error
+
+      - name: Run pyright for tests
+        run: .venv/bin/pyright --project pyrightconfig.tests.json --level error
+
+  tests:
+    name: 回归（pytest / 真 PG，slice ${{ matrix.slice }}）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [0, 1, 2, 3]
     services:
       postgres:
         # 与生产同镜像；宿主端口用 5433 正对 tests/conftest.py 的默认 URL，
-        # 于是测试侧不需要任何额外配置。
+        # 于是测试侧不需要任何额外配置。每个 slice 各自一个容器，scratch 库不会互踩。
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: nexus
@@ -84,36 +114,47 @@ jobs:
           .venv/bin/python -m pip install -r requirements.txt
           .venv/bin/python -m pip install -r requirements-dev.txt
 
-      - name: Run pyright
-        run: .venv/bin/pyright --level error
+      - name: Pick tests for this slice
+        id: pick
+        run: |
+          slice='${{ matrix.slice }}'
+          if [ "$slice" = "0" ]; then
+            paths="$(ls -d tests/*/ | grep -vE 'tests/(fixtures|__pycache__)/' | tr '\n' ' ')"
+          else
+            n=0
+            paths=""
+            for f in tests/test_*.py; do
+              if [ $(( n % 3 )) -eq $(( slice - 1 )) ]; then
+                paths="$paths $f"
+              fi
+              n=$(( n + 1 ))
+            done
+          fi
+          echo "paths=${paths# }" >> "$GITHUB_OUTPUT"
 
-      - name: Run pyright for tests
-        run: .venv/bin/pyright --project pyrightconfig.tests.json --level error
-
-      # NEXUS_REQUIRE_PG=1 是这里的关键：PG 连不上就让作业红，而不是把上百条
-      # 集成测试静默 skip 掉——被 skip 的回归看起来全绿，比没有回归更危险。
+      # 分片的原因（2026-10-11 实测）：整包一次跑时，runner 在 79% 附近连续两次收到
+      # shutdown signal，pytest 的失败摘要因此根本没打出来 —— 一个 job 死掉就把 2004
+      # 项的诊断信息全丢了。分四片 + fail-fast: false 后，任何一片被环境干掉，其余
+      # 三片仍会交回自己的失败清单；--timeout 则把「挂住」显式化为失败而不是拖死 runner。
+      #
+      # NEXUS_REQUIRE_PG=1 是另一道关键：PG 连不上就让作业红，而不是把上百条集成测试
+      # 静默 skip 掉——被 skip 的回归看起来全绿，比没有回归更危险。
       - name: Run tests against PostgreSQL
-        timeout-minutes: 35
+        timeout-minutes: 25
         env:
           PYTHONWARNINGS: "ignore:.*AbstractEventLoopPolicy.*:DeprecationWarning"
           NEXUS_REQUIRE_PG: "1"
           NEXUS_TEST_PG_URL: "postgresql://nexus:nexus_dev@localhost:5433/nexus"
-        run: .venv/bin/pytest -q -W error tests/
+        run: .venv/bin/pytest -q -W error --timeout=180 ${{ steps.pick.outputs.paths }}
 
   deploy:
     name: ${{ inputs.mode || 'deploy' }} → ${{ inputs.ref || github.ref_name }}
-    needs: verify
+    needs: [types, tests]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 20
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-        with:
-          # workflow_dispatch 时按选定的 ref 取，保证 deploy.sh 与要发布的代码同源。
-          ref: ${{ inputs.ref || github.ref_name }}
-
       - name: Require deploy secrets
         env:
           DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
@@ -152,23 +193,19 @@ jobs:
           fi
           printf '%s\n' "$scanned" >> ~/.ssh/known_hosts
 
-      # 把当前 ref 的 deploy.sh 传到远端临时路径执行：服务器上的代码此刻还是上一版，
-      # 直接用它的脚本会跑成旧流程；传完再跑，脚本与被发布的代码同源。
-      - name: Ship deploy script to target
-        env:
-          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
-          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-        run: |
-          scp -i ~/.ssh/id_deploy -o BatchMode=yes scripts/deploy.sh \
-            "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST:/tmp/nexus-deploy-${GITHUB_RUN_ID}.sh"
-
+      # 远端命令面是锁死的：服务器 root 的 authorized_keys 对这把密钥强制
+      # command=/usr/local/bin/nexus-deploy-gate，只认 'preflight|deploy|verify <ref>'
+      # 与 'rollback' 四种严格匹配的命令，其它一律 78 拒绝（已实测）。闸门内部再从
+      # fetch 到的 ref 里取 scripts/deploy.sh 执行，所以被跑的发版逻辑与要发布的代码
+      # 同源，而命令面里不存在任何「上传并执行任意文件」的位置。
       - name: Preflight on target
         env:
           DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
           DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
+          DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
         run: |
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
-            "COMPOSE_PROJECT_DIR='$PROJECT_DIR' bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh preflight"
+            "preflight $DEPLOY_REF"
 
       - name: ${{ inputs.mode || 'deploy' }}
         env:
@@ -177,20 +214,15 @@ jobs:
           DEPLOY_REF: ${{ inputs.ref || github.ref_name }}
           MODE: ${{ inputs.mode || 'deploy' }}
         run: |
+          if [ "$MODE" = "rollback" ]; then
+            cmd="rollback"          # 回滚退回 last-deploy.env 记录的 commit，不需要 ref
+          else
+            cmd="$MODE $DEPLOY_REF"
+          fi
           ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
-            "COMPOSE_PROJECT_DIR='$PROJECT_DIR' DEPLOY_REF='$DEPLOY_REF' \
-             bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh $MODE" \
+            "$cmd" \
           || {
-            echo "部署失败。回滚命令：ssh ... bash /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh rollback" >&2
+            echo "发版失败（$cmd）。回滚：workflow_dispatch 选 mode=rollback" >&2
             echo "（回滚只回代码不回库：本仓库迁移是 expand-only，旧代码可在新库上运行）" >&2
             exit 1
           }
-
-      - name: Remove uploaded script
-        if: always()
-        env:
-          DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
-          DEPLOY_SSH_USER: ${{ secrets.DEPLOY_SSH_USER }}
-        run: |
-          ssh -i ~/.ssh/id_deploy -o BatchMode=yes "$DEPLOY_SSH_USER@$DEPLOY_SSH_HOST" \
-            "rm -f /tmp/nexus-deploy-${GITHUB_RUN_ID}.sh" || true
