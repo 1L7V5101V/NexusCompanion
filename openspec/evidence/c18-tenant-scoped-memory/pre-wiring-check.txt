@@ -1,0 +1,8 @@
+# c18 接线前复核：PgMemoryMarkdownStore 无实例化点
+命令: grep -rn "PgMemoryMarkdownStore" --include=*.py . | grep -v .venv | grep -v agent/memory_pg.py
+日期: 2026-10-12 02:19:07
+
+./bootstrap/db/repository/persona_repo.py:118:        `PgMemoryMarkdownStore._upsert_content` 同字段约定）。
+
+结论：除定义文件 agent/memory_pg.py 与上述一条注释外无任何引用，该类在接线前仍是死代码。
+同时记录：其 read_self/write_self 使用 memory_type='"self"'，与 C9 RelationshipState 同值——c18 ADR-9 已把 self 整格移出画像层。

@@ -21,8 +21,18 @@ from core.memory.markdown import ConsolidateRequest, ConsolidateResult
 
 
 class FakeMemoryEngine:
-    def __init__(self, workspace: Path | None = None) -> None:
-        self._store = MemoryStore(workspace) if workspace is not None else None
+    def __init__(
+        self,
+        workspace: Path | None = None,
+        *,
+        profile_store: Any | None = None,
+    ) -> None:
+        # profile_store 用于注入按租户解析的画像提供者；缺省仍走单机文件 store。
+        self._store = (
+            profile_store
+            if profile_store is not None
+            else (MemoryStore(workspace) if workspace is not None else None)
+        )
         self.consolidate_calls: list[ConsolidateRequest] = []
         self.retrieve_result = MemoryQueryResult(text_block="")
 

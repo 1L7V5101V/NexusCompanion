@@ -37,6 +37,12 @@
 
 **不选：给 PG 实现加同步门面。** AgentLoop 已经在事件循环内，同步方法里再阻塞等待异步会自锁；`asyncio.run` 在运行中的 loop 里不可用；改用独立线程加独立 loop 又会让 SQLAlchemy 异步 engine 跨事件循环使用。要绕开就得再维护一套同步连接池，等于双份存储层。
 
+**预取的落点：扩 `resolve_persona_snapshot`，同一次数据库会话内取回两份快照。** 该函数（`bootstrap/persona.py:29-54`）现在的形状是借一条数据库连接、跑两条 SELECT（`tenant_persona_profiles` 一行 + `memory_items` 的 `self` 一行）、还连接。本 change 在同一次借用里再加一条 SELECT 取四类画像，返回值从 `PersonaSnapshot` 变成一对快照。代价是 `bind_persona_resolver` 的签名要变，C9 那条装配线被牵连。
+
+**不选：另立一个画像解析器、自己再借一次连接。** 边界更干净，但两次借用之间有时间缝：若那期间 optimizer 写了画像，同一轮拿到的 persona 与画像就来自两个不同瞬间。`persona-relationship` 规定进行中的 turn 使用组装时的快照、不中途替换——两个时刻拿到的东西严格说不是"组装时的快照"，而是两个时刻的拼贴。
+
+（术语说明：本节的"数据库会话"指一次数据库连接的借用周期，即 `async with session_factory()` 那一段，与用户登录会话无关。）
+
 ### ADR-2 新建 `MemoryProfileSnapshot`，不扩 `PersonaSnapshot`
 
 把五类画像塞进现有 `PersonaSnapshot` 会让 `persona-relationship` 的「PersonaProfile 提交后固定」语义被误读成画像层也固定——画像是每轮可变的。两者并列挂在 `TurnContext` 上，各自独立演进。`TurnContext`（`agent/core/prompt_block.py:24-33`）补 `tenant_id` 字段，用于快照缺失时的定位与审计。
@@ -79,6 +85,10 @@
 
 索引现状与代价：`memory_items` 上只有 `ix_memory_items_content_hash`（tenant_id, content_hash, memory_type 唯一）与 `ix_memory_items_type_status`（tenant_id, memory_type, status），`happened_at` 无索引。按天查询走 `tenant_id + memory_type='journal'` 已能把扫描范围限定到该租户的 journal 行集，再对 `happened_at` 过滤。本 change 不为此新加索引——journal 目前两侧都没有读接口（markdown 侧同样只有 `append_journal`，见 `agent/memory.py:112`），它不进 prompt，加索引属于无消费者的优化。
 
+**journal 的定位：它是日志，只是住在记忆表里。** 归属仍在 `memory_items`（`memory_type='journal'`），不新建 `journal_entries`、也不挪去审计面——那张表两种后端都有、列够用，而"只做记录、不被记忆路径消费"已经由类型白名单结构性保证：`recall_memory` 的时间检索在 `infra/storage/postgres_memory_store.py:889` 硬写 `memory_type='event'`，journal 行取不到。将来若真要按天回看，那是一条显式的按类型查询，属于另一个 change。
+
+推论：`MemoryProfileSnapshot` **不含 `journal` 字段**。快照是给 prompt 组装用的值对象，journal 没有任何组装期消费者，放进快照就是让预取去查一份没人读的数据。所以本 change 的组装期预取范围是四类（`long_term` / `pending` / `recent_context` / `history`）。spec 里的归属契约仍写五类——归属说的是"这些数据按租户不互串"，预取说的是"组装时取哪几份"，两者不是一回事。
+
 ### ADR-9 自我认知的读写都归 persona 那条缝，画像层不再管 self
 
 单体（markdown）不再作为画像层的第二条实现路径：五类画像读写只走按租户解析的表存储，单机归到 `infra/storage/tenancy.py:22` 的 `DEFAULT_TENANT = "default"`。
@@ -105,6 +115,28 @@
 
 **不选：让单机强制起 PG。** 那会让 `python main.py` 的零依赖本地跑法消失，Telegram 单机部署跟着要装数据库——等于把一次内部重构转嫁成部署负担。
 
+### ADR-11 静态块缓存 scope 加租户维度，删掉逐块手工防御
+
+`agent/core/prompt_block.py:318` 的 `cache_scope = str(ctx.workspace.expanduser().resolve())` 只有 workspace 路径，缓存键是 `(workspace, block.label, signature)`——**没有租户维度**。
+
+画像三个块今天不出事，只因为它们是 `is_static = False`，走不到查缓存那步（`:326` 只对 static 块算 signature）。而 C9 已经为同一个坑手工补过一次：`IdentityPromptBlock.cache_signature`（`:117-122`）在快照存在时故意返回 None，注释写明"缓存 scope 是进程级 workspace 路径——缓存会跨 tenant 泄漏（fail-closed）"。
+
+那种"每个块自己记得在 cache_signature 里防一次"的模式是脆弱的：把任何一个渲染租户内容的块改成 `is_static = True` 就会重新泄漏，且没有任何编译期或测试期信号。所以本 change 把租户并进 scope（`workspace + tenant_id`），并删掉 `IdentityPromptBlock` 那段手工 fail-closed——防御从"逐块自觉"变成"结构上不可能"。
+
+代价：static 块的缓存命中率按租户数摊薄（同一 workspace 的身份/规则块每个租户各存一份）。这些块体量小、数量有限，且原本在有快照时就已经被手工禁缓存了，所以实际占用不升反降。
+
+### ADR-12 画像快照在 `ContextRequest` 上必填，暴露所有无租户渲染
+
+`ContextRequest.persona_snapshot` 是带默认值的可选字段，`PersonaSnapshot` 的 docstring 还把 None 定义成合法语义（`agent/core/types.py:84-85`：None → 各 block 走单体回退）。我照抄这个形状加 `profile_snapshot`，于是"调用方没传"在类型上合法，而真实后果是画像注入静默消失。
+
+生产侧两个 render 调用点里，`agent/lifecycle/phases/prompt_render.py:87` 传了 persona 快照；`agent/lifecycle/phases/before_reasoning.py:78` 的 `_PromptWarmupModule` **两个都不传**，只为预热缓存而渲染一遍完整 prompt 并丢弃结果。它的副作用是覆盖 `ContextBuilder._last_debug_breakdown`（`agent/context.py:319`），让 admin/debug 的 source breakdown 显示一份"无租户 + 全局文件"的组装结果。
+
+选定：`profile_snapshot` 与 `tenant_id` 在 `ContextRequest` 上必填，None 或空不再是合法输入。warmup 因此必须显式回答"预热用的是谁的画像"——做法是让它复用本轮真实租户的快照（`BeforeReasoningCtx` 与 `PromptRenderCtx` 需补 `tenant_id`），而不是再拿空形状渲染。
+
+**不选：保持可选 + 只在 default 租户时从全局 store 兜底。** 那样 warmup 永远不传任何东西，也就永远不会被问到，跨租户静默失效的形状原样保留。
+
+**不选：删掉 warmup。** 它的预热对首 token 延迟有作用，且这是独立于本 change 的性能决策；本 change 只要求它带上租户身份。
+
 ## Risks / Trade-offs
 
 - **预取让每轮多一次 PG 读**，即使该轮某些块用不到 → 单条批量查询取五类；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。
@@ -125,7 +157,3 @@
 6. 门禁：`pyright --level error`（project 与 tests 两配置）+ `pytest -q -W error tests/`。
 
 生产部署顺序与回滚同上：先 dry-run 看归属，再迁 owner 租户。共享 markdown 文件在验证期内不删除。
-
-## Open Questions
-
-- journal 要不要补一个读回接口。`happened_at` 列已经在（ADR-8），缺的只是读方法本身，以及真要做按天大范围扫描时才需要的一个索引。现状两侧都没有读方法，本 change 不建；将来若 drift 或 admin 面需要按天回看事件，另开 change。

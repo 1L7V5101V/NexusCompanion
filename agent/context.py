@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from agent.core.types import ContextRenderResult, ContextRequest
-from agent.core.types import PersonaSnapshot
+from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.core.prompt_block import (
     ActiveSkillsPromptBlock,
     BehaviorRulesPromptBlock,
@@ -315,6 +315,8 @@ class ContextBuilder:
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
             persona_snapshot=request.persona_snapshot,
+            tenant_id=request.tenant_id,
+            profile_snapshot=request.profile_snapshot,
         )
         self._last_debug_breakdown = assembled.debug_breakdown
         self._last_assembled_contexts = {
@@ -335,6 +337,8 @@ class ContextBuilder:
         retrieved_memory_block: str = "",
         disabled_sections: set[str] | None = None,
         persona_snapshot: "PersonaSnapshot | None" = None,
+        tenant_id: str = "",
+        profile_snapshot: "MemoryProfileSnapshot | None" = None,
     ) -> SystemPromptBuildResult:
         ctx = TurnContext(
             workspace=self.workspace,
@@ -344,7 +348,9 @@ class ContextBuilder:
             channel=channel,
             chat_id=chat_id,
             retrieved_memory_block=retrieved_memory_block,
+            tenant_id=tenant_id,
             persona_snapshot=persona_snapshot,
+            profile_snapshot=profile_snapshot,
         )
         built = self._system_prompt_builder.build(
             ctx,

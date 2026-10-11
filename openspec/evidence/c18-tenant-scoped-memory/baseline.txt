@@ -1,0 +1,14 @@
+# c18-tenant-scoped-memory 基线门禁
+分支: feature/c18-tenant-scoped-memory @ 61923dbc6
+日期: 2026-10-12 02:18:48
+
+## pyright --level error -p pyrightconfig.json
+0 errors, 0 warnings, 0 informations
+
+## pyright --level error -p pyrightconfig.tests.json
+0 errors, 0 warnings, 0 informations
+
+## pytest -q -W error tests/
+2004 passed in 808.07s (0:13:28)
+
+对照点：后续 9.1/9.2 的失败用例数与 pyright 错误数均不得高于此处三个数字。

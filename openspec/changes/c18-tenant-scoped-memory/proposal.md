@@ -16,6 +16,9 @@
 - 一次性迁移：把现存全局 markdown 内容写入指定 owner 租户的 PG 行，幂等可重放；迁移完成后全局文件只作为迁移输入与归档留存，不再是事实源。
 - 本地验收工具（不是产品能力）：两个常驻测试租户 `admin1` / `admin2`、dev-only 的租户切换入口、一条跨租户隔离断言。
 
+- 提示块静态缓存的 scope 加租户维度（现在只有 workspace 路径），并删掉 C9 为此在身份块里手写的一次 fail-closed。
+- `ContextRequest` 的 `tenant_id` 与画像快照改为必填，None 不再是合法输入；`before_reasoning` 的预热渲染因此必须带租户身份。
+
 ### Non-Goals
 
 - 不改记忆召回与检索契约（`memory-retrieval-baseline`、`memory-engine-catalog` 范围内）。本 change 只动画像层，不动 `memory_items` 的向量/BM25 检索面。
@@ -38,7 +41,7 @@
 
 ## Impact
 
-**代码**：`agent/memory_pg.py`、`agent/memory.py`、`core/memory/markdown.py`、`core/memory/runtime.py`、`agent/context.py`、`agent/core/prompt_block.py`、`agent/looping/core.py`、`bootstrap/memory.py`、`bootstrap/persona.py`、`bootstrap/tools.py`、`bootstrap/app.py`、`bootstrap/proactive.py`、`plugins/drift_flow/*`；`agent/tools/path_resolver.py` 需把租户 category 根解析抽成公共 helper（`bootstrap/attachments/blob_store.py:71-85` 目前复制了同款逻辑）。另需一个 SQLite 侧的画像存储实现，落在 `memory2/` 已有的 `memory_items` 表上，与 PG 实现同接口。
+**代码**：`agent/memory_pg.py`、`agent/memory.py`、`core/memory/markdown.py`、`core/memory/runtime.py`、`agent/context.py`、`agent/core/prompt_block.py`（含 `SectionCache` 的 scope 与身份块的手工 fail-closed）、`agent/looping/core.py`、`agent/lifecycle/types.py`、`agent/lifecycle/phases/before_reasoning.py`、`agent/lifecycle/phases/prompt_render.py`、`bootstrap/memory.py`、`bootstrap/persona.py`、`bootstrap/tools.py`、`bootstrap/app.py`、`bootstrap/proactive.py`、`plugins/drift_flow/*`；`agent/tools/path_resolver.py` 需把租户 category 根解析抽成公共 helper（`bootstrap/attachments/blob_store.py:71-85` 目前复制了同款逻辑）。另需一个 SQLite 侧的画像存储实现，落在 `memory2/` 已有的 `memory_items` 表上，与 PG 实现同接口。
 
 **数据**：`memory_items` 新增五类 `memory_type` 行的写入方，`app_configs` 承接合并幂等键。PG 侧无新表、alembic 零迁移（persona 三表与 `memory_items` 都已在 head）。SQLite 侧 `memory2/store.py` 的建表语句要加 `tenant_persona_profiles` 与 `persona_audit_events` 两张——同一结构从此有两个出处（PG 走 alembic、SQLite 走建表语句），需一个跨后端列集合一致性测试兜住。
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from agent.core.types import PersonaSnapshot
+from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
 from prompts.agent import (
     build_agent_behavior_rules_prompt,
@@ -30,7 +30,12 @@ class TurnContext:
     channel: str | None
     chat_id: str | None
     retrieved_memory_block: str
+    # c18：本轮所属租户，必填——缺失即构造失败，不回退默认租户。画像块只读
+    # profile_snapshot，不得经 `memory` 回退进程级共享目录（spec「画像缺失不
+    # 回退共享位置」）。self 那一格归 persona_snapshot（ADR-9）。
+    tenant_id: str
     persona_snapshot: PersonaSnapshot | None = None
+    profile_snapshot: MemoryProfileSnapshot | None = None
 
 
 class PromptBlock(Protocol):
@@ -110,10 +115,8 @@ class IdentityPromptBlock:
         return self._render_fn(workspace=ctx.workspace)
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
-        # 快照存在时禁用 static 缓存：不同 tenant 的快照内容不同，而缓存
-        # scope 是进程级 workspace 路径——缓存会跨 tenant 泄漏（fail-closed）。
-        if ctx.persona_snapshot is not None:
-            return None
+        # c18 ADR-11：跨租户隔离已由 cache_scope 的租户维度结构性保证，这里不再
+        # 逐块手写防御（原实现靠"有快照就禁缓存"，改一个 static 块就会重新泄漏）。
         return str(ctx.workspace.expanduser().resolve())
 
 
@@ -182,8 +185,13 @@ class LongTermMemoryPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        memory = ctx.memory.get_memory_context()
-        return str(memory).strip() if memory else None
+        # c18：只读本轮租户快照。profile_snapshot 为 None 表示装配缺漏，按空
+        # 语义跳过注入——不回退 ctx.memory，那会读到进程级共享目录。
+        profile = ctx.profile_snapshot
+        if profile is None or not profile.long_term:
+            return None
+        text = f"## Long-term Memory\n{profile.long_term}".strip()
+        return text or None
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
@@ -213,7 +221,11 @@ class RecentContextPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        content = ctx.memory.read_recent_context()
+        # c18：同 LongTermMemoryPromptBlock——只读快照，None 走空语义。
+        profile = ctx.profile_snapshot
+        if profile is None:
+            return None
+        content = profile.recent_context
         if not content:
             return None
         # Strip ## Recent Turns section — it mirrors the sliding window and causes overlap.
@@ -301,7 +313,9 @@ class SystemPromptBuilder:
         renders: list[PromptSectionRender] = []
         breakdown: list[PromptSectionMeta] = []
         disabled = disabled_sections or set()
-        cache_scope = str(ctx.workspace.expanduser().resolve())
+        # c18 ADR-11：缓存 scope 必须带租户。只按 workspace 分scope 时，同一进程
+        # 服务多个租户会让后一个租户命中前一个租户留下的 static 块。
+        cache_scope = f"{ctx.workspace.expanduser().resolve()}|tenant={ctx.tenant_id}"
 
         # 2. 再逐个渲染 prompt block。
         for block in self._blocks:
@@ -309,7 +323,12 @@ class SystemPromptBuilder:
                 continue
             cache_hit = False
             rendered: str | None = None
-            signature = block.cache_signature(ctx) if block.is_static else None
+            # 无租户身份的渲染不进 static 缓存：scope 会退化成"所有无租户调用
+            # 共用一格"，那是 ADR-11 要消灭的形状。宁可少缓存，不可错缓存。
+            if block.is_static and ctx.tenant_id:
+                signature = block.cache_signature(ctx)
+            else:
+                signature = None
 
             # 3. static block 先查缓存，避免重复读文件或重复构造。
             if signature:

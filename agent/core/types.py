@@ -92,6 +92,35 @@ class PersonaSnapshot:
     relationship_state: str
 
 
+@dataclass(frozen=True)
+class MemoryProfileSnapshot:
+    """本轮 turn 的 tenant 记忆画像快照（c18-tenant-scoped-memory ADR-1）。
+
+    由 turn 入口在 tenant lane 内解析一次（单条查询取回四类），随 ContextRequest
+    传入 prompt 组装；组装期不再查库，也不得回退读共享 workspace 记忆目录。
+
+    不含 `self` 那一格——自我认知归 PersonaSnapshot.relationship_state
+    （ADR-9）。不含 `journal`——它是日志，没有任何组装期消费者（ADR-8）。
+    `empty()` 表示该租户这几类都还没有内容，是空语义而非回退。
+    """
+
+    tenant_id: str
+    long_term: str
+    pending: str
+    recent_context: str
+    history: str
+
+    @classmethod
+    def empty(cls, tenant_id: str) -> "MemoryProfileSnapshot":
+        return cls(
+            tenant_id=tenant_id,
+            long_term="",
+            pending="",
+            recent_context="",
+            history="",
+        )
+
+
 @dataclass
 class ContextRequest:
     history: list[dict[str, Any]]
@@ -105,6 +134,8 @@ class ContextRequest:
     disabled_sections: set[str] | None = None
     turn_injection_prompt: str | None = None
     persona_snapshot: "PersonaSnapshot | None" = None
+    profile_snapshot: "MemoryProfileSnapshot | None" = None
+    tenant_id: str = ""
 
 
 @dataclass

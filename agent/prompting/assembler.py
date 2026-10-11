@@ -100,6 +100,8 @@ class PromptAssembler:
         system_sections_top: list[PromptSectionRender] | None = None,
         system_sections_bottom: list[PromptSectionRender] | None = None,
         persona_snapshot: Any | None = None,
+        tenant_id: str = "",
+        profile_snapshot: Any | None = None,
     ) -> AssembledTurnInput:
         # assembler 负责把“主 prompt + turn injection + message envelope”
         # 收束成一份统一输入，避免调用方各自手拼消息顺序。
@@ -110,6 +112,8 @@ class PromptAssembler:
             retrieved_memory_block=retrieved_memory_block,
             disabled_sections=disabled_sections,
             persona_snapshot=persona_snapshot,
+            tenant_id=tenant_id,
+            profile_snapshot=profile_snapshot,
         )
         injection_context = turn_injection_context or {}
         disabled = disabled_sections or set()

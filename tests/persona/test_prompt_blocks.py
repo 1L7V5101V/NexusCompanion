@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING, Any, cast
 from agent.core.prompt_block import (
     IdentityPromptBlock,
     SelfModelPromptBlock,
+    SystemPromptBuilder,
     TurnContext,
 )
 from agent.core.types import PersonaSnapshot
+from agent.prompting.assembler import SectionCache
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
@@ -39,6 +41,7 @@ def _ctx(
         channel="chat",
         chat_id="c1",
         retrieved_memory_block="",
+        tenant_id=(snapshot.tenant_id if snapshot is not None else "tenant-test"),
         persona_snapshot=snapshot,
     )
 
@@ -75,11 +78,23 @@ def test_identity_block_falls_back_without_snapshot(tmp_path: Path) -> None:
     assert block.render(ctx) == "单体身份块"
 
 
-def test_identity_block_cache_disabled_with_snapshot(tmp_path: Path) -> None:
-    """跨 tenant 缓存泄漏防线：有快照 → cache_signature None（禁 static 缓存）。"""
-    block = IdentityPromptBlock()
-    assert block.cache_signature(_ctx(tmp_path, SNAP_A)) is None
-    assert block.cache_signature(_ctx(tmp_path, None)) is not None
+def test_identity_block_cached_per_tenant_not_per_workspace(tmp_path: Path) -> None:
+    """跨 tenant 缓存泄漏防线。
+
+    c18 ADR-11 之前的做法是"有快照就禁 static 缓存"——那是逐块手写防御，把任何
+    一个渲染租户内容的块改成 static 就会重新泄漏。现在隔离由 cache_scope 的租户
+    维度结构性保证，所以身份块可以照常被缓存，前提是不同租户不命中同一格。
+    """
+    builder = SystemPromptBuilder([IdentityPromptBlock()], cache=SectionCache())
+
+    first = builder.build(_ctx(tmp_path, SNAP_A))
+    second = builder.build(_ctx(tmp_path, SNAP_B))
+
+    assert [item.cache_hit for item in second.system_sections] == [False]
+    a_text = first.system_prompt
+    b_text = second.system_prompt
+    assert "A 的身份文本" in a_text and "A 的身份文本" not in b_text
+    assert "B 的身份文本" in b_text and "B 的身份文本" not in a_text
 
 
 def test_self_block_uses_snapshot_relationship_state(tmp_path: Path) -> None:

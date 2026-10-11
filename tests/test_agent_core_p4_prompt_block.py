@@ -54,6 +54,7 @@ def test_system_prompt_builder_uses_prompt_blocks_and_static_cache(tmp_path: Pat
         channel=None,
         chat_id=None,
         retrieved_memory_block="retrieved",
+        tenant_id="tenant-test",
     )
 
     first = builder.build(ctx)
@@ -79,6 +80,7 @@ def test_system_prompt_builder_respects_disabled_sections(tmp_path: Path):
         channel=None,
         chat_id=None,
         retrieved_memory_block="retrieved",
+        tenant_id="tenant-test",
     )
 
     built = builder.build(ctx, disabled_sections={"retrieved_memory"})
