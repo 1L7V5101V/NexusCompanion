@@ -131,7 +131,18 @@ deploy() {
 
   backup_db
   log "取代码（远端 $DEPLOY_REF）"
-  git fetch --prune origin
+  # 部署机到 github.com:443 的连接不稳定（实测多次半开超时），有界重试而不是让
+  # 整条发版挂在一次网络抖动上。
+  fetched=0
+  for attempt in 1 2 3; do
+    if timeout 90 git fetch --prune origin 2>/dev/null; then
+      fetched=1
+      break
+    fi
+    log "第 $attempt 次 git fetch 失败，重试"
+    sleep 10
+  done
+  [[ "$fetched" == "1" ]] || die "git fetch 连续 3 次失败：本次发版中止，容器与库都未改动"
   git checkout "$DEPLOY_REF" >> "$STATE_DIR/deploy-$TS.log" 2>&1
   git reset --hard "origin/$DEPLOY_REF" >> "$STATE_DIR/deploy-$TS.log" 2>&1
   log "HEAD=$(git rev-parse --short HEAD)"
