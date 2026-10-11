@@ -183,9 +183,11 @@ jobs:
           scanned="$(ssh-keyscan -t ed25519,rsa,ecdsa "$DEPLOY_SSH_HOST" 2>/dev/null)"
           [ -n "$scanned" ] || { echo "ssh-keyscan 未取到主机密钥"; exit 1; }
           if [ -n "$DEPLOY_SSH_FINGERPRINT" ]; then
+            # 主机通常同时有 ed25519 与 rsa 两把密钥，所以要判「期望值是否在其中」，
+            # 不能把全部指纹拼成一个字符串再比相等（实测这台机两条都有，等值比较必失败）。
             got="$(printf '%s\n' "$scanned" | ssh-keygen -lf - | awk '{print $2}')"
-            if [ "$got" != "$DEPLOY_SSH_FINGERPRINT" ]; then
-              echo "主机密钥指纹不匹配：期望 $DEPLOY_SSH_FINGERPRINT 实得 $got" >&2
+            if ! printf '%s\n' "$got" | grep -qxF "$DEPLOY_SSH_FINGERPRINT"; then
+              echo "主机密钥指纹不匹配：期望 $DEPLOY_SSH_FINGERPRINT 实得 $(printf '%s\n' "$got" | tr '\n' ' ')" >&2
               exit 1
             fi
           else
