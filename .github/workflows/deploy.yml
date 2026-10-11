@@ -21,6 +21,17 @@ name: Deploy
 # 发版。若不希望如此，请在 Settings → Environments → production 加上 required
 # reviewers，或把下面的 push 触发去掉、只用 workflow_dispatch。
 
+# 增量触发：只改文档（或只改流水线自己）的 push/PR 不跑这条流水线。
+# 理由有两条：一是本工作流验证通过后就会重建镜像并重启生产容器，一次纯文档提交要付
+# 出 4 片全量回归 + 一次几十秒的服务中断；二是文档改动没有任何可验证的代码语义。
+# paths-ignore 的判定范围是「这次 push 里所有 commit 改到的文件的并集」：只要并集里还有
+# 一个不匹配下面这些模式的文件（哪怕是 tests/ 里的一行），流水线照常全跑。
+#   - '**.md' 匹配任意层级的 markdown；目录模式覆盖 openspec/evidence 里的截图与 JSON。
+#   - '.github/**' 只影响流水线自身，不进镜像、不改变要部署的代码，所以不触发发版；
+#     改了 YAML 想立刻验证，用 workflow_dispatch 手动跑（mode=preflight 只查不改）。
+# 手动 workflow_dispatch 不受这里的过滤影响，运维任何时候都能强行发版。
+# 注意：GitHub Actions 的 YAML 解析器不支持锚点/别名，下面两份列表必须逐字保持一致，
+# 改一处要改两处，否则 PR 与 main 的「什么算纯文档」会漂移。
 on:
   workflow_dispatch:
     inputs:
@@ -35,8 +46,20 @@ on:
         options: [preflight, deploy, verify, rollback]
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'openspec/**'
+      - '_handbook/**'
+      - '.github/**'
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'openspec/**'
+      - '_handbook/**'
+      - '.github/**'
 
 # 按 ref 分组，而不是全局一组：全局组会把 PR 的验证排在「生产部署」后面 —— 本 PR 连推
 # 几次后，后来的 run 确实整排队列等前一个跑完（GitHub 只给出 queued，不解释原因）。
