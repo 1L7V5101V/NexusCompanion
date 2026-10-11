@@ -22,6 +22,7 @@ PG_DB="${PG_DB:-nexus}"
 APP_CONTAINER="${APP_CONTAINER:-NexusCompanion}"
 DASHBOARD_URL="${DASHBOARD_URL:-http://127.0.0.1:2236/}"
 CHAT_URL="${CHAT_URL:-http://127.0.0.1:6322/}"
+PROBE_DEADLINE_SECONDS="${PROBE_DEADLINE_SECONDS:-120}"
 TS="$(date +%Y%m%d-%H%M%S)"
 KEEP_BACKUPS="${KEEP_BACKUPS:-8}"
 
@@ -103,17 +104,43 @@ backup_db() {
   ls -1t "$BACKUP_DIR"/*.dump 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f
 }
 
+probe_http() {
+  # 探活要带截止时间轮询，不能 sleep 8 + 单次 curl：`up -d` 只代表容器已启动，应用真正
+  # 监听端口要十几到几十秒（本项目实测冷启动约 25 秒，dashboard 还要挂插件）。
+  # 2026-10-11 的发版就是被判成「Dashboard 探活失败：HTTP 000」而流水线红掉，服务其实
+  # 已经正常在跑 —— 误报比漏报更糟，因为它让人以为发版失败。
+  local url="$1" name="$2" waited=0 code
+  while [[ "$waited" -lt "$PROBE_DEADLINE_SECONDS" ]]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$url" || echo 000)"
+    if [[ "$code" =~ ^[23] ]]; then
+      log "$name 探活 OK：HTTP $code（等待 ${waited}s）"
+      return 0
+    fi
+    sleep 3
+    waited=$((waited + 3))
+  done
+  die "$name 探活失败：${waited}s 内始终不是 2xx/3xx（最后一次 HTTP $code）"
+}
+
 verify() {
   docker inspect -f '{{.State.Status}} {{.State.Restarting}}' "$APP_CONTAINER" 2>/dev/null \
     | grep -q '^running false' || die "应用容器未在正常运行"
-  local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$DASHBOARD_URL" || echo 000)"
-  [[ "$code" =~ ^[23] ]] || die "Dashboard 探活失败：HTTP $code"
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$CHAT_URL" || echo 000)"
-  [[ "$code" =~ ^[23] ]] || die "WebChat 探活失败：HTTP $code"
-  log "探活 OK（Dashboard/Chat 均 2xx-3xx）"
-  docker logs --since 5m "$APP_CONTAINER" 2>&1 | grep -ciE "traceback|error:" >/dev/null \
-    && log "注意：近 5 分钟日志含错误字样，请人工复核" || log "近 5 分钟日志无异常字样"
+  probe_http "$DASHBOARD_URL" Dashboard
+  probe_http "$CHAT_URL" WebChat
+  local errs
+  errs="$(docker logs --since 5m "$APP_CONTAINER" 2>&1 | grep -ciE 'traceback|error' || true)"
+  if [[ "$errs" != "0" ]]; then
+    log "注意：近 5 分钟日志有 $errs 行含错误字样，请人工复核"
+  else
+    log "近 5 分钟日志无错误字样"
+  fi
+  # C11 durable 调度是否真的起来了：这是「调度落 PG」这版的核心运行面。只在 JSON/文件后端
+  # 或调度被门控关掉时才会缺失，所以作为信息报出而不是判失败。
+  if docker logs --since 10m "$APP_CONTAINER" 2>&1 | grep -q "DurableSchedulerService started"; then
+    log "DurableSchedulerService 已启动（含中断执行恢复扫描）"
+  else
+    log "注意：近 10 分钟日志没有 DurableSchedulerService started —— 本次部署可能未启用 PG durable 调度"
+  fi
   log "库版本=$(db_version)"
 }
 
