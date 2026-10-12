@@ -102,6 +102,8 @@
 
 迁移脚本必须显式传目标租户，缺参 fail-closed（对应 spec 的「未指定归属时拒绝」）。本地租户切换入口 SHALL 只在 dev 标志下注册，判据是它绕过了「会话在 `/api/auth/exchange` 时与账号 1:1 绑死」这条生产不变量——`bootstrap/db/models/canonical.py:96` 的 `uq_canonical_conversations_tenant_id` 约束决定了换租户必须换会话，生产开放它等于允许会话改绑他人租户。
 
+实现形态（apply 阶段定）：入口是 `POST /api/admin/dev/tenant-switch`，挂在 admin 面上，回环 + admin session + Origin + CSRF 四道门禁一条不少；它只替目标账号签发一次性邀请 Token，调用方拿这个 Token 走既有 `/api/auth/exchange` 开新会话——**不改绑任何已有会话**，所以「换租户必须换会话」这条不变量在 dev 里也没被绕过，被自动化的只是换会话那一步。挂载判据取 `config.dev_mode`，`config` 缺失按非 dev 处理（fail-closed）。目标账号只有一个租户时才能只凭 `display_name` 切换，多租户账号必须点名 `tenant_id`，否则「切到哪个 agent」成了实现细节。
+
 ### ADR-7 本地测试租户沿用 `pilot-<随机>` id，`admin1` / `admin2` 只作为 label
 
 不改租户 id 生成规则。`bootstrap/db/repository/provisioning_repo.py:386-388` 的 `_new_tenant_id()` 固定产出 `pilot-<12 位随机>`，本 change 不为测试台加覆盖入口——加一个「可以指定租户 id」的口子等于在 1:1 身份链旁边开一条人工命名路径，与 `canonical-identity` 的派生链约束相抵。

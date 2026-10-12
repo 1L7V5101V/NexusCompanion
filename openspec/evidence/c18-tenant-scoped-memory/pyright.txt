@@ -1,11 +1,28 @@
 c18-tenant-scoped-memory task 9.2 evidence — 类型门禁（全量测试见 pytest-full.txt）
-生成: 2026-10-12 22:00  分支: feature/c18-tenant-scoped-memory（未推送）
+生成: 2026-10-12 22:00，22:59 复跑（8.1/8.2 落地后）  分支: feature/c18-tenant-scoped-memory（未推送）
 
 ==============================================================
+ 最终数字（22:59 那一轮，代码与 9.1 那份全量测试同一版本）
+  pyrightconfig.json            0 errors, 6320 warnings, 0 informations
+  pyrightconfig.tests.json      0 errors, 9652 warnings, 0 informations
+  scripts/seed_local_test_tenants.py + scripts/record_profile_isolation_admin1_admin2.py
+                                0 errors, 66 warnings（两个 8.1/8.3 脚本合跑一次）
+  scripts/migrate_profile_to_tenant.py   0 errors, 4 warnings（22:00 那轮单跑）
+
+错误数与 1.1 基线一致（各 0）。覆盖范围如实记在这里：`scripts/` 与 `alembic/` 都不在
+两个 pyright 配置的 include 里，所以本 change 新增的脚本单独跑一次（第三行），
+不能以为闸门覆盖了它。
+
+==============================================================
+ 8.1/8.2 落地前那一轮（22:00）
   pyrightconfig.json            0 errors, 6301 warnings, 0 informations
   pyrightconfig.tests.json      0 errors, 9645 warnings, 0 informations
   scripts/migrate_profile_to_tenant.py   0 errors, 4 warnings
-
-错误数与 1.1 基线一致（各 0）。覆盖范围如实记在这里：`scripts/` 与 `alembic/` 都不在
-两个 pyright 配置的 include 里，所以本 change 新增的迁移脚本单独跑一次（第三行），
-不能以为闸门覆盖了它。
+==============================================================
+中间一轮曾出过 4 条 error，都是新代码带来的，值得记下来因为它们各指一个真问题：
+- `POST /api/admin/dev/tenant-switch` 的处理器里写 `_, raw_token = await issue_invitation(...)`，
+  而它的依赖参数名正是 `_`（`_: _AdminSession = Depends(_admin_mutation)`）——同一个函数里
+  把注入进来的 admin session 覆盖掉了。改成 `_token_row` 才可见。这不是风格问题：
+  名字复用会让后面读到 `_` 的地方拿到错的东西。
+- 测试桩件 `_Runtime` 传给声明为 `AuthRuntime` 的参数要显式 `cast`：桩件只实现路由注册与
+  门禁用到的那几面，不假装自己是完整 runtime。

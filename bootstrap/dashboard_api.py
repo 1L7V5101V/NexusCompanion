@@ -1583,9 +1583,12 @@ def create_dashboard_app(
     if auth_runtime is not None:
         # C5（design ADR-7）：admin 管理面 `/api/admin/*` 挂 Dashboard；
         # auth.enabled 总开关关闭时维持 P0.5 行为（不挂路由）。
+        # c18 ADR-6：dev 切换入口只在 `agent.dev_mode` 为真时注册，config 缺失按非 dev。
         from bootstrap.auth import build_admin_api
 
-        app.include_router(build_admin_api(auth_runtime))
+        app.include_router(
+            build_admin_api(auth_runtime, dev_mode=bool(config and config.dev_mode))
+        )
 
         # 租户邀请码签发（dashboard 管理面）：安全边界与既有 `/api/dashboard/*`
         # mutation 一致 —— 依赖 Caddy 对 admin 主机的 basic auth/Bearer 门禁，

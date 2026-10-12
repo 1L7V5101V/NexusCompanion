@@ -43,12 +43,14 @@ from bootstrap.db.repository.provisioning_repo import ProvisioningStateError
 
 __all__ = [
     "CreateAccountRequest",
+    "DevTenantSwitchRequest",
     "ExchangeRequest",
     "LoginRequest",
     "RegisterRequest",
     "TenantInviteRequest",
     "build_admin_api",
     "build_auth_api",
+    "resolve_dev_switch_target",
 ]
 
 _HTTP_401_AUTH_REQUIRED = "authentication required"
@@ -88,6 +90,45 @@ class TenantInviteRequest(BaseModel):
     """管理员签发租户邀请码（D1：仅租户名，不建号）。"""
 
     tenant_name: str = Field(min_length=1, max_length=255)
+
+
+class DevTenantSwitchRequest(BaseModel):
+    """dev-only 租户切换（c18 ADR-6）：`label` 与 `tenant_id` 至少给一个。"""
+
+    label: str = Field(default="", max_length=200)
+    tenant_id: str = Field(default="", max_length=64)
+
+
+async def resolve_dev_switch_target(
+    runtime: AuthRuntime, *, label: str, tenant_id: str
+) -> tuple[str, str]:
+    """把「切到哪个租户」解析成 `(account_id, tenant_id)`，解析不出就 fail-closed。
+
+    只给 label 时要求该账号恰好拥有一个租户；多租户账号必须点名 `tenant_id`，
+    否则「admin2」这种 label 到底切到哪个 agent 就成了实现细节。
+    """
+    if tenant_id:
+        conv = await runtime.canonical_repo.get_conversation_by_tenant(tenant_id)
+        if conv is None:
+            raise HTTPException(404, detail="tenant not found")
+        return str(conv["account_id"]), tenant_id
+    matched = [
+        acc
+        for acc in await runtime.provisioning.list_accounts()
+        if acc.get("display_name") == label
+    ]
+    if not matched:
+        raise HTTPException(404, detail="label not found")
+    if len(matched) > 1:
+        raise HTTPException(409, detail="label maps to more than one account")
+    conversations = await runtime.canonical_repo.list_conversations_by_account(
+        matched[0]["id"]
+    )
+    if not conversations:
+        raise HTTPException(409, detail="account has no tenant")
+    if len(conversations) > 1:
+        raise HTTPException(409, detail="account owns several tenants, give tenant_id")
+    return str(matched[0]["id"]), str(conversations[0]["tenant_id"])
 
 
 class TelegramPrebindRequest(BaseModel):
@@ -240,8 +281,11 @@ def build_auth_api(runtime: AuthRuntime) -> APIRouter:
     return router
 
 
-def build_admin_api(runtime: AuthRuntime) -> APIRouter:
-    """管理员面：``/api/admin/*``（挂 Dashboard；回环边界 ADR-5）。"""
+def build_admin_api(runtime: AuthRuntime, *, dev_mode: bool = False) -> APIRouter:
+    """管理员面：``/api/admin/*``（挂 Dashboard；回环边界 ADR-5）。
+
+    ``dev_mode`` 决定 c18 的本地租户切换入口是否注册，默认不注册。
+    """
     router = APIRouter()
     cfg = runtime.config
     secure = cfg.cookie_secure
@@ -376,6 +420,40 @@ def build_admin_api(runtime: AuthRuntime) -> APIRouter:
         # 幂等 no-op：不存在/已撤销也返回成功，避免泄露 Token 是否存在（ADR-3）。
         await runtime.auth.revoke_token(token_id, reason="admin:revoke_token")
         return {"status": "revoked"}
+
+    # ── c18 ADR-6：本地验收台的租户切换入口。非 dev 配置不注册 → 该路径 404。
+    #    换租户走的是「换会话」：这里只替目标账号签发一次性邀请 Token，调用方拿去
+    #    /api/auth/exchange 开新会话；生产开放它等于允许会话改绑他人租户。──
+    if dev_mode:
+
+        @router.post("/api/admin/dev/tenant-switch")
+        async def dev_tenant_switch(
+            body: DevTenantSwitchRequest,
+            _: _AdminSession = Depends(_admin_mutation),
+        ) -> dict[str, Any]:
+            label = body.label.strip()
+            tenant_id = body.tenant_id.strip()
+            if not label and not tenant_id:
+                raise HTTPException(400, detail="label or tenant_id required")
+            account_id, target_tenant = await resolve_dev_switch_target(
+                runtime, label=label, tenant_id=tenant_id
+            )
+            account = await runtime.provisioning.get_account(account_id)
+            if account is None or account["status"] != "active":
+                raise HTTPException(409, detail="account not active")
+            # 变量名不用 `_`：依赖参数已经占了这个名字，复用会把注入的会话覆盖掉。
+            _token_row, raw_token = await runtime.auth.issue_invitation(
+                account_id,
+                display_note=f"dev-tenant-switch:{target_tenant}",
+                issued_by="admin:dev-tenant-switch",
+            )
+            return {
+                "account_id": account_id,
+                "tenant_id": target_tenant,
+                "display_name": account.get("display_name", ""),
+                "token": raw_token,
+                "next": "POST /api/auth/exchange 用该 token 开目标租户的会话",
+            }
 
     # ── C10 Telegram binding 管理（pilot_identity_binding 开启时由 app 注入
     #    runtime.telegram_binding；关闭时这些路由 404，不泄露能力存在性）。──

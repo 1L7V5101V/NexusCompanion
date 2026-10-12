@@ -1,0 +1,55 @@
+c18-tenant-scoped-memory task 8.1 evidence — 常驻本地测试租户的 label → tenant_id 映射
+生成: 2026-10-13  分支: feature/c18-tenant-scoped-memory（未推送）
+后端: 本地便携 PG 5433 的 `nexus` 库（`config.local-chat.toml` 的 storage.postgres_url）
+
+==============================================================
+ 映射（ADR-7：`admin1` / `admin2` 只写进 `test_accounts.display_name`，
+ tenant_id 仍是 `pilot-<12 位随机>`，看日志要先查这张表）
+==============================================================
+label=admin1  account_id=25151343-2ef2-43c0-a8b7-6dfd2ebc34f5  status=active  tenant_id=pilot-wier0gha15oo  persona=pilot-wier0gha15oo:created
+label=admin2  account_id=ec1aed53-cc90-457b-840d-cdbffb85b700  status=active  tenant_id=pilot-6dxq9duey8ln  persona=pilot-6dxq9duey8ln:created
+
+==============================================================
+ 重启后按 display_name 仍能解析出同一对 tenant_id
+==============================================================
+新建一个进程、只读解析（`--resolve` 不建号、不写 persona 行），与上表逐字相同：
+
+label=admin1  account_id=25151343-2ef2-43c0-a8b7-6dfd2ebc34f5  status=active  tenant_id=pilot-wier0gha15oo  persona=not-checked
+label=admin2  account_id=ec1aed53-cc90-457b-840d-cdbffb85b700  status=active  tenant_id=pilot-6dxq9duey8ln  persona=not-checked
+
+命令：
+    .venv/Scripts/python.exe scripts/seed_local_test_tenants.py \
+        --workspace ~/.nexus/workspace --config config.local-chat.toml
+    # 只读解析
+    ... --resolve
+
+==============================================================
+ 两个租户各自落地的行（逐租户实测，不是推断）
+==============================================================
+pilot-wier0gha15oo
+  memory_items 分区: memory_items_pilot_wier0gha15oo_302ad582acfe（+ embedding_idx / pkey）
+  tenant_persona_profiles: source=custom, identity=90 字符, personality_rules=738, self_model=40
+  tenant_memory_engine_bindings: engine_id=default
+  tenant_memory_profile_sections: relationship_state=40 字符 ← onboarding 种子写进画像专表（ADR-9）
+pilot-6dxq9duey8ln
+  memory_items 分区: memory_items_pilot_6dxq9duey8ln_0bba8ae6c5fc（+ embedding_idx / pkey）
+  tenant_persona_profiles: source=custom, identity=90 字符, personality_rules=738, self_model=40
+  tenant_memory_engine_bindings: engine_id=default
+  tenant_memory_profile_sections: relationship_state=40 字符
+
+==============================================================
+ 实测到的两条约束（第一次跑就撞上了）
+==============================================================
+1. `persona_audit_events.actor` 是 VARCHAR(16) 且有 CHECK `actor IN ('user','optimizer','admin')`。
+   播种脚本原先传的描述性字符串（"seed-local-test-tenants"）被数据库拒掉，整笔 onboarding
+   事务回滚——账号与租户已经建出来了，persona 行没有。脚本改用 `admin`。
+   这条不是缺陷记录：审计列本来就是枚举，是脚本没读模型。
+2. 一次性脚本里 `TenantProvisioningService.request_provisioning()` 只入队（状态注册表是
+   进程内存态，DDL 由常驻后端的 worker 执行），脚本进程退出就没人执行。所以 `--partition-step`
+   在脚本内直接跑幂等 DDL，否则建出来的租户没有分区。
+
+==============================================================
+ 这份记录没覆盖的部分
+==============================================================
+identity/personality_rules 用的是 `agent/persona` 的进程级常量，只为满足「该租户有 persona
+行、快照可解析」；身份画像的租户化是用户另开 change 的事（见 tasks.md 末尾的四件事）。
