@@ -75,9 +75,9 @@
 
 ## 7. 画像迁移脚本
 
-- [ ] 7.1 新增 `scripts/migrate_profile_to_tenant.py`：必须显式 `--tenant`，缺参 fail-closed 退出非零；目标后端按配置解析（PG 走租户、SQLite 走固定租户），不假设只有 PG——废弃文件后端后，单机现存的 markdown 画像同样要迁进表。默认 dry-run 打印目标租户各类当前字符数、来源文件字节数、每类正文首行摘要，以及 `memory_items` 里遗留的旧 self 行字符数（供人工判断是否重复）；显式执行才写入（design ADR-6、spec「未指定归属时拒绝」）。**`SELF.md` 在迁移范围内**：它的内容写进 `relationship_state` 行并覆盖播种值，因为播种值来自 config 默认模板、文件里才是演化后的当前值（design ADR-9、spec「自我认知文件覆盖播种值」）。验证：不带 `--tenant` 执行返回非零且目标库与共享目录零变化；两种后端各跑一次 dry-run 均输出可读的字节数与正文摘要对照
-- [ ] 7.2 实装迁移，五类语义不合并；幂等靠画像专表自己的键——日志类写 `dedup_key` 并依赖 `UNIQUE (tenant_id, dedup_key)`，整块类依赖 `UNIQUE (tenant_id, category)` 做 upsert。**不再走 `_append_once_with_index`**：它依赖的 `app_configs` 键是 `String(128)` 单列主键、`tenant_id` 非主键，而 `core/memory/markdown.py:191-200` 生成的 `source_ref` 是 message id 的 JSON 数组（id 形如 `<session_key>:<seq>`，见 `session/store.py:1014`），三条以上消息就超长，且键跨租户全局（design ADR-13）。journal 按 `journal/YYYY-MM-DD.md` 逐行迁入，文件名日期写入 `happened_at`，正文不拼日期前缀（design ADR-8）。验证：同一来源连跑两次，第二次后该租户各类条目数不变（spec「重放不产生重复条目」）；两个不同租户迁入相同 `source_ref` 的内容都成功（spec「跨租户幂等键不互相压制」）；抽查 journal 行的 `happened_at` 日期集合与原目录文件日期集合一一对应；输出存 `openspec/evidence/c18-tenant-scoped-memory/migration-replay.txt`
-- [ ] 7.3 迁移后原文件保持原样。验证：执行前后对共享目录六文件做 sha256 比对一致，结果并入同一 evidence 文件
+- [x] 7.1 新增 `scripts/migrate_profile_to_tenant.py`：必须显式 `--tenant`，缺参 fail-closed 退出非零；目标后端按配置解析（PG 走租户、SQLite 走固定租户），不假设只有 PG——废弃文件后端后，单机现存的 markdown 画像同样要迁进表。默认 dry-run 打印目标租户各类当前字符数、来源文件字节数、每类正文首行摘要，以及 `memory_items` 里遗留的旧 self 行字符数（供人工判断是否重复）；显式执行才写入（design ADR-6、spec「未指定归属时拒绝」）。**`SELF.md` 在迁移范围内**：它的内容写进 `relationship_state` 行并覆盖播种值，因为播种值来自 config 默认模板、文件里才是演化后的当前值（design ADR-9、spec「自我认知文件覆盖播种值」）。验证：不带 `--tenant` 执行返回非零且目标库与共享目录零变化；两种后端各跑一次 dry-run 均输出可读的字节数与正文摘要对照——实测：`--tenant` 必填实测为 argparse 退出码 2，共享目录与目标库零变化（连表都没碰）；两种后端各跑一次 dry-run 均打印「表内 N 字 / 来源 N 字节 / 首行摘要」三列对照，SQLite 走 workspace/memory/memory2.db、PG 按 storage.backend 解析，且迁进非 default 租户时会警告「不会有读者」；旧 self 行只做报告不删除。全部输出存 `openspec/evidence/c18-tenant-scoped-memory/migration-replay.txt`。
+- [x] 7.2 实装迁移，五类语义不合并；幂等靠画像专表自己的键——日志类写 `dedup_key` 并依赖 `UNIQUE (tenant_id, dedup_key)`，整块类依赖 `UNIQUE (tenant_id, category)` 做 upsert。**不再走 `_append_once_with_index`**：它依赖的 `app_configs` 键是 `String(128)` 单列主键、`tenant_id` 非主键，而 `core/memory/markdown.py:191-200` 生成的 `source_ref` 是 message id 的 JSON 数组（id 形如 `<session_key>:<seq>`，见 `session/store.py:1014`），三条以上消息就超长，且键跨租户全局（design ADR-13）。journal 按 `journal/YYYY-MM-DD.md` 逐行迁入，文件名日期写入 `happened_at`，正文不拼日期前缀（design ADR-8）。验证：同一来源连跑两次，第二次后该租户各类条目数不变（spec「重放不产生重复条目」）；两个不同租户迁入相同 `source_ref` 的内容都成功（spec「跨租户幂等键不互相压制」）；抽查 journal 行的 `happened_at` 日期集合与原目录文件日期集合一一对应；输出存 `openspec/evidence/c18-tenant-scoped-memory/migration-replay.txt`——实测：日志类幂等键取 `f"{category}[:date]:sha256:{正文摘要前16}"`，与 app_configs 那套无关。同一来源 --apply 两次：history 3 / pending 2 / journal 3 行第二次全部判重跳过、行数不变；同一批内容迁进租户 A 与租户 B 两边各自成立（键相同而租户不同，正面验「跨租户幂等键不互相压制」）；journal 行的 happened_at 集合 = {2026-10-01, 2026-10-02} 与目录里两个文件名一一对应，正文无 `**YYYY-MM-DD**` 前缀。PG 侧同样跑通（3 格 sections / 5 行 entries，重放零新增），验后按租户清理干净、残留 0。
+- [x] 7.3 迁移后原文件保持原样。验证：执行前后对共享目录六文件做 sha256 比对一致，结果并入同一 evidence 文件——实测：来源共七份文件（含两份 journal）迁移前后 sha256 逐一比对一致。
 
 ## 8. 本地验收工具
 
@@ -88,7 +88,7 @@
 ## 9. 门禁与状态收口
 
 - [ ] 9.1 同步既有断言清单（proposal.md — Impact 列出的那些，含 `tests/memory_fakes.py` 的三个协议方法、`tests/test_memory_optimizer.py` 的两阶段骨架、`tests/test_support_modules.py:753`、`docker/debug/runtime_race_probe.py:117-126`），使全量测试通过。验证：`pytest -q -W error tests/` 零失败，输出存 `openspec/evidence/c18-tenant-scoped-memory/pytest-full.txt`
-- [ ] 9.2 类型门禁。验证：`pyright --level error` 两配置输出存 `openspec/evidence/c18-tenant-scoped-memory/pyright.txt`，错误数不高于 1.1 基线
+- [ ] 9.2 类型门禁。验证：`pyright --level error` 两配置输出存 `openspec/evidence/c18-tenant-scoped-memory/pyright.txt`，错误数不高于 1.1 基线——注意覆盖范围：`scripts/` 与 `alembic/` 都不在两个配置的 include 里，本 change 新增的 `scripts/migrate_profile_to_tenant.py` 要单独跑一次 pyright（已单独跑过，0 errors），别以为闸门覆盖了它。
 - [ ] 9.3 `openspec validate c18-tenant-scoped-memory --strict` 通过；`openspec status --change c18-tenant-scoped-memory` 四份 artifact 均 done
 - [ ] 9.4 仅在有 evidence 的前提下更新 `openspec/SCALING_ROADMAP.md` 与 `openspec/PILOT_ROADMAP_PROJECT_CHECKLIST.md` 中记忆画像隔离相关条目状态；无证据的条目不动
 - [ ] 9.5 回填 `openspec/specs/tenant-memory-profile/spec.md`（archive 时生成主 spec），并在 `PILOT_ROADMAP.md` 的实现地图接缝处标注该 capability 已建立

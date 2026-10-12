@@ -1,0 +1,74 @@
+== 1) 缺 --tenant：非零退出，且目标库与共享目录零变化 ==
+exit code: 2
+stderr: migrate_profile_to_tenant.py: error: --tenant 必填：画像归属不能靠默认值猜
+共享目录未变: True
+表内行数: 0 0
+
+== 2) dry-run：只对照 ==
+后端：sqlite｜租户：default｜来源文件：7 份
+  long_term           表内       0 字 | MEMORY.md                57 字节 | 首行 '# 长期画像'
+  recent_context      表内       0 字 | RECENT_CONTEXT.md        82 字节 | 首行 '# Recent Context'
+  relationship_state  表内       0 字 | SELF.md                  63 字节 | 首行 '我们聊到第三个月，我知道他讨厌被追问进度。'
+  history             表内       0 行 | 来源       3 行 | 现有正文       0 字
+  pending             表内       0 行 | 来源       2 行 | 现有正文       0 字
+  journal             表内       0 行 | 来源       3 行 | 现有正文       0 字
+dry-run：未写入任何东西，加 --apply 才执行。
+
+dry-run 之后表内行数: 0 0
+
+== 3) --apply 第一次 ==
+后端：sqlite｜租户：default｜来源文件：7 份
+  long_term           表内       0 字 | MEMORY.md                57 字节 | 首行 '# 长期画像'
+  recent_context      表内       0 字 | RECENT_CONTEXT.md        82 字节 | 首行 '# Recent Context'
+  relationship_state  表内       0 字 | SELF.md                  63 字节 | 首行 '我们聊到第三个月，我知道他讨厌被追问进度。'
+  history             表内       0 行 | 来源       3 行 | 现有正文       0 字
+  pending             表内       0 行 | 来源       2 行 | 现有正文       0 字
+  journal             表内       0 行 | 来源       3 行 | 现有正文       0 字
+已写入：整块类 3 格、日志新增 8 行、判重跳过 0 行
+---- 写入后对照 ----
+  long_term           表内      21 字 | MEMORY.md                57 字节 | 首行 '# 长期画像'
+  recent_context      表内      74 字 | RECENT_CONTEXT.md        82 字节 | 首行 '# Recent Context'
+  relationship_state  表内      21 字 | SELF.md                  63 字节 | 首行 '我们聊到第三个月，我知道他讨厌被追问进度。'
+  history             表内       3 行 | 来源       3 行 | 现有正文      19 字
+  pending             表内       2 行 | 来源       2 行 | 现有正文      18 字
+  journal             表内       3 行 | 来源       3 行 | 现有正文      83 字
+
+
+== 4) --apply 第二次（重放）：日志类零新增 ==
+  history             表内       3 行 | 来源       3 行 | 现有正文      19 字
+第一次: {'history': 3, 'journal': 3, 'pending': 2} 
+第二次: {'history': 3, 'journal': 3, 'pending': 2} 
+重放不产生重复条目: True
+
+== 5) 另一个租户迁入同一批内容：跨租户幂等键不互相压制 ==
+  pending             表内       2 行 | 来源       2 行 | 现有正文      18 字
+租户 B: {'history': 3, 'journal': 3, 'pending': 2} 
+与 A 同键各自成立: True
+
+== 6) journal 的日期占 happened_at 列、正文不拼日期前缀（ADR-8 / 3.5） ==
+journal 行的 happened_at 集合: ['2026-10-01T00:00:00.000000+00:00', '2026-10-02T00:00:00.000000+00:00']
+pending 正文样本: ['- 事实一\n- 事实二']
+正文里没有任何 **YYYY-MM-DD** 前缀: True
+
+== 7) 原文件保持原样（7.3） ==
+七份来源 sha256 全部一致: True
+
+== 8) 整块类三格都有内容、长度与来源一致 ==
+sections: {'long_term': 21, 'recent_context': 74, 'relationship_state': 21}
+SELF.md 迁进 relationship_state 并覆盖播种值: True
+== PG dry-run ==
+后端：postgres｜租户：c18-mig-pg-check｜来源文件：6 份
+  long_term           表内       0 字 | MEMORY.md                39 字节 | 首行 '# 长期画像'
+  recent_context      表内       0 字 | RECENT_CONTEXT.md        39 字节 | 首行 '# Recent Context'
+  relationship_state  表内       0 字 | SELF.md                  24 字节 | 首行 'PG 腿的关系状态。'
+  history             表内       0 行 | 来源       2 行 | 现有正文       0 字
+  pending             表内       0 行 | 来源       2 行 | 现有正文       0 字
+  journal             表内       0 行 | 来源       1 行 | 现有正文       0 字
+dry-run：未写入任何东西，加 --apply 才执行。
+
+== PG apply ==
+["  relationship_state  表内      10 字 | SELF.md                  24 字节 | 首行 'PG 腿的关系状态。'", '  history             表内       2 行 | 来源       2 行 | 现有正文       8 字', '  pending             表内       2 行 | 来源       2 行 | 现有正文      12 字', '  journal             表内       1 行 | 来源       1 行 | 现有正文      21 字']
+== PG 重放 ==
+  history             表内       2 行 | 来源       2 行 | 现有正文       8 字
+PG 侧专表落库：sections = (3, 66) entries = (5,)
+清理后残留： (0, 0)
