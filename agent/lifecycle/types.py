@@ -100,6 +100,7 @@ class PromptRenderInput:
     turn_injection_prompt: str
     extra_hints: list[str] | None = None
     persona_snapshot: Any | None = None
+    profile_snapshot: Any | None = None
 
 
 @dataclass
@@ -127,6 +128,7 @@ class PromptRenderCtx:
     )
 
     persona_snapshot: "Any | None" = None
+    profile_snapshot: "Any | None" = None
 
 @dataclass(frozen=True)
 class PromptRenderResult:

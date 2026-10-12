@@ -4,8 +4,9 @@ persona_audit_events（c9-persona-relationship ADR-2）。
 DDL 冻结于 openspec/changes/c9-persona-relationship/design.md ADR-2；语义门禁：
 PILOT_ROADMAP §5.7（配置分层/SELF.md 迁移/生效时机）、§5.9.8、§10 DECIDED
 （Persona/Relationship 存储语义：PersonaProfile 提交后固定、RelationshipState
-单写者原地更新、无 revision 链）。RelationshipState 本体复用
-`memory_items(memory_type='self')`（ADR-1），不在本模块。
+单写者原地更新、无 revision 链）。RelationshipState 当前值住画像专表
+`tenant_memory_profile_sections` 的 `relationship_state` 行（c18 ADR-9/13），不在本
+模块；本模块的 `self_model` 列只是 onboarding 的 seed 值，不是当前值。
 """
 
 from __future__ import annotations

@@ -79,10 +79,10 @@ class ContextBundle:
 class PersonaSnapshot:
     """本轮 turn 的 tenant 人设与关系状态快照（c9-persona-relationship ADR-4）。
 
-    由 turn 入口在 tenant lane 内解析一次（PG durable 模式读
-    `tenant_persona_profiles` + `memory_items(memory_type='self')`），随
-    ContextRequest 传入 prompt 组装；组装期不再查库。None = 无快照
-    （dev/SQLite 路径或 onboarding 未完成）→ 各 block 走单体回退语义。
+    由 turn 入口在 tenant lane 内解析一次（PG durable 模式读 `tenant_persona_profiles`
+    与画像专表的 `relationship_state` 行，c18 ADR-9），与 `MemoryProfileSnapshot` 成对
+    返回、出自同一次数据库借用（ADR-1），随 ContextRequest 传入 prompt 组装；组装期不再
+    查库。None = 无快照（dev/SQLite 路径或 onboarding 未完成）→ 各 block 走单体回退语义。
     """
 
     tenant_id: str
@@ -96,8 +96,9 @@ class PersonaSnapshot:
 class MemoryProfileSnapshot:
     """本轮 turn 的 tenant 记忆画像快照（c18-tenant-scoped-memory ADR-1）。
 
-    由 turn 入口在 tenant lane 内解析一次（单条查询取回四类），随 ContextRequest
-    传入 prompt 组装；组装期不再查库，也不得回退读共享 workspace 记忆目录。
+    由 turn 入口在 tenant lane 内解析一次（画像专表的两条 SELECT，与 PersonaSnapshot 同
+    一次借用取回），随 ContextRequest 传入 prompt 组装；组装期不再查库，也不得回退读共享
+    workspace 记忆目录。
 
     不含 `self` 那一格——自我认知归 PersonaSnapshot.relationship_state
     （ADR-9）。不含 `journal`——它是日志，没有任何组装期消费者（ADR-8）。

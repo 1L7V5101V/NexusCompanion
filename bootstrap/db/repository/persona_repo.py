@@ -1,9 +1,10 @@
-"""Persona/Relationship 仓储（c9-persona-relationship ADR-2/3/5）。
+"""Persona/Relationship 仓储（c9-persona-relationship ADR-2/3/5，
+c18-tenant-scoped-memory ADR-9 改种子目标表）。
 
 - 模板 CRUD/启停：修改与停用只影响后续 onboarding，不触碰已建快照。
 - onboarding 提交：`tenant_persona_profiles` INSERT ... ON CONFLICT DO NOTHING
-  原子抢位 + `memory_items(memory_type='self')` 种子（RelationshipState 当前值，
-  ADR-1 复用既有 seam）+ `persona_audit_events` 追加——三者同一事务。
+  原子抢位 + 画像专表的 `relationship_state` 种子（RelationshipState 当前值）+
+  `persona_audit_events` 追加——三者同一事务。
 - Profile 读取面按 tenant 过滤；**不提供任何修改已提交快照的方法**（spec
   「提交后 PersonaProfile 用户侧不可二次修改」——仓储层就没有该入口）。
 """
@@ -15,9 +16,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from agent.memory_pg import PgMemoryProfileStore
 from bootstrap.db.models.persona import (
     PersonaAuditEventModel,
     PersonaTemplateModel,
@@ -114,8 +116,8 @@ class PersonaRepository:
 
         并发双提交只成功一份（ON CONFLICT DO NOTHING；rowcount=0 → 抛
         :class:`OnboardingAlreadyCompletedError`，409 语义）。RelationshipState
-        种子写 `memory_items(memory_type='self')`（ADR-1 seam，与
-        `PgMemoryMarkdownStore._upsert_content` 同字段约定）。
+        种子写画像专表的 `relationship_state` 行（c18 ADR-9：当前值归画像层存储，
+        `tenant_persona_profiles.self_model` 从此只是 seed 值、不是当前值）。
         """
         tid = uuid.UUID(template_id) if template_id else None
         async with self._sf() as sess, sess.begin():
@@ -135,23 +137,10 @@ class PersonaRepository:
                 self_model=self_model,
             )
             sess.add(profile)
-            # RelationshipState 种子（ADR-1 seam：memory_items 单行 self 内容）。
-            # 原生 SQL 且不列 embedding（PG vector 列，ORM Text 声明在 asyncpg 下
-            # 会把 NULL 绑成 VARCHAR 而被拒；既有 seam 走 psycopg 自适应故未暴露）。
-            await sess.execute(
-                text("""
-                    INSERT INTO memory_items
-                        (id, tenant_id, memory_type, summary, content_hash,
-                         reinforcement, emotional_weight, status, created_at, updated_at)
-                    VALUES (:id, :tenant_id, 'self', :summary, :content_hash,
-                            1, 0, 'active', now(), now())
-                    """),
-                {
-                    "id": f"self_{uuid.uuid4().hex[:12]}",
-                    "tenant_id": tenant_id,
-                    "summary": self_model,
-                    "content_hash": str(hash(self_model)),
-                },
+            # RelationshipState 种子：走存储层的 upsert，所以这张表的正文只有一处实现。
+            # 交出本会话 → 存储不自开事务、也不提前提交，种子与审计仍同事务。
+            await PgMemoryProfileStore(self._sf, tenant_id).write_section(
+                "relationship_state", self_model, session=sess
             )
             sess.add(
                 PersonaAuditEventModel(

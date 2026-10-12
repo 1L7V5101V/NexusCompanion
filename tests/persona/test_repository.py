@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
+from typing import Any, ClassVar
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from bootstrap.persona import PgRelationshipIO, resolve_persona_snapshot
 from bootstrap.db.repository.persona_repo import (
@@ -16,6 +20,16 @@ from bootstrap.db.repository.persona_repo import (
 )
 
 pytestmark = pytest.mark.postgres
+
+
+class _CountingSession(AsyncSession):
+    """数「借了几次会话」用：`async_sessionmaker(class_=...)` 就是为换 Session 类准备的。"""
+
+    created: ClassVar[int] = 0
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        type(self).created += 1
+        super().__init__(*args, **kwargs)
 
 
 def run(coro: Any) -> Any:
@@ -52,9 +66,35 @@ async def test_onboarding_atomic_double_submit_rejected(
     # 提交后正文固定（第二次提交未覆盖）。
     again = await persona_repo.get_profile(tenant["tenant_id"])
     assert again["identity"] == "身份A" and again["personality_rules"] == "规则A"
-    # 种子（RelationshipState 当前值）已建立。
-    snap = await resolve_persona_snapshot(persona_repo._sf, tenant["tenant_id"])
-    assert snap is not None and snap.relationship_state == "自模型A"
+    # 种子（RelationshipState 当前值）已建立，且在画像专表而不是召回表（c18 ADR-9/13）。
+    resolved = await resolve_persona_snapshot(persona_repo._sf, tenant["tenant_id"])
+    assert resolved is not None
+    snap, _profile = resolved
+    assert snap.relationship_state == "自模型A"
+    async with persona_repo._sf() as sess:
+        seeded = (
+            await sess.execute(
+                text(
+                    "SELECT content FROM tenant_memory_profile_sections "
+                    "WHERE tenant_id = :t AND category = 'relationship_state'"
+                ),
+                {"t": tenant["tenant_id"]},
+            )
+        ).scalar_one_or_none()
+        self_rows = (
+            await sess.execute(
+                text(
+                    "SELECT count(*) FROM memory_items "
+                    "WHERE tenant_id = :t AND memory_type = 'self'"
+                ),
+                {"t": tenant["tenant_id"]},
+            )
+        ).scalar_one()
+    assert seeded == "自模型A"
+    assert int(self_rows) == 0, (
+        "6.7 之后 onboarding 不该再往召回表写 self 行——那张表的类型过滤不是结构性的，"
+        "一次普通召回就能把这格整段返回"
+    )
     # 审计行同事务。
     audit = await persona_repo.list_audit(tenant["tenant_id"])
     assert [a["action"] for a in audit] == ["onboarding_submit"]
@@ -100,8 +140,11 @@ async def test_profiles_are_tenant_isolated(
         tenant_id=tb["tenant_id"], source="custom",
         identity="B的身份", personality_rules="B的规则", self_model="B的自模型",
     )
-    snap_a = await resolve_persona_snapshot(persona_repo._sf, ta["tenant_id"])
-    snap_b = await resolve_persona_snapshot(persona_repo._sf, tb["tenant_id"])
+    resolved_a = await resolve_persona_snapshot(persona_repo._sf, ta["tenant_id"])
+    resolved_b = await resolve_persona_snapshot(persona_repo._sf, tb["tenant_id"])
+    assert resolved_a is not None and resolved_b is not None
+    snap_a, _profile_a = resolved_a
+    snap_b, _profile_b = resolved_b
     assert snap_a.identity == "A的身份" and snap_a.relationship_state == "A的自模型"
     assert snap_b.identity == "B的身份" and snap_b.relationship_state == "B的自模型"
 
@@ -160,3 +203,47 @@ async def test_no_revision_tables(
     assert not any(
         "revision" in n or "version" in n or "history" in n for n in names
     ), names
+
+
+@pytest.fixture()
+def counting_factory(persona_pg_url: str) -> Iterator[async_sessionmaker]:
+    engine = create_async_engine(
+        persona_pg_url.replace("postgresql://", "postgresql+asyncpg://"),
+        poolclass=NullPool,
+    )
+    yield async_sessionmaker(engine, class_=_CountingSession, expire_on_commit=False)
+    engine.sync_engine.dispose()
+
+
+async def test_prefetch_borrows_one_session(
+    persona_repo: PersonaRepository,
+    counting_factory: async_sessionmaker,
+    make_tenant: Callable[..., Any],
+) -> None:
+    """c18 task 3.2 / ADR-1：画像、关系状态与身份出自同一次借用，一轮只借一次。"""
+    from agent.memory_pg import PgMemoryProfileStore
+
+    tenant = await make_tenant(prefix="pt_pre")
+    await persona_repo.submit_onboarding(
+        tenant_id=tenant["tenant_id"], source="custom",
+        identity="身份", personality_rules="规则", self_model="关系当前值",
+    )
+    store = PgMemoryProfileStore(persona_repo._sf, tenant["tenant_id"])
+    await store.write_section("long_term", "长期画像")
+    await store.append_entry(
+        "pending", "待合并", happened_at=datetime.now(timezone.utc)
+    )
+
+    _CountingSession.created = 0
+    resolved = await resolve_persona_snapshot(counting_factory, tenant["tenant_id"])
+    assert resolved is not None
+    snapshot, profile = resolved
+
+    assert _CountingSession.created == 1, (
+        f"一轮预取借了 {_CountingSession.created} 次会话——两次借用之间有时间缝，"
+        "并发 optimizer 写入会让同一轮拿到两个瞬间的拼贴"
+    )
+    assert snapshot.relationship_state == "关系当前值"
+    assert profile.long_term == "长期画像"
+    assert profile.pending == "待合并"
+    assert profile.history == ""

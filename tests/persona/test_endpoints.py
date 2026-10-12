@@ -250,13 +250,21 @@ def test_config_seed_does_not_override_onboarded_tenant(
             identity="PG 里的身份", personality_rules="PG 里的规则", self_model="PG 里的状态",
         )
     )
-    before = asyncio.run(resolve_persona_snapshot(repo_factory, tenant["tenant_id"]))
+    resolved_before = asyncio.run(
+        resolve_persona_snapshot(repo_factory, tenant["tenant_id"])
+    )
+    assert resolved_before is not None
+    before, _before_profile = resolved_before
 
     # 模拟 config.toml seed 修改 + 进程重启（重新解析）：PG 当前值不变。
     config_seed_changed = PersonaSnapshot(
         tenant_id=tenant["tenant_id"], source="custom",
         identity="config 里的新身份", personality_rules="", relationship_state="",
     )
-    after = asyncio.run(resolve_persona_snapshot(repo_factory, tenant["tenant_id"]))
+    resolved_after = asyncio.run(
+        resolve_persona_snapshot(repo_factory, tenant["tenant_id"])
+    )
+    assert resolved_after is not None
+    after, _after_profile = resolved_after
     assert after.identity == before.identity == "PG 里的身份"
     assert after.identity != config_seed_changed.identity

@@ -56,6 +56,7 @@ class _BuildPromptRenderCtxModule:
             turn_injection_prompt=input.turn_injection_prompt,
             extra_hints=list(input.extra_hints or []),
             persona_snapshot=getattr(input, "persona_snapshot", None),
+            profile_snapshot=getattr(input, "profile_snapshot", None),
         )
         return frame
 
@@ -97,6 +98,7 @@ class _RenderPromptModule:
                 disabled_sections=ctx.disabled_sections,
                 turn_injection_prompt=ctx.turn_injection_prompt,
                 persona_snapshot=ctx.persona_snapshot,
+                profile_snapshot=ctx.profile_snapshot,
             ),
             system_sections_top=ctx.system_sections_top,
             system_sections_bottom=ctx.system_sections_bottom,
