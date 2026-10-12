@@ -8,10 +8,13 @@ c18-tenant-scoped-memory ADR-1/9/13 改目标表）。
 - `PgRelationshipIO`：optimizer 的 RelationshipState 读写落 PG seam——写为
   `tenant_memory_profile_sections` 的 `relationship_state` 整行覆写 + `persona_audit_events`
   追加（同事务，ADR-5 单写者语义：串行由调用方 tenant lock / lane 保证，这里保证原子与审计）。
+- `SqliteRelationshipIO`：同一件事的单机实现，语义与审计都保持一致（c18 ADR-10），差别只在
+  事务靠 store 那条同步事务入口在同一个线程里连写两条。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -22,6 +25,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.memory_pg import PgMemoryProfileStore
+from core.memory.profile_sqlite import SqliteMemoryProfileStore
 
 
 async def resolve_persona_snapshot(
@@ -117,6 +121,59 @@ class PgRelationshipIO:
             )
 
 
+class SqliteRelationshipIO:
+    """单机后端的 RelationshipState 读写（c18 ADR-9/10：与 PG 同语义、同审计）。
+
+    持有的不是连接而是 store：那个 store 自己开连接、自己有锁，而一个事务必须整段待在同一个
+    线程里（原因见 `SqliteMemoryProfileStore.transaction` 的文档）。所以本类的 write 一次
+    `asyncio.to_thread` 交进一个同步函数体，里面连着写画像行与审计行——两次写入同属一笔事务，
+    与 PG 侧 `PgRelationshipIO.write` 的形状一致。
+
+    归属是固定的：单机只有 `DEFAULT_TENANT`。传进别的租户不是「换个桶写」，是上游的租户归属
+    没接上，所以直接抛而不是静默写到默认租户那一行上。
+    """
+
+    def __init__(self, profile_store: SqliteMemoryProfileStore) -> None:
+        self._store = profile_store
+
+    def _require_tenant(self, tenant_id: str) -> None:
+        if tenant_id != self._store.tenant_id:
+            raise ValueError(
+                f"SQLite 画像存储按租户单例（当前 {self._store.tenant_id!r}），"
+                f"收到 {tenant_id!r}：上游租户归属没接上"
+            )
+
+    async def read(self, tenant_id: str) -> str:
+        self._require_tenant(tenant_id)
+        return await self._store.read_section("relationship_state")
+
+    async def write(
+        self, tenant_id: str, content: str, *, turn_id: str | None = None
+    ) -> None:
+        self._require_tenant(tenant_id)
+        await asyncio.to_thread(self._write_sync, content, turn_id)
+
+    def _write_sync(self, content: str, turn_id: str | None) -> None:
+        created_at = datetime.now(UTC).isoformat(timespec="microseconds")
+        with self._store.transaction() as db:
+            self._store.write_section_sync(db, "relationship_state", content)
+            db.execute(
+                """
+                INSERT INTO persona_audit_events
+                    (id, tenant_id, actor, action, turn_id, detail, created_at)
+                VALUES (:id, :tenant_id, 'optimizer', 'relationship_update', :turn_id,
+                        :detail, :created_at)
+                """,
+                {
+                    "id": str(uuid.uuid4()),
+                    "tenant_id": self._store.tenant_id,
+                    "turn_id": turn_id,
+                    "detail": json.dumps({"chars": len(content)}),
+                    "created_at": created_at,
+                },
+            )
+
+
 def build_persona_wiring(
     session_factory: async_sessionmaker,
 ) -> tuple[Any, PgRelationshipIO]:
@@ -127,4 +184,9 @@ def build_persona_wiring(
     )
 
 
-__all__ = ["PgRelationshipIO", "build_persona_wiring", "resolve_persona_snapshot"]
+__all__ = [
+    "PgRelationshipIO",
+    "SqliteRelationshipIO",
+    "build_persona_wiring",
+    "resolve_persona_snapshot",
+]

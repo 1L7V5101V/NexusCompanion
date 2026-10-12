@@ -164,3 +164,20 @@ async def test_concurrent_writes_from_threaded_calls_all_land(
         taken = await store.take_pending(session)
         await harness.commit(session)
     assert taken.split("\n\n") == [f"P{i}" for i in range(20)]
+
+
+def test_transaction_leaves_nothing_when_the_body_raises(
+    store: SqliteMemoryProfileStore,
+) -> None:
+    """同步事务入口：中途抛错就一条都不留。
+
+    单机写缝在一次线程跳转里连写画像行与审计行（`bootstrap/persona.py::SqliteRelationshipIO`），
+    靠的就是这条回滚；入口之所以是同步的，是因为 async 会把锁持在一次 `await` 上，而
+    `to_thread` 之后另一个线程再拿同一把 RLock 会直接锁死。
+    """
+    with pytest.raises(RuntimeError):
+        with store.transaction() as db:
+            store.write_section_sync(db, "relationship_state", "半个写入")
+            raise RuntimeError("boom")
+
+    assert store.read_section_sync(store._db, "relationship_state") == ""  # noqa: SLF001

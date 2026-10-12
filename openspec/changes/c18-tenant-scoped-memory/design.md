@@ -251,6 +251,8 @@
 
 **不选：把批量读拆成「存储只出 SQL 文本、解析器自己执行」。** 类型确实干净（`Text` 两种后端通用），但整块类与日志类的读取带字符预算与截断语义（文件版的 `read_history(max_chars)` 是取尾部），这些逻辑得留在存储里，只出 SQL 文本会把它们推到调用方。
 
+**SQLite 实现另有两个同步方法名，这不是遗漏，别把它改回 async。** 单机只有一个租户、一条连接、一把 `threading.RLock`，而该实现的 async 方法每次都经 `asyncio.to_thread` 换线程。`threading.RLock` 只对属主线程可重入，所以「async 上下文管理器持锁 + 内部再调本实现的方法」这个形状会让事务里的第二条写入在另一个线程上等同一把锁——死锁。因此跨多条语句的事务（`6.6`：画像行 + 审计行）只能由调用方一次 `to_thread` 交进一个同步函数体，在里面 `with store.transaction() as db:` 拿连接、`write_section_sync(db, ...)` 写。这两个名字只存在于 SQLite 实现类，**不进 `MemoryProfileStoreApi`**（协议仍是那六个 async 方法）；PG 侧不需要等价物，`async_sessionmaker` 本来就是借用入口。**接受的不对称**：同一个后端类上有 async 协议方法与同步事务方法两套名字，代价是读代码的人需要本段解释为什么。
+
 类名随之要改：`PgMemoryMarkdownStore` 里的 "Markdown" 在文件后端摘除之后是假的，`agent/memory.py` 的 `MemoryStore` 同理。PG 侧那个类保留为画像存储的实现（删掉上表那些方法、把留下的重定向到两张新表），改名为不含 "Markdown" 的名字；SQLite 侧新建一个同名同接口的实现。名字里不出现后端之外的限定词，避免再出现「名字描述的是被删掉的那一层」。
 
 **不选：给 `PgMemoryMarkdownStore` 打补丁补齐协议。** 要保住的 10 个方法里 4 个在表上没有意义，补齐等于写 4 个空实现——现状那三个 pending 方法（`agent/memory_pg.py:176-188`）就是这么来的，而空实现不报错，只在 optimizer 侧表现为静默失效。

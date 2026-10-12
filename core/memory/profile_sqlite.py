@@ -111,6 +111,45 @@ class SqliteMemoryProfileStore:
                 self._db.rollback()
                 raise
 
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """给同后端调用方的一条事务：产出本实例的连接，正常退出时提交、异常时回滚。
+
+        为什么这个入口是**同步**的：本类的 async 方法每次都经 `asyncio.to_thread` 落到
+        工作线程，而 `threading.RLock` 只对属主线程可重入——若用 async 上下文管理器把锁持在
+        一次 `await` 上，事务里的第二次写入就会在另一个线程上等同一把锁，直接锁死。所以
+        「一个事务内的多条写入」必须整段待在同一个线程里：调用方用 `asyncio.to_thread` 把
+        整个同步函数体交进来，里面 `with store.transaction() as db:` 连写几条。
+
+        只给同后端用。PG 侧不需要它——PG 的 `async_sessionmaker` 本来就是借用入口。
+        """
+        with self._cursor(None) as db:
+            yield db
+
+    def write_section_sync(
+        self, db: sqlite3.Connection, category: str, content: str
+    ) -> None:
+        """在调用方事务内的同步覆写，与 async `write_section` 共用同一条 SQL 正文。"""
+        require_section(category)
+        now = _now_iso()
+        db.execute(
+            SECTION_UPSERT_SQL,
+            {
+                "id": str(uuid.uuid4()),
+                "tenant_id": self.tenant_id,
+                "category": category,
+                "content": content,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+
+    def read_section_sync(self, db: sqlite3.Connection, category: str) -> str:
+        """在调用方事务内的同步读取。"""
+        require_section(category)
+        rows = db.execute(SECTION_READ_SQL, {"tenant_id": self.tenant_id}).fetchall()
+        return pick_section(rows, category)
+
     def _read_section_sync(self, category: str) -> str:
         with self._lock:
             rows = self._db.execute(
@@ -121,19 +160,8 @@ class SqliteMemoryProfileStore:
     def _write_section_sync(
         self, category: str, content: str, session: sqlite3.Connection | None
     ) -> None:
-        now = _now_iso()
         with self._cursor(session) as db:
-            db.execute(
-                SECTION_UPSERT_SQL,
-                {
-                    "id": str(uuid.uuid4()),
-                    "tenant_id": self.tenant_id,
-                    "category": category,
-                    "content": content,
-                    "created_at": now,
-                    "updated_at": now,
-                },
-            )
+            self.write_section_sync(db, category, content)
 
     def _append_entry_sync(
         self,
