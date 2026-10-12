@@ -1,6 +1,6 @@
 """C18 画像存储的 SQLite 实现（c18-tenant-scoped-memory ADR-10 / ADR-14）。
 
-与 PG 侧 `PgMemoryProfileStore` 同接口、同语义、同方法名：六个方法都来自
+与 PG 侧 `PgMemoryProfileStore` 同接口、同语义、同方法名：协议里的方法都来自
 `core/memory/profile_store.py` 的 `MemoryProfileStoreApi`，SQL 正文也取自那里，本文件
 不出现第二条表正文。单机后端没有第二个租户，但跨租户隔离断言因此在 SQLite 上也能跑，
 不再只有 PG 一条路径验过（ADR-10）。
@@ -20,7 +20,7 @@ import asyncio
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,14 +30,17 @@ from core.memory.profile_store import (
     ENTRY_APPEND_SQL,
     ENTRY_ASSEMBLY_READ_SQL,
     ENTRY_CATEGORY_READ_SQL,
-    PENDING_TAKE_SQL,
+    ENTRY_WITH_IDS_SQL,
     SECTION_READ_SQL,
     SECTION_UPSERT_SQL,
     ProfileAssembly,
+    ProfileEntry,
     build_assembly,
+    entries_delete_params,
+    entries_delete_sql,
+    pick_entries,
     pick_section,
     render_entry_rows,
-    render_taken_rows,
     require_entry,
     require_section,
 )
@@ -93,8 +96,8 @@ class SqliteMemoryProfileStore:
     def _cursor(self, session: sqlite3.Connection | None) -> Iterator[sqlite3.Connection]:
         """给了连接就用它且不提交；没给就用自己的连接，正常退出时提交。
 
-        锁总是拿：单机常见形状是调用方把本实例那条连接交回给 `take_pending` /
-        `read_assembly`，此时不锁就是两个线程在同一条连接上交错执行。
+        锁总是拿：单机常见形状是调用方把本实例那条连接交回给 `read_assembly`，此时
+        不锁就是两个线程在同一条连接上交错执行。
 
         自己这条路径要显式回滚：`sqlite3` 的隐式事务在语句失败后仍然开着，不关掉就会把之后
         的写入并进这次失败的事务，而 PG 侧的 `async with session` 退出时自动丢弃。
@@ -196,14 +199,31 @@ class SqliteMemoryProfileStore:
             ).fetchall()
         return render_entry_rows([str(row[0]) for row in rows], max_chars=max_chars)
 
-    def _take_pending_sync(self, session: sqlite3.Connection) -> str:
-        # 实测确认 `DELETE ... RETURNING` 在 SQLite 侧不保证行序，所以 `render_taken_rows`
-        # 的排序在两种后端上都是承重的，不是冗余。
-        with self._cursor(session) as db:
-            rows = db.execute(
-                PENDING_TAKE_SQL, {"tenant_id": self.tenant_id}
+    def _read_entries_with_ids_sync(self, category: str) -> list[ProfileEntry]:
+        with self._lock:
+            rows = self._db.execute(
+                ENTRY_WITH_IDS_SQL,
+                {"tenant_id": self.tenant_id, "category": category},
             ).fetchall()
-        return render_taken_rows(rows)
+        return pick_entries(rows)
+
+    def _merge_sync(
+        self, entry_ids: Sequence[str], section_category: str, content: str
+    ) -> int:
+        """删除与覆写在同一条连接、同一个线程里跑完，退出时一次性提交。
+
+        「同一个线程」是承重的：`transaction()` 是同步上下文管理器，`RLock` 只对属主线程
+        可重入，所以这两条语句不能各走一次 `asyncio.to_thread`。
+        """
+        with self._cursor(None) as db:
+            deleted = 0
+            if entry_ids:
+                deleted = db.execute(
+                    entries_delete_sql(entry_ids),
+                    entries_delete_params(self.tenant_id, list(entry_ids)),
+                ).rowcount
+            self.write_section_sync(db, section_category, content)
+        return int(deleted)
 
     def read_assembly_sync(
         self, db: sqlite3.Connection, history_max_chars: int = 0
@@ -260,9 +280,18 @@ class SqliteMemoryProfileStore:
         require_entry(category)
         return await asyncio.to_thread(self._read_entries_sync, category, max_chars)
 
-    async def take_pending(self, session: Any) -> str:
-        """在调用方那条连接上取走 pending，不提交——见协议里那条「为什么必填」。"""
-        return await asyncio.to_thread(self._take_pending_sync, session)
+    async def read_entries_with_ids(self, category: str) -> list[ProfileEntry]:
+        require_entry(category)
+        return await asyncio.to_thread(self._read_entries_with_ids_sync, category)
+
+    async def merge_entries_into_section(
+        self, entry_ids: Sequence[str], section_category: str, content: str
+    ) -> int:
+        """一次 `to_thread` 里跑完「删这批行 + 覆写整块类」，见 `_merge_sync`。"""
+        require_section(section_category)
+        return await asyncio.to_thread(
+            self._merge_sync, list(entry_ids), section_category, content
+        )
 
     async def read_assembly(
         self, session: Any, *, history_max_chars: int = 0

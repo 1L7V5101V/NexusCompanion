@@ -66,11 +66,32 @@ ENTRY_APPEND_SQL = (
     "VALUES (:id, :tenant_id, :category, :content, :happened_at, :dedup_key, :created_at) "
     "ON CONFLICT (tenant_id, dedup_key) DO NOTHING"
 )
-PENDING_TAKE_SQL = (
-    "DELETE FROM tenant_memory_profile_entries "
-    "WHERE tenant_id = :tenant_id AND category = 'pending' "
-    "RETURNING content, happened_at"
+ENTRY_WITH_IDS_SQL = (
+    "SELECT id, content, happened_at FROM tenant_memory_profile_entries "
+    "WHERE tenant_id = :tenant_id AND category = :category "
+    "ORDER BY happened_at, created_at"
 )
+# 按主键批量删除：合并成功只该删「这次真吃进去的那些行」，不能顺手把合并窗口里新追加的
+# 行一起带走。命名占位 `:e0, :e1, …` 对 PG 的 `text()` 与 sqlite3 都成立，所以正文仍然
+# 只有一份。空列表不合法（PG 会报语法错），判空由两个实现各自在发语句之前做。
+
+
+def entries_delete_sql(entry_ids: Sequence[str]) -> str:
+    placeholders = ", ".join(f":e{index}" for index in range(len(entry_ids)))
+    return (
+        "DELETE FROM tenant_memory_profile_entries "
+        f"WHERE tenant_id = :tenant_id AND id IN ({placeholders})"
+    )
+
+
+def entries_delete_params(tenant_id: str, entry_ids: Sequence[Any]) -> dict[str, Any]:
+    """`entry_ids` 的元素类型由后端决定：PG 绑 `uuid.UUID`，SQLite 绑 str。"""
+    return {
+        "tenant_id": tenant_id,
+        **{f"e{index}": value for index, value in enumerate(entry_ids)},
+    }
+
+
 # 播种用的存在性探针：只问「这一类有没有行」，不问内容。用它而不是
 # `read_section(...) == ""`——空串既可能是没有行，也可能是被合法清空过，后者不该被
 # 播种重新填回 config 值。
@@ -118,14 +139,27 @@ def pick_section(rows: Sequence[tuple[Any, Any]], category: str) -> str:
     return ""
 
 
-def render_taken_rows(rows: Sequence[tuple[Any, Any]]) -> str:
-    """把 `PENDING_TAKE_SQL` 返回的 (content, happened_at) 行拼成正文，按事件日期正序。
+@dataclass(frozen=True)
+class ProfileEntry:
+    """一行日志类画像，连主键一起交出。
 
-    PG 侧的 `happened_at` 是 datetime、SQLite 侧是统一格式的 UTC ISO 串，两种都能直接
-    排序，所以这里不区分后端。
+    主键是给优化器用的：读完 pending 要发一次 LLM 合并，回来时窗口可能已经变了，只按
+    category 删除会把没参与合并的新行一起带走。`id` 在 PG 侧由 `uuid.UUID` 转成 str、
+    在 SQLite 侧本来就是 str，所以协议上是一种形状。
     """
-    ordered = sorted(rows, key=lambda row: (row[1], str(row[0])))
-    return render_entry_rows([str(row[0]) for row in ordered])
+
+    id: str
+    content: str
+
+
+def render_entries(rows: Sequence[ProfileEntry]) -> str:
+    """`ENTRY_WITH_IDS_SQL` 已按事件日期正序排好，这里只负责拼接。"""
+    return render_entry_rows([row.content for row in rows])
+
+
+def pick_entries(rows: Sequence[tuple[Any, Any, Any]]) -> list[ProfileEntry]:
+    """把 `ENTRY_WITH_IDS_SQL` 的 (id, content, happened_at) 行收成 `ProfileEntry`。"""
+    return [ProfileEntry(id=str(row[0]), content=str(row[1] or "")) for row in rows]
 
 
 @dataclass(frozen=True)
@@ -219,16 +253,27 @@ class MemoryProfileStoreApi(Protocol):
         """按时间顺序读某类日志并拼成一段正文。"""
         ...
 
-    async def take_pending(self, session: Any) -> str:
-        """在调用方的事务里取走全部 pending 正文并删除，**不自己提交**。
+    async def read_entries_with_ids(self, category: str) -> list[ProfileEntry]:
+        """按事件日期正序读某类日志，连主键一起给（优化器要靠键区分新旧行）。"""
+        ...
 
-        取代文件版的 `snapshot_pending` / `commit_pending_snapshot` /
-        `rollback_pending_snapshot`：那边要靠原子重命名把内容先藏起来才能崩溃可恢复，
-        这里回滚就是事务中止（ADR-14）。
+    async def merge_entries_into_section(
+        self, entry_ids: Sequence[str], section_category: str, content: str
+    ) -> int:
+        """**一个事务内**删掉这批日志行并覆写某个整块类，返回删掉的行数。
 
-        为什么这个参数是必填而不是可选：本方法唯一的用途是 6.11 那笔「取走 + 合并 + 写回」
-        的大事务。让它自己提交，删除就在合并之前落库，LLM 那一步失败时 pending 已经没了——
-        等于把文件版那套重命名保护换成一个更糟的版本。所以这里不给「不传会话」的退路。
+        为什么这两个动作必须同批：优化器先读 pending、再发一次 LLM 合并、最后写回
+        long_term。删除与写回若分两次提交，中间进程死掉就是「事实已从 pending 消失、
+        合并结果却没落库」——永久丢失。文件版靠原子重命名（`snapshot_pending` /
+        `commit_pending_snapshot` / `rollback_pending_snapshot` 三步）防这件事；表上不需要
+        那套，因为一个事务的中止就是回滚（ADR-14）。
+
+        为什么不把「取走」做成一条 `DELETE ... RETURNING` 横跨 LLM 调用：那要求事务在
+        整个 LLM 等待期间开着，而 SQLite 侧的连接由一把 `threading.RLock` 守着，它只对
+        属主线程可重入——async 事务把锁持在一次 `await` 上就会在下一个工作线程上等同一把
+        锁，直接锁死。所以事务保持短，只包住「删除 + 写回」这两条语句（ADR-14 修订）。
+
+        `entry_ids` 为空时不发起删除，只覆写该整块类，返回 0。
         """
         ...
 

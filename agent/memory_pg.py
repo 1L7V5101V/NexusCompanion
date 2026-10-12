@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,14 +36,17 @@ from core.memory.profile_store import (
     ENTRY_APPEND_SQL,
     ENTRY_ASSEMBLY_READ_SQL,
     ENTRY_CATEGORY_READ_SQL,
-    PENDING_TAKE_SQL,
+    ENTRY_WITH_IDS_SQL,
     SECTION_READ_SQL,
     SECTION_UPSERT_SQL,
     ProfileAssembly,
+    ProfileEntry,
     build_assembly,
+    entries_delete_params,
+    entries_delete_sql,
+    pick_entries,
     pick_section,
     render_entry_rows,
-    render_taken_rows,
     require_entry,
     require_section,
 )
@@ -412,18 +415,50 @@ class PgMemoryProfileStore:
             ).scalars().all()
         return render_entry_rows([str(item) for item in rows], max_chars=max_chars)
 
-    async def take_pending(self, session: AsyncSession) -> str:
-        """DELETE ... RETURNING 而不是「先查再删」：两条语句之间的窗口会让并发消费者
-        把同一批 pending 各取一次。RETURNING 让取走与删除成为同一个原子动作。
+    async def read_entries_with_ids(self, category: str) -> list[ProfileEntry]:
+        async with self._sf() as sess:
+            rows = (
+                await sess.execute(
+                    text(ENTRY_WITH_IDS_SQL),
+                    {"tenant_id": self.tenant_id, "category": category},
+                )
+            ).all()
+        return pick_entries(rows)
 
-        会话由调用方交出、这里不提交：6.11 那笔事务要在合并失败时把 pending 原样退回去。
+    async def merge_entries_into_section(
+        self, entry_ids: Sequence[str], section_category: str, content: str
+    ) -> int:
+        """「删掉这批行 + 覆写整块类」走同一个会话、同一次提交。
+
+        不选 `DELETE ... RETURNING` 横跨 LLM 那笔大事务：那要求连接在整次合并等待期
+        idle-in-transaction，而 SQLite 侧根本做不到（`RLock` 只对属主线程可重入）。
+        判据见协议里的 `merge_entries_into_section`。
         """
-        rows = (
-            await session.execute(
-                text(PENDING_TAKE_SQL), {"tenant_id": self.tenant_id}
+        require_section(section_category)
+        now = datetime.now(timezone.utc)
+        async with self._borrow(None) as sess:
+            deleted = 0
+            if entry_ids:
+                result = await sess.execute(
+                    text(entries_delete_sql(entry_ids)),
+                    entries_delete_params(
+                        self.tenant_id,
+                        [uuid.UUID(str(item)) for item in entry_ids],
+                    ),
+                )
+                deleted = int(result.rowcount or 0)
+            await sess.execute(
+                text(SECTION_UPSERT_SQL),
+                {
+                    "id": uuid.uuid4(),
+                    "tenant_id": self.tenant_id,
+                    "category": section_category,
+                    "content": content,
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
-        ).all()
-        return render_taken_rows(rows)
+        return deleted
 
     async def read_assembly(
         self, session: AsyncSession, *, history_max_chars: int = 0

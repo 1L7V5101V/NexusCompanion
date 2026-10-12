@@ -19,11 +19,13 @@ if TYPE_CHECKING:
 
 from agent.memory import DEFAULT_SELF_MD
 from agent.provider import LLMProvider
+from core.memory.profile_store import ProfileStoreResolver, render_entries
+from core.memory.profile_writer import ProfileTableMaintainer
 
 logger = logging.getLogger(__name__)
 
-# 当前单体 memory store 尚未 tenant 化（C9 前），optimizer 默认在单租户键上串行；
-# 多租户化后由调用方显式传 tenant_id。
+# optimizer 按 tenant 串行；c18 之后它读写的画像也在同一 tenant 的专表上，
+# 这个默认值只服务没传 tenant_id 的调用点（单机与直接构造的测试）。
 DEFAULT_OPTIMIZER_TENANT = "default"
 
 
@@ -218,6 +220,9 @@ class MemoryOptimizer:
         # c9-persona-relationship ADR-5：PG durable 模式注入（read/write 走
         # memory_items self seam + 审计，单事务）；None = 单体文件语义不变。
         relationship_io: "Any | None" = None,
+        # c18 ADR-3/ADR-14（task 6.11）：pending 的读与「删除 + 写回」都按租户走专表。
+        # 没有它就没有可信归属，本轮直接跳过（task 4.3 fail-closed）。
+        profile_stores: ProfileStoreResolver | None = None,
     ) -> None:
         self._memory = memory
         self._provider = provider
@@ -227,6 +232,7 @@ class MemoryOptimizer:
         # global maintenance lock；单 tenant 一个 Markdown store 语义不变。
         self._runtime_snapshot_store = runtime_snapshot_store
         self._relationship_io = relationship_io
+        self._profile_stores = profile_stores
         self._locks: dict[str, asyncio.Lock] = {}
         self._default_self_md = default_self_md
         self._identity_name = identity_name
@@ -258,45 +264,73 @@ class MemoryOptimizer:
             async with lock:
                 await self._optimize(tenant_id)
 
-    async def _optimize(self, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
-        """提交 pending 记忆合并，并随后更新自我认知。"""
+    def _profile_for(self, tenant_id: str) -> ProfileTableMaintainer | None:
+        """本轮优化用哪个租户的画像表；返回 None 表示什么都不做（task 4.3 fail-closed）。
 
-        # 1. 冻结本轮 pending 并读取当前长期记忆
-        pending = self._memory.snapshot_pending()
-        try:
-            current_memory = self._memory.read_long_term().strip()
-            if not current_memory and not pending:
-                self._memory.commit_pending_snapshot()
-                logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
-                return
-
-            # 2. 间隔延迟后并行启动 MEMORY 合并和 SELF 更新
-            await asyncio.sleep(self._STEP_DELAY_SECONDS)
-            merged_memory, _ = await asyncio.gather(
-                self._merge_memory(current_memory, pending),
-                self._update_self(pending, tenant_id=tenant_id),
+        三条判据按顺序：装配根没给解析器、归属为空、解析器报错——都只跳过，并留一条带
+        当时归属的日志。不选「回退到进程共享的文件目录」：那等于把这次优化写进所有租户
+        共用的一份画像里，正是本 change 要关的入口。
+        """
+        resolver = self._profile_stores
+        if resolver is None:
+            logger.error(
+                "c18 fail-closed：optimizer 没有画像存储解析器，跳过本轮优化"
             )
+            return None
+        if not str(tenant_id or "").strip():
+            logger.error(
+                "c18 fail-closed：optimizer 拿不到可信租户归属，跳过本轮优化"
+            )
+            return None
+        try:
+            store = resolver(tenant_id)
+        except Exception:
+            logger.exception(
+                "c18 fail-closed：画像存储解析失败，跳过本轮优化（tenant_id=%r）",
+                tenant_id,
+            )
+            return None
+        return ProfileTableMaintainer(store, tenant_id)
 
-            # 3. 两路都成功，统一处理 snapshot
-            if merged_memory:
-                if current_memory:
-                    self._memory.backup_long_term()
-                self._memory.write_long_term(merged_memory)
-                logger.info(
-                    "[memory_optimizer] 记忆已合并 before=%d after=%d chars",
-                    len(current_memory),
-                    len(merged_memory),
-                )
-                self._memory.commit_pending_snapshot()
-                logger.info("[memory_optimizer] PENDING 已归档，snapshot 已提交")
-            else:
-                self._memory.rollback_pending_snapshot()
-                logger.warning(
-                    "[memory_optimizer] 合并返回空，保留原有内容，snapshot 已回滚"
-                )
-        except BaseException:
-            self._memory.rollback_pending_snapshot()
-            raise
+    async def _optimize(self, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
+        """把该租户的 pending 合进 long_term，随后更新自我认知。"""
+        profile = self._profile_for(tenant_id)
+        if profile is None:
+            return
+
+        # 1. 先读这一轮的输入：pending 行连主键一起留着，写回时按主键点名删除。
+        rows = await profile.read_pending_rows()
+        pending = render_entries(rows)
+        current_memory = (await profile.read_long_term()).strip()
+        if not current_memory and not pending:
+            logger.info("[memory_optimizer] 记忆和 pending 均为空，跳过优化")
+            return
+
+        # 2. 间隔延迟后并行启动 MEMORY 合并和 SELF 更新
+        await asyncio.sleep(self._STEP_DELAY_SECONDS)
+        merged_memory, _ = await asyncio.gather(
+            self._merge_memory(current_memory, pending),
+            self._update_self(pending, tenant_id=tenant_id),
+        )
+
+        # 3. 合并成功才落笔：删掉这轮吃进去的行 + 覆写 long_term，同一个事务。
+        #    合并返回空或抛异常时一条都不删——文件版那套 snapshot/commit/rollback 三步
+        #    在这里没有对应物，因为「什么都没做」本身就是可恢复的状态（ADR-14 修订）。
+        if not merged_memory:
+            logger.warning(
+                "[memory_optimizer] 合并返回空，保留原有内容，%d 行 pending 原样留下",
+                len(rows),
+            )
+            return
+        deleted = await profile.merge_pending_into_long_term(
+            [row.id for row in rows], merged_memory
+        )
+        logger.info(
+            "[memory_optimizer] 记忆已合并 before=%d after=%d chars，取走 %d 行 pending",
+            len(current_memory),
+            len(merged_memory),
+            deleted,
+        )
 
     async def _merge_memory(self, memory: str, pending: str) -> str:
         today = datetime.now().strftime("%Y-%m-%d")

@@ -7,8 +7,8 @@
 驱动方式在 `test_pg_profile_store.py` 与 `test_sqlite_profile_store.py` 各自的文件里。
 
 侧重点不是「能不能存进去」，而是 ADR-13 / ADR-14 换来的三条语义：整块类覆写不增行、
-日志类靠 `(tenant_id, dedup_key)` 幂等且该键按租户隔离（F3）、pending 的取走与删除是一
-个原子动作（取代文件版那套「原子重命名 + 提交/回滚」三步）。
+日志类靠 `(tenant_id, dedup_key)` 幂等且该键按租户隔离（F3）、pending 的「删除 + 写回 long_term」是同一个事务
+（ADR-14 修订：文件版那套原子重命名三步不再需要）。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import pytest
 
@@ -52,7 +52,7 @@ class ProfileStoreHarness(Protocol):
         ...
 
     async def commit(self, session: Any) -> None:
-        """提交借来的会话。`take_pending` 与带 `session` 的写都不自己提交。"""
+        """提交借来的会话。带 `session` 的写都不自己提交。"""
         ...
 
     async def abort(self, session: Any) -> None:
@@ -123,34 +123,63 @@ async def case_null_dedup_key_always_appends(
     assert await store.read_entries("pending") == "a\n\nb"
 
 
-async def case_take_pending_returns_and_empties(
+async def case_read_entries_with_ids_orders_by_event_date(
     store: Any, harness: ProfileStoreHarness
 ) -> None:
     await store.append_entry("pending", "事实二", happened_at=_ts(2))
     await store.append_entry("pending", "事实一", happened_at=_ts(1))
-    async with harness.borrow(store) as session:
-        taken = await store.take_pending(session)
-        await harness.commit(session)
-    assert taken == "事实一\n\n事实二"
-    async with harness.borrow(store) as session:
-        assert await store.take_pending(session) == ""
-        await harness.commit(session)
-    assert await store.read_entries("history") == "", "只该带走 pending"
+    rows = await store.read_entries_with_ids("pending")
+    assert [row.content for row in rows] == ["事实一", "事实二"]
+    assert all(str(row.id) for row in rows), "主键必须能交回调用方（合并靠它点名删除）"
 
 
-async def case_take_pending_rolls_back_with_the_caller(
+async def case_merge_deletes_only_the_named_rows(
     store: Any, harness: ProfileStoreHarness
 ) -> None:
-    """ADR-14 用「事务中止」取代文件版的原子重命名，这条就得真成立。
+    """合并只删「这次真吃进去的行」：窗口里新追加的那条得留下。"""
+    await store.append_entry("pending", "进了这轮", happened_at=_ts(1))
+    rows = await store.read_entries_with_ids("pending")
+    await store.append_entry("pending", "没进这轮", happened_at=_ts(2))
+    await store.append_entry("history", "别碰我", happened_at=_ts(1))
 
-    6.11 的失败路径靠它：合并失败时 pending 必须原样在库里。`take_pending` 若自己提交，
-    这里读到的就是空——那是比文件版更糟的结果，所以协议不给「不传会话」的退路。
-    """
+    deleted = await store.merge_entries_into_section(
+        [row.id for row in rows], "long_term", "合并后的长期画像"
+    )
+
+    assert deleted == 1
+    assert await store.read_section("long_term") == "合并后的长期画像"
+    remaining = await store.read_entries("pending")
+    assert "没进这轮" in remaining and "进了这轮" not in remaining
+    assert await store.read_entries("history") == "别碰我"
+
+
+async def case_merge_without_ids_only_overwrites(
+    store: Any, harness: ProfileStoreHarness
+) -> None:
+    """空 id 列表不发起删除（PG 上 `IN ()` 是语法错），但仍然覆写。"""
     await store.append_entry("pending", "留着", happened_at=_ts(1))
-    async with harness.borrow(store) as session:
-        assert await store.take_pending(session) == "留着"
-        await harness.abort(session)
+    assert (
+        await store.merge_entries_into_section([], "long_term", "只有覆写") == 0
+    )
+    assert await store.read_section("long_term") == "只有覆写"
     assert await store.read_entries("pending") == "留着"
+
+
+async def case_merge_rolls_back_the_delete_when_the_write_fails(
+    store: Any, harness: ProfileStoreHarness
+) -> None:
+    """ADR-14 的失血点：写回失败时删除必须一起中止。
+
+    这里用 `content` 的 NOT NULL 约束造一次真实失败——两个后端都会在语句上抛，
+    而事务里那条 DELETE 不能已经落库。
+    """
+    await store.append_entry("pending", "别丢", happened_at=_ts(1))
+    rows = await store.read_entries_with_ids("pending")
+    with pytest.raises(Exception):
+        await store.merge_entries_into_section(
+            [row.id for row in rows], "long_term", cast(Any, None)
+        )
+    assert await store.read_entries("pending") == "别丢", "删除与写回不是同一个事务"
 
 
 async def case_write_section_joins_the_caller_transaction(
@@ -208,8 +237,10 @@ CASES = (
     case_entries_read_in_event_order_and_tail_to_budget,
     case_dedup_key_is_per_tenant,
     case_null_dedup_key_always_appends,
-    case_take_pending_returns_and_empties,
-    case_take_pending_rolls_back_with_the_caller,
+    case_read_entries_with_ids_orders_by_event_date,
+    case_merge_deletes_only_the_named_rows,
+    case_merge_without_ids_only_overwrites,
+    case_merge_rolls_back_the_delete_when_the_write_fails,
     case_write_section_joins_the_caller_transaction,
     case_read_assembly_uses_the_borrowed_session,
     case_happened_at_is_required_by_the_schema,

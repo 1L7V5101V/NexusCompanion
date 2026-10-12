@@ -5,9 +5,9 @@
 最后一条容易被写成 `except: pass`——那种写法下故障表现为「画像不再更新」，日志里查不到
 为什么，而画像静默失效正是本 change 要修的病症之一。
 
-覆盖范围如实交代：本文件是整理与压缩两条后台路径。第三条「优化器消费 pending」还没有
-fail-closed 接缝可测（`MemoryOptimizer` 手里还是文件 store，改到专表是 task 6.11），
-那一例与它同批补进来。
+三条后台路径各一例：整理（`consolidate`）、压缩（`refresh_recent_turns`）、优化器消费
+pending（`MemoryOptimizer.optimize`）。优化器那一例多断一件事——解析器在场但归属为空时
+连 pending 都不读：「读了却不敢写」比「不读」更难查。
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import pytest
 from core.memory.markdown import (
     ConsolidateRequest,
     MarkdownMemoryMaintenance,
+    MarkdownMemoryStore,
     RefreshRecentTurnsRequest,
 )
 from tests.memory.profile_write_cases import (
@@ -135,3 +136,34 @@ async def test_without_a_resolver_the_file_backend_still_writes(tmp_path: Path) 
     history = workspace / "memory" / "HISTORY.md"
     assert history.exists()
     assert "Zigbee" in history.read_text(encoding="utf-8")
+
+async def test_optimizer_without_tenant_writes_nothing(
+    tmp_path: Path, stores: TenantStores, caplog: pytest.LogCaptureFixture
+) -> None:
+    """第三条后台路径：优化器消费 pending（task 6.11 之后走专表）。"""
+    from datetime import datetime, timezone
+
+    from proactive_v2.memory_optimizer import MemoryOptimizer
+
+    workspace = tmp_path / "ws"
+    store = stores.resolve(TENANT_A)
+    await store.append_entry(
+        "pending",
+        "- [identity] 不该被谁吃掉",
+        happened_at=datetime(2026, 3, 3, tzinfo=timezone.utc),
+    )
+    provider = consolidation_provider()
+    optimizer = MemoryOptimizer(
+        MarkdownMemoryStore(workspace),
+        cast(Any, provider),
+        "m",
+        profile_stores=stores.resolve,
+    )
+
+    with caplog.at_level(logging.ERROR, logger="proactive_v2.memory_optimizer"):
+        await optimizer.optimize("")
+
+    assert provider.chat.await_count == 0  # type: ignore[attr-defined]
+    assert "不该被谁吃掉" in await store.read_entries("pending")
+    assert any("fail-closed" in r.getMessage() for r in caplog.records)
+

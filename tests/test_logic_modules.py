@@ -26,17 +26,25 @@ from session.manager import (
 
 @pytest.mark.asyncio
 async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path):
+    """optimizer 的覆盖路径：合并走该租户的专表，SELF 仍走注入的文件 store。"""
+    from tests.memory.profile_write_cases import TenantStores
+
+    stores = TenantStores.create(tmp_path)
+    tenant = "c18-opt-logic"
     memory = MagicMock()
-    memory.snapshot_pending.return_value = "- [identity] x"
-    memory.read_long_term.return_value = "MEM"
     memory.read_self.return_value = "# Nexus 的自我认知\n## 人格与形象\n- x"
     memory.read_history.return_value = "history"
     memory.get_memory_context.return_value = "ctx"
     memory.write_long_term = MagicMock()
     memory.append_history = MagicMock()
-    memory.commit_pending_snapshot = MagicMock()
-    memory.rollback_pending_snapshot = MagicMock()
     memory.write_self = MagicMock()
+    store = stores.resolve(tenant)
+    await store.write_section("long_term", "MEM")
+    await store.append_entry(
+        "pending",
+        "- [identity] x",
+        happened_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
     provider = MagicMock()
     provider.chat = AsyncMock(
         side_effect=[
@@ -44,15 +52,25 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
             LLMResponse(content="updated self"),
         ]
     )
-    opt = MemoryOptimizer(memory, provider, "m", max_tokens=100)
-    opt._STEP_DELAY_SECONDS = 0
-    await opt.optimize()
-    memory.write_long_term.assert_called_once_with("merged")
-    memory.write_self.assert_called_once()
+    try:
+        opt = MemoryOptimizer(
+            memory, provider, "m", max_tokens=100, profile_stores=stores.resolve
+        )
+        opt._STEP_DELAY_SECONDS = 0
+        await opt.optimize(tenant)
 
-    loop = MemoryOptimizerLoop(opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1))
-    assert loop._seconds_until_next_tick() >= 1.0
-    loop.stop()
+        assert (await store.read_section("long_term")).strip() == "merged"
+        assert await store.read_entries("pending") == "", "合并吃进去的行要被取走"
+        memory.write_long_term.assert_not_called()
+        memory.write_self.assert_called_once()
+
+        loop = MemoryOptimizerLoop(
+            opt, interval_seconds=10, _now_fn=lambda: datetime(2025, 1, 1, 0, 0, 1)
+        )
+        assert loop._seconds_until_next_tick() >= 1.0
+        loop.stop()
+    finally:
+        stores.close()
 
 
 @pytest.mark.asyncio

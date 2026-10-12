@@ -698,6 +698,12 @@ class AppRuntime:
                 # c9-persona-relationship ADR-5 / c18 ADR-10：RelationshipState 读写
                 # 走租户写缝（单事务 + 审计），两种后端各一个实现。
                 relationship_io=_persona_relationship_io,
+                # c18 task 4.2：optimizer 是四个独立根之一，持有解析器而不是 store。
+                profile_stores=(
+                    self.core.profile_access.resolve
+                    if getattr(self.core, "profile_access", None) is not None
+                    else None
+                ),
             )
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()

@@ -155,7 +155,7 @@ async def test_happened_at_is_stored_as_uniform_utc_iso(
 
 
 async def test_concurrent_writes_from_threaded_calls_all_land(
-    store: SqliteMemoryProfileStore, harness: _SqliteHarness
+    store: SqliteMemoryProfileStore,
 ) -> None:
     """每个方法都经 `asyncio.to_thread` 落在工作线程上，而连接是共享的一条。
 
@@ -168,10 +168,18 @@ async def test_concurrent_writes_from_threaded_calls_all_land(
             for i in range(20)
         )
     )
-    async with harness.borrow(store) as session:
-        taken = await store.take_pending(session)
-        await harness.commit(session)
-    assert taken.split("\n\n") == [f"P{i}" for i in range(20)]
+    rows = await store.read_entries_with_ids("pending")
+    assert [row.content for row in rows] == [f"P{i}" for i in range(20)]
+    deleted = await store.merge_entries_into_section(
+        [row.id for row in rows],
+        "long_term",
+        "\n\n".join(row.content for row in rows),
+    )
+    assert deleted == 20
+    assert await store.read_entries("pending") == ""
+    assert (await store.read_section("long_term")).split("\n\n") == [
+        f"P{i}" for i in range(20)
+    ]
 
 
 def test_transaction_leaves_nothing_when_the_body_raises(

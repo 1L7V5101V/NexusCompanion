@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from core.memory.profile_store import MemoryProfileStoreApi
+from core.memory.profile_store import MemoryProfileStoreApi, ProfileEntry
 
 if TYPE_CHECKING:
     from agent.memory import MemoryStore
@@ -140,9 +141,17 @@ class ProfileTableMaintainer:
             dedup_key=_dedup_key(f"{kind}:{date_str}", source_ref, text),
         )
 
-    async def take_pending(self, session: object) -> str:
-        """优化器取走待合并事实；事务由调用方给（ADR-14）。"""
-        return await self._store.take_pending(session)
+    async def read_pending_rows(self) -> list[ProfileEntry]:
+        """优化器要的那批待合并事实，连主键一起给（ADR-14 修订）。"""
+        return await self._store.read_entries_with_ids("pending")
+
+    async def merge_pending_into_long_term(
+        self, entry_ids: Sequence[str], content: str
+    ) -> int:
+        """一个事务内「删掉这些 pending 行 + 覆写 long_term」，返回删掉的行数。"""
+        return await self._store.merge_entries_into_section(
+            entry_ids, "long_term", content
+        )
 
 
 class ProfileFileMaintainer:

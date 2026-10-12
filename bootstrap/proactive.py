@@ -23,6 +23,7 @@ from session.manager import SessionManager
 if TYPE_CHECKING:
     from agent.core.types import PersonaSnapshotResolver
     from core.memory.markdown import MarkdownMemoryStore
+    from core.memory.profile_store import ProfileStoreResolver
     from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
     from infra.storage.provisioning import TenantProvisioning
@@ -153,6 +154,8 @@ def build_memory_optimizer_task(
     # c9-persona-relationship ADR-5：PG durable 模式的 tenant RelationshipState
     # 读写缝（read/write + 审计）；None = 单体文件语义。
     relationship_io: "Any | None" = None,
+    # c18 task 4.2（optimizer 那根）/6.11：pending 与 long_term 按租户走专表。
+    profile_stores: "ProfileStoreResolver | None" = None,
 ) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
@@ -167,6 +170,7 @@ def build_memory_optimizer_task(
         identity_name=get_identity_name(),
         runtime_snapshot_store=runtime_snapshot_store,
         relationship_io=relationship_io,
+        profile_stores=profile_stores,
     )
     interval = config.memory_optimizer_interval_seconds
     print(f"MemoryOptimizerLoop 已启动，间隔={interval}s ({interval / 3600:.1f}h)")
