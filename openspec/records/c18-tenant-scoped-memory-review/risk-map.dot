@@ -1,0 +1,153 @@
+// C18 租户化记忆画像层 — 风险关系图
+// 产出技能：risk-quality-reviewer + graphviz
+// 这张图只回答一个问题：画像层的调用方与存储里，缺陷挂在哪、任务覆盖到哪、护栏盖到哪。
+// 视图状态：current = 代码现状；target = 计划要做成的样子（虚线框）。
+// 严重度配色：红=阻断，橙=高，黄=中，灰=低。证据与行号见同目录 architecture-review.md。
+// 渲染：dot -Tsvg risk-map.dot -o risk-map.svg
+
+digraph c18_risk_map {
+  rankdir=TB;
+  graph [fontname="Helvetica", fontsize=11, labeljust=l,
+         label="\nC18 记忆画像层租户化 — 缺陷、任务覆盖与护栏覆盖的关系\n(实线=代码现状, 虚线=计划目标态, 红/橙/黄/灰=严重度)"];
+  node  [fontname="Helvetica", fontsize=10, shape=box, style="rounded,filled", fillcolor="#f5f5f5"];
+  edge  [fontname="Helvetica", fontsize=9];
+
+  // ── 存储层 ────────────────────────────────────────────────
+  subgraph cluster_store {
+    label="存储层 (data topology)";
+    style=rounded;
+    color="#888888";
+
+    file_store   [label="文件版画像存储\ncore/memory/markdown.py:985\nagent/memory.py:40\n[current]", shape=box3d];
+    pg_store     [label="PgMemoryMarkdownStore\nagent/memory_pg.py:53\n[current: 零实例化点 → target: 正式实现]", style="rounded,filled,dashed", fillcolor="#e8f0fe"];
+    sqlite_store [label="SQLite 画像存储\n(target, 任务 6.4, 尚不存在)", style="rounded,filled,dashed", fillcolor="#e8f0fe"];
+    memory_items [label="memory_items 表\nPG: models/memory.py + 分区迁移\nSQLite: memory2/store.py:68-83 (无 tenant_id 列)", shape=cylinder, fillcolor="#fff3cd"];
+    app_configs  [label="app_configs 表\n主键只有 key 一列, key 上限 128 字符\nbootstrap/db/models/extras.py:20", shape=cylinder, fillcolor="#f8d7da"];
+    persona_tbl  [label="tenant_persona_profiles\n+ persona_audit_events\nPG 有, SQLite 待补 (任务 6.1)", shape=cylinder, fillcolor="#fff3cd"];
+    shared_files [label="共享 markdown 文件\n<workspace>/memory/*.md + journal/\n[target: 冻结为归档, 永不改写]", shape=note, fillcolor="#eeeeee"];
+  }
+
+  // ── 计划已覆盖的调用方 ────────────────────────────────────
+  subgraph cluster_covered {
+    label="计划已覆盖的调用方 (tasks 有条目)";
+    style=rounded;
+    color="#2e7d32";
+
+    prompt_blocks [label="两个画像提示块\nagent/core/prompt_block.py:185,216\n任务 3.4 已落地", fillcolor="#d7f0d9"];
+    turn_ctx      [label="TurnContext + ContextRequest\ntenant_id / profile_snapshot 必填\n任务 3.3 已落地, 3.7 待做", fillcolor="#d7f0d9"];
+    six_refs      [label="六处启动期单例引用\nbootstrap/app.py:666,738,775\nbootstrap/tools.py:579,597\ndrift_flow/factory.py:114\n任务 4.2", fillcolor="#d7f0d9"];
+    runtime_proxy [label="core/memory/runtime.py:36-49\n四个无租户代理方法\n任务 4.1 删除", fillcolor="#d7f0d9"];
+    migration     [label="迁移脚本\nscripts/migrate_profile_to_tenant.py\n任务 7.1-7.3 (尚不存在)", style="rounded,filled,dashed", fillcolor="#d7f0d9"];
+  }
+
+  // ── 计划未覆盖的调用方 ────────────────────────────────────
+  subgraph cluster_uncovered {
+    label="计划未覆盖的活路径 (proposal 影响清单与 tasks 均无条目)";
+    style=rounded;
+    color="#c62828";
+
+    optimizer   [label="记忆整理器\nproactive_v2/memory_optimizer.py:261-355\n长期画像与自我认知的唯一生产写入方\n同步调用画像接口", fillcolor="#fde0e0"];
+    proactive_p [label="主动推送提示词\nplugins/proactive_flow/prompt.py:248-257\nstr(read_long_term() or \"\")", fillcolor="#fde0e0"];
+    drift_rt    [label="drift runtime frame\nplugins/drift_flow/runtime.py:598-602", fillcolor="#fde0e0"];
+    wake_rt     [label="唤醒推送\nplugins/wake_proactive/runtime.py:1024-1026\n经 getattr 取用", fillcolor="#fde0e0"];
+    looping     [label="AgentLoop 自持引用\nagent/looping/core.py:169,174,243-247,936-945\n别名与 getattr 形态", fillcolor="#fde0e0"];
+    dash_api    [label="dashboard 应用状态\nbootstrap/dashboard_api.py:957\nMemoryStore(workspace)", fillcolor="#fde0e0"];
+    init_ws     [label="workspace 初始化\nbootstrap/init_workspace.py:16-27,150\n每次启动重建四个画像文件并播种 SELF.md", fillcolor="#fde0e0"];
+    qq_channel  [label="QQ 频道\ninfra/channels/qq_channel.py:692-694\n直接从磁盘读 SELF.md, 不经 store", fillcolor="#fde0e0"];
+    prompt_tpl  [label="提示词模板\nprompts/agent.py:38-41,152\nprompts/background.py:32-36,112-113\n把共享文件绝对路径交给模型", fillcolor="#fde0e0"];
+    cfg_secret  [label="配置占位符回退\nagent/config.py:807-817\n读 memory/<VAR> 当密钥来源", fillcolor="#fde0e0"];
+    consolidate_ep [label="HTTP: 手动整理端点\nbootstrap/dashboard_api.py:1127-1147", fillcolor="#fde0e0"];
+    llm_actor   [label="模型自身\n经通用 read_file 工具", shape=ellipse, fillcolor="#fde0e0"];
+  }
+
+  // ── 召回面 ────────────────────────────────────────────────
+  recall [label="召回检索面\n向量 / BM25 / LIKE 三条\nplugins/default_memory/engine.py:1440-1448\n意图为 answer 或 context 时不加类型过滤", fillcolor="#fff3cd"];
+
+  // ── 护栏 ──────────────────────────────────────────────────
+  subgraph cluster_guard {
+    label="护栏";
+    style=rounded;
+    color="#1565c0";
+
+    scan_test [label="静态扫描测试\ntests/memory/test_no_shared_profile_io.py\n7 文件 + drift_flow 目录\n禁 4 条正则, 不禁 read_long_term 调用", shape=note, fillcolor="#dce8f7"];
+    scenarios [label="delta spec 的 15 个 Scenario\n其中 5 个无实现任务", shape=note, fillcolor="#dce8f7"];
+  }
+
+  // ── 风险节点 ──────────────────────────────────────────────
+  f1  [label="F1 阻断\npending 三方法是空实现\n返回 None 而非 str\n整理器恒拿到空内容", shape=octagon, fillcolor="#c62828", fontcolor=white];
+  f2  [label="F2 阻断\n协程对象被 str() 注进提示词", shape=octagon, fillcolor="#c62828", fontcolor=white];
+  f3  [label="F3 阻断\n去重键跨租户共享 + 超 128 字符", shape=octagon, fillcolor="#c62828", fontcolor=white];
+  f4  [label="F4 高\n画像行对关键词召回可见\n与 Non-Goal 冲突", shape=octagon, fillcolor="#ef6c00", fontcolor=white];
+  f5  [label="F5 高\n护栏范围盖不住活路径", shape=octagon, fillcolor="#ef6c00", fontcolor=white];
+  f6  [label="F6 高\n单机侧模型读到冻结归档", shape=octagon, fillcolor="#ef6c00", fontcolor=white];
+  f7  [label="F7 高\n存量 SELF.md 演化内容丢失", shape=octagon, fillcolor="#ef6c00", fontcolor=white];
+  f8  [label="F8 中\n同租户并发产生重复单行", shape=octagon, fillcolor="#f9a825"];
+  f9  [label="F9 中\nstr(hash()) 六处, 跨进程不稳定", shape=octagon, fillcolor="#f9a825"];
+  f10 [label="F10 中\n5 个 Scenario 无任务", shape=octagon, fillcolor="#f9a825"];
+  f11 [label="F11 中\neval 与 debug 工具失效未表态", shape=octagon, fillcolor="#f9a825"];
+
+  // ── 边：现状读路径 ────────────────────────────────────────
+  prompt_blocks -> turn_ctx      [label="读快照"];
+  turn_ctx      -> pg_store      [label="target: 预取四类画像", style=dashed];
+  six_refs      -> runtime_proxy [label="取用单例"];
+  runtime_proxy -> file_store    [label="current: 全部转发"];
+  file_store    -> shared_files  [label="读写"];
+  pg_store      -> memory_items  [label="target: 读写五类行", style=dashed];
+  pg_store      -> app_configs   [label="target: 幂等键", style=dashed];
+  sqlite_store  -> memory_items  [label="target: 读写", style=dashed];
+  optimizer     -> persona_tbl   [label="写自我认知 (PG 侧已接)"];
+  migration     -> shared_files  [label="target: 只读输入", style=dashed];
+  migration     -> pg_store      [label="target: 写入", style=dashed];
+
+  // ── 边：未覆盖路径怎么接到存储 ────────────────────────────
+  optimizer     -> file_store    [label="同步调用 8 个方法"];
+  proactive_p   -> file_store    [label="同步 read_long_term / read_self"];
+  drift_rt      -> file_store    [label="同步 read_long_term"];
+  wake_rt       -> file_store    [label="同步 read_long_term"];
+  looping       -> file_store    [label="构造期缓存 store 与 maintenance"];
+  dash_api      -> file_store    [label="构造"];
+  init_ws       -> file_store    [label="构造 (建 consolidation_writes.db)"];
+  init_ws       -> shared_files  [label="缺失时创建并写 SELF.md 默认值"];
+  qq_channel    -> shared_files  [label="直接读盘"];
+  cfg_secret    -> shared_files  [label="直接读盘"];
+  consolidate_ep -> looping      [label="触发手动整理"];
+  prompt_tpl    -> llm_actor     [label="给出绝对路径并指示 read_file"];
+  llm_actor     -> shared_files  [label="单机: 读成功 (根即共享工作区)\n多租户: 越出租户根被拒", style=dotted];
+
+  // ── 边：召回面 ────────────────────────────────────────────
+  memory_items  -> recall        [label="summary 列全行进 BM25 索引"];
+
+  // ── 边：风险挂靠 ──────────────────────────────────────────
+  pg_store      -> f1  [label="缺陷在此", color="#c62828"];
+  f1            -> optimizer [label="后果落在此", color="#c62828"];
+  pg_store      -> f3  [label="_append_once_with_index", color="#c62828"];
+  app_configs   -> f3  [label="主键与列长约束", color="#c62828"];
+  migration     -> f3  [label="任务 7.2 强制走这条路", color="#c62828"];
+  proactive_p   -> f2  [color="#c62828"];
+  drift_rt      -> f2  [color="#c62828"];
+  wake_rt       -> f2  [color="#c62828"];
+  memory_items  -> f4  [color="#ef6c00"];
+  recall        -> f4  [color="#ef6c00"];
+  scan_test     -> f5  [label="范围不全", color="#ef6c00"];
+  prompt_tpl    -> f6  [color="#ef6c00"];
+  shared_files  -> f6  [label="冻结后仍被读", color="#ef6c00"];
+  init_ws       -> f7  [label="播种输入取 config 而非文件", color="#ef6c00"];
+  pg_store      -> f8  [label="_upsert_content 先查后写", color="#f9a825"];
+  memory_items  -> f8  [label="无 (tenant_id, memory_type) 唯一约束", color="#f9a825"];
+  pg_store      -> f9  [color="#f9a825"];
+  persona_tbl   -> f9  [color="#f9a825"];
+  scenarios     -> f10 [color="#f9a825"];
+  f4            -> f11 [label="验证依赖召回评测", color="#f9a825"];
+
+  // ── 边：护栏覆盖关系 ──────────────────────────────────────
+  scan_test     -> six_refs      [label="盖到", color="#2e7d32"];
+  scan_test     -> runtime_proxy [label="盖到", color="#2e7d32"];
+  scan_test     -> prompt_blocks [label="盖到", color="#2e7d32"];
+  scan_test     -> looping       [label="盖不到: 文件不在范围\n且写法是别名与 getattr", color="#c62828", style=dashed];
+  scan_test     -> dash_api      [label="盖不到", color="#c62828", style=dashed];
+  scan_test     -> init_ws       [label="盖不到", color="#c62828", style=dashed];
+  scan_test     -> optimizer     [label="盖不到", color="#c62828", style=dashed];
+  scan_test     -> proactive_p   [label="盖不到: 规则有意不禁 read_long_term", color="#c62828", style=dashed];
+  scan_test     -> qq_channel    [label="盖不到", color="#c62828", style=dashed];
+  scan_test     -> prompt_tpl    [label="盖不到", color="#c62828", style=dashed];
+}

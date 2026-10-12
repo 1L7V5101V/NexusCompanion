@@ -11,33 +11,50 @@
 
 约束：`core/memory/markdown.py:61-80` 的 `MemoryProfileApi` 协议全部同步；`agent/memory_pg.py` 的 `PgMemoryMarkdownStore` 全部 async（`read_long_term:62`、`read_self:135`、`read_recent_context:127` 等），且全仓库无任何实例化点。prompt 块侧 `agent/core/prompt_block.py:168/185/216` 是同步调用。
 
+**`PgMemoryMarkdownStore` 并不满足 `MemoryProfileApi`。** 协议 10 个方法里它实现 6 个：缺 `backup_long_term`、`get_memory_context`、`has_long_term_memory`，协议的 `read_recent_history` 在它那里叫 `read_history`（`:88`）。文件侧靠子类 `MarkdownMemoryStore`（`core/memory/markdown.py:985-996`）补齐后两个并给 `read_history` 加一个重命名别名，PG 侧没有对应子类。task 1.2 验的是「无实例化点」，因此这条协议从未被一致性检查过。接上就在 `core/memory/runtime.py:46` 抛 AttributeError。
+
+`MemoryOptimizer._optimize`（`proactive_v2/memory_optimizer.py:261-298`）的调用形状也是同步的，在 PG 实现上的失效方式值得记下来，因为它不是「读到空」而是「抛异常并被吞掉」：`:266` 的 `self._memory.read_long_term().strip()` 对协程对象取 `.strip()` 立刻 AttributeError，被 `:296` 的 `except BaseException` 接住后 re-raise；`:264` 的 `snapshot_pending()` 未 await，返回值是协程对象而非 None，协程为真值，所以 `if not current_memory and not pending:` 这条空跳过分支永远判不出来。三个 pending 方法在 PG 侧本来就是空实现（`agent/memory_pg.py:176-188`），因为文件后端的「原子重命名」语义在 `memory_items` 上表达不出来。
+
+**三条旁路不经 `ContextBuilder`。** `ContextBuilder.render` 的生产调用点只有两个，都在主对话轮次里：`agent/lifecycle/phases/prompt_render.py:87` 与 `agent/lifecycle/phases/before_reasoning.py:79`。主动推送、drift、唤醒各自手搓消息列表后直接调 `provider.chat`：`plugins/default_proactive/runtime.py:557-576`、`plugins/drift_flow/runtime.py:224-227`、`plugins/wake_proactive/prompt.py:62-65`。它们自己那次画像读取是该次模型调用里画像内容的唯一来源，不存在「主链已经注入过、旁路读的是冗余」这种关系。
+
+其中两条已经在用组装器的段词汇，等于组装器的段渲染被分叉了一份：`plugins/proactive_flow/prompt.py:135` 建的就是 `list[PromptSectionRender]`，`:159-161` 写死 `self_model` / `long_term_memory` / `recent_context` 三个段名（与 `agent/core/prompt_block.py:157/182/218` 三个块的 label 一字不差），`:188` 收尾调 `build_context_frame_message(build_context_frame_content(sections))`，这两个函数主链在 `agent/prompting/assembler.py:154` 与 `agent/context.py:103` 用；`plugins/drift_flow/runtime.py:673-677` 同样在建 `PromptSectionRender(name="long_term_memory", ...)`。
+
 ## Goals / Non-Goals
 
 **Goals:**
 
-- 五类画像的唯一事实源落到按租户解析的表存储（PG 用 PG 表，单机用 SQLite 表），读取按租户、写入按租户，共享目录退出运行时路径。
+- 五类画像的唯一事实源落到画像专表（PG 与 SQLite 各建同形的两张，见 ADR-13），读取按租户、写入按租户，共享目录退出运行时路径。
+- 画像与记忆召回分表：画像行不出现在任何召回 SQL 里，召回结果也不含画像内容。
 - 同步的 prompt 块协议不被改成 async，改动不外溢到会话内容与召回面。
 - 单机与多租户共用同一套按租户解析的画像接口，单机归到固定租户；不再维护第二份文件实现。
+- 四条组装路径（主对话、主动推送、drift、唤醒）经同一个段渲染器取画像段，画像段的渲染只有一份实现（见 ADR-15）。
+- `ContextBuilder` 不做 I/O：租户数据全部从传入的快照走，它不再持有画像存储。
 
 **Non-Goals:**
 
-- 不在多租户模式下建立 per-tenant 的 markdown 目录。选了 PG 之后，「把根目录信息搬到 admin1 的文件夹」这件事变成「把根目录内容迁进 admin1 的 PG 行」，磁盘上不会出现 `tenants/<admin1>/memory/`。
-- 不改 `PersonaProfile` / `RelationshipState` 的快照与固定语义。
-- 不做画像层的双写（PG + 文件）兼容期。
+- 不在多租户模式下建立 per-tenant 的 markdown 目录。选了专表之后，「把根目录信息搬到 admin1 的文件夹」这件事变成「把根目录内容迁进 admin1 的画像行」，磁盘上不会出现 `tenants/<admin1>/memory/`。
+- 不改 `PersonaProfile` 的快照与固定语义。`RelationshipState` 的单写者与审计语义也不改，改的只是它当前值的存放位置（ADR-9、ADR-13）。
+- 不做画像层的双写（表 + 文件）兼容期。
+- 不统一「同名段放系统提示还是放上下文帧」这处路径间差异。改放置会改模型行为，需要跑评测判断好坏，不混进一个修隔离漏洞的 change（差异本身记在 ADR-15 末段）。
+- 不修主动推送与 drift 两条路径注入进程级全局身份常量的问题（`plugins/proactive_flow/prompt.py:43-44`、`plugins/drift_flow/runtime.py:838-839` 插的是 `agent/persona.py:8/14` 的 `NEXUS_IDENTITY` / `PERSONALITY_RULES`，而非该租户的 PersonaProfile）。本 change 关掉的是画像泄漏，身份租户化另开 change。
 
 ## Decisions
+
+（阅读顺序提示：ADR-13 是存储归属的根决策，ADR-1 / 8 / 9 / 10 都引用它；ADR-15 是组装侧的根决策，ADR-4 引用它。）
 
 ### ADR-1 每轮预取不可变画像快照，而不是把 prompt 路径改 async
 
 同步/异步错位有三种解法。
 
-**选定：预取快照。** turn 入口在租户 lane 内一次性把五类画像读成不可变对象，随 ContextRequest 传给 prompt 组装；两个画像块从快照同步读，`MemoryProfileApi` 协议与所有同步调用点不动。这样做的额外收益：五类一次批量查询，比逐块各查少四次往返；并且天然满足 `persona-relationship` 已经要求的「正在进行中的 turn 继续使用其组装时的快照，不中途替换」。
+**选定：预取快照。** turn 入口在租户 lane 内一次性把组装期要用的四类画像读成不可变对象，随 ContextRequest 传给 prompt 组装；两个画像块从快照同步读，`MemoryProfileApi` 协议与所有同步调用点不动。这样做的额外收益：四类一次批量查询，比逐块各查少三次往返；并且天然满足 `persona-relationship` 已经要求的「正在进行中的 turn 继续使用其组装时的快照，不中途替换」。
 
 **不选：把 prompt 组装路径改 async。** 要连带改 `agent/context.py` 的组装入口和 drift、proactive、optimizer、dashboard 四条旁路的调用点，回归面覆盖整个 prompt 组装，而收益只是省一层快照。
 
-**不选：给 PG 实现加同步门面。** AgentLoop 已经在事件循环内，同步方法里再阻塞等待异步会自锁；`asyncio.run` 在运行中的 loop 里不可用；改用独立线程加独立 loop 又会让 SQLAlchemy 异步 engine 跨事件循环使用。要绕开就得再维护一套同步连接池，等于双份存储层。
+**不选：给 PG 实现加同步门面。** AgentLoop 已经在事件循环内，同步方法里再阻塞等待异步会自锁；`asyncio.run` 在运行中的 loop 里不可用；改用独立线程加独立 loop 又会让 SQLAlchemy 异步 engine 跨事件循环使用。要绕开就得再维护一套同步连接池，等于双份存储层。（ADR-15 之后同步侧不再有画像读取调用点，这条解法的最后一点吸引力也消失了。）
 
-**预取的落点：扩 `resolve_persona_snapshot`，同一次数据库会话内取回两份快照。** 该函数（`bootstrap/persona.py:29-54`）现在的形状是借一条数据库连接、跑两条 SELECT（`tenant_persona_profiles` 一行 + `memory_items` 的 `self` 一行）、还连接。本 change 在同一次借用里再加一条 SELECT 取四类画像，返回值从 `PersonaSnapshot` 变成一对快照。代价是 `bind_persona_resolver` 的签名要变，C9 那条装配线被牵连。
+**预取的落点：扩 `resolve_persona_snapshot`，同一次数据库会话内取回两份快照。** 该函数（`bootstrap/persona.py:29-54`）现在的形状是借一条数据库连接、跑两条 SELECT（`tenant_persona_profiles` 一行 + `memory_items` 的 `self` 一行）、还连接。本 change 改成同一次借用里跑三条 SELECT：`tenant_persona_profiles` 取身份两字段，`tenant_memory_profile_sections` 一次取回 `long_term` / `recent_context` / `relationship_state` 三行，`tenant_memory_profile_entries` 取回 `pending` 与 `history`。返回值从 `PersonaSnapshot` 变成一对快照。代价是 `bind_persona_resolver` 的签名要变，C9 那条装配线被牵连。
+
+比原方案多一条 SELECT，但换来一处改善：`relationship_state` 与四类画像现在出自同一条查询，而原方案里它出自 `memory_items`、画像出自另一处，两者之间有时间缝。
 
 **不选：另立一个画像解析器、自己再借一次连接。** 边界更干净，但两次借用之间有时间缝：若那期间 optimizer 写了画像，同一轮拿到的 persona 与画像就来自两个不同瞬间。`persona-relationship` 规定进行中的 turn 使用组装时的快照、不中途替换——两个时刻拿到的东西严格说不是"组装时的快照"，而是两个时刻的拼贴。
 
@@ -49,13 +66,29 @@
 
 ### ADR-3 删掉 `core/memory/runtime.py` 的无租户代理方法，改为显式收 tenant_id
 
-`read_long_term` / `read_self` / `read_recent_context` / `get_memory_context` 这四个代理方法签名里没有租户，是泄漏的直接来源，保留它们就等于保留一个「随手一调就读全局」的入口。改为按租户解析：调用方要么已经持有租户上下文，要么拿不到画像。
+`MemoryRuntime` 上有六个无租户代理方法（`core/memory/runtime.py:36-52`）：`read_long_term` / `read_self` / `read_recent_context` / `read_recent_history` / `get_memory_context` / `has_long_term_memory`。它们的签名里没有租户，是泄漏的直接来源，保留它们就等于保留一个「随手一调就读全局」的入口。改为按租户解析：调用方要么已经持有租户上下文，要么拿不到画像。
+
+六个里有三个（`read_recent_history` / `get_memory_context` / `has_long_term_memory`）零生产调用方，按 ADR-14 直接删掉不补替代入口；剩下三个改成显式收 `tenant_id`。
 
 **不选：用 contextvar 隐式携带租户。** 隐式上下文正是 `tenant-tool-isolation` 要收敛掉的「进程级共享可变上下文 + 参数可覆盖」模式，同一进程内两个租户的 turn 交错时，隐式传播链上任一处漏 `copy_context()` 就会串。显式传参难看但可静态检查。
 
-### ADR-4 六处启动期单例引用改为「按租户解析」的入口
+### ADR-4 启动期单例引用改为「按租户解析」的入口
 
-`bootstrap/app.py:666`（optimizer）、`:738`（dashboard）、`:775`（proactive）、`bootstrap/tools.py:579`（ContextBuilder）、`:597`（maintenance 绑会话生命周期）、`plugins/drift_flow/factory.py:114`（drift 经 `scope.memory`）现在都在启动期抓住同一个 store 实例长期持有。改为持有「租户 → 画像读写入口」的解析器，在各自真正处理某个租户数据的时刻解析。其中 optimizer 与 proactive 本来就按会话逐个处理，租户上下文在手上，改动是把它传下去。
+原计划记的是「六处」。核过调用链之后是 **4 个独立根**，其中一个根有两个下游消费者，另一处被 ADR-15 消掉：
+
+| 位置 | 性质 |
+|---|---|
+| `bootstrap/app.py:666`（optimizer） | 独立根 |
+| `bootstrap/app.py:738`（dashboard） | 独立根 |
+| `bootstrap/app.py:775`（proactive） | 独立根。传 `memory_store=self.memory_runtime` 进 `build_proactive_runtime`，经 `proactive_v2/loop.py:74` → `:105` → `:170` 成为 `scope.memory` |
+| `bootstrap/tools.py:597`（maintenance 绑会话生命周期） | 独立根 |
+| `plugins/drift_flow/factory.py:114` | 不是根，是上面第三个根的下游消费者（读 `scope.memory`） |
+| `plugins/wake_proactive/runtime.py:127` | 同上，**原计划漏列** |
+| `bootstrap/tools.py:577-579`（ContextBuilder 注入） | ADR-15 删掉 `ContextBuilder` 的 `memory` 参数后，这处引用消失 |
+
+改法：根上改为持有「租户 → 画像读写入口」的解析器，在真正处理某个租户数据的时刻解析。optimizer 与 proactive 本来就按会话逐个处理，租户上下文在手上，改动是把它传下去。
+
+`scope.memory` 不会整个消失：唤醒侧还要用它的 `embedding_api`（`plugins/wake_proactive/runtime.py:553`、`:594`），消失的只是它的画像职责。ADR-15 之后三条旁路都不再经它读画像。
 
 ### ADR-5 抽公共 `tenant_category_root` helper，同时给 blob_store 去重
 
@@ -77,41 +110,58 @@
 
 **粒度：一条事件一行。** `append_journal`（`agent/memory_pg.py:107-123`）的调用方全部按单条事件调用，一天多行天然贴合，也不需要在当天追加时读-改-写整行。备选「一天一行」要重写调用侧，且与现有 `(source_ref, kind)` 去重语义冲突，不选。
 
-**日期：用表上已有的 `happened_at` 列。** `memory_items` 从初始迁移起就有 `happened_at TIMESTAMPTZ`（`bootstrap/db/models/memory.py:25`、`alembic/versions/47460ba069a5_initial.py:104`），分区模板里也带着它（`alembic/versions/a3d5c7e9f1b2_partition_memory_items.py:157`）。所以「一条一行 + 日期占列」不需要新迁移。
-
-真正的缺口是实现没填这一列：`_append_entry`（`agent/memory_pg.py:240-258`）只写了 `tenant_id` / `id` / `memory_type` / `summary` / `content_hash` / `status` / `created_at` / `updated_at`，日期于是被降级拼进 `summary` 前缀成 `**2026-10-11** <正文>`（`:119`）。本 change 补上：journal 与 history 写入时事件日期落 `happened_at`，`summary` 不再重复携带日期——同一事实只存一处。
+**日期：占 `happened_at` 列，且该列 NOT NULL。** 归属表换成 ADR-13 的 `tenant_memory_profile_entries` 之后，日期占列由建表约束保证，不再依赖实现记得填。这修掉了一个真实缺口：`_append_entry`（`agent/memory_pg.py:240-258`）只写了 `tenant_id` / `id` / `memory_type` / `summary` / `content_hash` / `status` / `created_at` / `updated_at`，`happened_at` 从来没填过，日期于是被降级拼进正文前缀成 `**2026-10-11** <正文>`（`:119`）。新表下正文列只放正文，同一事实只存一处。
 
 `created_at` 不能替代它：迁移历史 journal 时 `created_at` 等于迁移当天，而事件日期来自 `journal/YYYY-MM-DD.md` 的文件名，两者必须分开。
 
-索引现状与代价：`memory_items` 上只有 `ix_memory_items_content_hash`（tenant_id, content_hash, memory_type 唯一）与 `ix_memory_items_type_status`（tenant_id, memory_type, status），`happened_at` 无索引。按天查询走 `tenant_id + memory_type='journal'` 已能把扫描范围限定到该租户的 journal 行集，再对 `happened_at` 过滤。本 change 不为此新加索引——journal 目前两侧都没有读接口（markdown 侧同样只有 `append_journal`，见 `agent/memory.py:112`），它不进 prompt，加索引属于无消费者的优化。
+索引：`tenant_memory_profile_entries` 建 `(tenant_id, category, happened_at DESC)`。按天回看走这条索引即可。
 
-**journal 的定位：它是日志，只是住在记忆表里。** 归属仍在 `memory_items`（`memory_type='journal'`），不新建 `journal_entries`、也不挪去审计面——那张表两种后端都有、列够用，而"只做记录、不被记忆路径消费"已经由类型白名单结构性保证：`recall_memory` 的时间检索在 `infra/storage/postgres_memory_store.py:889` 硬写 `memory_type='event'`，journal 行取不到。将来若真要按天回看，那是一条显式的按类型查询，属于另一个 change。
+**journal 的定位：它是日志，只是和画像住在一起。** 不新建 `journal_entries`、也不挪去审计面。「只做记录、不被记忆路径消费」在 ADR-13 之后是结构性保证，不再需要论证：画像表不出现在任何召回 SQL 里，`recall_memory` 的三条 lane（向量 / BM25 / LIKE）都只打 `memory_items`。
 
-推论：`MemoryProfileSnapshot` **不含 `journal` 字段**。快照是给 prompt 组装用的值对象，journal 没有任何组装期消费者，放进快照就是让预取去查一份没人读的数据。所以本 change 的组装期预取范围是四类（`long_term` / `pending` / `recent_context` / `history`）。spec 里的归属契约仍写五类——归属说的是"这些数据按租户不互串"，预取说的是"组装时取哪几份"，两者不是一回事。
+这一点值得对照原方案：原方案把 journal 放进 `memory_items`，「取不到」的论证只能落在 `infra/storage/postgres_memory_store.py:889` 那条时间检索硬写的 `memory_type='event'` 上，覆盖不到向量与 BM25 两条 lane——`plugins/default_memory/engine.py:1440-1448` 的 `_resolve_memory_types` 只在 `filters.kinds` 非空或 `intent == "procedure"` 时返回类型白名单，其余意图返回 None 即不加过滤，而 `bootstrap/db/models/memory.py:17` 的 `memory_type` 列是 `String(64)` 无 CHECK 约束。
 
-### ADR-9 自我认知的读写都归 persona 那条缝，画像层不再管 self
+推论：`MemoryProfileSnapshot` **不含 `journal` 字段**。快照是给 prompt 组装用的值对象，journal 没有任何组装期消费者，放进快照就是让预取去查一份没人读的数据。所以本 change 的组装期预取范围是四类（`long_term` / `pending` / `recent_context` / `history`）。spec 里的归属契约仍写五类——归属说的是"这些数据按租户不互串"，预取说的是"组装时取哪几份"，两者不是一回事。将来若真要按天回看，那是一条显式的按类型查询，属于另一个 change。
 
-单体（markdown）不再作为画像层的第二条实现路径：五类画像读写只走按租户解析的表存储，单机归到 `infra/storage/tenancy.py:22` 的 `DEFAULT_TENANT = "default"`。
+### ADR-9 自我认知的访问路径归 persona 那条缝，当前值存进画像专表
 
-`self` 这一格整体移出画像层，读写都归 persona 那条缝，两种后端走同一套语义：
+单体（markdown）不再作为画像层的第二条实现路径：五类画像读写只走按租户解析的专表存储，单机归到 `infra/storage/tenancy.py:22` 的 `DEFAULT_TENANT = "default"`。
 
-- **读**：`SelfModelPromptBlock` 只读 `persona_snapshot.relationship_state`，删掉按模式二选一的 else 分支（`agent/core/prompt_block.py:162-173`）。该字段全仓库只有这一个消费者（定义 `agent/core/types.py:92`，赋值 `bootstrap/persona.py:60`），所以删分支不牵连别处。
+`self` 这一格要分两件事说，原计划把它们混在一句「整体移出画像层」里：
+
+**访问路径归 persona 缝。** 读写都只有 persona 那一个入口，两种后端走同一套语义：
+
+- **读**：`SelfModelPromptBlock` 只读 `persona_snapshot.relationship_state`，删掉按模式二选一的 else 分支（`agent/core/prompt_block.py:162-173`，其中 `:171` 的 `ctx.memory.read_self()` 是全仓库最后一处 `ctx.memory` 读取，见 ADR-15）。该字段全仓库只有这一个消费者（定义 `agent/core/types.py:92`，赋值 `bootstrap/persona.py:60`），所以删分支不牵连别处。它也不进 `MemoryProfileSnapshot`——交付走 persona 快照。
 - **写**：optimizer 统一走关系状态写缝（`proactive_v2/memory_optimizer.py:320-337`），该缝在 PG 与 SQLite 各一个实现，两者都同事务写审计事件。画像层的 `read_self` / `write_self`（`agent/memory_pg.py:135-139`）随之删除。
 - **装配**：`bootstrap/app.py:649` 的 `if self.webchat_durable is not None:` 放宽，两种后端都装 resolver 与写缝。
 
+**当前值存进画像专表的一行。** `PgRelationshipIO`（`bootstrap/persona.py:64-146`）现在打的是 `memory_items` 里 `memory_type='self'` 那一行，改为打 `tenant_memory_profile_sections` 里 `category='relationship_state'` 那一行；审计仍写 `persona_audit_events`，同事务不变。
+
+理由是 ADR-13 的理由一：留在 `memory_items` 就仍在召回面上。`_resolve_memory_types`（`plugins/default_memory/engine.py:1440-1448`）在非 procedure 意图下不加类型过滤，`memory_type` 列又没有 CHECK 约束，所以一次普通召回可以把用户的自我认知整段当检索结果返回。挪进画像专表之后这条路结构性不存在。
+
+**`tenant_persona_profiles.self_model` 不是当前值。** 它是 onboarding 提交时写死的固定值（`bootstrap/db/repository/persona_repo.py:135`），运行时 prompt 路径根本不读它——`resolve_persona_snapshot`（`bootstrap/persona.py:30-61`）只 SELECT `source` / `identity` / `personality_rules` 三列。它现在唯一的出口是 admin 读取接口（`persona_repo.py:250` 的 `_profile_to_dict`）。本 change 不改这个字段的语义，也不动那条 admin 读取路径；关系状态的当前值从此只在画像专表里。
+
+**播种与迁移的分工因此要改。** 单机固定租户的 `relationship_state` 行在 workspace 初始化时从 `[agent.persona].self_model` 播种，仅在行不存在时写入——对应文件后端里 `bootstrap/init_workspace.py:16-27` 播种 `memory/SELF.md` 那一步。而迁移脚本 SHALL 把现存的 `SELF.md` 内容写进该行并覆盖播种值：播种值来自 config 的默认模板，文件里才是演化之后的当前值，只报告不搬会静默丢掉单机现存的自我认知内容。
+
 快照为 None 时该块跳过注入，SHALL NOT 回退读共享文件。多租户下 None 意味着该租户没有 PersonaProfile，而这类租户本来就被 onboarding 门禁挡在对话之外（`bootstrap/chat_api.py:377-378`）；单机下由播种保证恒有该行（ADR-10）。
 
-代价有两条：要给 SQLite 补 persona 表（ADR-10）；要推翻 `persona-relationship` 里「单体 / SQLite dev 模式 SHALL 继续沿用现有文件语义（行为不变）」那句，本 change 因此带该 capability 的 MODIFIED delta。
+代价有两条：要给 SQLite 补 persona 表与画像表（ADR-10）；要推翻 `persona-relationship` 里「单体 / SQLite dev 模式 SHALL 继续沿用现有文件语义（行为不变）」那句，本 change 因此带该 capability 的 MODIFIED delta。
 
 **不选：只统一读、写侧留两条入口。** 那样外部行为确实一致，但同一行数据长期有两个写入者、按不同分支被调用，改一边忘一边是静默失效而不是报错。
 
-### ADR-10 SQLite 侧补 persona 两张表与画像实现
+**不选：当前值继续留在 `memory_items`。** 少一次迁移，但召回污染照旧，且「画像与召回分表」这条不变量会留一个例外，而这个例外恰好是用户最私密的一格。
 
-`memory2/store.py:69-82` 的 `memory_items` 与 PG 同形（含 `memory_type` / `happened_at` / `source_ref` / `extra_json`），但没有 `tenant_id` 列，也没有任何画像读写方法（该文件 42 个方法全在召回、FTS、向量侧）。五类画像需要一个 SQLite 实现，接口与 `PgMemoryMarkdownStore` 对齐。
+### ADR-10 SQLite 侧补四张表，画像实现与 PG 同接口
 
-自我认知那一格还要 SQLite 侧的 persona 表：`tenant_persona_profiles` 与 `persona_audit_events` 两张，`persona_templates` 不需要（单机没有模板面）。这两张表在 PG 由 alembic 管、在 SQLite 由 `memory2/store.py` 的建表语句管，因此**同一份结构有两个出处**，是本 ADR 的主要代价：以后改列必须同时改两处，否则两种后端静默分叉。缓解办法是加一个跨后端结构一致性测试，比对两侧 persona 表的列集合与 CHECK 取值。
+`memory2/store.py:69-82` 的 `memory_items` 与 PG 同形（含 `memory_type` / `happened_at` / `source_ref` / `extra_json`），但没有 `tenant_id` 列，也没有任何画像读写方法（该文件 42 个方法全在召回、FTS、向量侧）。ADR-13 之后画像不落 `memory_items`，所以这张表在本 change 里不动；SQLite 侧要新建四张：
 
-单机固定租户的 `tenant_persona_profiles` 行在 workspace 初始化时从 `[agent.persona]`（`agent/config_models.py:144-147`）播种，`source` 取 `custom`——该列的 CHECK 只允许 `('template','custom')`（`bootstrap/db/models/persona.py:87`），复用 `custom` 不需要改约束，PG 侧零新迁移。播种只在行不存在时发生，之后 config 不再参与当前值。
+- `tenant_memory_profile_sections` 与 `tenant_memory_profile_entries`（ADR-13 的画像专表）
+- `tenant_persona_profiles` 与 `persona_audit_events`（persona 缝用；`persona_templates` 不建，单机没有模板面）
+
+四张表在 PG 由 alembic 管、在 SQLite 由 `memory2/store.py` 的建表语句管，因此**同一份结构有两个出处**，是本 ADR 的主要代价：以后改列必须同时改两处，否则两种后端静默分叉。缓解办法是加一个跨后端结构一致性测试，比对两侧这四张表的列名集合、NOT NULL 集合与 CHECK 取值。
+
+画像存储的 SQLite 实现与 PG 实现同接口（ADR-14 定义的那个接口，不是 `PgMemoryMarkdownStore` 现有的方法集），归属 `infra/storage/tenancy.py:22` 的 `DEFAULT_TENANT`。
+
+单机固定租户要播种两处，都只在行不存在时写入：`tenant_persona_profiles` 一行（`identity` / `personality_rules` / `self_model` 取 `[agent.persona]`，即 `agent/config_models.py:144-147`；`source` 取 `custom`——该列的 CHECK 只允许 `('template','custom')`，见 `bootstrap/db/models/persona.py:87`），以及 `tenant_memory_profile_sections` 的 `relationship_state` 一行（内容同样取 `[agent.persona].self_model`，对应文件后端里 `bootstrap/init_workspace.py:16-27` 播种 `memory/SELF.md` 那一步）。播种之后 config 不再参与当前值。
 
 **不选：让单机强制起 PG。** 那会让 `python main.py` 的零依赖本地跑法消失，Telegram 单机部署跟着要装数据库——等于把一次内部重构转嫁成部署负担。
 
@@ -137,23 +187,116 @@
 
 **不选：删掉 warmup。** 它的预热对首 token 延迟有作用，且这是独立于本 change 的性能决策；本 change 只要求它带上租户身份。
 
+### ADR-13 画像层另立专表，与记忆召回分表
+
+画像原本计划写进 `memory_items`，复用 `memory_type` 判别。改为另立两张专表。
+
+**理由一：召回面的类型过滤不是结构性的。** `plugins/default_memory/engine.py:1440-1448` 的 `_resolve_memory_types` 只在 `filters.kinds` 非空或 `intent == "procedure"` 时返回类型白名单，其余意图返回 None，即不加过滤；`bootstrap/db/models/memory.py:17` 的 `memory_type` 列是 `String(64)`，无 CHECK 约束。所以画像行与召回行共表时，一次普通召回可以把长期画像整段当检索结果返回，而这恰好是本次要堵的那类泄漏。分表之后画像表不出现在任何召回 SQL 里，三条 lane（向量 / BM25 / LIKE）都打不到它。
+
+**理由二：单行整块类与追加日志类的物理需求相反。** 整块类每租户恒定三行、频繁整行覆写；日志类只追加、按时间倒序读、体量随对话增长。共表意味着两套访问模式共用一份索引与分区策略，而 `memory_items` 在 PG 侧是按 `tenant_id` 分区的（`alembic/versions/a3d5c7e9f1b2_partition_memory_items.py`），画像写入并不需要分区。
+
+两张表：
+
+| 表 | category | 行形状 | 约束 |
+|---|---|---|---|
+| `tenant_memory_profile_sections` | `long_term` / `recent_context` / `relationship_state` | 单行整块，upsert | `UNIQUE (tenant_id, category)` |
+| `tenant_memory_profile_entries` | `pending` / `history` / `journal` | 只追加 | `happened_at NOT NULL`、`UNIQUE (tenant_id, dedup_key)`、`INDEX (tenant_id, category, happened_at DESC)` |
+
+两张表都带 `tenant_id` 列——SQLite 侧也带。这修掉了原计划的一处验证盲区：`memory2/store.py` 的 `memory_items` 没有 `tenant_id` 列，所以单机的"隔离"只等于"只有一个租户"，跨租户隔离断言在 SQLite 上验不出东西，只能全部押在 PG 后端上。画像专表两侧都有租户列，隔离断言在两种后端都能跑（造两个租户 id 即可）。
+
+**`dedup_key` 取代 `app_configs` 承接幂等。** 原计划让所有需幂等的写入走 `_append_once_with_index`，它把去重键写进 `app_configs`。那条路有两个缺陷：那张表的主键是 `key` 单列 `String(128)`（`bootstrap/db/models/extras.py:20`），`tenant_id` 只是 `TenantMixin` 的非主键列，所以键是**跨租户全局**的，租户 B 的写入会被租户 A 留下的同名键静默判为重复（`return False`，无日志）；而 `core/memory/markdown.py:191-200` 生成的 `source_ref` 是 message id 的 JSON 数组，id 形如 `<session_key>:<seq>`（`session/store.py:1014`），三条以上消息就超 128 字符，PG 抛 22001，SQLite 不校验 VARCHAR 长度所以文件侧一直没暴露。新表的 `dedup_key` 是 TEXT、无长度上限、天然带租户维度，两个缺陷一起消失。
+
+代价：PG 侧一个新 alembic 版本，SQLite 侧两条建表语句，同一份结构两个出处（与 ADR-10 的 persona 表同一个代价，用同一个跨后端一致性测试兜）。预取从一条 SELECT 变两条，仍在同一次数据库会话内，ADR-1 要求的「persona 与画像来自同一瞬间」不受影响。
+
+**不选：一张表 + `category` 判别列。** 省一条 SELECT 与一份迁移，代价是 `happened_at` 对整块类无意义、对日志类必填，同一列两种语义；「每租户每类只一行」只能写成偏索引（`WHERE happened_at IS NULL`）；两套访问模式仍共用一份索引与分区策略。
+
+**不选：继续用 `memory_items` 加类型。** 除了理由一与理由二，还要在分区表上开画像写入路径，而画像写入的量级完全用不上分区。
+
+### ADR-14 画像存储接口按新表重设，文件时代的方法删除而不是重新实现
+
+原计划是「SQLite 侧接口与 `PgMemoryMarkdownStore` 对齐」。改为按 ADR-13 的两张表重设接口，同时删掉 `MemoryProfileApi`（`core/memory/markdown.py:61-80`）里那些只在文件语义下成立的方法。
+
+前提是 `PgMemoryMarkdownStore` 本来就不满足那个协议（见 Context 段）：协议 10 个方法它实现 6 个。「对齐」等于先给 PG 侧补 4 个方法，其中多数在表上没有意义。
+
+删除清单与依据：
+
+| 方法 | 处置 | 依据 |
+|---|---|---|
+| `read_self` / `write_self` | 删 | ADR-9，访问路径归 persona 缝 |
+| `get_memory_context` | 删 | 生产零调用方（只剩 `core/memory/runtime.py:48-49` 的代理、`agent/memory.py:252` 的实现、一处注释与一个 docker 调试探针）；task 3.4 已把排版移进 `LongTermMemoryPromptBlock` |
+| `has_long_term_memory` | 删 | 全仓库只有协议声明（`:80`）、`MarkdownMemoryStore:996` 与 `runtime.py:51` 的代理，零生产调用方 |
+| `read_recent_history` | 删 | 它是 `read_history` 的重命名别名（`core/memory/markdown.py:986-987`）；`runtime.py:45-46` 的代理零生产调用方 |
+| `backup_long_term` | 删 | 它把 `MEMORY.md` 复制成 `MEMORY.bak.md`（`core/memory/markdown.py:989-995`）。全仓库无任何读取方——唯一生产调用点是 `proactive_v2/memory_optimizer.py:283`，写后即弃。它的恢复手段是人手改文件，随文件后端一起消失 |
+| `append_history` / `append_pending` / `clear_pending` | 删 | 零生产调用方；写入统一走 `*_once` 幂等路径，pending 的消费改由取走即删承担 |
+| `snapshot_pending` / `commit_pending_snapshot` / `rollback_pending_snapshot`，以及文件侧的 `_recover_pending_snapshot` | 删 | 见下 |
+
+**pending 的两阶段提交在表存储下塌缩。** 文件后端要靠原子重命名把待合并内容先藏起来才能做到崩溃可恢复：`agent/memory.py:204-218` 重命名、`:228-244` 合并回来、`:246-250` 处理崩溃残留。表存储下消费就是一条 `DELETE FROM tenant_memory_profile_entries WHERE tenant_id=:t AND category='pending' RETURNING content`，取走与删除同事务，回滚就是事务中止，崩溃残留无从产生。`MemoryOptimizer._optimize`（`proactive_v2/memory_optimizer.py:261-298`）那个 try / `except BaseException` / 双分支 commit-rollback 的骨架随之简化成一次事务。
+
+留下的接口按两张表分两组，约 9 个方法：
+
+- **整块组**：读一类、写一类。`long_term` 与 `recent_context` 由画像层直接读写；`relationship_state` 的读写由 persona 缝独占（ADR-9），画像层的存储实现提供方法但不暴露给组装侧。
+- **日志组**：追加一行（带 `dedup_key`）、按时间读若干行、`pending` 取走即删。
+
+存储实现只做 async。ADR-15 之后同步侧不再有画像读取调用点，因此不需要 ADR-1 之外的同步门面。
+
+类名随之要改：`PgMemoryMarkdownStore` 里的 "Markdown" 在文件后端摘除之后是假的，`agent/memory.py` 的 `MemoryStore` 同理。PG 侧那个类保留为画像存储的实现（删掉上表那些方法、把留下的重定向到两张新表），改名为不含 "Markdown" 的名字；SQLite 侧新建一个同名同接口的实现。名字里不出现后端之外的限定词，避免再出现「名字描述的是被删掉的那一层」。
+
+**不选：给 `PgMemoryMarkdownStore` 打补丁补齐协议。** 要保住的 10 个方法里 4 个在表上没有意义，补齐等于写 4 个空实现——现状那三个 pending 方法（`agent/memory_pg.py:176-188`）就是这么来的，而空实现不报错，只在 optimizer 侧表现为静默失效。
+
+**不选：按原协议在两张新表上重写一遍。** 同样的接口会把文件语义带进表里，`backup_long_term` 与 `snapshot_pending` 只能再写一遍空实现。
+
+### ADR-15 四条组装路径共用段渲染器，`ContextBuilder` 不再持有画像存储
+
+`ContextBuilder._build_system_prompt_result`（`agent/context.py:332-360`）已经是「收快照、返回段、不碰消息封装」那个函数，返回 `SystemPromptBuildResult`（`agent/core/prompt_block.py:279-283`，公开数据类）。主链自己就在用：`PromptAssembler.assemble` 在 `assembler.py:108` 调它，再在 `:155` 加消息封装。它是私有的，唯一调用方是 `assemble`。
+
+**选定：提为公开的 `ContextBuilder.render_sections(request)`**，并把「哪些段进上下文帧、哪些进系统提示」的拆分（现在写在 `assembler.py:133-142`，判据是 `_CONTEXT_FRAME_SECTIONS`，`:49-53`）一并移进来，返回时两组分开。`assemble` 改为调这个公开方法，主链行为不变。插件侧只依赖一个窄协议：
+
+```python
+class ProfileSectionRenderer(Protocol):
+    def render_sections(self, request: ContextRequest) -> SystemPromptBuildResult: ...
+```
+
+三条旁路改为调它，删掉各自的画像读取：`plugins/proactive_flow/prompt.py:149-155` 的三次同步读、`:248-257` 的两个读取器、`:159-161` 三个重复段名；`plugins/drift_flow/runtime.py:597-602` 的同步读与 `:673-677` 的重复段。唤醒侧本来就是「先把文本取好再当参数传」（`build_messages(ctx=..., memory_text=...)`），改为传渲染结果。
+
+这样做的直接收益是把一类失效从结构上消掉：同步调用方拿到未 await 的协程对象时，协程是真值，`str(x() or "")` 会把 `<coroutine object ...>` 送进提示，而不报错也不留空。共用渲染器之后插件侧根本不存在对存储的读取调用，协程无从产生。
+
+**预取落点各一条，都在已有的 async 入口，不需要把同步方法翻成 async：**
+
+- drift：`_build_runtime_context_message` 已是 `async def`（`plugins/drift_flow/runtime.py:589`）。
+- 唤醒：`decide()` 是 `async def`（`plugins/wake_proactive/runtime.py:342`），三个 `_read_memory()` 调用点（`:353`、`:391`、`:685`）都在它下游，预取一次挂在 `WakeContext` 上往下带。
+- 主动推送：三层同步（`plugins/proactive_flow/modules.py:21` → `plugins/default_proactive/runtime.py:530` → `plugins/proactive_flow/prompt.py:149`），在 `modules.py:19` 的 `async def run` 预取，挂 `AgentTickContext` 新字段往下带。
+
+**装配**：三条旁路共用生产环境唯一的那个 `ContextBuilder` 实例（`bootstrap/tools.py:577-579` 建，`agent/looping/core.py:178` 用 `deps.context`），因此共用同一份 `SectionCache`；该缓存的 scope 已带租户维度（ADR-11），共用是安全的，且省掉重复渲染静态段。给 `ProactiveRuntimeScope`（`proactive_v2/runtime_scope.py:25` 旁）加一个渲染器字段，在 `proactive_v2/loop.py:163-170` 填充。
+
+**连带：`ContextBuilder` 的 `memory` 参数删除。** `ctx.memory` 在全部九个块里只被读一次，在 `agent/core/prompt_block.py:171`，即 `SelfModelPromptBlock` 无快照时的回退分支。ADR-9 删 `read_self`、task 6.8 让单机也装配 resolver（快照恒非 None），这一行随之消失。于是 `bootstrap/tools.py:577-579` 不再传 `memory_runtime.markdown.store`，`bootstrap/wiring.py:42` 的工厂签名少一个参数，`agent/looping/core.py:169-178` 那段「有 markdown 就用它的 store、否则退回 memory_engine」的三元选择整段删除。`ContextBuilder` 从此不做 I/O。
+
+**不选：三条旁路改调公开的 `ContextBuilder.render`。** `render`（`:294-330`）在段之外强制加消息封装，而封装是对话轮次形状：`[system, *history, context_frame?, user(current_message)]`（`agent/context.py:99-114`），`history` 与 `current_message` 都是 `ContextRequest` 必填字段。唤醒只要系统提示（它在 `plugins/wake_proactive/runtime.py:403-429` 把拿到的消息拆开重组），主动推送的开场消息不是用户说的话，当 `current_message` 喂进去会被盖上用户消息时间戳并可能触发渠道策略改写（`agent/context.py:94-97`）。三条都要传 `history=[]` 加一句假消息，然后把封装扔掉。
+
+**不选：只抽一个「画像段」helper 函数。** 共用渲染但不共用顺序、缓存与 breakdown，两条组装管线并存，段名仍在两处声明。
+
+**不统一的一处差异，显式记录。** 主链把 `long_term_memory` 与 `self_model` 放系统提示（`_CONTEXT_FRAME_SECTIONS` 只含 `active_skills` / `recent_context` / `retrieved_memory`），而主动推送把这三段全放上下文帧（`prompt.py:159-161` → `:188`），帧开头带一句「以下内容由系统提供，不是用户陈述……禁止在回复中引用、复述、展示本提醒本身」（`assembler.py:75`）。同名段在两条路径下给模型的位置与附带约束不同。`render_sections` 两组分开返回、各路径自己挑，因此本次保持各自现状；统一放置会改模型行为，需要跑评测判断好坏，属另一个 change。
+
 ## Risks / Trade-offs
 
-- **预取让每轮多一次 PG 读**，即使该轮某些块用不到 → 单条批量查询取五类；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。
-- **迁移目标选错会造成双份画像**：本地 PG 里 `dev`、`smoke_7afc7830` 与两个 `pilot-*` 租户已有 `memory_items` 的 self 行，全局 markdown 又有一份 → 迁移脚本默认 dry-run 并打印目标租户当前五类的字符数，人工确认后再执行。
-- **漏改某条旁路会把内容写回共享文件**，而写回后不会再被读到，故障表现为「记忆静默丢失」而不是报错 → 用 spec 中「多租户路径无共享目录读写」那条静态扫描 Scenario 做成可执行测试，扫描范围覆盖六个启动期引用点所在模块。
-- **测试断言面大**：至少 9 处断言 `workspace/memory/` 路径或 markdown 单例语义（清单见 proposal.md — Impact）→ 先改 `tests/memory_fakes.py:25` 这个共用替身，让其余用例跟着替身收敛，避免逐文件手改。
-- **`content_hash` 跨进程不稳定，普通追加路径不幂等**：`agent/memory_pg.py:252` 与 `bootstrap/persona.py:113/130` 都用 `str(hash(正文))`，而 Python 的字符串 hash 按进程随机化、仓库未固定 `PYTHONHASHSEED`。因此唯一索引 `ix_memory_items_content_hash`（tenant_id, content_hash, memory_type）跨进程去不了重，迁移重放会插出重复行 → 迁移与所有需要幂等的写入一律走 `_append_once_with_index`（靠 `app_configs` 的稳定 dedup key），并在 tasks 里显式禁止迁移使用 `_append_entry`。
-- **SQLite 上没有租户列，隔离断言不能在单机上验**：`memory2/store.py` 的 `memory_items` 无 `tenant_id`，单机固定租户的"隔离"只等于"只有一个租户"。跨租户隔离断言（含 admin1/admin2 那条）必须在 PG 后端上跑，SQLite 侧只验画像读写接口本身。
-- **回滚**：多租户模式下画像层无 feature 开关可退回全局文件——退回即重新引入泄漏。回滚策略是代码回滚，PG 中已写入的画像行留存无害，共享目录原文件按 spec 要求从未被改写，因此回滚后旧行为立即可用。
+- **预取让每轮多两条 SELECT**，即使该轮某些块用不到 → 两条都是按 `(tenant_id, category)` 的窄查询，走唯一索引与时间索引；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。
+- **迁移目标选错会造成双份画像**：本地 PG 里 `dev`、`smoke_7afc7830` 与两个 `pilot-*` 租户已有 `memory_items` 的 self 行，全局 markdown 又有一份，新表再迁一次就是第三份 → 迁移脚本默认 dry-run 并打印目标租户当前各类的字符数（含新表已有内容与 `memory_items` 里的旧 self 行），人工确认后再执行。旧 self 行不删，它随召回面继续可见，属于 ADR-9 之后的一条待清理数据，清理动作另开 change。
+- **漏改某条旁路会把内容写回共享文件**，而写回后不会再被读到，故障表现为「记忆静默丢失」而不是报错 → 用 spec 中「多租户路径无共享目录读写」那条静态扫描 Scenario 做成可执行测试。扫描范围 SHALL 覆盖 ADR-4 的 4 个独立根所在模块，**并覆盖三条旁路**：`plugins/proactive_flow/`、`plugins/drift_flow/`、`plugins/wake_proactive/`。原计划的扫描清单只有 `plugins/drift_flow/`，另两条不在内，而它们恰恰是同步调用 async 存储、最容易把协程对象塞进提示的地方。
+- **测试断言面大**：断言 `workspace/memory/` 路径或 markdown 单例语义的用例，加上三条旁路与 `ContextBuilder` 构造签名的用例（清单见 proposal.md — Impact）→ 先改 `tests/memory_fakes.py:25` 这个共用替身，让其余用例跟着替身收敛，避免逐文件手改。
+- **`content_hash` 跨进程不稳定**：全仓库 6 处 `str(hash(正文))`——`agent/memory_pg.py:232/252/295`、`bootstrap/persona.py:113/131`、`bootstrap/db/repository/persona_repo.py:153`——而 Python 的字符串 hash 按进程随机化、仓库未固定 `PYTHONHASHSEED`，所以任何靠它去重的路径在重放时都失效。**这 6 处在本 change 之后全部消失**，不是被修好而是被删掉：新表用 `(tenant_id, category)` 与 `(tenant_id, dedup_key)` 做键，不需要正文哈希（ADR-13、ADR-14）。原计划「迁移一律走 `_append_once_with_index`、禁止 `_append_entry`」那条强制令随之作废——`_append_once_with_index` 依赖的 `app_configs` 键有 128 字符上限且跨租户全局，两个缺陷见 ADR-13。
+- **共用段渲染器会同时改变四条路径的提示内容** → 缓解有两条：`render_sections` 把系统提示段与上下文帧段分开返回，各路径保持现状放置，主动推送那三段的落点不变；主链只改调用名，`assemble` 的输入输出与顺序不动。验证方式是断言四条路径拿到的画像段内容一致，而不是断言提示全文一致。
+- **`ContextFactory` 的签名变化**：`bootstrap/wiring.py:22` 现在是 `Callable[[Path, Any], Any]`，删掉 `ContextBuilder` 的 `memory` 参数后变 `Callable[[Path], Any]`。`_CONTEXT_WIRING` 只有一个条目（`:41-43`），所以爆炸半径小，但这是一个公开类型别名的破坏性改动，配置里写了自定义 context wiring 的部署会在启动时报错而不是静默降级。
+- **回滚**：多租户模式下画像层无 feature 开关可退回全局文件——退回即重新引入泄漏。回滚策略是代码回滚加一个 alembic downgrade：两张画像表是纯新增，`memory_items` 与 persona 三表都不动，downgrade 只 drop 新表，已迁入的画像数据丢弃但不影响旧行为。共享目录原文件按 spec 要求从未被改写，因此回滚后旧行为立即可用。
 
 ## Migration Plan
 
-1. 实现快照预取与 `MemoryProfileSnapshot`，接入三个画像块；`TurnContext` 补 `tenant_id`。
-2. 删除 `core/memory/runtime.py` 的无租户代理，逐个改造六处启动期引用点。
-3. 抽 `tenant_category_root`，blob_store 改用。
-4. 迁移脚本：dry-run 输出目标租户现状 → 显式执行 → 重放一次验证幂等。
-5. 建 `admin1` / `admin2` 常驻租户与 dev-only 切换入口，跑跨租户隔离断言。
-6. 门禁：`pyright --level error`（project 与 tests 两配置）+ `pytest -q -W error tests/`。
+1. PG 侧加一个 alembic 版本建两张画像表；SQLite 侧建表语句加同样两张（ADR-13、ADR-10）。
+2. 按 ADR-14 的接口实现 PG 与 SQLite 两份画像存储，删除 `MemoryProfileApi` 里文件时代的方法与 `PgMemoryMarkdownStore` 的对应实现。
+3. 提公开 `ContextBuilder.render_sections`，定义 `ProfileSectionRenderer` 窄协议，删 `ContextBuilder` 的 `memory` 参数（ADR-15）。
+4. 实现快照预取与 `MemoryProfileSnapshot`，接入画像块；`TurnContext` 补 `tenant_id`；三条旁路改用共用渲染器并在各自 async 入口预取。
+5. 删除 `core/memory/runtime.py` 的无租户代理，逐个改造 ADR-4 的 4 个独立根。
+6. 抽 `tenant_category_root`，blob_store 改用。
+7. 迁移脚本：dry-run 输出目标租户现状 → 显式执行 → 重放一次验证幂等。
+8. 建 `admin1` / `admin2` 常驻租户与 dev-only 切换入口，跑跨租户隔离断言（两种后端各跑一次，见 ADR-13）。
+9. 门禁：`pyright --level error`（project 与 tests 两配置）+ `pytest -q -W error tests/`。
 
-生产部署顺序与回滚同上：先 dry-run 看归属，再迁 owner 租户。共享 markdown 文件在验证期内不删除。
+生产部署顺序与回滚同上：先跑 alembic upgrade 建表（无数据变化，可提前），再 dry-run 看归属，再迁 owner 租户。共享 markdown 文件在验证期内不删除。
