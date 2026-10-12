@@ -138,8 +138,13 @@ class PersonaSnapshotResolver(Protocol):
 
 @dataclass
 class ContextRequest:
+    # c18 task 3.7：租户归属与画像快照是必填项。可选时「忘了传」与「这个租户就是没有
+    # 画像」在类型上长得一样，前者会静默按无租户形状渲染（缓存串租户、调试视图被污染），
+    # 后者才该是 `MemoryProfileSnapshot.empty()`。
     history: list[dict[str, Any]]
     current_message: str
+    tenant_id: str
+    profile_snapshot: "MemoryProfileSnapshot"
     media: list[str] | None = None
     skill_names: list[str] | None = None
     channel: str | None = None
@@ -149,8 +154,14 @@ class ContextRequest:
     disabled_sections: set[str] | None = None
     turn_injection_prompt: str | None = None
     persona_snapshot: "PersonaSnapshot | None" = None
-    profile_snapshot: "MemoryProfileSnapshot | None" = None
-    tenant_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not str(self.tenant_id or "").strip():
+            raise ValueError("ContextRequest.tenant_id 不能为空（画像段按租户缓存）")
+        if self.profile_snapshot is None:
+            raise ValueError(
+                "ContextRequest.profile_snapshot 必填：没有画像请交 empty()，不要交 None"
+            )
 
 
 @dataclass

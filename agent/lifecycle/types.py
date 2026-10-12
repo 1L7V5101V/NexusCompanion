@@ -66,6 +66,9 @@ class BeforeTurnCtx:
 class BeforeReasoningInput:
     state: TurnState
     before_turn: BeforeTurnCtx
+    # c18 task 3.7 / ADR-12：本 turn 的画像快照在 before_reasoning 之前就已解析好，
+    # 预热渲染吃同一份——以无租户形状预热会把租户作用域的段缓存与调试视图污染成空画像。
+    profile_snapshot: Any
 
 
 @dataclass
@@ -80,6 +83,9 @@ class BeforeReasoningCtx:
     # writable
     skill_names: list[str]
     retrieved_memory_block: str
+    # c18 task 3.7：预热渲染要按本轮真实归属渲染，所以归属与快照随 ctx 一起进来。
+    tenant_id: str
+    profile_snapshot: Any
     extra_hints: list[str] = field(default_factory=_empty_str_list)
     abort: bool = False
     abort_reply: str = ""
@@ -98,9 +104,11 @@ class PromptRenderInput:
     retrieved_memory_block: str
     disabled_sections: set[str]
     turn_injection_prompt: str
+    # c18 task 3.7：归属与画像快照随输入进来，不在渲染阶段自己猜。
+    tenant_id: str
+    profile_snapshot: Any
     extra_hints: list[str] | None = None
     persona_snapshot: Any | None = None
-    profile_snapshot: Any | None = None
 
 
 @dataclass
@@ -118,6 +126,9 @@ class PromptRenderCtx:
     retrieved_memory_block: str
     disabled_sections: set[str]
     turn_injection_prompt: str
+    # c18 task 3.7：归属与画像快照必填，缺失即空语义由调用方交出 empty()
+    tenant_id: str
+    profile_snapshot: Any
     extra_hints: list[str] = field(default_factory=_empty_str_list)
     # writable
     system_sections_top: list[PromptSectionRender] = field(
@@ -128,7 +139,6 @@ class PromptRenderCtx:
     )
 
     persona_snapshot: "Any | None" = None
-    profile_snapshot: "Any | None" = None
 
 @dataclass(frozen=True)
 class PromptRenderResult:

@@ -772,6 +772,7 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             # ADR-11：缓存 scope 带租户维度，所以「第二次渲染命中缓存」这条断言必须
             # 落在同一个租户上——不带 tenant_id 的请求按设计不进缓存。
             tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     )
     assert result2.system_prompt
@@ -788,6 +789,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             skill_names=["extra"],
             channel="telegram",
             chat_id="42",
+            # c18 task 3.7：与上面同一租户，画像仍为空语义（这条只验媒体与环境段）
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     ).messages
     assert messages[0]["role"] == "system"
@@ -810,6 +814,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     turn_injection = builder.build_turn_injection_context(turn_injection_prompt="pref")
     render_result = builder.render(
         ContextRequest(
+            # c18 task 3.7：归属与画像快照必填（这条只验渲染形状，画像给空语义）
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
             history=[{"role": "assistant", "content": "hi"}],
             current_message="hello",
             media=["https://img", str(image), str(document), str(tmp_path / "bad.txt")],
@@ -829,6 +836,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     custom_telegram = builder.render(
         ContextRequest(
+            # c18 task 3.7：归属与画像快照必填（这条只验渲染形状，画像给空语义）
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
             history=[],
             current_message="hello",
             channel="telegram_work",
@@ -840,6 +850,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     media_only_messages = builder.render(
         ContextRequest(
+            # c18 task 3.7：归属与画像快照必填（这条只验渲染形状，画像给空语义）
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
             history=[],
             current_message="",
             media=["https://img"],
@@ -859,6 +872,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     )
     text_media_messages = text_media_builder.render(
         ContextRequest(
+            # c18 task 3.7：归属与画像快照必填（这条只验渲染形状，画像给空语义）
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
             history=[],
             current_message="看看这张图",
             media=[str(image), str(document)],
@@ -924,6 +940,9 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
             chat_id="7674283004",
             message_timestamp=request_time,
             retrieved_memory_block=retrieved_memory_block,
+            # c18 task 3.7：归属与画像快照必填；这条用例只吃检索块，画像给空语义
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     )
 

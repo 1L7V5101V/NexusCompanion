@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bus.event_bus import EventBus
+from agent.core.types import MemoryProfileSnapshot
 from agent.core.response_parser import ResponseMetadata
 from agent.lifecycle.facade import TurnLifecycle
 from agent.lifecycle.phase import Phase, PhaseFrame, topo_sort_modules
@@ -206,6 +207,7 @@ async def test_lifecycle_on_before_reasoning():
     await bus.emit(BeforeReasoningCtx(
         session_key="k", channel="c", chat_id="ch", content="hello",
         timestamp=_now, skill_names=[], retrieved_memory_block="",
+        tenant_id="t-1", profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
     ))
     handler.assert_awaited_once()
 

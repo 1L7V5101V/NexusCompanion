@@ -23,7 +23,7 @@ from agent.core.prompt_block import (
     ProfileSectionRenderer,
     SystemPromptBuildResult,
 )
-from agent.core.types import ContextRequest
+from agent.core.types import ContextRequest, MemoryProfileSnapshot
 from agent.prompting import (
     SYSTEM_CONTEXT_FRAME_MARKER,
     PromptSectionRender,
@@ -61,6 +61,7 @@ def _request(**overrides: object) -> ContextRequest:
         "history": [{"role": "user", "content": "earlier"}],
         "current_message": "now",
         "tenant_id": "tenant-a",
+        "profile_snapshot": MemoryProfileSnapshot.empty("tenant-a"),
         # 恒带一个会落进上下文帧的段，这样每条用例里都确实存在一条帧消息可比。
         "retrieved_memory_block": "RETRIEVED",
         "message_timestamp": datetime(2026, 10, 12, tzinfo=timezone.utc),

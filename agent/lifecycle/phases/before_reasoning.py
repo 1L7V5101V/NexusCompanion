@@ -47,6 +47,9 @@ class _BuildBeforeReasoningCtxModule:
             skill_names=list(before_turn.skill_names),
             retrieved_memory_block=before_turn.retrieved_memory_block,
             extra_hints=list(before_turn.extra_hints),
+            # c18 task 3.7：归属来自可信入站，快照来自本 turn 入口那一次借用
+            tenant_id=frame.input.state.tenant_id,
+            profile_snapshot=frame.input.profile_snapshot,
         )
         return frame
 
@@ -76,10 +79,15 @@ class _PromptWarmupModule:
         ctx = cast(BeforeReasoningCtx, frame.slots[_CTX_SLOT])
         if ctx.abort:
             return frame
+        # ADR-12：预热必须按本轮真实归属与真实画像渲染。以无租户形状预热会留下两处
+        # 污染——租户作用域的段缓存被空画像填上，以及 `last_debug_breakdown` 变成这一轮
+        # 从没渲染过的形状。
         _ = self._context.render(
             ContextRequest(
                 history=[],
                 current_message="",
+                tenant_id=ctx.tenant_id,
+                profile_snapshot=ctx.profile_snapshot,
                 skill_names=ctx.skill_names,
                 channel=ctx.channel,
                 chat_id=ctx.chat_id,

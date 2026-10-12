@@ -15,6 +15,7 @@ from agent.core.runtime_support import ToolDiscoveryState
 from agent.core.types import (
     ContextBundle,
     LLMToolCall,
+    MemoryProfileSnapshot,
     ReasonerResult,
 )
 from agent.prompting import DEFAULT_CONTEXT_TRIM_PLANS, is_context_frame
@@ -313,6 +314,17 @@ class PassiveTurnPipeline:
         self._after_turn_plugin_modules.extend(modules)
         self._after_turn = self._build_after_turn_phase()
 
+    async def _resolve_turn_snapshots(self, tenant_id: str) -> tuple[Any, Any]:
+        """向 reasoner 要本 turn 的快照；假 reasoner / 未接线时按空画像渲染。"""
+        resolver = getattr(self._reasoner, "resolve_turn_snapshots", None)
+        if not callable(resolver):
+            return None, MemoryProfileSnapshot.empty(tenant_id)
+        resolve = cast(
+            "Callable[[str], Awaitable[tuple[Any, Any]]]",
+            resolver,
+        )
+        return await resolve(tenant_id)
+
     def _build_before_turn_phase(self) -> Phase[TurnState, BeforeTurnCtx, BeforeTurnFrame]:
         return Phase(
             default_before_turn_modules(
@@ -438,11 +450,22 @@ class PassiveTurnPipeline:
                     )
                 )
 
+                # c18 task 3.7 / ADR-12：本 turn 的快照在进入 before_reasoning 之前解析
+                # 一次，预热与后续渲染吃同一份——预热以无租户形状渲染会污染租户作用域的
+                # 段缓存与调试视图。
+                persona_snapshot, profile_snapshot = (
+                    await self._resolve_turn_snapshots(state.tenant_id)
+                )
+
                 # Phase 2: BeforeReasoning 模块链（工具上下文、BeforeReasoning 事件、prompt warmup）。
                 with trace_phase(self._trace_store, turn_id, "before_reasoning"):
                     with diagnostic_context(phase="before_reasoning"):
                         before_reasoning = await self._before_reasoning.run(
-                            BeforeReasoningInput(state=state, before_turn=before_turn)
+                            BeforeReasoningInput(
+                                state=state,
+                                before_turn=before_turn,
+                                profile_snapshot=profile_snapshot,
+                            )
                         )
                 if before_reasoning.abort:
                     logger.info(
@@ -493,6 +516,8 @@ class PassiveTurnPipeline:
                             base_history=None,
                             retrieved_memory_block=before_reasoning.retrieved_memory_block,
                             extra_hints=list(before_reasoning.extra_hints) or None,
+                            persona_snapshot=persona_snapshot,
+                            profile_snapshot=profile_snapshot,
                         )
                 logger.info(
                     diagnostic_line(
@@ -808,8 +833,14 @@ class Reasoner(ABC):
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
+        persona_snapshot: Any = None,
+        profile_snapshot: Any = None,
     ) -> "TurnRunResult":
-        """执行完整被动 turn，包括 retry / trim / tool loop。"""
+        """执行完整被动 turn，包括 retry / trim / tool loop。
+
+        c18 task 3.7：主链交出本 turn 已解析好的快照；没交就自己解析一次（评测与单元
+        用例直接调本方法时的路径）。
+        """
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         """子类可重写以注入 tool hooks。默认 no-op。"""
@@ -891,6 +922,27 @@ class DefaultReasoner(Reasoner):
     def bind_persona_resolver(self, resolver: Any) -> None:
         """注入 persona 快照解析器（bootstrap 在 PG durable 装配后调用）。"""
         self._persona_resolver = resolver
+
+    async def resolve_turn_snapshots(self, tenant_id: str) -> tuple[Any, Any]:
+        """本 turn 的 (persona 快照, 画像快照)，一次借用交出两条内容（c18 ADR-1）。
+
+        三种「没有内容」的情况都归一成 `(None, MemoryProfileSnapshot.empty(tenant))`：
+        解析器未接线、解析抛错、该租户还没 onboarding（resolver 返回 None 是正常路径，
+        不该为它打一条 exception）。「这个租户就是没有画像」因此是个值而不是缺席，
+        `ContextRequest` 才敢把它做成必填项（task 3.7）。
+        """
+        empty_profile = MemoryProfileSnapshot.empty(tenant_id)
+        if self._persona_resolver is None:
+            return None, empty_profile
+        try:
+            resolved = await self._persona_resolver(tenant_id)
+        except Exception:
+            logger.exception("persona snapshot 解析失败（按空画像渲染）")
+            return None, empty_profile
+        if resolved is None:
+            return None, empty_profile
+        persona_snapshot, profile_snapshot = resolved
+        return persona_snapshot, profile_snapshot
 
     def add_tool_hooks(self, hooks: list["ToolHook"]) -> None:
         self._tool_executor.add_hooks(hooks)
@@ -978,6 +1030,8 @@ class DefaultReasoner(Reasoner):
         base_history: list[dict] | None = None,
         retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
+        persona_snapshot: Any = None,
+        profile_snapshot: Any = None,
     ) -> "TurnRunResult":
         from agent.core.runtime_support import TurnRunResult
 
@@ -1038,21 +1092,15 @@ class DefaultReasoner(Reasoner):
         )
 
         # 2. 再按 trim plan + history window 顺序逐轮尝试。
-        # c9-persona-relationship ADR-4：tenant lane 内解析一次 persona 快照
-        # （本 turn 的组装期快照；解析失败回退 None → 单体语义，不阻断 turn）。
-        # c18 ADR-1：同一次解析同时交出记忆画像快照，两者出自同一次数据库借用。
-        persona_snapshot = None
-        profile_snapshot = None
-        if self._persona_resolver is not None:
-            try:
-                resolved = await self._persona_resolver(str(msg.tenant_id))
-            except Exception:
-                logger.exception("persona snapshot 解析失败（回退单体语义）")
-            else:
-                # resolver 返回 None 是「该租户还没 profile」的正常路径（未 onboarding），
-                # 不能靠解包失败走这条路——否则每个未 onboarding 的租户都会打一条 exception。
-                if resolved is not None:
-                    persona_snapshot, profile_snapshot = resolved
+        # c18 task 3.7：主链的快照由 pipeline 在 before_reasoning 之前解析好交下来；
+        # 直接调用 run_turn 的路径（评测、单元用例）在这里自己解析一次。两条都 converge
+        # 到「非 None 的快照」，因为 ContextRequest 现在要求它。
+        if profile_snapshot is None:
+            resolved_persona, profile_snapshot = await self.resolve_turn_snapshots(
+                str(msg.tenant_id)
+            )
+            if persona_snapshot is None:
+                persona_snapshot = resolved_persona
 
         attempts = self._build_attempt_plans(total_history)
         for attempt, plan in enumerate(attempts):
@@ -1081,6 +1129,7 @@ class DefaultReasoner(Reasoner):
                     session_key=session.key,
                     channel=msg.channel,
                     chat_id=msg.chat_id,
+                    tenant_id=str(msg.tenant_id),
                     content=msg.content,
                     media=msg.media if msg.media else None,
                     timestamp=msg.timestamp,

@@ -145,6 +145,9 @@ class ScriptedReasoner(Reasoner):
         base_history: list[dict[str, Any]] | None = None,
         retrieved_memory_block: str = "",
         extra_hints: list[str] | None = None,
+        # c18 task 3.7：主链现在把本 turn 的快照交下来；脚本化 reasoner 不查库，收下即可。
+        persona_snapshot: Any = None,
+        profile_snapshot: Any = None,
     ) -> TurnRunResult:
         self.invocations += 1
         if self.latency_ms > 0:

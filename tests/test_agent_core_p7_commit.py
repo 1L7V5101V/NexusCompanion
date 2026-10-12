@@ -220,6 +220,7 @@ async def test_turn_committed_omits_user_message_when_user_turn_not_persisted():
             channel="cli",
             sender="hua",
             chat_id="direct",
+            tenant_id="cli:direct",
             content="内部提示词",
             metadata={"omit_user_turn": True},
         ),

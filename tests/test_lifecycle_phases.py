@@ -14,7 +14,7 @@ from agent.core.passive_support import build_context_hint_message
 from agent.core.passive_turn import ContextStore
 from agent.core.response_parser import ResponseMetadata
 from agent.core.runtime_support import TurnRunResult
-from agent.core.types import ContextBundle
+from agent.core.types import ContextBundle, MemoryProfileSnapshot
 from agent.lifecycle.phase import Phase
 from agent.tools.registry import ToolRegistry
 from bus.event_bus import EventBus
@@ -265,6 +265,8 @@ def _inbound() -> InboundMessage:
     return InboundMessage(
         channel="telegram", sender="user", chat_id="123",
         content="hello", timestamp=_now,
+        # c18 task 3.7：归属来自可信入站，before_reasoning 的预热渲染要用它
+        tenant_id="t-1",
     )
 
 
@@ -840,7 +842,11 @@ async def test_before_reasoning_finalize_calls_render():
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
     state.session = session
 
-    ctx = await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
+    ctx = await phase.run(BeforeReasoningInput(
+            state=state,
+            before_turn=before_turn,
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
+        ))
 
     context_builder.render.assert_called_once()
     call_args = context_builder.render.call_args[0][0]
@@ -888,7 +894,11 @@ async def test_before_reasoning_chain_can_add_extra_hints():
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
     state.session = session
 
-    ctx = await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
+    ctx = await phase.run(BeforeReasoningInput(
+            state=state,
+            before_turn=before_turn,
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
+        ))
     assert ctx.extra_hints == ["hint from before turn", "hint from plugin"]
 
 
@@ -929,7 +939,11 @@ async def test_before_reasoning_collects_export_slots():
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
     state.session = session
 
-    ctx = await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
+    ctx = await phase.run(BeforeReasoningInput(
+            state=state,
+            before_turn=before_turn,
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
+        ))
 
     assert ctx.extra_hints == ["slot hint"]
     assert ctx.abort is True
@@ -976,7 +990,11 @@ async def test_before_reasoning_chain_modify_skill_names_used_in_finalize_render
     state = TurnState(msg=msg, session_key="telegram:123", dispatch_outbound=True)
     state.session = session
 
-    _ = await phase.run(BeforeReasoningInput(state=state, before_turn=before_turn))
+    _ = await phase.run(BeforeReasoningInput(
+            state=state,
+            before_turn=before_turn,
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
+        ))
 
     # finalize 必须用 chain 修改后的值 render
     call_args = context_builder.render.call_args[0][0]
@@ -1044,6 +1062,8 @@ async def test_prompt_render_chain_appends_bottom_section(tmp_path):
             retrieved_memory_block="",
             disabled_sections=set(),
             turn_injection_prompt="",
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     )
 
@@ -1097,6 +1117,8 @@ async def test_prompt_render_chain_respects_disabled_sections(tmp_path):
             retrieved_memory_block="",
             disabled_sections={"memes"},
             turn_injection_prompt="",
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     )
 
@@ -1148,6 +1170,8 @@ async def test_prompt_render_collects_export_slots(tmp_path):
             retrieved_memory_block="",
             disabled_sections=set(),
             turn_injection_prompt="",
+            tenant_id="t-1",
+            profile_snapshot=MemoryProfileSnapshot.empty("t-1"),
         )
     )
     rendered = str(result.messages)

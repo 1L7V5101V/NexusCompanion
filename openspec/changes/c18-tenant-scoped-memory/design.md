@@ -191,6 +191,8 @@
 
 **不选：删掉 warmup。** 它的预热对首 token 延迟有作用，且这是独立于本 change 的性能决策；本 change 只要求它带上租户身份。
 
+落地时的两处形状（3.7）：快照的解析点从 `DefaultReasoner.run_turn` **上移到 `PassiveTurnPipeline.run` 的 Phase 2 之前**，一次解析同时交给预热与后面的渲染——留在原处就没法让预热吃到本轮快照，`before_reasoning` 比渲染早一个阶段。`DefaultReasoner.resolve_turn_snapshots(tenant_id)` 因此成为画像快照的唯一出处，三种「没有内容」（解析器未接线、解析抛错、该租户还没 onboarding）都归一成 `(None, MemoryProfileSnapshot.empty(tenant))`：「这个租户没有画像」是个值而不是缺席，必填才立得住。直接调 `run_turn` 的路径（评测与单元用例）仍会在里面自解析一次，代价是那条路上多一次借用。`BeforeReasoningCtx` 与 `PromptRenderCtx` 都补了 `tenant_id`，`ContextRequest.__post_init__` 对空归属与 None 快照当场抛。可观察的判据在 `tests/memory/test_warmup_keeps_breakdown.py`：预热后从 `last_debug_breakdown` 读到的长时段字数带着本轮快照的正文，交空快照那一段则根本不出现——后者是前者的敏感性对照。
+
 ### ADR-13 画像层另立专表，与记忆召回分表
 
 画像原本计划写进 `memory_items`，复用 `memory_type` 判别。改为另立两张专表。

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from agent.core.runtime_support import AgentLoopRunner, PromptRenderRunner, TurnRunResult
+from agent.core.types import MemoryProfileSnapshot
 from agent.tools.context import ToolExecutionContext
 from agent.lifecycle.types import PromptRenderInput
 from agent.looping.ports import SessionServices
@@ -102,6 +103,11 @@ async def process_spawn_completion_event(
             retrieved_memory_block="",
             disabled_sections=set(),
             turn_injection_prompt="",
+            # 后台任务回传这一路今天没有 turn 入口那一次画像借用可复用（它不走
+            # PassiveTurnPipeline），归属仍要显式交出——空画像是一个值，
+            # 不是「忘了传」，两者在类型上从此不同。
+            tenant_id=tool_context.tenant_id,
+            profile_snapshot=MemoryProfileSnapshot.empty(tool_context.tenant_id),
         )
     )
     initial_messages = prompt_render.messages
