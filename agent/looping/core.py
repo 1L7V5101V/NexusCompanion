@@ -953,6 +953,7 @@ class AgentLoop:
                             session=session,
                             archive_all=archive_all,
                             force=force,
+                            tenant_id=tenant_id,
                         )
                     ),
                     timeout=_MANUAL_CONSOLIDATION_TIMEOUT_SECONDS,

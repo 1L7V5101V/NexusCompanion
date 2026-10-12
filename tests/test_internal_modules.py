@@ -17,6 +17,7 @@ from core.memory.markdown import (
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
+from core.memory.profile_writer import ProfileFileMaintainer
 from memory2.post_response_worker import PostResponseMemoryWorker
 
 
@@ -38,7 +39,7 @@ class _ConsolidationHarness:
         self.last_draft = None
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
         self._consolidation = ConsolidationWorker(
-            profile_maint=cast(Any, self._memory_port),
+            profile_maint=ProfileFileMaintainer(cast(Any, self._memory_port)),
             provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,

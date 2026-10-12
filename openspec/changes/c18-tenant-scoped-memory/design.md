@@ -305,6 +305,12 @@ ADR-13 把画像读侧改成快照、ADR-9/13/14 把关系状态与 pending 消�
 
 **不选：把 6.10 从本 change 移出。** 文件后端不摘掉，spec 里「记忆画像不再有共享文件后端」那条 Requirement 就不成立，本 change 的隔离结论也只覆盖读侧。
 
+实现期的三条形状（6.12 落地时定）：
+
+- **整理与压缩只有一种调用形状。** `MemoryProfileStoreApi` 全 async，文件 store 全同步，而中间这段过渡期两种门面要同时存在。选定：`core/memory/profile_writer.py` 里一个 `ProfileMaintainer` 协议 + 两个实现（`ProfileTableMaintainer` 走专表、`ProfileFileMaintainer` 把 `MemoryStore` 的同步方法包进 `asyncio.to_thread`），worker 一律 `await` 门面。不选「worker 里按类型分支或 `_maybe_await`」——那把同步/异步的分叉铺进五处调用点，而 6.10 删文件后端时要删的是整个 `ProfileFileMaintainer` 类加 maintenance 里那条回退，两处都能一次删净。
+- **maintenance 的槽位按 `(租户, 会话)` 分，不只按会话。** 这条是写侧接线时查出来的既有缺陷：`session_key` 只在租户内唯一（`telegram:<chat_id>` 这类形态在两个租户下可以完全相同），而队列、任务表与锁都只以它为键，且槽位里记的归属是最先入队那次的。B 的整理意图于是会被并进 A 那一轮，按 A 的租户写画像——正是本 change 要关的那类泄漏，只是入口在队列而不在存储。修在 6.12 同一批（`tests/admission/test_priority.py` 加一条断言两个租户各占一槽）。
+- **fail-closed 的判据是「不发 LLM 调用 + 不落任何画像 + 留可定位记录」。** 归属为空或解析器报错都在 `_consolidate_unlocked` 顶部拦掉，因此那轮提取根本不发生（不是提取完再丢弃）。代价如实记在这里：这条接线让静态扫描（task 2.2）在 `bootstrap/tools.py` 多出一处 `memory_runtime.markdown.maintenance` 命中——绑定解析器必须摸到那个对象，6.10 摘文件后端时把绑定与命中一起删掉，扫描才有真绿点。
+
 ## Risks / Trade-offs
 
 - **预取让每轮多两条 SELECT**，即使该轮某些块用不到 → 两条都是按 `(tenant_id, category)` 的窄查询，走唯一索引与时间索引；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。

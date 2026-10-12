@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -178,8 +178,8 @@ class MemoryProfileStoreApi(Protocol):
     """画像存储接口。两种后端各一个实现，全部 async。
 
     SQLite 侧底层是同步 `sqlite3`，照仓库既有先例用 `asyncio.to_thread` 包
-    （`core/memory/markdown.py:783-785` 对 `read_history` 就是这么做的），不在协议层
-    为两种后端分叉出两套签名。
+    （`core/memory/profile_writer.py` 的 `ProfileFileMaintainer` 对文件 store 的同步
+    方法就是这么包的），不在协议层为两种后端分叉出两套签名。
     """
 
     async def read_section(self, category: str) -> str:
@@ -244,3 +244,9 @@ class MemoryProfileStoreApi(Protocol):
         用例。
         """
         ...
+
+
+ProfileStoreResolver = Callable[[str], MemoryProfileStoreApi]
+# 「给我一个租户 id，还我一个绑定该租户的存储」——装配根持有的是这个函数，不是某个 store。
+# 定义放在 core 侧（不是 `bootstrap/profile_access.py`）：`core/memory` 不能反向 import
+# bootstrap，而 maintenance 需要给这个形状署名。实现见 ADR-3/ADR-4。

@@ -3,6 +3,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from core.memory.profile_writer import ProfileFileMaintainer
 from core.memory.markdown import (
     _MarkdownConsolidationWorker as ConsolidationWorker,
     _select_recent_history_entries,
@@ -72,7 +73,7 @@ def test_consolidation_service_archive_all_and_profile_extract():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -140,7 +141,7 @@ def test_consolidation_service_uses_profile_maint_for_reads():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, profile_maint),
+        profile_maint=ProfileFileMaintainer(cast(Any, profile_maint)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -185,7 +186,7 @@ def test_consolidation_event_failure_does_not_write_markdown():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -240,7 +241,7 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -324,7 +325,7 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -411,7 +412,7 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -497,7 +498,7 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -555,7 +556,7 @@ def test_consolidation_recent_context_exception_fails_consolidation():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=cast(Any, memory),
+        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,

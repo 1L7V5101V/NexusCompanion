@@ -20,6 +20,12 @@ from agent.prompting import is_context_frame
 from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
+from core.memory.profile_store import ProfileStoreResolver
+from core.memory.profile_writer import (
+    ProfileFileMaintainer,
+    ProfileMaintainer,
+    ProfileTableMaintainer,
+)
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -36,6 +42,9 @@ class ConsolidateRequest:
     session: object
     archive_all: bool = False
     force: bool = False
+    # 6.12：画像写进哪个租户的专表由这一项决定。装配根给了租户解析器而它为空时，
+    # 整轮按 4.3 fail-closed 跳过，不回退到进程共享的那份目录。
+    tenant_id: str = ""
 
 
 @dataclass
@@ -47,6 +56,7 @@ class ConsolidateResult:
 @dataclass(frozen=True)
 class RefreshRecentTurnsRequest:
     session: object
+    tenant_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -230,17 +240,11 @@ def _select_recent_history_entries(history_text: str, *, limit: int = 3) -> list
     return entries[-limit:]
 
 
-def _coerce_history_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return ""
-
-
 _DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
 
 
-def _append_entries_to_journal(
-    profile_maint: "MarkdownMemoryStore",
+async def _append_entries_to_journal(
+    profile: ProfileMaintainer,
     entries: list[str],
     source_ref: str,
 ) -> None:
@@ -252,7 +256,7 @@ def _append_entries_to_journal(
         by_date.setdefault(m.group(1), []).append(entry)
     for date_str, date_entries in by_date.items():
         combined = "\n".join(date_entries)
-        profile_maint.append_journal(
+        await profile.append_journal(
             date_str, combined, source_ref=source_ref, kind=f"journal:{date_str}"
         )
 
@@ -412,7 +416,7 @@ class _MarkdownConsolidationWorker:
     def __init__(
         self,
         *,
-        profile_maint: "MarkdownMemoryStore",
+        profile_maint: ProfileMaintainer,
         provider: "LLMProvider",
         model: str,
         keep_count: int,
@@ -611,7 +615,7 @@ ongoing_threads 严格限制：
         self,
         *,
         session,
-        profile_maint,
+        profile: ProfileMaintainer,
         window: _ConsolidationWindow | None,
         archive_all: bool,
     ) -> str | _ConsolidationFailure:
@@ -628,11 +632,7 @@ ongoing_threads 严格限制：
         recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
         recent_turns_for_prompt = _format_conversation_for_recent_context(recent_turns)
-        old_recent_context = ""
-        if hasattr(profile_maint, "read_recent_context"):
-            old_recent_context = str(
-                await asyncio.to_thread(profile_maint.read_recent_context) or ""
-            )
+        old_recent_context = await profile.read_recent_context()
         conversation = _format_conversation_for_recent_context(compact_source)
         compression: dict[str, list[str]] | None = None
         if conversation:
@@ -708,18 +708,17 @@ ongoing_threads 严格限制：
             recent_turns=rendered_recent_turns,
         )
 
-    async def refresh_recent_turns(self, *, session, profile_maint=None) -> None:
-        profile = profile_maint or self._profile_maint
+    async def refresh_recent_turns(
+        self, *, session, profile: ProfileMaintainer | None = None
+    ) -> None:
+        profile = profile or self._profile_maint
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
         recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         recent_turns = tail[-recent_count:] if recent_count > 0 else []
         rendered_recent_turns = _format_recent_context_messages(recent_turns)
-        existing_text = ""
-        if hasattr(profile, "read_recent_context"):
-            existing_text = str(await asyncio.to_thread(profile.read_recent_context) or "")
+        existing_text = await profile.read_recent_context()
         updated = _replace_recent_turns_block(existing_text, rendered_recent_turns)
-        if hasattr(profile, "write_recent_context"):
-            await asyncio.to_thread(profile.write_recent_context, updated)
+        await profile.write_recent_context(updated)
 
     # 只做窗口选择和 LLM 提取，写入由 MemoryEngine 统一提交。
     async def prepare_consolidation(
@@ -727,8 +726,10 @@ ongoing_threads 严格限制：
         session,
         archive_all: bool = False,
         force: bool = False,
+        *,
+        profile: ProfileMaintainer | None = None,
     ) -> _ConsolidationDraft | _ConsolidationFailure | None:
-        profile_maint = self._profile_maint
+        profile = profile or self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
             session,
@@ -778,12 +779,8 @@ ongoing_threads 严格限制：
         # 2. 把窗口消息格式化成一段对话文本，并准备好 source_ref / 现有长期记忆 / 最近 history。
         source_ref = _build_consolidation_source_ref(window)
         conversation = _format_conversation_for_consolidation(window.old_messages)
-        current_memory = await asyncio.to_thread(profile_maint.read_long_term)
-        history_text = ""
-        if hasattr(profile_maint, "read_history"):
-            history_text = _coerce_history_text(
-                await asyncio.to_thread(profile_maint.read_history, 16000)
-            )
+        current_memory = await profile.read_long_term()
+        history_text = await profile.read_history(16000)
         recent_history_entries = _select_recent_history_entries(
             history_text,
             limit=3,
@@ -961,7 +958,7 @@ history_entries.emotional_weight 规则：
         # 4. 归一化 markdown 产物，向量写入由 engine 订阅提交事件完成。
         recent_context_text = await self._build_recent_context_snapshot(
             session=session,
-            profile_maint=profile_maint,
+            profile=profile,
             window=window,
             archive_all=archive_all,
         )
@@ -1019,9 +1016,14 @@ class MarkdownMemoryMaintenance:
         runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     ) -> None:
         self._store = store
+        # 6.12：没有装配根给来的解析器时，整理仍写这份文件（评测脚本与直接构造的测试走
+        # 这条路）。task 6.10 摘掉文件后端后，`_legacy_profile` 与 `_profile_for` 里的
+        # 那条回退一起删。
+        self._legacy_profile = ProfileFileMaintainer(store)
+        self._profile_stores: ProfileStoreResolver | None = None
         self._event_bus = event_bus
         self._worker = _MarkdownConsolidationWorker(
-            profile_maint=store,
+            profile_maint=self._legacy_profile,
             provider=provider,
             model=model,
             keep_count=keep_count,
@@ -1032,9 +1034,9 @@ class MarkdownMemoryMaintenance:
         self._consolidation_min_new_messages = max(5, keep_count // 2)
         self._get_session: Callable[[str, str], object] | None = None
         self._save_session: Callable[[object], Awaitable[None]] | None = None
-        self._maintenance_queues: dict[str, deque[str]] = {}
-        self._maintenance_tasks: dict[str, asyncio.Task[None]] = {}
-        self._maintenance_locks: dict[str, asyncio.Lock] = {}
+        self._maintenance_queues: dict[tuple[str, str], deque[str]] = {}
+        self._maintenance_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._maintenance_locks: dict[tuple[str, str], asyncio.Lock] = {}
         # C3 §10 DECIDED：global maintenance ready queue 初始上限 64，
         # 由 [agent.admission].global_maintenance_queue 覆盖（见 bootstrap/memory.py）。
         if global_maintenance_limit < 1:
@@ -1057,6 +1059,38 @@ class MarkdownMemoryMaintenance:
         self._get_session = request.get_session
         self._save_session = request.save_session
 
+    def bind_profile_stores(self, resolver: ProfileStoreResolver) -> None:
+        """装配根交出「按租户解析画像存储」的能力（ADR-3/ADR-4，task 4.2）。
+
+        不给 `MarkdownMemoryMaintenance` 一个 store 而是给一个函数：整理一轮服务哪个租户
+        是由事件里的 `tenant_id` 决定的，共享 store 正是跨租户写入的入口（ADR-16）。
+        """
+        self._profile_stores = resolver
+
+    def _profile_for(self, tenant_id: str) -> ProfileMaintainer | None:
+        """本轮画像读写走哪套；返回 None 表示这一轮什么都不写（task 4.3 fail-closed）。
+
+        归属为空或解析器报错（PG 查不到该租户、SQLite 收到非固定租户）都只跳过：
+        回退到进程共享目录等于把泄漏重新打开。
+        """
+        resolver = self._profile_stores
+        if resolver is None:
+            return self._legacy_profile
+        if not str(tenant_id or "").strip():
+            logger.error(
+                "c18 fail-closed：maintenance 拿不到可信租户归属，本轮不写任何画像"
+            )
+            return None
+        try:
+            store = resolver(tenant_id)
+        except Exception:
+            logger.exception(
+                "c18 fail-closed：画像存储解析失败，跳过本轮整理（tenant_id=%r）",
+                tenant_id,
+            )
+            return None
+        return ProfileTableMaintainer(store, tenant_id)
+
     def on_turn_committed(self, event: TurnCommitted) -> None:
         if bool((event.extra or {}).get("skip_post_memory")):
             return
@@ -1068,28 +1102,32 @@ class MarkdownMemoryMaintenance:
         # C3 §5.9.5：per-session maintenance 意图合并（单槽至多 1 个 pending；
         # consolidation/refresh 由执行时状态决定，重复意图无信息量）；
         # 全局在途 maintenance 达上限时延后（不拒绝用户消息，下轮 turn 再触发）。
-        queue = self._maintenance_queues.get(session_key)
+        # 槽位按 (租户, 会话) 分：session_key 只在租户内唯一（telegram:<chat_id> 这类
+        # 形态在两个租户下可以完全相同），共用一个槽等于把 B 的整理意图并到 A 的租户上。
+        lane = (tenant_id, session_key)
+        queue = self._maintenance_queues.get(lane)
         if queue is not None and len(queue) > 0:
             return
         if self._maintenance_inflight() >= self._maintenance_global_limit:
             logger.info(
-                "global maintenance ready queue 满（%d），延后 maintenance: session=%s",
+                "global maintenance ready queue 满（%d），延后 maintenance: tenant=%s session=%s",
                 self._maintenance_global_limit,
+                tenant_id,
                 session_key,
             )
             self._maintenance_deferred_count += 1
             return
-        queue = self._maintenance_queues.setdefault(session_key, deque())
+        queue = self._maintenance_queues.setdefault(lane, deque())
         queue.append(session_key)
-        if session_key in self._maintenance_tasks:
+        if lane in self._maintenance_tasks:
             return
         task = asyncio.create_task(
-            self._run_maintenance_queue(session_key, tenant_id),
-            name=f"markdown-memory-maintenance:{session_key}",
+            self._run_maintenance_queue(tenant_id, session_key),
+            name=f"markdown-memory-maintenance:{tenant_id}:{session_key}",
         )
-        self._maintenance_tasks[session_key] = task
+        self._maintenance_tasks[lane] = task
         task.add_done_callback(
-            lambda t: self._on_maintenance_done(t, session_key, tenant_id)
+            lambda t: self._on_maintenance_done(t, tenant_id, session_key)
         )
 
     def _maintenance_inflight(self) -> int:
@@ -1099,11 +1137,13 @@ class MarkdownMemoryMaintenance:
         )
         return len(self._maintenance_tasks) + pending_sessions
 
-    async def _run_maintenance_queue(self, session_key: str, tenant_id: str) -> None:
-        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
+    async def _run_maintenance_queue(self, tenant_id: str, session_key: str) -> None:
+        lock = self._maintenance_locks.setdefault(
+            (tenant_id, session_key), asyncio.Lock()
+        )
         async with lock:
             while True:
-                queue = self._maintenance_queues.get(session_key)
+                queue = self._maintenance_queues.get((tenant_id, session_key))
                 if not queue:
                     return
                 _ = queue.popleft()
@@ -1122,40 +1162,46 @@ class MarkdownMemoryMaintenance:
                     async with work_runtime_lease(self._runtime_snapshot_store):
                         if self._should_consolidate_session(session):
                             result = await self._consolidate_unlocked(
-                                ConsolidateRequest(session=session)
+                                ConsolidateRequest(
+                                    session=session, tenant_id=tenant_id
+                                )
                             )
                             if result.trace.get("mode") == "markdown" and self._save_session:
                                 await self._save_session(session)
                         else:
                             await self.refresh_recent_turns(
-                                RefreshRecentTurnsRequest(session=session)
+                                RefreshRecentTurnsRequest(
+                                    session=session, tenant_id=tenant_id
+                                )
                             )
                 except Exception:
                     logger.exception(
-                        "markdown memory maintenance iteration failed for session=%s — continuing queue",
+                        "markdown memory maintenance iteration failed for tenant=%s session=%s — continuing queue",
+                        tenant_id,
                         session_key,
                     )
 
     def _on_maintenance_done(
         self,
         task: asyncio.Task[None],
-        session_key: str,
         tenant_id: str,
+        session_key: str,
     ) -> None:
-        if self._maintenance_tasks.get(session_key) is task:
-            _ = self._maintenance_tasks.pop(session_key, None)
-        queue = self._maintenance_queues.get(session_key)
+        lane = (tenant_id, session_key)
+        if self._maintenance_tasks.get(lane) is task:
+            _ = self._maintenance_tasks.pop(lane, None)
+        queue = self._maintenance_queues.get(lane)
         if queue:
             next_task = asyncio.create_task(
-                self._run_maintenance_queue(session_key, tenant_id),
-                name=f"markdown-memory-maintenance:{session_key}",
+                self._run_maintenance_queue(tenant_id, session_key),
+                name=f"markdown-memory-maintenance:{tenant_id}:{session_key}",
             )
-            self._maintenance_tasks[session_key] = next_task
+            self._maintenance_tasks[lane] = next_task
             next_task.add_done_callback(
-            lambda t: self._on_maintenance_done(t, session_key, tenant_id)
-        )
+                lambda t: self._on_maintenance_done(t, tenant_id, session_key)
+            )
         else:
-            _ = self._maintenance_queues.pop(session_key, None)
+            _ = self._maintenance_queues.pop(lane, None)
         if task.cancelled():
             logger.info("markdown memory maintenance cancelled: %s", session_key)
             return
@@ -1183,15 +1229,23 @@ class MarkdownMemoryMaintenance:
         session_key = str(getattr(request.session, "key", "") or "")
         if not session_key:
             return await self._consolidate_unlocked(request)
-        lock = self._maintenance_locks.setdefault(session_key, asyncio.Lock())
+        lock = self._maintenance_locks.setdefault(
+            (request.tenant_id, session_key), asyncio.Lock()
+        )
         async with lock:
             return await self._consolidate_unlocked(request)
 
     async def _consolidate_unlocked(self, request: ConsolidateRequest) -> ConsolidateResult:
+        profile = self._profile_for(request.tenant_id)
+        if profile is None:
+            return ConsolidateResult(
+                trace={"mode": "skipped", "reason": "fail_closed_no_tenant"}
+            )
         draft = await self._worker.prepare_consolidation(
             request.session,
             archive_all=request.archive_all,
             force=request.force,
+            profile=profile,
         )
         if draft is None:
             return ConsolidateResult(trace={"mode": "skipped"})
@@ -1205,10 +1259,10 @@ class MarkdownMemoryMaintenance:
                 }
             )
         try:
-            await self._commit_markdown_draft(request.session, draft)
+            await self._commit_markdown_draft(request.session, draft, profile)
         except Exception:
             logger.exception(
-                "consolidation commit raised for session=%s — markdown files written, session.last_consolidated already advanced, still persisting",
+                "consolidation commit raised for session=%s — 画像已按门面写出、session.last_consolidated 也已推进，仍继续持久化会话",
                 getattr(request.session, "key", "?"),
             )
         return ConsolidateResult(
@@ -1220,18 +1274,17 @@ class MarkdownMemoryMaintenance:
         self,
         session: object,
         draft: "_ConsolidationDraft",
+        profile: ProfileMaintainer,
     ) -> None:
         history_entries = [entry for entry, _ in draft.history_entry_payloads]
         if history_entries:
-            await asyncio.to_thread(
-                self._store.append_history_once,
+            await profile.append_history_once(
                 "\n".join(history_entries),
                 source_ref=draft.source_ref,
                 kind="history_entry",
             )
         if draft.pending_items:
-            appended = await asyncio.to_thread(
-                self._store.append_pending_once,
+            appended = await profile.append_pending_once(
                 draft.pending_items,
                 source_ref=draft.source_ref,
                 kind="pending_items",
@@ -1241,11 +1294,10 @@ class MarkdownMemoryMaintenance:
                     "Markdown memory: appended %d pending_items",
                     len(draft.pending_items.splitlines()),
                 )
-        self._store.write_recent_context(draft.recent_context_text)
+        await profile.write_recent_context(draft.recent_context_text)
         if history_entries:
-            await asyncio.to_thread(
-                _append_entries_to_journal,
-                self._store,
+            await _append_entries_to_journal(
+                profile,
                 history_entries,
                 draft.source_ref,
             )
@@ -1268,7 +1320,10 @@ class MarkdownMemoryMaintenance:
         self,
         request: RefreshRecentTurnsRequest,
     ) -> None:
-        await self._worker.refresh_recent_turns(session=request.session)
+        profile = self._profile_for(request.tenant_id)
+        if profile is None:
+            return
+        await self._worker.refresh_recent_turns(session=request.session, profile=profile)
 
 
 def build_markdown_memory_runtime(

@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from core.memory.profile_store import MemoryProfileStoreApi
+from core.memory.profile_store import MemoryProfileStoreApi, ProfileStoreResolver
 
-ProfileStoreResolver = Callable[[str], MemoryProfileStoreApi]
+__all__ = ["ProfileAccess", "ProfileStoreResolver", "build_profile_access"]
 
 
 @dataclass
