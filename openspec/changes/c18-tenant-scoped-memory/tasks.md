@@ -54,7 +54,7 @@
 
 ## 5. 公共租户目录 helper
 
-- [ ] 5.1 把 `agent/tools/path_resolver.py:58-68` 的私有 `_category_root` 逻辑抽成公开 `tenant_category_root(workspace_root, tenant_id, category)`，`bootstrap/attachments/blob_store.py:71-85` 改用它并删除复制实现（design ADR-5）。验证：`pytest -q -W error tests/ -k "blob or path_resolver or attachment"` 通过，且 `grep -rn 'tenants.*tenant_dirname' --include=*.py` 只剩 helper 一处
+- [x] 5.1 把 `agent/tools/path_resolver.py:58-68` 的私有 `_category_root` 逻辑抽成公开 `tenant_category_root(workspace_root, tenant_id, category)`，`bootstrap/attachments/blob_store.py:71-85` 改用它并删除复制实现（design ADR-5）。验证：`pytest -q -W error tests/ -k "blob or path_resolver or attachment"` 通过，且 `grep -rn 'tenants.*tenant_dirname' --include=*.py` 只剩 helper 一处——实测：生产代码里只剩 `tenant_category_root` 一处派生（`agent/tools/path_resolver.py:129`），另两处命中分别是 blob_store 的模块文档（散文，不是代码）和两条测试期望（测试**故意**从外部按 `tenant_dirname` 重算路径，否则就成了拿被测函数自己证明自己）。所以这条 grep 的准确口径是「生产侧一处」而不是「全仓库一处」。三个调用点都换过去了：`file_root`（租户 workspace 根）、`_category_root`（attachments/scratch/exports）、`AttachmentBlobStore.tenant_root`；顺带把 blob_store 里已经没人读的 `tenant_dirname` 导入去掉。新加一条用例钉住两个分支与「多租户缺 tenant_id 就抛」（`tests/test_tenant_path_resolver.py`）；`AttachmentBlobStore` 自己那条 `AttachmentStorageError` 的 fail-closed 保持原样（它是域内错误类型，helper 抛 ValueError 之前它先挡住）。
 
 ## 6. 表存储、画像存储实现与自我认知归属收敛
 

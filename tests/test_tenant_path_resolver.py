@@ -181,3 +181,22 @@ async def test_multitenant_roots_isolate_tenants(tmp_path: Path) -> None:
 
 def _unused(*args: Any, **kwargs: Any) -> None:
     return None
+
+
+def test_tenant_category_root_is_the_single_derivation(tmp_path: Path) -> None:
+    """c18 task 5.1：租户类别根的派生只有一处，两个分支都从同一个函数出。
+
+    原先这条派生在文件工具根、`_category_root`、附件 blob store 各写一遍；改一处忘两处
+    不会报错，只会让某一类资源悄悄落到别人的目录里。
+    """
+    from agent.tools.path_resolver import tenant_category_root, tenant_dirname
+
+    multi = tenant_category_root(tmp_path, "telegram:42", "scratch")
+    assert multi == tmp_path / "tenants" / tenant_dirname("telegram:42") / "scratch"
+    assert multi.is_dir(), "按需创建"
+
+    single = tenant_category_root(tmp_path, "", "attachments", multi_tenant=False)
+    assert single == tmp_path / "attachments"
+
+    with pytest.raises(ValueError):
+        tenant_category_root(tmp_path, "", "attachments")

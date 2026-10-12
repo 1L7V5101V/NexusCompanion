@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Iterable
 
-from agent.tools.path_resolver import tenant_dirname
+from agent.tools.path_resolver import tenant_category_root
 from bootstrap.attachments.validation import SERVER_EXT_BY_MIME
 
 # storage_key 形态: {uuid4.hex}.{ext}（服务端派生，相对租户根的一层文件）
@@ -72,17 +72,12 @@ class AttachmentBlobStore:
         """租户 attachments_root（按需创建）；tenant_id 缺失 fail-closed。"""
         if not tenant_id:
             raise AttachmentStorageError("tenant_id 缺失，拒绝解析 blob root")
-        if self._multi_tenant:
-            root = (
-                self.workspace_root
-                / "tenants"
-                / tenant_dirname(tenant_id)
-                / "attachments"
-            )
-        else:
-            root = self.workspace_root / "attachments"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return tenant_category_root(
+            self.workspace_root,
+            tenant_id,
+            "attachments",
+            multi_tenant=self._multi_tenant,
+        )
 
     # ── staging（两次写，ADR-3） ──────────────────────────────────────
 

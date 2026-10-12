@@ -49,23 +49,19 @@ class TenantPathResolver:
         """多租户模式返回租户工作区根（按需创建）；单机模式回退 fallback。"""
         if not self._multi_tenant or not tenant_id:
             return fallback
-        root = self._workspace_root / "tenants" / tenant_dirname(tenant_id) / "workspace"
-        root.mkdir(parents=True, exist_ok=True)
-        return root
+        return tenant_category_root(
+            self._workspace_root, tenant_id, "workspace", multi_tenant=True
+        )
 
     # ── 资源类别根（§5.8.5 Protocol；随 C6/C14 消费）────────────────────
 
     def _category_root(self, context: ToolExecutionContext, category: str) -> Path:
-        root = (
-            self._workspace_root
-            / "tenants"
-            / tenant_dirname(context.tenant_id)
-            / category
-            if self._multi_tenant
-            else self._workspace_root / category
+        return tenant_category_root(
+            self._workspace_root,
+            context.tenant_id,
+            category,
+            multi_tenant=self._multi_tenant,
         )
-        root.mkdir(parents=True, exist_ok=True)
-        return root
 
     def attachments_root(self, context: ToolExecutionContext) -> str:
         return str(self._category_root(context, "attachments"))
@@ -111,6 +107,31 @@ def tenant_dirname(tenant_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", tenant_id)[:48]
     digest = hashlib.sha1(tenant_id.encode("utf-8")).hexdigest()[:8]
     return f"{cleaned}-{digest}"
+
+
+def tenant_category_root(
+    workspace_root: Path,
+    tenant_id: str,
+    category: str,
+    *,
+    multi_tenant: bool = True,
+) -> Path:
+    """资源类别根，按需创建。多租户 `<root>/tenants/<dirname>/<category>`，
+    单机 `<root>/<category>`（design ADR-5）。
+
+    这条派生原先在三处各写一遍（文件工具根、`_category_root`、附件 blob store），
+    改一处忘两处就是「两个模块对同一个租户给出不同目录」，而那种分叉不会报错，
+    只会让某一类内容悄悄落到别人的目录里。所有租户目录派生都从这里过。
+    """
+    if multi_tenant and not tenant_id:
+        raise ValueError("多租户模式缺 tenant_id，拒绝派生资源根")
+    root = (
+        Path(workspace_root) / "tenants" / tenant_dirname(tenant_id) / category
+        if multi_tenant
+        else Path(workspace_root) / category
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _safe_segment(segment: str) -> str:
