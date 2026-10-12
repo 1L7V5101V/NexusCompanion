@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.prompting import PromptSectionMeta, PromptSectionRender, SectionCache
@@ -15,6 +15,7 @@ from prompts.agent import (
 )
 
 if TYPE_CHECKING:
+    from agent.core.types import ContextRequest
     from agent.skills import SkillsLoader
     from core.memory.markdown import MemoryProfileApi
 
@@ -281,6 +282,28 @@ class SystemPromptBuildResult:
     system_sections: list[PromptSectionRender]
     system_prompt: str
     debug_breakdown: list[PromptSectionMeta]
+    # c18 ADR-15：进上下文帧的那一组。`SystemPromptBuilder.build` 只产出未分组的
+    # 全部段，分组发生在 `ContextBuilder.render_sections`（它才看得到调用方追加的
+    # 自定义段），所以这里默认空。
+    frame_sections: list[PromptSectionRender] = field(default_factory=list)
+
+
+@runtime_checkable
+class ProfileSectionRenderer(Protocol):
+    """c18 ADR-15：组装旁路依赖的唯一画像入口。
+
+    插件侧要的是「给我这个租户的画像段」，不是 `ContextBuilder` 那套工作区、技能、
+    消息封装。窄到这一个方法，插件的单测才能只实现一个方法就当替身用，也不必为了
+    渲染画像而构造完整轮次上下文。`ContextBuilder` 满足它。
+    """
+
+    def render_sections(
+        self,
+        request: "ContextRequest",
+        *,
+        system_sections_top: list[PromptSectionRender] | None = None,
+        system_sections_bottom: list[PromptSectionRender] | None = None,
+    ) -> SystemPromptBuildResult: ...
 
 
 class SystemPromptBuilder:

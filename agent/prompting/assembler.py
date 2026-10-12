@@ -4,9 +4,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from agent.context import ContextBuilder
+    from agent.core.prompt_block import SystemPromptBuildResult
+    from agent.core.types import ContextRequest
 
 
 @dataclass(frozen=True)
@@ -46,7 +46,9 @@ class SectionCache:
         self._data[(scope, section_name, signature)] = content
 
 
-_CONTEXT_FRAME_SECTIONS = {
+# c18 ADR-15：这组段的落点是「上下文帧」而不是系统提示。判据从 assembler 移不出来
+# ——分组要发生在调用方追加段之后，所以由 `ContextBuilder.render_sections` 使用它。
+CONTEXT_FRAME_SECTIONS = {
     "active_skills",
     "recent_context",
     "retrieved_memory",
@@ -86,60 +88,17 @@ class PromptAssembler:
 
     def assemble(
         self,
+        request: "ContextRequest",
         *,
-        history: list[dict[str, Any]],
-        current_message: str,
-        media: list[str] | None = None,
-        skill_names: list[str] | None = None,
-        channel: str | None = None,
-        chat_id: str | None = None,
-        message_timestamp: "datetime | None" = None,
-        retrieved_memory_block: str = "",
-        disabled_sections: set[str] | None = None,
+        sections: "SystemPromptBuildResult",
         turn_injection_context: dict[str, str] | None = None,
-        system_sections_top: list[PromptSectionRender] | None = None,
-        system_sections_bottom: list[PromptSectionRender] | None = None,
-        persona_snapshot: Any | None = None,
-        tenant_id: str = "",
-        profile_snapshot: Any | None = None,
     ) -> AssembledTurnInput:
-        # assembler 负责把“主 prompt + turn injection + message envelope”
-        # 收束成一份统一输入，避免调用方各自手拼消息顺序。
-        built = self._context_builder._build_system_prompt_result(
-            skill_names=skill_names,
-            channel=channel,
-            chat_id=chat_id,
-            retrieved_memory_block=retrieved_memory_block,
-            disabled_sections=disabled_sections,
-            persona_snapshot=persona_snapshot,
-            tenant_id=tenant_id,
-            profile_snapshot=profile_snapshot,
-        )
+        # assembler 负责把「已渲染好的段 + turn injection + message envelope」收束成
+        # 一份统一输入，避免调用方各自手拼消息顺序。段的渲染与分组在
+        # `ContextBuilder.render_sections` 里（c18 ADR-15），这里只加注入段与封装——
+        # 旁路要复用的正是前者，不能连这一步一起复用。
         injection_context = turn_injection_context or {}
-        disabled = disabled_sections or set()
-        top_sections = [
-            section for section in (system_sections_top or [])
-            if section.name not in disabled
-        ]
-        bottom_sections = [
-            section for section in (system_sections_bottom or [])
-            if section.name not in disabled
-        ]
-        all_sections = [
-            *top_sections,
-            *built.system_sections,
-            *bottom_sections,
-        ]
-        system_sections = [
-            section
-            for section in all_sections
-            if section.name not in _CONTEXT_FRAME_SECTIONS
-        ]
-        frame_sections = [
-            section
-            for section in all_sections
-            if section.name in _CONTEXT_FRAME_SECTIONS
-        ]
+        frame_sections = list(sections.frame_sections)
         for name, content in injection_context.items():
             text = str(content or "").strip()
             if text:
@@ -150,31 +109,28 @@ class PromptAssembler:
                         is_static=False,
                     )
                 )
-        system_prompt = "\n\n---\n\n".join(item.content for item in system_sections)
         context_frame = build_context_frame_content(frame_sections)
         messages = self._context_builder._envelope_builder.build(
-            history=history,
-            current_message=current_message,
-            system_prompt=system_prompt,
+            history=request.history,
+            current_message=request.current_message,
+            system_prompt=sections.system_prompt,
             context_frame=context_frame,
-            channel=channel,
-            message_timestamp=message_timestamp,
-            media=media,
+            channel=request.channel,
+            message_timestamp=request.message_timestamp,
+            media=request.media,
         )
         return AssembledTurnInput(
-            system_sections=all_sections,
-            system_prompt=system_prompt,
+            # 字段名叫 system_sections，装的就是真正进了系统提示的那一组；原来这里
+            # 填的是分组前的全部段，与名字不符，且没有任何调用方读它。
+            system_sections=list(sections.system_sections),
+            system_prompt=sections.system_prompt,
             turn_injection_context=injection_context,
             messages=messages,
-            debug_breakdown=[
-                *_section_meta(top_sections),
-                *built.debug_breakdown,
-                *_section_meta(bottom_sections),
-            ],
+            debug_breakdown=list(sections.debug_breakdown),
         )
 
 
-def _section_meta(sections: list[PromptSectionRender]) -> list[PromptSectionMeta]:
+def section_meta(sections: list[PromptSectionRender]) -> list[PromptSectionMeta]:
     return [
         PromptSectionMeta(
             name=section.name,

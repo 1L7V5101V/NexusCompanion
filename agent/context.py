@@ -23,10 +23,12 @@ from agent.core.prompt_block import (
     TurnContext,
 )
 from agent.prompting import (
+    CONTEXT_FRAME_SECTIONS,
     PromptAssembler,
     PromptSectionMeta,
     PromptSectionRender,
     build_context_frame_message,
+    section_meta,
 )
 from agent.skills import SkillsLoader
 from prompts.agent import (
@@ -291,6 +293,64 @@ class ContextBuilder:
             return {}
         return {"turn_injection": turn_injection_prompt}
 
+    def render_sections(
+        self,
+        request: ContextRequest,
+        *,
+        system_sections_top: list[PromptSectionRender] | None = None,
+        system_sections_bottom: list[PromptSectionRender] | None = None,
+    ) -> SystemPromptBuildResult:
+        """渲染系统提示段与上下文帧段，不碰消息封装（c18 ADR-15）。
+
+        主链经 `PromptAssembler.assemble` 走到这里；主动推送与 drift 两条旁路调的是
+        同一个方法，所以画像段只有一份实现、一套 static 缓存、一份 source breakdown。
+        分组必须在调用方追加的段合进来之后才做，因此 top/bottom 也从参数进来。
+        """
+        built = self._build_system_prompt_result(
+            skill_names=request.skill_names,
+            channel=request.channel,
+            chat_id=request.chat_id,
+            retrieved_memory_block=request.retrieved_memory_block,
+            disabled_sections=request.disabled_sections,
+            persona_snapshot=request.persona_snapshot,
+            tenant_id=request.tenant_id,
+            profile_snapshot=request.profile_snapshot,
+        )
+        disabled = request.disabled_sections or set()
+        top_sections = [
+            section for section in (system_sections_top or [])
+            if section.name not in disabled
+        ]
+        bottom_sections = [
+            section for section in (system_sections_bottom or [])
+            if section.name not in disabled
+        ]
+        all_sections = [
+            *top_sections,
+            *built.system_sections,
+            *bottom_sections,
+        ]
+        system_sections = [
+            section
+            for section in all_sections
+            if section.name not in CONTEXT_FRAME_SECTIONS
+        ]
+        frame_sections = [
+            section
+            for section in all_sections
+            if section.name in CONTEXT_FRAME_SECTIONS
+        ]
+        return SystemPromptBuildResult(
+            system_sections=system_sections,
+            system_prompt="\n\n---\n\n".join(item.content for item in system_sections),
+            debug_breakdown=[
+                *section_meta(top_sections),
+                *built.debug_breakdown,
+                *section_meta(bottom_sections),
+            ],
+            frame_sections=frame_sections,
+        )
+
     def render(
         self,
         request: ContextRequest,
@@ -301,22 +361,15 @@ class ContextBuilder:
         turn_injection_context = self.build_turn_injection_context(
             turn_injection_prompt=request.turn_injection_prompt
         )
-        assembled = self._assembler.assemble(
-            history=request.history,
-            current_message=request.current_message,
-            media=request.media,
-            skill_names=request.skill_names,
-            channel=request.channel,
-            chat_id=request.chat_id,
-            message_timestamp=request.message_timestamp,
-            retrieved_memory_block=request.retrieved_memory_block,
-            disabled_sections=request.disabled_sections,
-            turn_injection_context=turn_injection_context,
+        sections = self.render_sections(
+            request,
             system_sections_top=system_sections_top,
             system_sections_bottom=system_sections_bottom,
-            persona_snapshot=request.persona_snapshot,
-            tenant_id=request.tenant_id,
-            profile_snapshot=request.profile_snapshot,
+        )
+        assembled = self._assembler.assemble(
+            request,
+            sections=sections,
+            turn_injection_context=turn_injection_context,
         )
         self._last_debug_breakdown = assembled.debug_breakdown
         self._last_assembled_contexts = {
