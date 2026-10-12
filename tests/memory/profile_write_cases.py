@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock
 
 from core.memory.markdown import (
     MarkdownMemoryMaintenance,
-    MarkdownMemoryStore,
 )
+from agent.memory import MemoryStore
 from core.memory.profile_sqlite import SqliteMemoryProfileStore
 from tests.memory.test_sqlite_profile_store import create_sqlite_memory_db
 
@@ -130,7 +130,7 @@ def file_backed_maintenance(
 ) -> MarkdownMemoryMaintenance:
     """不绑解析器的 maintenance：文件 store 仍在构造签名里，6.10 才摘掉它。"""
     return MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(workspace),
+        store=MemoryStore(workspace),
         provider=cast(Any, provider or consolidation_provider()),
         model="m",
         keep_count=20,

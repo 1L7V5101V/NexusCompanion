@@ -22,7 +22,7 @@ from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
-from core.memory.markdown import MarkdownMemoryStore
+from agent.memory import MemoryStore
 from tests.memory.profile_write_cases import TenantStores
 
 TENANT = "c18-optimizer"
@@ -47,10 +47,10 @@ def _provider_raising(error: Exception) -> object:
     return provider
 
 
-def _setup(tmp_path) -> tuple[TenantStores, MarkdownMemoryStore]:
+def _setup(tmp_path) -> tuple[TenantStores, MemoryStore]:
     """一个建好画像表的单机库 + 一个仍按旧形状存在的文件 store。"""
     stores = TenantStores.create(tmp_path)
-    return stores, MarkdownMemoryStore(tmp_path)
+    return stores, MemoryStore(tmp_path)
 
 
 def _optimizer(stores: TenantStores, provider: object, memory) -> MemoryOptimizer:
@@ -214,8 +214,10 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path) -> None:
 
 def test_optimize_without_a_resolver_writes_nothing(tmp_path) -> None:
     """没有画像存储解析器就没有可信归属：跳过、不发 LLM、不碰文件目录（task 4.3）。"""
-    memory = MarkdownMemoryStore(tmp_path)
-    memory.append_pending("- [identity] 不该被谁吃掉")
+    memory = MemoryStore(tmp_path)
+    memory.pending_file.write_text(
+        "- [identity] 不该被谁吃掉", encoding="utf-8"
+    )
     provider = _provider_with_responses("## 不该发生")
     optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
     optimizer._STEP_DELAY_SECONDS = 0  # type: ignore[misc]

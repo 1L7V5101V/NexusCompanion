@@ -30,9 +30,9 @@ from core.memory.markdown import (
     _ConsolidationFailure,
     _ConsolidationWindow,
     MarkdownMemoryMaintenance,
-    MarkdownMemoryStore,
     MemoryLifecycleBindRequest,
 )
+from agent.memory import MemoryStore
 from core.memory.plugin import MemoryPluginRuntime
 from infra.storage.interfaces import TenantContext
 
@@ -363,7 +363,7 @@ async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
+        store=MemoryStore(Path(".")),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,
@@ -405,7 +405,7 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
+        store=MemoryStore(Path(".")),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,
@@ -454,7 +454,7 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
+        store=MemoryStore(tmp_path),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=6,
@@ -492,7 +492,7 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(tmp_path),
+        store=MemoryStore(tmp_path),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=4,
@@ -525,7 +525,7 @@ async def test_default_memory_engine_serializes_lifecycle_maintenance():
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MarkdownMemoryStore(Path(".")),
+        store=MemoryStore(Path(".")),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,

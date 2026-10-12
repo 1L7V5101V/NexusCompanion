@@ -34,9 +34,7 @@ async def test_memory_optimizer_loop_and_memory_port_cover_paths(tmp_path: Path)
     memory = MagicMock()
     memory.read_self.return_value = "# Nexus 的自我认知\n## 人格与形象\n- x"
     memory.read_history.return_value = "history"
-    memory.get_memory_context.return_value = "ctx"
     memory.write_long_term = MagicMock()
-    memory.append_history = MagicMock()
     memory.write_self = MagicMock()
     store = stores.resolve(tenant)
     await store.write_section("long_term", "MEM")

@@ -21,7 +21,6 @@ from agent.core.types import MemoryProfileSnapshot
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.markdown import MemoryProfileApi
 
 # 别的身份留在共享目录里的内容片段。
 CANARY = "硅的光子挠曲电效应"

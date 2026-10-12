@@ -114,30 +114,9 @@ class _ProbeMemoryEngine:
     def read_recent_context(self) -> str:
         return ""
 
-    def get_memory_context(self) -> str:
-        return ""
-
     def read_history(self, max_chars: int = 0) -> str:
         return ""
 
-    def read_recent_history(self, *, max_chars: int = 0) -> str:
-        return ""
-
-    def has_long_term_memory(self) -> bool:
-        return False
-
-
-class _NoopProvider:
-    async def chat(self, **kwargs: Any) -> LLMResponse:
-        return LLMResponse(content="noop", tool_calls=[])
-
-
-class _NoopRetrieval:
-    async def retrieve(self, request: RetrievalRequest) -> RetrievalResult:
-        return RetrievalResult(block="")
-
-
-class _BlockingReasoner(Reasoner):
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
         self.started: dict[str, asyncio.Event] = {}

@@ -34,9 +34,9 @@ from agent.plugins.snapshot import (
 from bus.events import InboundMessage, OutboundMessage
 from core.memory.markdown import (
     MarkdownMemoryMaintenance,
-    MarkdownMemoryStore,
     MemoryLifecycleBindRequest,
 )
+from agent.memory import MemoryStore
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerBusy
@@ -296,7 +296,7 @@ async def test_maintenance_background_worker_holds_lease() -> None:
     """MarkdownMemoryMaintenance 后台队列 worker 逐条 maintenance 取 lease。"""
     store = make_store("snap-bg")
     maintenance = MarkdownMemoryMaintenance(
-        store=cast(MarkdownMemoryStore, object()),  # refresh 分支被 spy，store 不被触达
+        store=cast(MemoryStore, object()),  # refresh 分支被 spy，store 不被触达
         provider=MagicMock(),
         model="m",
         keep_count=20,

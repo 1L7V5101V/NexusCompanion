@@ -16,7 +16,6 @@ from agent.prompting.assembler import SectionCache
 
 if TYPE_CHECKING:
     from agent.skills import SkillsLoader
-    from core.memory.markdown import MemoryProfileApi
 
 
 def _ctx(

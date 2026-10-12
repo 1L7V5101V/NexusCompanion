@@ -69,25 +69,22 @@ class MemoryLifecycleBindRequest:
 
 @runtime_checkable
 class MemoryProfileApi(Protocol):
+    """文件后端的画像读写形状。
+
+    ADR-14 删掉的是那些只在「一份文件」前提下成立的方法声明（`read_self` / `write_self`
+    归 persona 缝，`read_recent_history` 是重命名别名，`backup_long_term` 写后即弃，
+    `get_memory_context` 与 `has_long_term_memory` 零生产调用方）。task 6.10 摘掉文件后端
+    后，本协议与它服务的这条过渡路径一起消失。
+    """
+
     def read_long_term(self) -> str: ...
 
     def write_long_term(self, content: str) -> None: ...
-
-    def read_self(self) -> str: ...
-
-    def write_self(self, content: str) -> None: ...
-
-    def read_recent_history(self, *, max_chars: int = 0) -> str: ...
 
     def read_recent_context(self) -> str: ...
 
     def write_recent_context(self, content: str) -> None: ...
 
-    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None: ...
-
-    def get_memory_context(self) -> str: ...
-
-    def has_long_term_memory(self) -> bool: ...
 
 _ALLOWED_PENDING_TAGS = frozenset(
     {
@@ -979,24 +976,9 @@ history_entries.emotional_weight 规则：
 
 
 
-class MarkdownMemoryStore(MemoryStore):
-    def read_recent_history(self, *, max_chars: int = 0) -> str:
-        return self.read_history(max_chars=max_chars)
-
-    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
-        if self.memory_file.exists():
-            shutil.copyfile(
-                self.memory_file,
-                self.memory_file.with_name(backup_name),
-            )
-
-    def has_long_term_memory(self) -> bool:
-        return bool(self.read_long_term().strip())
-
-
 @dataclass
 class MarkdownMemoryRuntime:
-    store: MarkdownMemoryStore
+    store: MemoryStore
     maintenance: "MarkdownMemoryMaintenance"
 
 
@@ -1004,7 +986,7 @@ class MarkdownMemoryMaintenance:
     def __init__(
         self,
         *,
-        store: MarkdownMemoryStore,
+        store: MemoryStore,
         provider: "LLMProvider",
         model: str,
         keep_count: int,
@@ -1337,7 +1319,7 @@ def build_markdown_memory_runtime(
     recent_context_model: str | None = None,
     global_maintenance_limit: int = GLOBAL_MAINTENANCE_QUEUE,
 ) -> MarkdownMemoryRuntime:
-    store = MarkdownMemoryStore(workspace)
+    store = MemoryStore(workspace)
     maintenance = MarkdownMemoryMaintenance(
         store=store,
         provider=provider,

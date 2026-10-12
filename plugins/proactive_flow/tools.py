@@ -23,7 +23,6 @@ from plugins.default_proactive.outbound_text import normalize_outbound_text
 
 if TYPE_CHECKING:
     from core.memory.engine import MemoryRetrievalApi
-    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ class ToolDeps:
     """所有工具的外部依赖，通过构造注入。"""
     web_fetch_tool: Any = None          # WebFetchTool（降级用）
     web_search_tool: Any = None         # WebSearchTool（可选）
-    memory: "MemoryProfileApi | MemoryRetrievalApi | None" = None
+    memory: "MemoryRetrievalApi | None" = None
     recent_chat_fn: Any = None          # async (n) -> list[dict]
     ack_fn: Any = None                  # async (compound_key: str, feedback: str) -> None
     alert_ack_fn: Any = None            # async (compound_key: str) -> None

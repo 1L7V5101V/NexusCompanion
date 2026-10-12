@@ -22,9 +22,9 @@ import pytest
 from core.memory.markdown import (
     ConsolidateRequest,
     MarkdownMemoryMaintenance,
-    MarkdownMemoryStore,
     RefreshRecentTurnsRequest,
 )
+from agent.memory import MemoryStore
 from tests.memory.profile_write_cases import (
     TENANT_A,
     TenantStores,
@@ -154,7 +154,7 @@ async def test_optimizer_without_tenant_writes_nothing(
     )
     provider = consolidation_provider()
     optimizer = MemoryOptimizer(
-        MarkdownMemoryStore(workspace),
+        MemoryStore(workspace),
         cast(Any, provider),
         "m",
         profile_stores=stores.resolve,

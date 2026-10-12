@@ -25,8 +25,8 @@ from core.memory.markdown import (
     ConsolidateRequest,
     MarkdownMemoryMaintenance,
     RefreshRecentTurnsRequest,
-    MarkdownMemoryStore,
 )
+from agent.memory import MemoryStore
 from tests.memory.profile_write_cases import (
     HISTORY_ENTRY,
     TENANT_A,
@@ -93,7 +93,7 @@ async def test_consolidation_reads_the_tenant_long_term(
     """整理前那次「现有长期记忆」读的是专表里该租户那一行，不是共享的 MEMORY.md。"""
     workspace = tmp_path / "ws"
     await stores.resolve(TENANT_A).write_section("long_term", "该租户的长期画像正文")
-    MarkdownMemoryStore(workspace).write_long_term("文件里的旧画像")
+    MemoryStore(workspace).write_long_term("文件里的旧画像")
     provider = consolidation_provider()
 
     await _maintenance(workspace, stores, provider).consolidate(

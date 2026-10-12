@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agent.config_models import Config
 from bootstrap.memory import build_memory_admin_runtime
+from bootstrap.profile_access import build_profile_access
+from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.providers import build_providers
 from core.memory.markdown import ConsolidateRequest
 from core.net.http import SharedHttpResources
@@ -104,7 +106,7 @@ CONVERSATION: list[dict[str, str]] = [
 ]
 
 
-async def main(config_path: str, workspace_str: str) -> None:
+async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
     workspace = Path(workspace_str)
     config = Config.load(config_path)
     http_resources = SharedHttpResources()
@@ -116,39 +118,59 @@ async def main(config_path: str, workspace_str: str) -> None:
         light_provider=light_provider,
         http_resources=http_resources,
     )
-    store = memory_runtime.markdown.store
+    # c18 task 6.12/6.11：整理与优化器读写的是该租户的画像专表，脚本按生产形状接解析器。
+    access = build_profile_access(
+        config, memory_db_path=workspace / "memory" / "memory2.db"
+    )
+    memory_runtime.markdown.maintenance.bind_profile_stores(access.resolve)
+    file_store = memory_runtime.markdown.store
+    store = access.resolve(tenant_id)
 
-    print("=== PENDING.md (before consolidation) ===")
-    print(store.read_pending() or "(empty)")
+    print("=== pending（before consolidation）===")
+    print(await store.read_entries("pending") or "(empty)")
 
     session = Session(key="probe:agent_context_test")
     for msg in CONVERSATION:
         session.add_message(msg["role"], msg["content"])
 
-    print(f"\n>>> consolidation 开始（{len(CONVERSATION)} 条消息）...\n")
+    print()
+    print(f">>> consolidation 开始（{len(CONVERSATION)} 条消息）...")
     result = await memory_runtime.markdown.maintenance.consolidate(
-        ConsolidateRequest(session=session, force=True, archive_all=False)
+        ConsolidateRequest(
+            session=session, force=True, archive_all=False, tenant_id=tenant_id
+        )
     )
     print(f"consolidation 结果: {result}")
 
-    print("\n=== PENDING.md (after consolidation) ===")
-    pending = store.read_pending()
-    print(pending or "(empty)")
+    print()
+    print("=== pending（after consolidation，整理应已追加进来）===")
+    print(await store.read_entries("pending") or "(empty)")
+    print()
+    print("=== history（after consolidation）===")
+    print(await store.read_entries("history", max_chars=2000) or "(empty)")
 
-    print("\n>>> optimizer 开始...\n")
+    print()
+    print(">>> optimizer 开始...")
     optimizer = MemoryOptimizer(
-        memory=store,
+        memory=file_store,
         provider=provider,
         model=config.model,
         max_tokens=8192,
+        profile_stores=access.resolve,
     )
-    await optimizer.optimize()
+    await optimizer.optimize(tenant_id)
 
-    print("\n=== MEMORY.md (after optimizer) ===")
-    print(store.read_long_term())
-    print("\n=== SELF.md (after optimizer) ===")
-    print(store.read_self())
+    print()
+    print("=== long_term（after optimizer）===")
+    print(await store.read_section("long_term") or "(empty)")
+    print()
+    print("=== pending（after optimizer，被合并的行应已取走）===")
+    print(await store.read_entries("pending") or "(empty)")
+    print()
+    print("=== SELF.md（after optimizer，仍是文件那一路）===")
+    print(file_store.read_self())
 
+    access.close()
     await memory_runtime.aclose()
 
 
@@ -156,5 +178,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/sandbox/config.toml")
     parser.add_argument("--workspace", default="/sandbox/workspace")
+    parser.add_argument("--tenant", default=DEFAULT_TENANT)
     args = parser.parse_args()
-    asyncio.run(main(args.config, args.workspace))
+    asyncio.run(main(args.config, args.workspace, args.tenant))

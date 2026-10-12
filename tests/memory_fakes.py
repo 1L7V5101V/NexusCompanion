@@ -92,9 +92,6 @@ class FakeMemoryEngine:
         if self._store is not None:
             self._store.write_self(content)
 
-    def read_recent_history(self, *, max_chars: int = 0) -> str:
-        return self.read_history(max_chars=max_chars)
-
     def read_history(self, max_chars: int = 0) -> str:
         if self._store is None:
             return ""
@@ -107,21 +104,8 @@ class FakeMemoryEngine:
         if self._store is not None:
             self._store.write_recent_context(content)
 
-    def backup_long_term(self, backup_name: str = "MEMORY.bak.md") -> None:
-        return None
-
-    def get_memory_context(self) -> str:
-        return self._store.get_memory_context() if self._store is not None else ""
-
-    def has_long_term_memory(self) -> bool:
-        return bool(self.read_long_term().strip())
-
     def read_pending(self) -> str:
         return self._store.read_pending() if self._store is not None else ""
-
-    def append_pending(self, facts: str) -> None:
-        if self._store is not None:
-            self._store.append_pending(facts)
 
     def append_pending_once(
         self,
@@ -136,21 +120,6 @@ class FakeMemoryEngine:
             source_ref=source_ref,
             kind=kind,
         )
-
-    def snapshot_pending(self) -> str:
-        return self._store.snapshot_pending() if self._store is not None else ""
-
-    def commit_pending_snapshot(self) -> None:
-        if self._store is not None:
-            self._store.commit_pending_snapshot()
-
-    def rollback_pending_snapshot(self) -> None:
-        if self._store is not None:
-            self._store.rollback_pending_snapshot()
-
-    def append_history(self, entry: str) -> None:
-        if self._store is not None:
-            self._store.append_history(entry)
 
     def append_history_once(
         self,

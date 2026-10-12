@@ -22,7 +22,7 @@ from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from agent.core.types import PersonaSnapshotResolver
-    from core.memory.markdown import MarkdownMemoryStore
+    from agent.memory import MemoryStore
     from core.memory.profile_store import ProfileStoreResolver
     from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -149,7 +149,7 @@ def build_memory_optimizer_task(
     config: Config,
     *,
     provider: LLMProvider,
-    memory_store: "MarkdownMemoryStore",
+    memory_store: "MemoryStore",
     runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     # c9-persona-relationship ADR-5：PG durable 模式的 tenant RelationshipState
     # 读写缝（read/write + 审计）；None = 单体文件语义。
