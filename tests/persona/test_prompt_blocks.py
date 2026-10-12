@@ -98,6 +98,11 @@ def test_identity_block_cached_per_tenant_not_per_workspace(tmp_path: Path) -> N
 
 
 def test_self_block_uses_snapshot_relationship_state(tmp_path: Path) -> None:
+    """当前值只有 persona 快照一个来源（c18 task 6.9 / ADR-9）。
+
+    原来这里是一对用例：有快照读快照、没快照读文件。回退那条合并成一条来源断言 +
+    一条「不回退」断言——回退分支删掉之后它测的机制就不存在了。
+    """
     block = SelfModelPromptBlock()
     rendered = block.render(_ctx(tmp_path, SNAP_A, self_file_content="单体 SELF 内容"))
     assert rendered is not None
@@ -105,11 +110,16 @@ def test_self_block_uses_snapshot_relationship_state(tmp_path: Path) -> None:
     assert "单体 SELF 内容" not in rendered  # 快照优先，不读文件
 
 
-def test_self_block_falls_back_to_file_without_snapshot(tmp_path: Path) -> None:
-    block = SelfModelPromptBlock()
-    rendered = block.render(_ctx(tmp_path, None, self_file_content="单体 SELF 内容"))
-    assert rendered is not None
-    assert "单体 SELF 内容" in rendered
+def test_self_block_without_snapshot_injects_nothing(tmp_path: Path) -> None:
+    """快照为 None 时什么都不注入，不回退共享 workspace 的 SELF.md。
+
+    这就是 spec「画像缺失不回退共享位置」在那一行上的落点：`ctx.memory` 的全仓库最后一处
+    读取此前正是这条回退。
+    """
+    rendered = SelfModelPromptBlock().render(
+        _ctx(tmp_path, None, self_file_content="单体 SELF 内容")
+    )
+    assert rendered is None
 
 
 def test_two_tenants_render_differently(tmp_path: Path) -> None:

@@ -293,6 +293,18 @@ class ProfileSectionRenderer(Protocol):
 
 **接上共用渲染器之后，帧里的段标题有一处文字变化。** 画像块是给系统提示那条路渲染的——那条路是正文拼接，标题由块自己给（`## Long-term Memory`、`## <名字> Self-Perception`）；旁路把同一段放进上下文帧，而 `build_context_frame_content` 按段名再加一层 `## long_term_memory`，两边一撞就是两个标题（4.5 落地后由 4.6 的用例撞出）。选定：去重规则放在共用的帧组装器里——段内容以 `## ` 开头时不再叠段名标题。于是旁路那两段的标题文字变成块自己的写法（`## long_term_memory` → `## Long-term Memory`），`recent_context` 不受影响（该块返回裸正文）。规则不放这里而放各旁路自己剥标题，就是 ADR-15 拒绝的「各路径再实现一遍」；主链不受影响——它进帧的三段里 `active_skills` 用 `# ` 一级标题、另两段是裸正文，实测主链帧相关用例零变化。
 
+### ADR-16 画像层的写入侧也归租户专表（准备 6.10 时发现的缺口）
+
+ADR-13 把画像读侧改成快照、ADR-9/13/14 把关系状态与 pending 消费改到专表，但**整理与压缩的写入**一直留在文件后端里，原计划没有任何任务碰它。实测到的落点是 `core/memory/markdown.py` 的 `MarkdownMemoryMaintenance.consolidate`：`append_history_once`（`:1227`）、`append_pending_once`（`:1234`）、`write_recent_context`（`:1244`）、`_append_entries_to_journal`（`:1247`），整理前还读 `read_long_term` 与 `read_history`（`:781-785`）；优化器侧剩 `write_long_term`。
+
+于是 6.10「装配不再产出文件 store」如果照原文做完，运行时就没有任何代码往专表写画像——表里只有迁移脚本搬进来的历史内容，之后不再变化。这不是「隔离做好了但功能少一块」，而是画像层静默停摆：没有报错，只是内容永远停在迁移那一刻。
+
+选定：写入侧与读取侧一起改到专表，走 `MemoryProfileStoreApi`（日志类 `append_entry` 带 `happened_at` 与 `dedup_key`，整块类 `write_section`），租户归属由 4.2 传下来的解析器给出，拿不到可信归属时按 4.3 fail-closed 跳过并留可定位记录。因此执行顺序上写入侧必须早于 6.10。
+
+**不选：让文件后端继续活着，只把读侧换成快照。** 读写两侧就分属两个事实源：整理写文件、组装读表，表的内容从此不再更新，而这条分叉在两种后端上都不会报错。这正是 ADR-13 分表要避免的那种「画像层有两个出处」。
+
+**不选：把 6.10 从本 change 移出。** 文件后端不摘掉，spec 里「记忆画像不再有共享文件后端」那条 Requirement 就不成立，本 change 的隔离结论也只覆盖读侧。
+
 ## Risks / Trade-offs
 
 - **预取让每轮多两条 SELECT**，即使该轮某些块用不到 → 两条都是按 `(tenant_id, category)` 的窄查询，走唯一索引与时间索引；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。

@@ -59,17 +59,18 @@ class PromptBlock(Protocol):
 #  20 SkillsCatalogPromptBlock → skills.build_skills_summary()
 #                              来源：skills/ 目录扫描结果、技能描述、依赖可用性
 #                              时机：技能文件或环境依赖变化时才变，低频
-#  30 SelfModelPromptBlock     → memory/SELF.md
-#                              来源：memory.read_self()
+#  30 SelfModelPromptBlock     → persona_snapshot.relationship_state
+#                              来源：画像专表的 relationship_state 行（c18 ADR-9），
+#                                    本轮 turn 入口解析一次
 #                              时机：自我认知被写回时才变，低频
-#  35 LongTermMemoryPromptBlock→ memory/MEMORY.md
-#                              来源：memory.read_profile() / get_memory_context()
+#  35 LongTermMemoryPromptBlock→ profile_snapshot.long_term
+#                              来源：画像专表的 long_term 行（c18 ADR-13），同一次预取
 #                              时机：长期记忆 consolidate 或人工更新时才变，低频
 #  40 SessionContextPromptBlock→ 环境 + 当前 session
 #                              来源：platform.machine() + channel + chat_id
 #                              时机：切换机器架构、channel、chat_id 时才变；同 session 基本稳定
-#  45 RecentContextPromptBlock → memory/RECENT_CONTEXT.md（裁掉 Recent Turns）
-#                              来源：memory.read_recent_context()
+#  45 RecentContextPromptBlock → profile_snapshot.recent_context（裁掉 Recent Turns）
+#                              来源：画像专表的 recent_context 行，同一次预取
 #                              时机：近期语境压缩摘要更新时变化；每轮 Recent Turns 刷新不会直接进入这里
 #  50 ActiveSkillsPromptBlock  → active skill 内容
 #                              来源：always skills + 本轮命中的 skill_names
@@ -161,20 +162,14 @@ class SelfModelPromptBlock:
     is_static = False
 
     def render(self, ctx: TurnContext, cached_signature: str | None = None) -> str | None:
-        # C9：tenant 快照优先（RelationshipState 当前值来自 PG seam）；无快照
-        # 回退单体文件语义（行为不变）。
-        if ctx.persona_snapshot is not None:
-            self_content = ctx.persona_snapshot.relationship_state
-            name = ctx.persona_snapshot.identity.split("\n", 1)[0][:32] or "Nexus"
-            if not self_content:
-                return None
-            return f"## {name} Self-Perception\n\n{self_content}"
-        self_content = ctx.memory.read_self()
-        if not self_content:
+        # c18 ADR-9：自我认知只读 persona 快照里的当前值。快照为 None 表示这一轮该租户没有
+        # 可注入的关系状态，按空语义跳过——不回退读共享 workspace 的 SELF.md，那在租户快照
+        # 出现之前是跨租户泄漏的源头。这原本是全仓库最后一处 `ctx.memory` 读取。
+        snapshot = ctx.persona_snapshot
+        if snapshot is None or not snapshot.relationship_state:
             return None
-        from agent.persona import get_identity_name
-        name = get_identity_name()
-        return f"## {name} Self-Perception\n\n{self_content}"
+        name = snapshot.identity.split("\n", 1)[0][:32] or "Nexus"
+        return f"## {name} Self-Perception\n\n{snapshot.relationship_state}"
 
     def cache_signature(self, ctx: TurnContext) -> str | None:
         return None
