@@ -59,6 +59,7 @@ from agent.tools.registry import ToolRegistry
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
+    from agent.core.prompt_block import ProfileSectionRenderer
     from core.memory.engine import MemoryEngine
     from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
@@ -201,6 +202,16 @@ class AgentLoop:
     def prompt_breakdown(self) -> list[Any]:
         """最近一轮 prompt source breakdown（admin/debug 观测面，ADR-6）。"""
         return self._context.last_debug_breakdown
+
+    @property
+    def profile_renderer(self) -> "ProfileSectionRenderer":
+        """本进程唯一的段渲染器（c18 ADR-15）。
+
+        主动推送与 drift 两条旁路共用这一个实例，因此共用同一份带租户维度的
+        `SectionCache`（ADR-11）。旁路侧只依赖 `ProfileSectionRenderer` 这个窄协议，
+        不依赖 `AgentLoop` 或 `ContextBuilder` 具体类。
+        """
+        return self._context
 
     def bind_persona_resolver(self, resolver: Any) -> None:
         """注入 tenant persona 快照解析器（c9-persona-relationship ADR-4）。"""

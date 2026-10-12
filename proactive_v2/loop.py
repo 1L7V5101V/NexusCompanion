@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 if TYPE_CHECKING:
+    from agent.core.prompt_block import ProfileSectionRenderer
     from core.memory.engine import MemoryRetrievalApi
     from agent.plugins.snapshot import (
         RuntimeSnapshot,
@@ -90,6 +91,7 @@ class ProactiveLoop:
         provisioning: "TenantProvisioning | None" = None,
         # C8 §5.9.16：tick 开始的副作用方 revocation recheck（provisioning gate 旁）。
         revocation_gate: RevocationGate | None = None,
+        profile_renderer: "ProfileSectionRenderer | None" = None,
     ) -> None:
         self._turn_logger = turn_logger
         self._provisioning = provisioning
@@ -116,6 +118,7 @@ class ProactiveLoop:
         self._plugin_proactive_sources = proactive_sources or []
         self._runtime_snapshot_store = runtime_snapshot_store
         self._revocation_gate = revocation_gate
+        self._profile_renderer = profile_renderer
         self._plugin_mcp_servers = plugin_mcp_servers or {}
         self._active_snapshot_id: str | None = None
         self._kernel_started = False
@@ -182,6 +185,7 @@ class ProactiveLoop:
             tool_hooks=self._tool_hooks,
             schedule_fn=self._scheduler.next_interval,
             turn_logger=self._turn_logger,
+            profile_renderer=self._profile_renderer,
         )
 
     def _build_plugin_runtime(self) -> object:

@@ -129,6 +129,8 @@ def build_proactive_runtime(
         provisioning=provisioning,
         runtime_snapshot_store=runtime_snapshot_store,
         revocation_gate=revocation_gate,
+        # c18 ADR-15：两条旁路与主对话共用主 agent 那个渲染器（同一份租户维度缓存）。
+        profile_renderer=agent_loop.profile_renderer,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。
