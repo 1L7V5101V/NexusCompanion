@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.context import ContextBuilder, ContextRequest
+from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.prompting import SYSTEM_CONTEXT_FRAME_MARKER
 from agent.tools.base import Tool
 from agent.tools.memorize import MemorizeTool
@@ -703,19 +704,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
         def build_skills_summary(self) -> str:
             return "skill summary"
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return "memory block"
-
-        def read_self(self) -> str:
-            return "self note"
-
-        def read_recent_context(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return "memory block"
-
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
@@ -733,7 +721,8 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
     document.write_bytes(b"%PDF-1.4\n")
     now = datetime.now(timezone.utc)
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    # c18 4.8：ContextBuilder 不再持有画像存储，画像内容只能由调用方交出快照带进来。
+    builder = ContextBuilder(tmp_path)
     result = builder.render(
         ContextRequest(
             history=[],
@@ -741,6 +730,21 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             skill_names=["extra"],
             message_timestamp=now,
             retrieved_memory_block="retrieved",
+            tenant_id="t-1",
+            persona_snapshot=PersonaSnapshot(
+                tenant_id="t-1",
+                source="custom",
+                identity="Nexus",
+                personality_rules="",
+                relationship_state="self note",
+            ),
+            profile_snapshot=MemoryProfileSnapshot(
+                tenant_id="t-1",
+                long_term="memory block",
+                pending="",
+                recent_context="",
+                history="",
+            ),
         )
     )
     prompt = result.system_prompt
@@ -765,6 +769,9 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
             skill_names=["extra"],
             message_timestamp=now,
             retrieved_memory_block="retrieved",
+            # ADR-11：缓存 scope 带租户维度，所以「第二次渲染命中缓存」这条断言必须
+            # 落在同一个租户上——不带 tenant_id 的请求按设计不进缓存。
+            tenant_id="t-1",
         )
     )
     assert result2.system_prompt
@@ -847,7 +854,6 @@ def test_context_builder_builds_prompt_messages_and_assistant_blocks(
 
     text_media_builder = ContextBuilder(
         tmp_path,
-        _Memory(),  # type: ignore[arg-type]
         multimodal=False,
         vl_available=True,
     )
@@ -884,19 +890,6 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         def build_skills_summary(self) -> str:
             return ""
 
-    class _Memory:
-        def read_profile(self) -> str:
-            return ""
-
-        def read_self(self) -> str:
-            return ""
-
-        def read_recent_context(self) -> str:
-            return ""
-
-        def get_memory_context(self) -> str:
-            return ""
-
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
@@ -910,7 +903,7 @@ def test_context_builder_reproduces_temporal_conflict_baseline(
         encoding="utf-8",
     )
 
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path)
     request_time = datetime.fromisoformat("2026-04-08T17:57:00+08:00")
     retrieved_memory_block = """
 [item_5a9c8d59f77c] [2026-03-29 12:44] 用户表示明天下午三点有面试，因当前感到疲惫想小睡，但担心此举会打乱明天的生物钟。

@@ -65,8 +65,8 @@ def _tick_with_snapshots() -> AgentTickContext:
 def test_proactive_frame_carries_sections_from_the_shared_renderer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 替身从 3.8 那个文件复用（_Skills / _Memory），不再抄第三份。
-    from tests.memory.test_render_sections_parity import _Memory, _Skills
+    # 替身从 3.8 那个文件复用（_Skills），不再抄第二份。
+    from tests.memory.test_render_sections_parity import _Skills
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
@@ -76,9 +76,7 @@ def test_proactive_frame_carries_sections_from_the_shared_renderer(
     builder = ProactivePromptBuilder(
         cfg=cast(ProactiveConfig, None),
         workspace_context_fn=lambda: "",
-        # memory 参数在 4.8 之前还是必填；本轮有 persona 快照，块不会走那个回退分支。
-        # _Memory 是刻意不满足协议的局部替身（与 3.8 那个文件同一个处理）。
-        profile_renderer=ContextBuilder(tmp_path, _Memory()),  # type: ignore[arg-type]
+        profile_renderer=ContextBuilder(tmp_path),
     )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

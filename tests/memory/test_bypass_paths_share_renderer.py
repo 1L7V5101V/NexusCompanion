@@ -102,13 +102,13 @@ def test_both_bypass_paths_reuse_one_static_block_cache(
     from plugins.drift_flow.tools import DriftToolDeps
     from plugins.proactive_flow.prompt import ProactivePromptBuilder
     from tests.memory.test_no_coroutine_in_prompt import _tick_with_snapshots
-    from tests.memory.test_render_sections_parity import _Memory, _Skills
+    from tests.memory.test_render_sections_parity import _Skills
 
     monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
     )
-    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    builder = ContextBuilder(tmp_path)
     ctx = _tick_with_snapshots()
 
     proactive = ProactivePromptBuilder(

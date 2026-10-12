@@ -6,7 +6,7 @@
 > 2. 加实现：`6.3` 只定义新接口不删旧方法 → `6.4` → `6.5` → `6.1`/`6.2`（已完成）
 > 3. 换写入与读取路径：**这三项不能顺序提交，必须同批翻**。种子一改（`6.7`）写侧就落到专表，而读侧（`3.2`）还在读 `memory_items` 的 self 行 → 中间状态是「新租户的关系状态读为空」；反过来先翻读侧也一样。所以实做时 `3.2` + `6.6` 的 PG 半边 + `6.7` 的 PG 半边是一次提交，做完 3.2 的「形状已定死」那句排序理由就不成立了——它被这条原子性覆盖。第 3 步的四项（`3.2` / `6.6` / `6.7` / `6.8`）都已落地。`3.5` 现在只剩一个待删的对象：日期前缀在全仓库只有一处，`agent/memory_pg.py:137` 的 `f"**{date_str}** {text}"`，它属于 6.3 要删掉的那个类——所以本项并入第 5 步（删掉那处，`tests/memory/test_journal_row_shape.py` 直接对新存储写：`case_happened_at_is_required_by_the_schema` 已经证明日期占列、正文不拼前缀）。
 > 4. 旁路接入：`4.4` → `4.5` → `4.6`
-> 5. 删除原子块：`6.9` → `6.11` → `4.1` → `6.3` 的删除清单 → `4.8` → `6.3`/`4.5` 一并提交
+> 5. 删除原子块：`6.9` → `6.11` → `4.1` → `6.3` 的删除清单 → `4.8` → `6.3`/`4.5` 一并提交（实测进度：`6.9` / `4.1` / `4.8` 三项因前提已满足而各自单独绿提交了，第 5 步只剩 `6.11` + `6.3` 的删除清单 + `3.5` 那处日期前缀，仍须同批）
 > 5.5 写入侧改表：`6.12`（整理/压缩/journal 五个写入点与两处读取）——**必须在 `6.10` 之前**，否则文件后端一摘，运行时没人写专表。这条是准备 6.10 时查出来的缺口，见该任务与 ADR-16。
 > 6. 收口：`6.8` → `6.10`（两个静态扫描转绿）→ `3.7` → `5.1` → 组 7 → 组 8 → 组 9
 >
@@ -51,7 +51,7 @@
 >
 > 已确定的接入形状（留给那个 change，不用再查一遍）：预取落在已是 `async def` 的 `decide()`（`:342`），三个读取点（`:353`、`:391`、`:685`）都在其下游，结果挂 `WakeContext` 往下带——**不需要把任何同步方法翻成 async**，该路径本来就是「先取好文本再当参数传」（`build_messages(ctx=..., memory_text=...)`）。它只取系统提示（`runtime.py:403-429` 把消息拆开重组），不消费 `render_sections` 的消息封装。`scope.memory` 的 `embedding_api` 用途（`:553`、`:594`）不动。本 change 保留 2.4 的静态扫描对 `plugins/wake_proactive/` 的覆盖，作为它恢复加载能力时的看守。
 
-- [ ] 4.8 删除 `ContextBuilder` 的 `memory` 构造参数：`ctx.memory` 在全部九个块里只被读一次（`agent/core/prompt_block.py:171`，即 `SelfModelPromptBlock` 的回退分支，随 6.9 消失）。连带 `bootstrap/tools.py:577-579` 不再传 `memory_runtime.markdown.store`、`bootstrap/wiring.py:22` 的 `ContextFactory` 由 `Callable[[Path, Any], Any]` 变 `Callable[[Path], Any]`、`bootstrap/wiring.py:42` 的工厂少一个参数、`agent/looping/core.py:169-178` 那段三元选择整段删除（design ADR-15）。**依赖 4.5–4.6 与 6.9**。验证：`grep -rn "ctx.memory\|memory=" agent/context.py agent/core/prompt_block.py` 零命中；`pytest -q -W error tests/ -k "context or wiring or smoke"` 通过
+- [x] 4.8 删除 `ContextBuilder` 的 `memory` 构造参数：`ctx.memory` 在全部九个块里只被读一次（`agent/core/prompt_block.py:171`，即 `SelfModelPromptBlock` 的回退分支，随 6.9 消失）。连带 `bootstrap/tools.py:577-579` 不再传 `memory_runtime.markdown.store`、`bootstrap/wiring.py:22` 的 `ContextFactory` 由 `Callable[[Path, Any], Any]` 变 `Callable[[Path], Any]`、`bootstrap/wiring.py:42` 的工厂少一个参数、`agent/looping/core.py:169-178` 那段三元选择整段删除（design ADR-15）。**依赖 4.5–4.6 与 6.9**。验证：`grep -rn "ctx.memory\|memory=" agent/context.py agent/core/prompt_block.py` 零命中；`pytest -q -W error tests/ -k "context or wiring or smoke"` 通过——实测两个 grep 都零命中。改动面比「删一个参数」大，因为 `TurnContext.memory` 是第二个**位置参数**：字段一并删除（否则留一个没人读的必填位），于是 5 处 `TurnContext(...)` 与 6 处 `ContextBuilder(...)` 调用点全要改。连带删掉的替身：`_Memory` 类在三个测试文件里成为死代码（parity 那份删掉，另两个从它导入的也跟着改），`bootstrap/wiring.py` 的 `ContextFactory` 由 `Callable[[Path, Any], Any]` 收成 `Callable[[Path], Any]`，`agent/looping/core.py:169-180` 那段「有 markdown 就用它的 store、否则 cast memory_engine」的三元选择整段删除（`markdown_memory` 字段保留——`:949` 绑的是 maintenance，不是画像读写）。**两条既有断言按新事实改写而不是放宽**：`test_support_modules.py:753` 原来靠画像存储替身把 `memory block` / `self note` 注进提示，现改为在 `ContextRequest` 上显式交出 `profile_snapshot` 与 `persona_snapshot`（这正是 3.2 连带项要的写法），它就此从在册红灯转绿；同文件那条 `identity_meta.cache_hit is True` 的断言原来第二次渲染不带租户，按 ADR-11「无租户不进缓存」必然为假，补上 `tenant_id` 让断言落在它本来的命题上。`test_bootstrap_wiring_p2` 那个工厂替身的形参个数现在就是「组装期拿不到存储句柄」的守卫：生产侧再传第二个实参会直接 TypeError。
 
 ## 5. 公共租户目录 helper
 

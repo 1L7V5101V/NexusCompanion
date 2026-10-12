@@ -523,9 +523,7 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         "bootstrap.tools.resolve_context_factory",
         lambda name: (
-            lambda workspace, memory_store: observed.update(
-                {"name": name, "workspace": workspace, "memory_store": memory_store}
-            )
+            lambda workspace: observed.update({"name": name, "workspace": workspace})
             or fake_context
         ),
     )
@@ -569,7 +567,9 @@ def test_build_loop_deps_uses_context_factory(monkeypatch, tmp_path: Path):
 
     assert observed["name"] == "default"
     assert observed["workspace"] == tmp_path
-    assert observed["memory_store"] is markdown_store
+    # c18 4.8：context 工厂只收 workspace。替身的形参个数就是断言本身——生产侧再传第二个
+    # 实参会直接 TypeError，画像存储句柄再也没有通道进入组装期。
+    assert set(observed) == {"name", "workspace"}
     assert deps.context is fake_context
 
 

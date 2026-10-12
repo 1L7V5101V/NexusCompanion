@@ -574,10 +574,7 @@ def _build_loop_deps(
 
     # 1. 按 typed wiring 解析 context，并注入配置声明的媒体能力。
     wiring = getattr(config, "wiring", WiringConfig())
-    context = resolve_context_factory(wiring.context)(
-        workspace,
-        memory_runtime.markdown.store,
-    )
+    context = resolve_context_factory(wiring.context)(workspace)
     if isinstance(context, ContextBuilder):
         context.set_media_capabilities(
             multimodal=bool(getattr(config, "multimodal", True)),

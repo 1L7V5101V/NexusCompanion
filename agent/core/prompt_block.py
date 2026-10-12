@@ -17,7 +17,6 @@ from prompts.agent import (
 if TYPE_CHECKING:
     from agent.core.types import ContextRequest
     from agent.skills import SkillsLoader
-    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.core.prompt_block")
 
@@ -25,15 +24,15 @@ logger = logging.getLogger("agent.core.prompt_block")
 @dataclass
 class TurnContext:
     workspace: Path
-    memory: "MemoryProfileApi"
     skills: "SkillsLoader"
     skill_names: list[str]
     channel: str | None
     chat_id: str | None
     retrieved_memory_block: str
     # c18：本轮所属租户，必填——缺失即构造失败，不回退默认租户。画像块只读
-    # profile_snapshot，不得经 `memory` 回退进程级共享目录（spec「画像缺失不
-    # 回退共享位置」）。self 那一格归 persona_snapshot（ADR-9）。
+    # profile_snapshot，快照缺失即空语义（spec「画像缺失不回退共享位置」）；self 那一格
+    # 归 persona_snapshot（ADR-9）。原来这里的 `memory` 字段是块直接读进程级画像存储的通道，
+    # 全仓库最后一处读取随 6.9 删除，字段本身随 4.8 消失——组装期不再有任何 I/O 句柄。
     tenant_id: str
     persona_snapshot: PersonaSnapshot | None = None
     profile_snapshot: MemoryProfileSnapshot | None = None

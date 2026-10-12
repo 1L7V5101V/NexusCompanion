@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from agent.looping.interrupt import TurnInterruptState
 
 
-ContextFactory = Callable[[Path, Any], Any]
+ContextFactory = Callable[[Path], Any]
 ToolsetProviderFactory = Callable[[], ToolsetProvider]
 MemoryPluginFactory = Callable[[], MemoryPlugin]
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,7 +39,8 @@ _MEMORY_PLUGIN_WIRING: dict[str, MemoryPluginFactory] = {
     "default": _build_default_memory_plugin,
 }
 _CONTEXT_WIRING: dict[str, ContextFactory] = {
-    "default": lambda workspace, memory: ContextBuilder(workspace, memory=memory),
+    # c18 4.8：ContextBuilder 不再持有画像存储，工厂只剩 workspace 一个参数。
+    "default": lambda workspace: ContextBuilder(workspace),
 }
 _TOOLSET_WIRING: dict[str, ToolsetProviderFactory] = {
     "spawn": SpawnToolsetProvider,

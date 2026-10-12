@@ -4,7 +4,7 @@ import logging
 import mimetypes
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from agent.core.types import ContextRenderResult, ContextRequest
 from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
@@ -37,9 +37,6 @@ from prompts.agent import (
     build_skills_catalog_prompt,
     build_telegram_rendering_prompt,
 )
-
-if TYPE_CHECKING:
-    from core.memory.markdown import MemoryProfileApi
 
 logger = logging.getLogger("agent.context")
 
@@ -229,14 +226,12 @@ class ContextBuilder:
     def __init__(
         self,
         workspace: Path,
-        memory: "MemoryProfileApi",
         *,
         multimodal: bool = True,
         vl_available: bool = False,
     ):
         self.workspace = workspace
         self.skills = SkillsLoader(workspace)
-        self.memory = memory
         self._system_prompt_builder = SystemPromptBuilder(
             [
                 IdentityPromptBlock(render_fn=build_agent_static_identity_prompt),
@@ -395,7 +390,6 @@ class ContextBuilder:
     ) -> SystemPromptBuildResult:
         ctx = TurnContext(
             workspace=self.workspace,
-            memory=self.memory,
             skills=self.skills,
             skill_names=skill_names or [],
             channel=channel,

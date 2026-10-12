@@ -32,22 +32,6 @@ from agent.prompting import (
 )
 
 
-class _Memory:
-    """够用的文件后端替身：本测试只关心段的位置与两条路一致，不关心画像内容。"""
-
-    def read_profile(self) -> str:
-        return "memory block"
-
-    def read_self(self) -> str:
-        return "self note"
-
-    def read_recent_context(self) -> str:
-        return ""
-
-    def get_memory_context(self) -> str:
-        return "memory block"
-
-
 class _Skills:
     def __init__(self, workspace: Path) -> None:
         self._workspace = workspace
@@ -68,7 +52,7 @@ def builder(monkeypatch, tmp_path: Path) -> ContextBuilder:
     monkeypatch.setattr(
         "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
     )
-    instance = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    instance = ContextBuilder(tmp_path)
     return instance
 
 

@@ -61,7 +61,6 @@ from session.manager import SessionManager
 if TYPE_CHECKING:
     from agent.core.prompt_block import ProfileSectionRenderer
     from core.memory.engine import MemoryEngine
-    from core.memory.markdown import MemoryProfileApi
     from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
     from agent.tool_hooks.base import ToolHook
@@ -171,14 +170,10 @@ class AgentLoop:
         self._tool_search_enabled = bool(config.llm.tool_search_enabled)
         self._memory_engine = memory_engine
         self._markdown_memory = markdown_memory
-        memory_profile = (
-            markdown_memory.store
-            if markdown_memory is not None
-            else cast("MemoryProfileApi", self._memory_engine)
-        )
+        # c18 4.8：组装期不再持有画像存储。`markdown_memory` 仍然留着——
+        # 会话生命周期绑的是 maintenance（`_consolidate` 那条），不是画像读写。
         self._context = deps.context or ContextBuilder(
             deps.workspace,
-            memory=memory_profile,
             multimodal=config.llm.multimodal,
             vl_available=config.llm.vl_available,
         )
