@@ -21,6 +21,7 @@ from proactive_v2.state import ProactiveStateStore
 from session.manager import SessionManager
 
 if TYPE_CHECKING:
+    from agent.core.types import PersonaSnapshotResolver
     from core.memory.markdown import MarkdownMemoryStore
     from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -70,6 +71,8 @@ def build_proactive_runtime(
     # C8 §5.9.16：生产 proactive 从静态回退切到 lease 绑定路径；tick 副作用方 gate。
     runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     revocation_gate: RevocationGate | None = None,
+    # c18 ADR-3/4：主对话用的那个租户快照解析器，旁路按所处理租户复用同一条。
+    persona_resolver: "PersonaSnapshotResolver | None" = None,
 ) -> tuple[list, ProactiveLoop | None]:
     tasks: list = []
     # 1. 总开关关闭时，主动链路完全不启动。
@@ -131,6 +134,8 @@ def build_proactive_runtime(
         revocation_gate=revocation_gate,
         # c18 ADR-15：两条旁路与主对话共用主 agent 那个渲染器（同一份租户维度缓存）。
         profile_renderer=agent_loop.profile_renderer,
+        # c18 ADR-3：同一个租户快照解析器，画像当前值因此只有一处出处。
+        persona_resolver=persona_resolver,
     )
 
     # 4. 主动链路本体以后台任务方式常驻运行。

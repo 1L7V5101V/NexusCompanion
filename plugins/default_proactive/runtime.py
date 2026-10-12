@@ -126,6 +126,11 @@ class ProactiveFlowDeps:
     schedule_fn: Callable[[float | None], int] | None = None
     event_bus: EventBus | None = None
     tool_hooks: list[ToolHook] | None = None
+    # c18 ADR-15 / ADR-3：与主对话同一个段渲染器 + 同一个租户快照解析器；租户从 sense 取，
+    # 不从 session_key 反推（infra/storage/tenancy.py 是唯一合法派生入口）。
+    profile_renderer: Any | None = None
+    persona_resolver: Any | None = None
+    target_tenant_fn: Callable[[], str] | None = None
 
 
 # ── 主 Pipeline ─────────────────────────────────────────────────────────
@@ -158,6 +163,9 @@ class ProactiveFlowRuntime:
         self._turn_orchestrator = deps.turn_orchestrator
         self._deduper = deps.deduper
         self._tool_deps = deps.tool_deps
+        self._profile_renderer = deps.profile_renderer
+        self._persona_resolver = deps.persona_resolver
+        self._target_tenant_fn = deps.target_tenant_fn
         self._gateway_deps = deps.gateway_deps
         self._workspace_context_fn = deps.workspace_context_fn
         self._llm_fn = deps.llm_fn
@@ -181,8 +189,8 @@ class ProactiveFlowRuntime:
         )
         self._prompt_builder = ProactivePromptBuilder(
             cfg=self._cfg,
-            memory=self._tool_deps.memory,
             workspace_context_fn=self._workspace_context_fn,
+            profile_renderer=deps.profile_renderer,
         )
         self._resolver = ProactiveResolver(
             cfg=self._cfg,
@@ -233,6 +241,33 @@ class ProactiveFlowRuntime:
             now_utc=frame.input.started_at,
         )
         return ProactiveRunState(ctx=ctx, started=time.perf_counter())
+
+    async def prefetch_profile(self, state: ProactiveRunState) -> None:
+        """按本轮所服务的租户解析一次画像快照（c18 ADR-1 / ADR-3）。
+
+        主动链路从 prepare 往下三层都是同步方法，所以预取只能落在这一层的 async 入口
+        （`plugins/proactive_flow/modules.py` 的 `run`）。快照一旦到手就是普通对象，同步
+        调用方拿不到未 await 的协程——这正是 task 2.5 那条靶要防的形状。
+
+        没装解析器或本轮没有目标租户时什么都不做：画像段于是缺席，而不是回退去读共享
+        workspace 目录（spec「画像缺失不回退共享位置」）。
+        """
+        if self._persona_resolver is None or self._target_tenant_fn is None:
+            return
+        tenant_id = str(self._target_tenant_fn() or "")
+        if not tenant_id:
+            return
+        ctx = state.ctx
+        ctx.tenant_id = tenant_id
+        try:
+            resolved = await self._persona_resolver(tenant_id)
+        except Exception:
+            # 与主对话那条同一个处理（`agent/core/passive_turn.py` 解析失败 → 记日志、
+            # 本轮无快照）：读库失败不该让一条本来能发的推送整轮崩掉。
+            logger.exception("主动推送解析租户快照失败（本轮不注入画像段）")
+            return
+        if resolved is not None:
+            ctx.persona_snapshot, ctx.profile_snapshot = resolved
 
     async def gate(self, state: ProactiveRunState) -> None:
         ctx = state.ctx

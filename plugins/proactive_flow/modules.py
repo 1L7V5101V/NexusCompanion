@@ -18,6 +18,9 @@ class ProactivePrepareModule:
 
     async def run(self, frame: ProactiveFrame) -> ProactiveFrame:
         state = get_run_state(frame)
+        # 画像快照必须在 prepare 之前取：prepare 往下（gateway → prompt）三层都是同步的，
+        # 只有这里是能把 await 收住的入口（c18 ADR-15）。
+        await self._runtime.prefetch_profile(state)
         self._runtime.prepare_proactive(state)
         frame.slots["candidate:batch"] = state.feed
         return frame

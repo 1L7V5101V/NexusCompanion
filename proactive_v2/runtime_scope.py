@@ -12,6 +12,7 @@ from proactive_v2.mcp_sources import McpGateway
 
 if TYPE_CHECKING:
     from agent.core.prompt_block import ProfileSectionRenderer
+    from agent.core.types import PersonaSnapshotResolver
     from turn_logging.turn_logger import RoutingTurnLogger
 
 
@@ -44,4 +45,10 @@ class ProactiveRuntimeScope:
 
     主动推送与 drift 都用它渲染画像段，因此共用同一份带租户维度的 `SectionCache`。插件侧
     只依赖这个窄协议，不依赖 `ContextBuilder` 或 `AgentLoop` 具体类。
+    """
+    persona_resolver: "PersonaSnapshotResolver | None" = None
+    """tenant → (persona 快照, 画像快照) 的解析器，与主对话绑定的那同一个（c18 ADR-3）。
+
+    旁路自己按所处理会话的租户解析一次，画像内容才进得了 `render_sections` 的 request；
+    缺它时旁路不渲染画像段（None 是空语义，不是回退读共享文件）。
     """

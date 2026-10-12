@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 
@@ -12,6 +12,12 @@ class AgentTickContext:
     now_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     session_key: str = ""
     context_as_fallback_open: bool = False
+
+    # c18 ADR-1/3：本轮所服务租户的快照对，由 `prefetch_profile` 在 async 入口取好后带下去。
+    # None 是「本轮没有该租户的画像」的空语义，下游不得回退读共享 workspace 目录。
+    tenant_id: str = ""
+    persona_snapshot: Any | None = None
+    profile_snapshot: Any | None = None
 
     # Gateway 预取结果（_run_loop 启动前由 DataGateway 填充）
     fetched_alerts: list[dict] = field(default_factory=list)    # 含 ack_server 字段

@@ -4,16 +4,29 @@ import json
 from collections.abc import Callable
 
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
+from agent.core.prompt_block import (
+    LongTermMemoryPromptBlock,
+    ProfileSectionRenderer,
+    RecentContextPromptBlock,
+    SelfModelPromptBlock,
+)
+from agent.core.types import ContextRequest
 from agent.prompting import (
     PromptSectionRender,
     build_context_frame_content,
     build_context_frame_message,
 )
-from core.memory.markdown import MemoryProfileApi
 from proactive_v2.config import ProactiveConfig
 from plugins.default_proactive.context import AgentTickContext
 from proactive_v2.contracts import normalize_alert, normalize_content, normalize_context
 from plugins.default_proactive.gateway import GatewayResult
+
+# 画像三段的段名取自块自己，不在插件里再抄一份字面量（c18 ADR-15）。
+_PROFILE_SECTION_NAMES = (
+    SelfModelPromptBlock.label,
+    LongTermMemoryPromptBlock.label,
+    RecentContextPromptBlock.label,
+)
 
 
 class ProactivePromptBuilder:
@@ -21,12 +34,12 @@ class ProactivePromptBuilder:
         self,
         *,
         cfg: ProactiveConfig,
-        memory: MemoryProfileApi | None,
         workspace_context_fn: Callable[[], str] | None,
+        profile_renderer: ProfileSectionRenderer | None = None,
     ) -> None:
         self._cfg = cfg
-        self._memory = memory
         self._workspace_context_fn = workspace_context_fn
+        self._profile_renderer = profile_renderer
 
     def build_system_prompt(self, plugin_sections: list[str] | None = None) -> str:
         proactive_plugin_sections = "\n\n".join(
@@ -145,20 +158,9 @@ class ProactivePromptBuilder:
             )
         ]
 
-        # 2. 读取用户画像与近期上下文
-        self_content = _read_self_text(self._memory).strip()
-        memory_block = _read_long_term_text(self._memory).strip()
-        recent_context_block = (
-            str(self._memory.read_recent_context() or "").strip()
-            if self._memory is not None
-            else ""
-        )
-
-        # 3. 追加本轮所有非空动态区块
+        # 2. 画像三段：经主对话那个共用渲染器渲染，插件侧不再自己读存储
         for name, content in (
-            ("self_model", self_content),
-            ("long_term_memory", memory_block),
-            ("recent_context", recent_context_block),
+            *self._render_profile_sections(ctx),
             ("proactive_alerts", self.render_alert_block(gw.alerts).strip()),
             (
                 "proactive_content",
@@ -176,7 +178,7 @@ class ProactivePromptBuilder:
                     )
                 )
 
-        # 4. 固定注入当前时钟并生成上下文帧
+        # 3. 固定注入当前时钟并生成上下文帧
         sections.append(
             PromptSectionRender(
                 name="runtime_clock",
@@ -186,6 +188,32 @@ class ProactivePromptBuilder:
         )
 
         return build_context_frame_message(build_context_frame_content(sections))
+
+    def _render_profile_sections(self, ctx: AgentTickContext) -> list[tuple[str, str]]:
+        """向共用的段渲染器要画像三段，落点保持本路径现状（进上下文帧）。
+
+        没装渲染器、或本轮没解析到快照时返回空列表：画像段于是缺席。这里不存在「读不到
+        就去读共享 workspace 目录」的分支——那正是本 change 要消掉的泄漏，而且同步调用
+        存储只会拿到未 await 的协程字符串（task 2.5 实测到的形状）。
+        """
+        if self._profile_renderer is None:
+            return []
+        result = self._profile_renderer.render_sections(
+            ContextRequest(
+                history=[],
+                current_message="",
+                skill_names=[],
+                message_timestamp=ctx.now_utc,
+                tenant_id=ctx.tenant_id,
+                persona_snapshot=ctx.persona_snapshot,
+                profile_snapshot=ctx.profile_snapshot,
+            )
+        )
+        rendered = {
+            section.name: str(section.content or "").strip()
+            for section in [*result.frame_sections, *result.system_sections]
+        }
+        return [(name, rendered.get(name, "")) for name in _PROFILE_SECTION_NAMES]
 
     def render_runtime_clock(self, ctx: AgentTickContext) -> str:
         local_now = ctx.now_utc.astimezone()
@@ -243,15 +271,3 @@ class ProactivePromptBuilder:
             + json.dumps(annotated_context, ensure_ascii=False)[:900]
             + "\n\n"
         )
-
-
-def _read_long_term_text(memory: MemoryProfileApi | None) -> str:
-    if memory is not None:
-        return str(memory.read_long_term() or "")
-    return ""
-
-
-def _read_self_text(memory: MemoryProfileApi | None) -> str:
-    if memory is not None:
-        return str(memory.read_self() or "")
-    return ""

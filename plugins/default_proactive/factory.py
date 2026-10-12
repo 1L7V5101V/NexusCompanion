@@ -76,6 +76,11 @@ class AgentTickFactory:
             schedule_fn=self._deps.schedule_fn,
             event_bus=self._deps.event_bus,
             tool_hooks=self._deps.tool_hooks,
+            # c18 ADR-15/ADR-3：渲染器与解析器都取自主链路那同一对对象；租户从 sense 拿，
+            # 不从 session_key 反推。
+            profile_renderer=self._deps.profile_renderer,
+            persona_resolver=self._deps.persona_resolver,
+            target_tenant_fn=self._deps.sense.target_tenant,
         )
 
     def _get_session_key(self) -> str:

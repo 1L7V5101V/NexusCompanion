@@ -796,6 +796,8 @@ class AppRuntime:
                 memory_store=self.memory_runtime,
                 presence=self.presence,
                 agent_loop=self.agent_loop,
+                # c18 ADR-3/4：旁路与主对话共用同一个租户快照解析器（上面装配段建的那个）。
+                persona_resolver=_persona_resolver,
                 event_bus=event_bus,
                 tool_hooks=list(plugin_manager.tool_hooks) if plugin_manager else None,
                 proactive_modules=(

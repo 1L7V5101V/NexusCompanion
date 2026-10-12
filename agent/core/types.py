@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from bus.events import InboundMessage
 
@@ -120,6 +120,20 @@ class MemoryProfileSnapshot:
             recent_context="",
             history="",
         )
+
+
+@runtime_checkable
+class PersonaSnapshotResolver(Protocol):
+    """tenant → (persona 快照, 画像快照) 的异步解析器（c18 ADR-1 / ADR-3）。
+
+    主对话在 turn 入口调一次，两条旁路在各自处理某个租户的那一轮调一次——用的是同一个对象，
+    所以画像的当前值只有一处出处。返回 None 表示该租户还没有 profile 行（未 onboarding），
+    调用方按空语义跳过注入，SHALL NOT 回退读共享 workspace 目录。
+    """
+
+    async def __call__(
+        self, tenant_id: str
+    ) -> "tuple[PersonaSnapshot, MemoryProfileSnapshot] | None": ...
 
 
 @dataclass

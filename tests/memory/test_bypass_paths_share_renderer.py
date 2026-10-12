@@ -38,18 +38,21 @@ def test_agent_loop_exposes_its_own_builder() -> None:
     assert AgentLoop.profile_renderer.fget(stub) is builder  # type: ignore[arg-type]
 
 
-def test_scope_field_defaults_to_none() -> None:
-    """没装配它（dev 路径 / 测试）时字段是 None，不兜一个假渲染器。
+def test_scope_fields_default_to_none() -> None:
+    """没装配它们（dev 路径 / 测试）时是 None，不兜一个假渲染器或假解析器。
 
     查字段默认值而不是构造整个 scope：`mcp_gateway` 的类型不是 Optional，为这条断言造一个
     假网关没有意义。
     """
-    assert ProactiveRuntimeScope.__dataclass_fields__["profile_renderer"].default is None
+    fields = ProactiveRuntimeScope.__dataclass_fields__
+    assert fields["profile_renderer"].default is None
+    assert fields["persona_resolver"].default is None
 
 
 def test_build_runtime_scope_forwards_the_renderer() -> None:
-    """`ProactiveLoop._build_runtime_scope` 把注入的渲染器带进两条旁路共用的那个 scope。"""
+    """`ProactiveLoop._build_runtime_scope` 把渲染器与解析器都带进两条旁路共用的那个 scope。"""
     builder = object()
+    resolver = object()
     loop_stub = SimpleNamespace(
         _cfg=object(),
         _sense=object(),
@@ -71,8 +74,10 @@ def test_build_runtime_scope_forwards_the_renderer() -> None:
         _scheduler=SimpleNamespace(next_interval=lambda _s: 1),
         _turn_logger=None,
         _profile_renderer=builder,
+        _persona_resolver=resolver,
     )
 
     scope = _build_scope(loop_stub)
 
     assert scope.profile_renderer is builder
+    assert scope.persona_resolver is resolver
