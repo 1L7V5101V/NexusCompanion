@@ -58,6 +58,8 @@
 
 比原方案多一条 SELECT，但换来一处改善：`relationship_state` 与四类画像现在出自同一条查询，而原方案里它出自 `memory_items`、画像出自另一处，两者之间有时间缝。
 
+那三条 SELECT 的 SQL 正文归画像存储，不归解析器——解析器借出会话后调用存储的批量读方法（ADR-14 末段），否则 sections 表会有两个读者、两份 SQL 正文，改列必须改两处，正是 ADR-11 要消灭的那种「每个地方自己记得一次」。
+
 **不选：另立一个画像解析器、自己再借一次连接。** 边界更干净，但两次借用之间有时间缝：若那期间 optimizer 写了画像，同一轮拿到的 persona 与画像就来自两个不同瞬间。`persona-relationship` 规定进行中的 turn 使用组装时的快照、不中途替换——两个时刻拿到的东西严格说不是"组装时的快照"，而是两个时刻的拼贴。
 
 （术语说明：本节的"数据库会话"指一次数据库连接的借用周期，即 `async with session_factory()` 那一段，与用户登录会话无关。）
@@ -239,7 +241,11 @@
 - **整块组**：读一类、写一类。`long_term` 与 `recent_context` 由画像层直接读写；`relationship_state` 的读写由 persona 缝独占（ADR-9），画像层的存储实现提供方法但不暴露给组装侧。
 - **日志组**：追加一行（带 `dedup_key`）、按时间读若干行、`pending` 取走即删。
 
-存储实现只做 async。ADR-15 之后同步侧不再有画像读取调用点，因此不需要 ADR-1 之外的同步门面。
+存储实现只做 async。ADR-15 之后同步侧不再有画像读取调用点，因此不需要 ADR-1 之外的同步门面。SQLite 侧的 `memory2/store.py` 是同步 `sqlite3`，照仓库既有先例用 `asyncio.to_thread` 包（`core/memory/markdown.py:783-785` 对 `read_history` 就是这么做的），不在协议层为两种后端分叉出同步与异步两套签名。
+
+**组装期的批量读收一个外部会话参数。** ADR-1 要求 persona 与画像出自同一次会话借用（两次借用之间有时间缝，并发 optimizer 写入会让同一轮拿到两个瞬间的拼贴），而 ADR-14 又要求 SQL 只有一份——两条叠在一起，只能让存储提供「在你借好的会话上跑」的方法，而不是自己再开一个。PG 侧传 `AsyncSession`，SQLite 侧传 `sqlite3.Connection`：这两种类型没有共同接口（`AsyncSession.execute` 是协程、`sqlite3.Connection.execute` 是同步并返回 Cursor），所以该参数在协议层只能收成较泛的类型，契约写在文档字符串里。**这是本 ADR 明确接受的一处代价**：类型检查帮不了「传错后端会话」这种情况，靠 6.5 那条两侧共用一份参数化清单的用例兜住。
+
+**不选：把批量读拆成「存储只出 SQL 文本、解析器自己执行」。** 类型确实干净（`Text` 两种后端通用），但整块类与日志类的读取带字符预算与截断语义（文件版的 `read_history(max_chars)` 是取尾部），这些逻辑得留在存储里，只出 SQL 文本会把它们推到调用方。
 
 类名随之要改：`PgMemoryMarkdownStore` 里的 "Markdown" 在文件后端摘除之后是假的，`agent/memory.py` 的 `MemoryStore` 同理。PG 侧那个类保留为画像存储的实现（删掉上表那些方法、把留下的重定向到两张新表），改名为不含 "Markdown" 的名字；SQLite 侧新建一个同名同接口的实现。名字里不出现后端之外的限定词，避免再出现「名字描述的是被删掉的那一层」。
 
