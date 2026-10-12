@@ -79,7 +79,6 @@ from bus.event_bus import EventBus
 from bus.processing import ProcessingState
 from bus.queue import MessageBus
 from core.memory.markdown import MemoryLifecycleBindRequest, MarkdownMemoryMaintenance
-from bootstrap.profile_access import ProfileAccess, build_profile_access
 from core.memory.runtime import MemoryRuntime
 from core.net.http import SharedHttpResources
 from proactive_v2.presence import PresenceStore
@@ -115,7 +114,6 @@ class CoreRuntime:
     workspace: Path | None = None
     turn_logger: RoutingTurnLogger | None = None
     storage_runtime: StorageRuntime | None = None
-    profile_access: ProfileAccess | None = None
     revocation_gate: RevocationGate | None = None
     tool_audit_sink: Any | None = None
     tool_audit_engine: AsyncEngine | None = None
@@ -351,12 +349,6 @@ class CoreRuntime:
             if storage_runtime is not None:
                 storage_runtime.close()
 
-        async def _close_profile_access() -> None:
-            """c18 ADR-3：解析器按租户缓存的画像 store 由装配根关闭。"""
-            access = self.profile_access
-            if access is not None:
-                access.close()
-
         async def _stop_workspace_mcp_watcher() -> None:
             self.workspace_mcp_watcher.stop()
             task = self.workspace_mcp_watcher_task
@@ -416,7 +408,6 @@ class CoreRuntime:
                 else _noop_async,
             ),
             ("session_manager.close", _close_session_manager),
-            ("profile_access.close", _close_profile_access),
             (
                 "storage_runtime.close",
                 _close_storage_runtime,
@@ -731,12 +722,8 @@ def build_core_runtime(
     # INSERT；否则单机结构化日志兜底），开关与 path_resolver 同源。
     from bootstrap.audit import resolve_tool_audit_sink
 
-    # c18 ADR-3/ADR-16（task 4.2 的 maintenance 根）：整理与压缩按租户写专表，
-    # 装配根交给它的是解析器不是 store——一轮整理服务哪个租户由事件里的 tenant_id 决定。
-    profile_access = build_profile_access(
-        config, memory_db_path=workspace / "memory" / "memory2.db"
-    )
-    memory_runtime.markdown.maintenance.bind_profile_stores(profile_access.resolve)
+    # c18 ADR-3/ADR-16（task 4.2 的 maintenance 根）：解析器已由 memory runtime 建好并
+    # 持有（关闭进它的 closeables），这里不再有装配点去各建一份。
 
     storage_cfg = getattr(config, "storage", None)
     audit_sink, audit_engine = resolve_tool_audit_sink(
@@ -856,7 +843,6 @@ def build_core_runtime(
         plugin_manager=plugin_manager,
         turn_logger=turn_logger,
         storage_runtime=storage_runtime,
-        profile_access=profile_access,
         revocation_gate=revocation_gate,
         tool_audit_sink=audit_sink,
         tool_audit_engine=audit_engine,

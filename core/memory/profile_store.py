@@ -211,9 +211,8 @@ def build_assembly(
 class MemoryProfileStoreApi(Protocol):
     """画像存储接口。两种后端各一个实现，全部 async。
 
-    SQLite 侧底层是同步 `sqlite3`，照仓库既有先例用 `asyncio.to_thread` 包
-    （`core/memory/profile_writer.py` 的 `ProfileFileMaintainer` 对文件 store 的同步
-    方法就是这么包的），不在协议层为两种后端分叉出两套签名。
+    SQLite 侧底层是同步 `sqlite3`，照仓库既有先例（`infra/control/stdio.py` 用
+    `asyncio.to_thread` 包同步 IO）包成 async，不在协议层为两种后端分叉出两套签名。
     """
 
     async def read_section(self, category: str) -> str:

@@ -23,7 +23,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent.config_models import Config
-from agent.memory import MemoryStore
 from core.memory.engine import MemoryAdminApi
 from core.telemetry.builtin import register_builtin_metrics
 from core.telemetry.metrics import MetricRegistry, get_default_registry
@@ -859,7 +858,6 @@ def create_dashboard_app(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
-    memory_store: MemoryStore | None = None,  # markdown 旧记忆系统，与 storage.backend 无关
     config: Config | None = None,
     metric_registry: MetricRegistry | None = None,
     auth_runtime=None,  # C5 admin 面（bootstrap.auth.runtime.AuthRuntime，仅在 auth.enabled 时提供）
@@ -954,7 +952,6 @@ def create_dashboard_app(
 
     app = FastAPI(title="Nexus Dashboard API", lifespan=lifespan)
     app.state.memory_admin = memory_admin
-    app.state.memory_store = memory_store or MemoryStore(workspace)  # markdown 旧记忆系统，与 storage.backend 无关
     # 指标导出源（D1 进程内 MetricRegistry）：显式传入或取进程级默认，并注册
     # turn/存储/迁移内建族，保证 /metrics 始终包含可展示的指标定义。
     metrics_registry = metric_registry or get_default_registry()
@@ -1627,7 +1624,6 @@ def run_dashboard_api(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
-    memory_store: MemoryStore | None = None,
     config: Config | None = None,
     auth_runtime=None,
 ) -> None:
@@ -1639,7 +1635,6 @@ def run_dashboard_api(
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
-            memory_store=memory_store,
             config=config,
             auth_runtime=auth_runtime,
         )
@@ -1655,7 +1650,6 @@ def _build_dashboard_uvicorn_config(
     manual_consolidator: ManualConsolidator | None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
-    memory_store: MemoryStore | None = None,
     config: Config | None = None,
     auth_runtime=None,
 ) -> uvicorn.Config:
@@ -1665,7 +1659,6 @@ def _build_dashboard_uvicorn_config(
             manual_consolidator=manual_consolidator,
             manual_memory_optimizer=manual_memory_optimizer,
             memory_admin=memory_admin,
-            memory_store=memory_store,
             config=config,
             auth_runtime=auth_runtime,
         ),
@@ -1685,7 +1678,6 @@ def build_dashboard_server(
     manual_consolidator: ManualConsolidator | None = None,
     manual_memory_optimizer: ManualMemoryOptimizer | None = None,
     memory_admin: MemoryAdminApi,
-    memory_store: MemoryStore | None = None,
     config: Config | None = None,
     auth_runtime=None,
 ) -> uvicorn.Server:
@@ -1696,7 +1688,6 @@ def build_dashboard_server(
         manual_consolidator=manual_consolidator,
         manual_memory_optimizer=manual_memory_optimizer,
         memory_admin=memory_admin,
-        memory_store=memory_store,
         config=config,
         auth_runtime=auth_runtime,
     )

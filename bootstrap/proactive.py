@@ -22,7 +22,6 @@ from session.manager import SessionManager
 
 if TYPE_CHECKING:
     from agent.core.types import PersonaSnapshotResolver
-    from agent.memory import MemoryStore
     from core.memory.profile_store import ProfileStoreResolver
     from core.memory.runtime import MemoryRuntime
     from agent.plugins.snapshot import RuntimeSnapshotStore
@@ -149,13 +148,13 @@ def build_memory_optimizer_task(
     config: Config,
     *,
     provider: LLMProvider,
-    memory_store: "MemoryStore",
+    # c18 task 4.2（optimizer 那根）/6.10：pending 与 long_term 按租户走专表，
+    # 画像层已没有文件后端，所以解析器是必填入口。
+    profile_stores: ProfileStoreResolver,
     runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
-    # c9-persona-relationship ADR-5：PG durable 模式的 tenant RelationshipState
-    # 读写缝（read/write + 审计）；None = 单体文件语义。
+    # c9-persona-relationship ADR-5 / c18 ADR-10：RelationshipState 读写缝，
+    # 两种后端各一个实现；None 时 SELF 这一路跳过。
     relationship_io: "Any | None" = None,
-    # c18 task 4.2（optimizer 那根）/6.11：pending 与 long_term 按租户走专表。
-    profile_stores: "ProfileStoreResolver | None" = None,
 ) -> tuple[list, "MemoryOptimizer | None"]:
     if not config.memory_optimizer_enabled:
         print("MemoryOptimizerLoop 已禁用（memory_optimizer_enabled=false）")
@@ -163,7 +162,6 @@ def build_memory_optimizer_task(
 
     persona = config.persona
     mem_optimizer = MemoryOptimizer(
-        memory=memory_store,
         provider=provider,
         model=config.model,
         default_self_md=persona.self_model or DEFAULT_SELF_MD,

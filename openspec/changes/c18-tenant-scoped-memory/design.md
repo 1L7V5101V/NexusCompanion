@@ -307,9 +307,15 @@ ADR-13 把画像读侧改成快照、ADR-9/13/14 把关系状态与 pending 消�
 
 实现期的三条形状（6.12 落地时定）：
 
-- **整理与压缩只有一种调用形状。** `MemoryProfileStoreApi` 全 async，文件 store 全同步，而中间这段过渡期两种门面要同时存在。选定：`core/memory/profile_writer.py` 里一个 `ProfileMaintainer` 协议 + 两个实现（`ProfileTableMaintainer` 走专表、`ProfileFileMaintainer` 把 `MemoryStore` 的同步方法包进 `asyncio.to_thread`），worker 一律 `await` 门面。不选「worker 里按类型分支或 `_maybe_await`」——那把同步/异步的分叉铺进五处调用点，而 6.10 删文件后端时要删的是整个 `ProfileFileMaintainer` 类加 maintenance 里那条回退，两处都能一次删净。
+- **整理与压缩只有一种调用形状。** `MemoryProfileStoreApi` 全 async，文件 store 全同步，而中间这段过渡期两种门面同时存在过：`ProfileTableMaintainer`（专表）与把 `MemoryStore` 同步方法包进 `asyncio.to_thread` 的文件门面，worker 一律 `await` 门面。不选「worker 里按类型分支或 `_maybe_await`」——那把同步/异步的分叉铺进五处调用点。6.10 落地时文件门面与 maintenance 里那条「没有解析器就写文件」的回退一起删除，`ProfileMaintainer` 协议也随之收起（只剩一个实现时它就是多余的一层）：maintenance 与 optimizer 的画像入口现在只有构造时必交的解析器，因此 fail-closed 只剩一种形态——归属不可信。
 - **maintenance 的槽位按 `(租户, 会话)` 分，不只按会话。** 这条是写侧接线时查出来的既有缺陷：`session_key` 只在租户内唯一（`telegram:<chat_id>` 这类形态在两个租户下可以完全相同），而队列、任务表与锁都只以它为键，且槽位里记的归属是最先入队那次的。B 的整理意图于是会被并进 A 那一轮，按 A 的租户写画像——正是本 change 要关的那类泄漏，只是入口在队列而不在存储。修在 6.12 同一批（`tests/admission/test_priority.py` 加一条断言两个租户各占一槽）。
 - **fail-closed 的判据是「不发 LLM 调用 + 不落任何画像 + 留可定位记录」。** 归属为空或解析器报错都在 `_consolidate_unlocked` 顶部拦掉，因此那轮提取根本不发生（不是提取完再丢弃）。代价如实记在这里：这条接线让静态扫描（task 2.2）在 `bootstrap/tools.py` 多出一处 `memory_runtime.markdown.maintenance` 命中——绑定解析器必须摸到那个对象，6.10 摘文件后端时把绑定与命中一起删掉，扫描才有真绿点。
+
+6.10 落地时一并成立的三条事实（不再另处复述）：
+
+- **画像解析器每进程只建一次。** 原先 `bootstrap/tools.py` 与 `bootstrap/app.py` 各建一份，两条 SQLite 连接打同一个 `memory2.db`，PG 侧多一个 engine。现在由 `build_memory_runtime` / `build_memory_admin_runtime` 建好，挂在 `MemoryRuntime.profile_access` 上并进它的 `closeables`（关闭链早已经过那里），四个根共用同一个实例。
+- **工作区初始化不再播种画像文件。** `memory/MEMORY.md`、`HISTORY.md`、`RECENT_CONTEXT.md`、`PENDING.md`、`SELF.md` 从播种表里删掉，`memory/consolidation_writes.db` 那个幂等 sidecar 随文件后端一起消失。留着它们的代价不是多占几个 inode，而是「用户改文件、运行时读不到」这种没有报错的失效面。
+- **dashboard 那条 `memory_store` 链是死重。** `app.state.memory_store` 全仓库没有任何读点，四处参数与一次构造整条删除；这条能在删除时确认，是因为 6.9 已把画像读写都换成了快照。
 
 ## Risks / Trade-offs
 

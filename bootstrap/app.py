@@ -688,7 +688,6 @@ class AppRuntime:
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
-                memory_store=self.memory_runtime.markdown.store,
                 # C8 §5.9.16：optimizer work-start lease 复用插件 snapshot store。
                 runtime_snapshot_store=(
                     plugin_manager.snapshot_store
@@ -698,12 +697,9 @@ class AppRuntime:
                 # c9-persona-relationship ADR-5 / c18 ADR-10：RelationshipState 读写
                 # 走租户写缝（单事务 + 审计），两种后端各一个实现。
                 relationship_io=_persona_relationship_io,
-                # c18 task 4.2：optimizer 是四个独立根之一，持有解析器而不是 store。
-                profile_stores=(
-                    self.core.profile_access.resolve
-                    if getattr(self.core, "profile_access", None) is not None
-                    else None
-                ),
+                # c18 task 4.2/6.10：optimizer 是四个独立根之一，画像入口只有这个解析器
+                # （由 memory runtime 建好并负责关闭）。
+                profile_stores=self.memory_runtime.profile_access.resolve,
             )
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()
@@ -762,7 +758,6 @@ class AppRuntime:
                 manual_consolidator=self.agent_loop,
                 manual_memory_optimizer=self._memory_optimizer,
                 memory_admin=self.memory_runtime.engine,
-                memory_store=self.memory_runtime.markdown.store,
                 config=self.config,
                 auth_runtime=auth_runtime,
             )

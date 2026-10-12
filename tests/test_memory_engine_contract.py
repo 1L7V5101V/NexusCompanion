@@ -32,7 +32,7 @@ from core.memory.markdown import (
     MarkdownMemoryMaintenance,
     MemoryLifecycleBindRequest,
 )
-from agent.memory import MemoryStore
+from tests.memory.profile_write_cases import TenantStores, unused_profile_stores
 from core.memory.plugin import MemoryPluginRuntime
 from infra.storage.interfaces import TenantContext
 
@@ -363,7 +363,7 @@ async def test_default_memory_engine_refreshes_recent_context_from_lifecycle():
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MemoryStore(Path(".")),
+        profile_stores=cast(Any, unused_profile_stores),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,
@@ -405,7 +405,7 @@ async def test_default_memory_engine_consolidates_ready_session_from_lifecycle()
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MemoryStore(Path(".")),
+        profile_stores=cast(Any, unused_profile_stores),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,
@@ -453,8 +453,9 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
         messages=[{"role": "user", "content": "u"}] * 12,
         last_consolidated=0,
     )
+    stores = TenantStores.create(tmp_path)
     maintenance = MarkdownMemoryMaintenance(
-        store=MemoryStore(tmp_path),
+        profile_stores=stores.resolve,
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=6,
@@ -476,12 +477,16 @@ async def test_markdown_consolidation_advances_window_when_consumer_fails(tmp_pa
     )
     maintenance._worker.prepare_consolidation = AsyncMock(return_value=draft)
 
-    await maintenance.consolidate(ConsolidateRequest(session=session))
+    await maintenance.consolidate(
+        ConsolidateRequest(session=session, tenant_id="c18-contract")
+    )
 
     assert session.last_consolidated == 6
-    assert "用户测试记忆" in (tmp_path / "memory" / "HISTORY.md").read_text(
-        encoding="utf-8"
-    )
+    # task 6.10：整理写的是该租户的 history 行，不再写 HISTORY.md
+    history = await stores.resolve("c18-contract").read_entries("history")
+    assert "用户测试记忆" in history
+    assert not (tmp_path / "memory" / "HISTORY.md").exists()
+    stores.close()
     await event_bus.aclose()
 
 
@@ -491,8 +496,9 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_
         messages=[{"role": "user", "content": f"u{i}"} for i in range(8)],
         last_consolidated=0,
     )
+    stores = TenantStores.create(tmp_path)
     maintenance = MarkdownMemoryMaintenance(
-        store=MemoryStore(tmp_path),
+        profile_stores=stores.resolve,
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=4,
@@ -505,7 +511,12 @@ async def test_markdown_consolidation_failure_trace_does_not_advance_cursor(tmp_
         )
     )
 
-    result = await maintenance.consolidate(ConsolidateRequest(session=session))
+    try:
+        result = await maintenance.consolidate(
+            ConsolidateRequest(session=session, tenant_id="c18-contract")
+        )
+    finally:
+        stores.close()
 
     assert result.consolidated_count == 0
     assert result.trace == {
@@ -525,7 +536,7 @@ async def test_default_memory_engine_serializes_lifecycle_maintenance():
         last_consolidated=0,
     )
     maintenance = MarkdownMemoryMaintenance(
-        store=MemoryStore(Path(".")),
+        profile_stores=cast(Any, unused_profile_stores),
         provider=cast(Any, SimpleNamespace()),
         model="lm",
         keep_count=20,

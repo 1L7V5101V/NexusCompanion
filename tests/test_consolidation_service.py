@@ -3,7 +3,6 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from core.memory.profile_writer import ProfileFileMaintainer
 from core.memory.markdown import (
     _MarkdownConsolidationWorker as ConsolidationWorker,
     _select_recent_history_entries,
@@ -24,34 +23,37 @@ def _message_text(kwargs) -> str:
 def _prepare(
     service: ConsolidationWorker,
     session: object,
+    profile: object,
     *,
     archive_all: bool = False,
     force: bool = False,
 ):
+    # task 6.10：worker 不再持有一个共享画像对象，本轮写哪个租户由调用方交出的门面决定。
     return asyncio.run(
         service.prepare_consolidation(
             session,
             archive_all=archive_all,
             force=force,
+            profile=cast(Any, profile),
         )
     )
 
 
 def test_consolidation_service_archive_all_and_profile_extract():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(
             return_value=(
                 "[2026-03-15 09:00] 用户确认 Zigbee 需求\n\n"
                 "[2026-03-15 09:30] 用户对本地控制方案感兴趣\n\n"
                 "[2026-03-15 09:45] 用户准备下单 Zigbee 网关"
             )
         ),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -73,7 +75,6 @@ def test_consolidation_service_archive_all_and_profile_extract():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -89,7 +90,7 @@ def test_consolidation_service_archive_all_and_profile_extract():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(service, session, memory, archive_all=True)
 
     assert draft is not None
     assert draft.history_entry_payloads == [
@@ -119,13 +120,13 @@ def test_consolidation_service_uses_profile_maint_for_reads():
         save_item=AsyncMock(return_value="new:profile-1"),
     )
     profile_maint = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
     )
     async def _chat_side_effect(**kwargs):
         text = _message_text(kwargs)
@@ -141,7 +142,6 @@ def test_consolidation_service_uses_profile_maint_for_reads():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, profile_maint)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -157,7 +157,7 @@ def test_consolidation_service_uses_profile_maint_for_reads():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(service, session, profile_maint, archive_all=True)
 
     assert draft is not None
     profile_maint.read_long_term.assert_called_once()
@@ -168,13 +168,13 @@ def test_consolidation_service_uses_profile_maint_for_reads():
 
 def test_consolidation_event_failure_does_not_write_markdown():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -186,7 +186,6 @@ def test_consolidation_event_failure_does_not_write_markdown():
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
 
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=20,
@@ -202,7 +201,7 @@ def test_consolidation_event_failure_does_not_write_markdown():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(service, session, memory, archive_all=True)
 
     # event 失败 → last_consolidated 不推进，隐式结果不写库
     assert draft is not None
@@ -216,13 +215,13 @@ def test_consolidation_event_failure_does_not_write_markdown():
 
 def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -241,7 +240,6 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -267,7 +265,7 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(service, session, memory, archive_all=True)
 
     assert draft is not None
     written = draft.recent_context_text
@@ -283,9 +281,9 @@ def test_consolidation_recent_context_formats_user_full_and_assistant_preview():
 
 def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(
             return_value=(
                 "# Recent Context\n\n"
                 "## Compression\n"
@@ -299,10 +297,10 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
                 "[a-preview] 第八条\n"
             )
         ),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -325,7 +323,6 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -352,7 +349,7 @@ def test_consolidation_recent_context_compresses_archived_window_not_kept_gap():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session)
+    draft = _prepare(service, session, memory)
 
     assert "【较早窗口（本次待压缩）】\nUSER: 第五条\nASSISTANT: 第六条\nUSER: 第七条\nASSISTANT: 第八条\nUSER: 第九条" in captured_prompt["text"]
     assert draft is not None
@@ -384,13 +381,13 @@ def test_replace_recent_turns_block_preserves_existing_compression():
 
 def test_consolidation_archive_all_compresses_full_history_before_recent_turns():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -412,7 +409,6 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -439,7 +435,7 @@ def test_consolidation_archive_all_compresses_full_history_before_recent_turns()
         _chat_id="1",
     )
 
-    draft = _prepare(service, session, archive_all=True)
+    draft = _prepare(service, session, memory, archive_all=True)
 
     assert all(
         call.kwargs.get("disable_thinking") is True
@@ -474,13 +470,13 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
         "[user] 旧 recent\n"
     )
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=old_recent_context),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=old_recent_context),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -498,7 +494,6 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -525,7 +520,7 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session)
+    draft = _prepare(service, session, memory)
 
     assert draft is not None
     assert draft.step == "recent_context"
@@ -534,13 +529,13 @@ def test_consolidation_recent_context_invalid_json_fails_consolidation():
 
 def test_consolidation_recent_context_exception_fails_consolidation():
     memory = SimpleNamespace(
-        read_long_term=MagicMock(return_value="MEM"),
-        read_history=MagicMock(return_value=""),
-        read_recent_context=MagicMock(return_value=""),
-        write_recent_context=MagicMock(),
-        append_history_once=MagicMock(return_value=True),
-        append_pending_once=MagicMock(return_value=True),
-        append_journal=MagicMock(),
+        read_long_term=AsyncMock(return_value="MEM"),
+        read_history=AsyncMock(return_value=""),
+        read_recent_context=AsyncMock(return_value=""),
+        write_recent_context=AsyncMock(),
+        append_history_once=AsyncMock(return_value=True),
+        append_pending_once=AsyncMock(return_value=True),
+        append_journal=AsyncMock(),
         save_from_consolidation=AsyncMock(),
         save_item=AsyncMock(return_value="new:profile-1"),
         save_item_with_supersede=AsyncMock(return_value="new:profile-1"),
@@ -556,7 +551,6 @@ def test_consolidation_recent_context_exception_fails_consolidation():
 
     provider = SimpleNamespace(chat=AsyncMock(side_effect=_chat_side_effect))
     service = ConsolidationWorker(
-        profile_maint=ProfileFileMaintainer(cast(Any, memory)),
         provider=cast(Any, provider),
         model="m",
         keep_count=4,
@@ -583,7 +577,7 @@ def test_consolidation_recent_context_exception_fails_consolidation():
         _chat_id="1",
     )
 
-    draft = _prepare(service, session)
+    draft = _prepare(service, session, memory)
 
     assert draft is not None
     assert draft.step == "recent_context"

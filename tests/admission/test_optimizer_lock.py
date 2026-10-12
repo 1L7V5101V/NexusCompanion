@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+from tests.memory.profile_write_cases import unused_profile_stores
 from proactive_v2.memory_optimizer import (
     DEFAULT_OPTIMIZER_TENANT,
     MemoryOptimizer,
@@ -27,9 +28,10 @@ def test_no_global_optimizer_lock_in_source() -> None:
 
 def _make_optimizer() -> MemoryOptimizer:
     return MemoryOptimizer(
-        memory=cast(Any, object()),
-        provider=cast(Any, object()),
-        model="test-model",
+        cast(Any, object()),
+        "test-model",
+        # 这两条验的是按 tenant 串行的锁，画像存储不被触达
+        profile_stores=cast(Any, unused_profile_stores),
     )
 
 

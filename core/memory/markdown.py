@@ -11,21 +11,16 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from agent.admission.queues import GLOBAL_MAINTENANCE_QUEUE
 from agent.llm_json import load_json_object_loose
-from agent.memory import MemoryStore
 from agent.prompting import is_context_frame
 from agent.provider import LLMProvider
 from bus.events_lifecycle import TurnCommitted
 from core.memory.events import ConsolidationCommitted
 from core.memory.profile_store import ProfileStoreResolver
-from core.memory.profile_writer import (
-    ProfileFileMaintainer,
-    ProfileMaintainer,
-    ProfileTableMaintainer,
-)
+from core.memory.profile_writer import ProfileTableMaintainer
 
 if TYPE_CHECKING:
     from bus.event_bus import EventBus
@@ -65,25 +60,6 @@ class MemoryLifecycleBindRequest:
     # 必须走真实租户视图（PG per-tenant 存储下默认租户查不到 chat: 会话）。
     get_session: Callable[[str, str], object]
     save_session: Callable[[object], Awaitable[None]]
-
-
-@runtime_checkable
-class MemoryProfileApi(Protocol):
-    """文件后端的画像读写形状。
-
-    ADR-14 删掉的是那些只在「一份文件」前提下成立的方法声明（`read_self` / `write_self`
-    归 persona 缝，`read_recent_history` 是重命名别名，`backup_long_term` 写后即弃，
-    `get_memory_context` 与 `has_long_term_memory` 零生产调用方）。task 6.10 摘掉文件后端
-    后，本协议与它服务的这条过渡路径一起消失。
-    """
-
-    def read_long_term(self) -> str: ...
-
-    def write_long_term(self, content: str) -> None: ...
-
-    def read_recent_context(self) -> str: ...
-
-    def write_recent_context(self, content: str) -> None: ...
 
 
 _ALLOWED_PENDING_TAGS = frozenset(
@@ -241,7 +217,7 @@ _DATE_PREFIX_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2})")
 
 
 async def _append_entries_to_journal(
-    profile: ProfileMaintainer,
+    profile: ProfileTableMaintainer,
     entries: list[str],
     source_ref: str,
 ) -> None:
@@ -413,14 +389,12 @@ class _MarkdownConsolidationWorker:
     def __init__(
         self,
         *,
-        profile_maint: ProfileMaintainer,
         provider: "LLMProvider",
         model: str,
         keep_count: int,
         recent_context_provider: "LLMProvider | None" = None,
         recent_context_model: str | None = None,
     ) -> None:
-        self._profile_maint = profile_maint
         self._provider = provider
         self._model = model
         self._recent_context_provider = recent_context_provider or provider
@@ -612,7 +586,7 @@ ongoing_threads 严格限制：
         self,
         *,
         session,
-        profile: ProfileMaintainer,
+        profile: ProfileTableMaintainer,
         window: _ConsolidationWindow | None,
         archive_all: bool,
     ) -> str | _ConsolidationFailure:
@@ -706,9 +680,8 @@ ongoing_threads 严格限制：
         )
 
     async def refresh_recent_turns(
-        self, *, session, profile: ProfileMaintainer | None = None
+        self, *, session, profile: ProfileTableMaintainer
     ) -> None:
-        profile = profile or self._profile_maint
         tail = list(session.messages[-self._keep_count :]) if self._keep_count > 0 else []
         recent_count = min(len(tail), _recent_turn_count(self._keep_count))
         recent_turns = tail[-recent_count:] if recent_count > 0 else []
@@ -724,9 +697,8 @@ ongoing_threads 严格限制：
         archive_all: bool = False,
         force: bool = False,
         *,
-        profile: ProfileMaintainer | None = None,
+        profile: ProfileTableMaintainer,
     ) -> _ConsolidationDraft | _ConsolidationFailure | None:
-        profile = profile or self._profile_maint
         # 1. 先决定这次要归档哪一段消息窗口；没有新窗口就直接返回。
         window = _select_consolidation_window(
             session,
@@ -978,7 +950,8 @@ history_entries.emotional_weight 规则：
 
 @dataclass
 class MarkdownMemoryRuntime:
-    store: MemoryStore
+    """画像那一层只剩「按租户的 maintenance」这一件事；文件 store 已退出运行时（task 6.10）。"""
+
     maintenance: "MarkdownMemoryMaintenance"
 
 
@@ -986,7 +959,9 @@ class MarkdownMemoryMaintenance:
     def __init__(
         self,
         *,
-        store: MemoryStore,
+        # c18 task 6.10：这是画像读写的唯一入口。构造时必须交出解析器——没有它就没有
+        # 可信租户归属，而共享文件 store 已经退出运行时路径（ADR-3 / ADR-16）。
+        profile_stores: ProfileStoreResolver,
         provider: "LLMProvider",
         model: str,
         keep_count: int,
@@ -997,15 +972,9 @@ class MarkdownMemoryMaintenance:
         # C8 §5.9.16：后台 maintenance worker work-start snapshot lease。
         runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
     ) -> None:
-        self._store = store
-        # 6.12：没有装配根给来的解析器时，整理仍写这份文件（评测脚本与直接构造的测试走
-        # 这条路）。task 6.10 摘掉文件后端后，`_legacy_profile` 与 `_profile_for` 里的
-        # 那条回退一起删。
-        self._legacy_profile = ProfileFileMaintainer(store)
-        self._profile_stores: ProfileStoreResolver | None = None
+        self._profile_stores = profile_stores
         self._event_bus = event_bus
         self._worker = _MarkdownConsolidationWorker(
-            profile_maint=self._legacy_profile,
             provider=provider,
             model=model,
             keep_count=keep_count,
@@ -1041,23 +1010,13 @@ class MarkdownMemoryMaintenance:
         self._get_session = request.get_session
         self._save_session = request.save_session
 
-    def bind_profile_stores(self, resolver: ProfileStoreResolver) -> None:
-        """装配根交出「按租户解析画像存储」的能力（ADR-3/ADR-4，task 4.2）。
-
-        不给 `MarkdownMemoryMaintenance` 一个 store 而是给一个函数：整理一轮服务哪个租户
-        是由事件里的 `tenant_id` 决定的，共享 store 正是跨租户写入的入口（ADR-16）。
-        """
-        self._profile_stores = resolver
-
-    def _profile_for(self, tenant_id: str) -> ProfileMaintainer | None:
-        """本轮画像读写走哪套；返回 None 表示这一轮什么都不写（task 4.3 fail-closed）。
+    def _profile_for(self, tenant_id: str) -> ProfileTableMaintainer | None:
+        """本轮画像读写落哪个租户的专表；返回 None 表示这一轮什么都不写（task 4.3）。
 
         归属为空或解析器报错（PG 查不到该租户、SQLite 收到非固定租户）都只跳过：
-        回退到进程共享目录等于把泄漏重新打开。
+        回退到进程共享目录等于把泄漏重新打开，而那条回退已随文件后端一起删除。
         """
         resolver = self._profile_stores
-        if resolver is None:
-            return self._legacy_profile
         if not str(tenant_id or "").strip():
             logger.error(
                 "c18 fail-closed：maintenance 拿不到可信租户归属，本轮不写任何画像"
@@ -1256,7 +1215,7 @@ class MarkdownMemoryMaintenance:
         self,
         session: object,
         draft: "_ConsolidationDraft",
-        profile: ProfileMaintainer,
+        profile: ProfileTableMaintainer,
     ) -> None:
         history_entries = [entry for entry, _ in draft.history_entry_payloads]
         if history_entries:
@@ -1308,9 +1267,9 @@ class MarkdownMemoryMaintenance:
         await self._worker.refresh_recent_turns(session=request.session, profile=profile)
 
 
-def build_markdown_memory_runtime(
+def build_memory_maintenance(
     *,
-    workspace: Path,
+    profile_stores: ProfileStoreResolver,
     provider: "LLMProvider",
     model: str,
     keep_count: int,
@@ -1319,9 +1278,13 @@ def build_markdown_memory_runtime(
     recent_context_model: str | None = None,
     global_maintenance_limit: int = GLOBAL_MAINTENANCE_QUEUE,
 ) -> MarkdownMemoryRuntime:
-    store = MemoryStore(workspace)
+    """画像层的 maintenance（task 6.10：这里不再产出文件 store）。
+
+    名字里的 "markdown" 在文件后端退出运行时后就是假的，所以函数与 `MemoryStore` 的
+    构造一起退场；调用方交出的是按租户解析画像存储的那个函数（ADR-3）。
+    """
     maintenance = MarkdownMemoryMaintenance(
-        store=store,
+        profile_stores=profile_stores,
         provider=provider,
         model=model,
         keep_count=keep_count,
@@ -1330,4 +1293,4 @@ def build_markdown_memory_runtime(
         recent_context_model=recent_context_model,
         global_maintenance_limit=global_maintenance_limit,
     )
-    return MarkdownMemoryRuntime(store=store, maintenance=maintenance)
+    return MarkdownMemoryRuntime(maintenance=maintenance)

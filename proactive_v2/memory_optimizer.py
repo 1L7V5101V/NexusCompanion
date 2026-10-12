@@ -1,9 +1,9 @@
 """
 proactive/memory_optimizer.py — 记忆质量优化器
 
-每轮运行两步：
-  1. 重写 MEMORY.md：把 PENDING 事实 → 凝练用户档案
-  2. 更新 SELF.md：只改写既有三段自我认知
+每轮运行两步，都落在**该租户**的画像存储上（c18 task 6.11 / 6.10）：
+  1. 把 pending 事实合并进 long_term，并在同一个事务里取走这些行
+  2. 更新自我认知（relationship_state，经 persona 那条缝，单事务 + 审计）
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from agent.memory import MemoryStore
     from agent.plugins.snapshot import RuntimeSnapshotStore
 
 from agent.memory import DEFAULT_SELF_MD
@@ -209,27 +208,27 @@ _SELF_PROMPT = """\
 class MemoryOptimizer:
     def __init__(
         self,
-        memory: "MemoryStore",
         provider: LLMProvider,
         model: str,
+        *,
+        # c18 ADR-3/ADR-14（task 6.11）：pending 的读与「删除 + 写回」都按租户走专表；
+        # 归属为空或解析失败就整轮跳过（task 4.3 fail-closed）。画像层已没有文件后端，
+        # 所以这是 optimizer 唯一的画像入口（task 6.10）。
+        profile_stores: ProfileStoreResolver,
         max_tokens: int = 16384,
         default_self_md: str = "",
         identity_name: str = "",
         # C8 §5.9.16：optimizer work-start snapshot lease。
         runtime_snapshot_store: "RuntimeSnapshotStore | None" = None,
-        # c9-persona-relationship ADR-5：PG durable 模式注入（read/write 走
-        # memory_items self seam + 审计，单事务）；None = 单体文件语义不变。
+        # c9-persona-relationship ADR-5 / c18 ADR-10：RelationshipState 的读写缝，
+        # 两种后端各一个实现；None 时 SELF 这一路跳过（见 `_update_self`）。
         relationship_io: "Any | None" = None,
-        # c18 ADR-3/ADR-14（task 6.11）：pending 的读与「删除 + 写回」都按租户走专表。
-        # 没有它就没有可信归属，本轮直接跳过（task 4.3 fail-closed）。
-        profile_stores: ProfileStoreResolver | None = None,
     ) -> None:
-        self._memory = memory
         self._provider = provider
         self._model = model
         self._max_tokens = max_tokens
         # C3 §5.9.5/§10 DECIDED：optimizer lock 按 tenant 隔离，不引入跨 tenant
-        # global maintenance lock；单 tenant 一个 Markdown store 语义不变。
+        # global maintenance lock；同一租户内串行，不同租户互不阻塞。
         self._runtime_snapshot_store = runtime_snapshot_store
         self._relationship_io = relationship_io
         self._profile_stores = profile_stores
@@ -346,34 +345,23 @@ class MemoryOptimizer:
         )
 
     async def _update_self(self, pending: str, *, tenant_id: str = DEFAULT_OPTIMIZER_TENANT) -> None:
-        """只更新 SELF.md 现有保留的三段，不新增 section。
+        """只更新自我认知现有的三段，不新增 section。
 
-        c9-persona-relationship ADR-5：注入 relationship_io 时（PG durable），
-        read/write 走 tenant PG seam（单事务 + 审计）；否则单体文件语义不变。
+        读写走 persona 那条缝（ADR-9/ADR-10：单事务 + 审计，两种后端各一个实现）。
+        缝为 None 时跳过并留记录——这条路径今天只在「PG 后端但没开 durable webchat」时出现，
+        那个装配缺口的成因与影响写在 c18 的 tasks 4.2 注记里，不在这里用共享文件目录兜底。
         """
-        if self._relationship_io is not None:
-            self_content = (
-                await self._relationship_io.read(tenant_id)
-            ).strip() or DEFAULT_SELF_MD.strip()
-            if not self_content:
-                logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
-                return
-            prompt = _SELF_PROMPT.format(
-                self_content=self_content,
-                pending=pending or "（无新内容）",
+        if self._relationship_io is None:
+            logger.warning(
+                "[memory_optimizer] 没有 RelationshipState 写缝，跳过 SELF 更新（tenant_id=%r）",
+                tenant_id,
             )
-            updated = await self._request_text_response(
-                system_content=_SELF_SYSTEM,
-                user_content=prompt,
-                max_tokens=2048,
-            )
-            if updated:
-                await self._relationship_io.write(tenant_id, updated)
-                logger.info("[memory_optimizer] SELF.md 已更新（tenant PG seam）")
             return
-        self_content = self._memory.read_self().strip() or DEFAULT_SELF_MD.strip()
+        self_content = (
+            await self._relationship_io.read(tenant_id)
+        ).strip() or DEFAULT_SELF_MD.strip()
         if not self_content:
-            logger.info("[memory_optimizer] SELF.md 不存在或为空，跳过更新")
+            logger.info("[memory_optimizer] SELF 不存在或为空，跳过更新")
             return
         prompt = _SELF_PROMPT.format(
             self_content=self_content,
@@ -385,8 +373,8 @@ class MemoryOptimizer:
             max_tokens=2048,
         )
         if updated:
-            self._memory.write_self(updated)
-            logger.info("[memory_optimizer] SELF.md 已更新")
+            await self._relationship_io.write(tenant_id, updated)
+            logger.info("[memory_optimizer] SELF 已更新（RelationshipState 写缝）")
 
     async def _request_text_response(
         self,

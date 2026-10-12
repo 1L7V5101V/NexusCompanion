@@ -124,14 +124,19 @@ def consolidation_session() -> SimpleNamespace:
     )
 
 
-def file_backed_maintenance(
-    workspace: Path,
+def build_maintenance(
+    profile_stores: Any,
     provider: SimpleNamespace | None = None,
 ) -> MarkdownMemoryMaintenance:
-    """不绑解析器的 maintenance：文件 store 仍在构造签名里，6.10 才摘掉它。"""
+    """按生产形状构造：画像入口只有那个解析器（task 6.10 之后已没有文件后端）。"""
     return MarkdownMemoryMaintenance(
-        store=MemoryStore(workspace),
+        profile_stores=profile_stores,
         provider=cast(Any, provider or consolidation_provider()),
         model="m",
         keep_count=20,
     )
+
+
+def unused_profile_stores(tenant_id: str) -> Any:
+    """给「本用例不该触达画像存储」的构造点用：真被解析到就当场失败。"""
+    raise AssertionError(f"这个用例不该解析画像存储（收到 {tenant_id!r}）")

@@ -20,7 +20,6 @@ from agent.config import (
     TelegramChannelConfig,
     load_config,
 )
-from agent.memory import DEFAULT_SELF_MD
 from bus.event_bus import EventBus
 from core.net.http import SharedHttpResources
 
@@ -254,8 +253,10 @@ def test_init_workspace_creates_expected_assets(tmp_path):
     assert 'model = "qwen-vl-plus"' in config_text
     assert (workspace / "sessions.db").exists()
     assert (workspace / "observe").is_dir()
-    assert (workspace / "memory" / "consolidation_writes.db").exists()
-    assert (workspace / "memory" / "journal").is_dir()
+    # c18 task 6.10：画像层不住文件里，工作区初始化不再创建 markdown 那套资产
+    assert not (workspace / "memory" / "consolidation_writes.db").exists()
+    assert not (workspace / "memory" / "journal").exists()
+    assert not (workspace / "memory" / "MEMORY.md").exists()
     assert (workspace / "memory" / "memory2.db").exists()
     assert "Proactive Context" in (
         workspace / "PROACTIVE_CONTEXT.md"
@@ -309,7 +310,8 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         config_path=config_path,
         workspace=workspace,
     )
-    self_path = workspace / "memory" / "SELF.md"
+    # c18 task 6.10：画像那几个 .md 不再播种，force 语义改在仍会写的那一份上验
+    self_path = workspace / "PROACTIVE_CONTEXT.md"
     self_path.write_text("custom\n", encoding="utf-8")
 
     summary_skip = workspace_init.init_workspace(
@@ -324,7 +326,7 @@ def test_init_workspace_respects_force_for_text_assets(tmp_path):
         workspace=workspace,
         force=True,
     )
-    assert self_path.read_text(encoding="utf-8") == DEFAULT_SELF_MD
+    assert self_path.read_text(encoding="utf-8").startswith("# Proactive Context")
     assert any(path == self_path for path in summary_force.overwritten)
 
 

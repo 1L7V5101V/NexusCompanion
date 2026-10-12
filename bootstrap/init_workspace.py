@@ -5,28 +5,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.config import Config
-from agent.config_models import PersonaConfig
-from agent.memory import DEFAULT_SELF_MD, MemoryStore, get_default_self_md
 from bootstrap.memory import ensure_memory_plugin_storage
 from infra.persistence.json_store import save_json
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.state import ProactiveStateStore
 from session.store import SessionStore
 
-_EMPTY_FILES: dict[str, str] = {
-    "memory/MEMORY.md": "",
-    "memory/HISTORY.md": "",
-    "memory/RECENT_CONTEXT.md": "",
-    "memory/PENDING.md": "",
+# c18 task 6.10：画像层（MEMORY / HISTORY / RECENT_CONTEXT / PENDING / SELF）住在租户
+# 专表里，初始化再往 `workspace/memory/` 撒一批空文件，只会留下「改了文件却没生效」的
+# 误导面。这里只保留仍被运行时读的那一份。
+_TEXT_FILES: dict[str, str] = {
+    "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
 }
-
-
-def _build_text_files(self_model: str) -> dict[str, str]:
-    return {
-        **_EMPTY_FILES,
-        "memory/SELF.md": self_model,
-        "PROACTIVE_CONTEXT.md": ProactiveLoop._PROACTIVE_CONTEXT_TEMPLATE,
-    }
 
 _JSON_FILES: dict[str, object] = {
     "mcp_servers.json": {"servers": {}},
@@ -96,12 +86,9 @@ def _ensure_workspace_text_assets(
     *,
     force: bool,
     summary: InitSummary,
-    persona: PersonaConfig | None = None,
 ) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
-    self_model = get_default_self_md(persona)
-    text_files = _build_text_files(self_model)
-    for rel_path, content in text_files.items():
+    for rel_path, content in _TEXT_FILES.items():
         _write_text_file(workspace / rel_path, content, force=force, summary=summary)
 
 
@@ -145,14 +132,9 @@ def _ensure_workspace_db_assets(
         else:
             summary.skipped.append(sessions_db)
 
-    consolidation_db = workspace / "memory" / "consolidation_writes.db"
-    consolidation_exists = consolidation_db.exists()
-    MemoryStore(workspace)  # markdown 旧记忆系统，与 storage.backend 无关
-    if not consolidation_exists:
-        summary.created.append(consolidation_db)
-    else:
-        summary.skipped.append(consolidation_db)
-
+    # c18 task 6.10：画像层的存储是 memory2.db 里那两张专表，由启动时的
+    # `create_storage_runtime` 建，不在这里预创建；文件后端那个
+    # `memory/consolidation_writes.db` 幂等 sidecar 随文件后端一起退场。
     proactive_db = workspace / "proactive.db"
     proactive_exists = proactive_db.exists()
     ProactiveStateStore(proactive_db).close()
@@ -190,12 +172,7 @@ def init_workspace(
     _ensure_config(config_path, force=force, summary=summary)
 
     config = Config.load(config_path)
-    _ensure_workspace_text_assets(
-        workspace,
-        force=force,
-        summary=summary,
-        persona=config.persona,
-    )
+    _ensure_workspace_text_assets(workspace, force=force, summary=summary)
     _ensure_workspace_json_assets(workspace, force=force, summary=summary)
     _ensure_workspace_directories(workspace, summary=summary)
     _ensure_workspace_db_assets(

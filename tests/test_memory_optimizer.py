@@ -22,7 +22,7 @@ from proactive_v2.memory_optimizer import (
     MemoryOptimizer,
     MemoryOptimizerLoop,
 )
-from agent.memory import MemoryStore
+from bootstrap.persona import SqliteRelationshipIO
 from tests.memory.profile_write_cases import TenantStores
 
 TENANT = "c18-optimizer"
@@ -47,18 +47,17 @@ def _provider_raising(error: Exception) -> object:
     return provider
 
 
-def _setup(tmp_path) -> tuple[TenantStores, MemoryStore]:
-    """一个建好画像表的单机库 + 一个仍按旧形状存在的文件 store。"""
-    stores = TenantStores.create(tmp_path)
-    return stores, MemoryStore(tmp_path)
+def _setup(tmp_path) -> TenantStores:
+    """一个建好画像专表的单机库（task 6.10：optimizer 只有这一个画像入口）。"""
+    return TenantStores.create(tmp_path)
 
 
-def _optimizer(stores: TenantStores, provider: object, memory) -> MemoryOptimizer:
+def _optimizer(stores: TenantStores, provider: object) -> MemoryOptimizer:
     optimizer = MemoryOptimizer(
-        memory,
         cast(Any, provider),
         "test-model",
         profile_stores=stores.resolve,
+        relationship_io=SqliteRelationshipIO(stores.resolve(TENANT)),
     )
     optimizer._STEP_DELAY_SECONDS = 0  # type: ignore[misc]
     return optimizer
@@ -92,18 +91,18 @@ def _seed(
 def _read(stores: TenantStores, category: str) -> str:
     async def run() -> str:
         store = stores.resolve(TENANT)
-        if category == "long_term":
-            return await store.read_section("long_term")
+        if category in ("long_term", "recent_context", "relationship_state"):
+            return await store.read_section(category)
         return await store.read_entries(cast(Any, category))
 
     return asyncio.run(run())
 
 
 def test_optimize_skips_when_long_term_and_pending_are_empty(tmp_path) -> None:
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     provider = types.SimpleNamespace(chat=AsyncMock())
     try:
-        asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+        asyncio.run(_optimizer(stores, provider).optimize(TENANT))
         provider.chat.assert_not_called()
     finally:
         stores.close()
@@ -115,14 +114,14 @@ def test_optimize_merges_pending_into_long_term_in_one_transaction(tmp_path) -> 
     备份文件那一层保护是文件时代「原子重命名 + 覆写」的产物；表上同一事务里覆写，
     中止即回滚，不需要也不该留一份旁路副本。
     """
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     _seed(stores, long_term="old profile", pending=["- [identity] 新身份"])
     provider = _provider_with_responses(
         "## 用户画像\n- 新版本\n",
         "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
     )
     try:
-        asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+        asyncio.run(_optimizer(stores, provider).optimize(TENANT))
 
         assert _read(stores, "long_term").strip() == "## 用户画像\n- 新版本"
         assert _read(stores, "pending") == "", "合并吃进去的行必须被取走"
@@ -133,14 +132,14 @@ def test_optimize_merges_pending_into_long_term_in_one_transaction(tmp_path) -> 
 
 
 def test_optimize_keeps_pending_rows_when_merge_returns_empty(tmp_path) -> None:
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     _seed(stores, long_term="old profile", pending=["- pending fact"])
     provider = _provider_with_responses(
         "",
         "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
     )
     try:
-        asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+        asyncio.run(_optimizer(stores, provider).optimize(TENANT))
 
         assert "- pending fact" in _read(stores, "pending")
         assert _read(stores, "long_term") == "old profile"
@@ -150,12 +149,12 @@ def test_optimize_keeps_pending_rows_when_merge_returns_empty(tmp_path) -> None:
 
 def test_optimize_keeps_pending_rows_when_merge_raises(tmp_path) -> None:
     """抛异常那一路也在同一个事务之外：没有任何写入落库，pending 原样在表里。"""
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     _seed(stores, long_term="old profile", pending=["- pending fact"])
     provider = _provider_raising(RuntimeError("llm down"))
     try:
         with pytest.raises(RuntimeError):
-            asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+            asyncio.run(_optimizer(stores, provider).optimize(TENANT))
 
         assert "- pending fact" in _read(stores, "pending")
         assert _read(stores, "long_term") == "old profile"
@@ -164,8 +163,7 @@ def test_optimize_keeps_pending_rows_when_merge_raises(tmp_path) -> None:
 
 
 def test_optimize_updates_self_using_pending_only(tmp_path) -> None:
-    stores, memory = _setup(tmp_path)
-    memory.write_self("## 原 SELF")
+    stores = _setup(tmp_path)
     _seed(
         stores,
         long_term="old",
@@ -177,10 +175,11 @@ def test_optimize_updates_self_using_pending_only(tmp_path) -> None:
         "# Nexus 的自我认知\n\n## 人格与形象\n\n- 新版人格\n\n## 我对当前用户的理解\n\n- 新版理解\n\n## 我们关系的定义\n\n- 新版关系\n",
     )
     try:
-        asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+        asyncio.run(_optimizer(stores, provider).optimize(TENANT))
 
-        assert memory.read_self().strip().startswith("# Nexus 的自我认知")
-        assert "新版理解" in memory.read_self()
+        updated_self = _read(stores, "relationship_state")
+        assert updated_self.strip().startswith("# Nexus 的自我认知")
+        assert "新版理解" in updated_self
 
         self_prompt = provider.chat.await_args_list[1].kwargs["messages"][1]["content"]  # type: ignore[attr-defined]
         assert "- [preference] 回复保持简洁。" in self_prompt
@@ -190,7 +189,7 @@ def test_optimize_updates_self_using_pending_only(tmp_path) -> None:
 
 
 def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path) -> None:
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     _seed(
         stores,
         long_term="old profile",
@@ -202,7 +201,7 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path) -> None:
         "# Rachael 的自我认知\n\n## 人格与形象\n- 保持\n",
     )
     try:
-        asyncio.run(_optimizer(stores, provider, memory).optimize(TENANT))
+        asyncio.run(_optimizer(stores, provider).optimize(TENANT))
 
         call = provider.chat.await_args_list[0]  # type: ignore[attr-defined]
         prompt = call.kwargs["messages"][1]["content"]
@@ -212,26 +211,10 @@ def test_merge_memory_ignores_history_and_only_uses_pending(tmp_path) -> None:
         stores.close()
 
 
-def test_optimize_without_a_resolver_writes_nothing(tmp_path) -> None:
-    """没有画像存储解析器就没有可信归属：跳过、不发 LLM、不碰文件目录（task 4.3）。"""
-    memory = MemoryStore(tmp_path)
-    memory.pending_file.write_text(
-        "- [identity] 不该被谁吃掉", encoding="utf-8"
-    )
-    provider = _provider_with_responses("## 不该发生")
-    optimizer = MemoryOptimizer(memory, cast(Any, provider), "test-model")
-    optimizer._STEP_DELAY_SECONDS = 0  # type: ignore[misc]
-
-    asyncio.run(optimizer.optimize(TENANT))
-
-    provider.chat.assert_not_called()  # type: ignore[attr-defined]
-    assert "- [identity] 不该被谁吃掉" in memory.read_pending()
-
-
 def test_request_text_response_uses_expected_chat_kwargs(tmp_path) -> None:
-    stores, memory = _setup(tmp_path)
+    stores = _setup(tmp_path)
     provider = _provider_with_responses("merged")
-    optimizer = _optimizer(stores, provider, memory)
+    optimizer = _optimizer(stores, provider)
 
     try:
         result = asyncio.run(
@@ -253,9 +236,9 @@ def test_request_text_response_uses_expected_chat_kwargs(tmp_path) -> None:
 
 def test_optimize_reports_busy_instead_of_waiting(tmp_path) -> None:
     async def run_case() -> None:
-        stores, memory = _setup(tmp_path)
+        stores = _setup(tmp_path)
         provider = types.SimpleNamespace(chat=AsyncMock())
-        optimizer = _optimizer(stores, provider, memory)
+        optimizer = _optimizer(stores, provider)
         started = asyncio.Event()
         release = asyncio.Event()
 

@@ -4,60 +4,18 @@
 长期画像合并掉」在结构上就可能发生。装配根改持 `ProfileStoreResolver`（ADR-3）之后，每轮
 maintenance 按它真正服务的那个租户解析出一个 store，本类就是那轮用到的读写门面。
 
-方法名保持与 worker 原来对文件 store 的调用一致，这样 `_MarkdownConsolidationWorker` 里
-只有「调用方式」要改（同步转 await），段名与语义不动。日志类的幂等键由 `source_ref` 与正文
+段名与语义沿用文件时代的那套名字，调用方式全是 async。日志类的幂等键由 `source_ref` 与正文
 摘要一起推出：重放同一次 consolidation 不会多出一份（旧 `app_configs` 那套 128 字符全局键
 正是 6.12 要替掉的东西，见 ADR-13）。
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from core.memory.profile_store import MemoryProfileStoreApi, ProfileEntry
-
-if TYPE_CHECKING:
-    from agent.memory import MemoryStore
-
-
-@runtime_checkable
-class ProfileMaintainer(Protocol):
-    """整理与压缩那一轮用到的画像读写，统一的 async 形状。
-
-    两个实现：`ProfileTableMaintainer`（租户专表）与 `ProfileFileMaintainer`（文件后端）。
-    worker 只认这一种形状，「同步文件 IO 要挪进线程」这件事留在门面内部。
-    """
-
-    async def read_long_term(self) -> str: ...
-
-    async def write_long_term(self, content: str) -> None: ...
-
-    async def read_recent_context(self) -> str: ...
-
-    async def write_recent_context(self, content: str) -> None: ...
-
-    async def read_history(self, max_chars: int = 0) -> str: ...
-
-    async def append_history_once(
-        self, entry: str, *, source_ref: str, kind: str = "history_entry"
-    ) -> bool: ...
-
-    async def append_pending_once(
-        self, facts: str, *, source_ref: str, kind: str = "pending_items"
-    ) -> bool: ...
-
-    async def append_journal(
-        self,
-        date_str: str,
-        entry: str,
-        *,
-        source_ref: str = "",
-        kind: str = "journal",
-    ) -> bool: ...
 
 
 def _dedup_key(kind: str, source_ref: str, text: str) -> str:
@@ -151,75 +109,4 @@ class ProfileTableMaintainer:
         """一个事务内「删掉这些 pending 行 + 覆写 long_term」，返回删掉的行数。"""
         return await self._store.merge_entries_into_section(
             entry_ids, "long_term", content
-        )
-
-
-class ProfileFileMaintainer:
-    """`MemoryStore`（文件后端）的 async 门面，形状与 `ProfileTableMaintainer` 一致。
-
-    只为一件事存在：装配根按租户解析专表（task 4.2）与摘掉文件后端（task 6.10）是两个
-    步骤，中间这段时间 maintenance 仍要在没有解析器的构造点（评测脚本、直接构造的测试）
-    写文件。task 6.10 删掉那条回退时，本类与它一起删除。
-    """
-
-    def __init__(self, store: "MemoryStore") -> None:
-        self._store = store
-
-    async def read_long_term(self) -> str:
-        return str(await asyncio.to_thread(self._store.read_long_term) or "")
-
-    async def write_long_term(self, content: str) -> None:
-        await asyncio.to_thread(self._store.write_long_term, content)
-
-    async def read_recent_context(self) -> str:
-        return str(await asyncio.to_thread(self._store.read_recent_context) or "")
-
-    async def write_recent_context(self, content: str) -> None:
-        await asyncio.to_thread(self._store.write_recent_context, content)
-
-    async def read_history(self, max_chars: int = 0) -> str:
-        return str(
-            await asyncio.to_thread(self._store.read_history, max_chars) or ""
-        )
-
-    async def append_history_once(
-        self, entry: str, *, source_ref: str, kind: str = "history_entry"
-    ) -> bool:
-        return bool(
-            await asyncio.to_thread(
-                self._store.append_history_once,
-                entry,
-                source_ref=source_ref,
-                kind=kind,
-            )
-        )
-
-    async def append_pending_once(
-        self, facts: str, *, source_ref: str, kind: str = "pending_items"
-    ) -> bool:
-        return bool(
-            await asyncio.to_thread(
-                self._store.append_pending_once,
-                facts,
-                source_ref=source_ref,
-                kind=kind,
-            )
-        )
-
-    async def append_journal(
-        self,
-        date_str: str,
-        entry: str,
-        *,
-        source_ref: str = "",
-        kind: str = "journal",
-    ) -> bool:
-        return bool(
-            await asyncio.to_thread(
-                self._store.append_journal,
-                date_str,
-                entry,
-                source_ref=source_ref,
-                kind=kind,
-            )
         )

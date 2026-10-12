@@ -1,9 +1,11 @@
 """c18 task 2.2 / 2.4：画像层的运行时路径不得指向共享 workspace 记忆目录，
 且组装旁路不得自己读画像存储。
 
-落实 spec「运行时路径无共享目录读写」与「画像段渲染只有一份实现」。本测试在接线
-完成前预期为红——`bootstrap/memory.py` 等仍在装配进程级全局 markdown store，三条旁路
-仍在自己读画像。转绿点在 task 6.10（摘掉文件后端装配）与 4.5–4.7（旁路接入共用渲染器）。
+落实 spec「运行时路径无共享目录读写」与「画像段渲染只有一份实现」。
+
+task 6.10 之后第一条规则转绿：装配根不再产出文件 store，画像层唯一的入口是按租户解析
+出来的存储。第二条规则仍有一处**已登记**的例外（唤醒插件，见 `WAKE_BASELINE`），它不能
+在本 change 里消掉，原因写在下面。
 
 两套规则的作用域是分开的：
 
@@ -42,10 +44,9 @@ BYPASS_DIRS = (
 )
 
 FORBIDDEN: tuple[tuple[str, str], ...] = (
-    (r"build_markdown_memory_runtime\s*\(", "装配全局 markdown 记忆 runtime"),
     (
-        r"\.markdown\.(?:store|maintenance)\b",
-        "取用进程级 markdown store/maintenance 单例",
+        r"\.markdown\.store\b",
+        "取用进程级 markdown store 单例（task 6.10 已删掉这个属性）",
     ),
     (r"\bMemoryStore\s*\(", "直接构造文件版 MemoryStore"),
     (
@@ -69,6 +70,29 @@ FORBIDDEN_IN_ASSEMBLY_PATHS: tuple[tuple[str, str], ...] = (
 # infra/storage/runtime.py:67-78 在有 postgres_url 时把 _memory_sqlite 置为
 # None——该实参在多租户下不参与构造，不是画像层读写。目录归属由 2.3 的行为测试
 # 与上面的构造符号共同覆盖。
+
+
+# 例外登记：唤醒插件那一处读点。`plugins/wake_proactive/runtime.py` 今天不可导入
+# （`session/embedding_store` 缺失，见 tasks 4.7 那条注记），改动已移出本 change，所以
+# 这条命中在这里是**已知且预期**的。判据因此是「不得出现登记之外的命中」，而不是
+# 「必须为零」——后者是一条永远绿不了的规则，既不能当闸门也不该删掉看守。
+WAKE_BASELINE: frozenset[str] = frozenset(
+    {
+        "plugins/wake_proactive/runtime.py — 旁路自己读画像存储，"
+        "未走共用的 render_sections（ADR-15）"
+    }
+)
+
+
+def _hit_files(hits: list[str]) -> set[str]:
+    """把 `path:line — 规则` 收成 `path — 规则`：行号会漂，登记不能按行号锁。"""
+    out: set[str] = set()
+    for hit in hits:
+        path, _, reason = hit.partition(" — ")
+        file_only, _, _ = path.rpartition(":")
+        # Windows 上扫描结果用反斜杠，登记用正斜杠：比对前统一
+        out.add(f"{file_only.replace(chr(92), '/')} — {reason}")
+    return out
 
 
 def _global_sources() -> list[Path]:
@@ -114,8 +138,13 @@ def test_runtime_paths_do_not_read_or_write_shared_memory_dir() -> None:
 
 
 def test_assembly_paths_do_not_read_profile_store_directly() -> None:
-    """task 2.4 / spec「画像段渲染只有一份实现」：旁路只消费渲染结果。"""
+    """task 2.4 / spec「画像段渲染只有一份实现」：旁路只消费渲染结果。
+
+    已登记的唤醒例外允许存在；登记之外新出现的读取点是本测试要拦的东西。行号会漂，
+    所以登记按「文件 + 规则」比对，不按行号锁。
+    """
     hits = _scan(_bypass_sources(), FORBIDDEN_IN_ASSEMBLY_PATHS)
-    assert not hits, (
-        "组装旁路仍在自己读画像存储，画像段因此有两份实现：\n" + "\n".join(sorted(hits))
+    fresh = _hit_files(hits) - WAKE_BASELINE
+    assert not fresh, (
+        "组装旁路新增了自己的画像读取，画像段因此有两份实现：\n" + "\n".join(sorted(fresh))
     )

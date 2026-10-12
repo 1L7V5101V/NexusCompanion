@@ -8,6 +8,9 @@
 三条后台路径各一例：整理（`consolidate`）、压缩（`refresh_recent_turns`）、优化器消费
 pending（`MemoryOptimizer.optimize`）。优化器那一例多断一件事——解析器在场但归属为空时
 连 pending 都不读：「读了却不敢写」比「不读」更难查。
+
+task 6.10 之后画像层没有文件后端，所以这里没有「没接解析器就回退写文件」那条例外——
+回退本身已经不存在，构造签名直接要求解析器。
 """
 
 from __future__ import annotations
@@ -24,13 +27,12 @@ from core.memory.markdown import (
     MarkdownMemoryMaintenance,
     RefreshRecentTurnsRequest,
 )
-from agent.memory import MemoryStore
 from tests.memory.profile_write_cases import (
     TENANT_A,
     TenantStores,
+    build_maintenance,
     consolidation_provider,
     consolidation_session,
-    file_backed_maintenance,
 )
 
 DEFAULT_TENANT_ID = "default"
@@ -45,10 +47,8 @@ def stores(tmp_path: Path) -> Iterator[TenantStores]:
         holder.close()
 
 
-def _maintenance(workspace: Path, resolver: Any, provider: Any) -> MarkdownMemoryMaintenance:
-    maintenance = file_backed_maintenance(workspace, provider)
-    maintenance.bind_profile_stores(cast(Any, resolver))
-    return maintenance
+def _maintenance(resolver: Any, provider: Any) -> MarkdownMemoryMaintenance:
+    return build_maintenance(resolver, provider)
 
 
 async def test_consolidation_without_tenant_writes_nothing(
@@ -56,7 +56,7 @@ async def test_consolidation_without_tenant_writes_nothing(
 ) -> None:
     workspace = tmp_path / "ws"
     provider = consolidation_provider()
-    maintenance = _maintenance(workspace, stores.resolve, provider)
+    maintenance = _maintenance(stores.resolve, provider)
 
     result = await maintenance.consolidate(
         ConsolidateRequest(
@@ -82,7 +82,7 @@ async def test_consolidation_with_unresolvable_tenant_logs_locatable_skip(
         raise RuntimeError("该租户在 PG 里没有画像行")
 
     provider = consolidation_provider()
-    maintenance = _maintenance(workspace, _resolver, provider)
+    maintenance = _maintenance(_resolver, provider)
 
     with caplog.at_level(logging.ERROR, logger="memory.markdown"):
         result = await maintenance.consolidate(
@@ -104,7 +104,7 @@ async def test_refresh_without_tenant_writes_nothing(
 ) -> None:
     workspace = tmp_path / "ws"
     provider = consolidation_provider()
-    maintenance = _maintenance(workspace, stores.resolve, provider)
+    maintenance = _maintenance(stores.resolve, provider)
 
     with caplog.at_level(logging.ERROR, logger="memory.markdown"):
         await maintenance.refresh_recent_turns(
@@ -116,36 +116,17 @@ async def test_refresh_without_tenant_writes_nothing(
     assert "fail-closed" in "\n".join(r.getMessage() for r in caplog.records)
 
 
-async def test_without_a_resolver_the_file_backend_still_writes(tmp_path: Path) -> None:
-    """没接解析器时仍按旧形状写文件——这条回退是 6.10 要连着门面一起删掉的过渡期。
-
-    把它写成用例而不是口头交代，是因为「装配根忘了绑解析器」与「文件后端被摘掉」得能区分
-    开：前者的行为是本例的样子，后者会让构造签名直接不存在。
-    """
-    workspace = tmp_path / "ws"
-    provider = consolidation_provider()
-    maintenance = file_backed_maintenance(workspace, provider)
-
-    result = await maintenance.consolidate(
-        ConsolidateRequest(
-            session=consolidation_session(), archive_all=True, tenant_id=""
-        )
-    )
-
-    assert result.trace.get("mode") == "markdown"
-    history = workspace / "memory" / "HISTORY.md"
-    assert history.exists()
-    assert "Zigbee" in history.read_text(encoding="utf-8")
-
 async def test_optimizer_without_tenant_writes_nothing(
     tmp_path: Path, stores: TenantStores, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """第三条后台路径：优化器消费 pending（task 6.11 之后走专表）。"""
+    """第三条后台路径：优化器消费 pending（task 6.11 之后走专表）。
+
+    这里连一次读取都不该发生——归属为空时「读了 pending 却不敢写」比「不读」更难查。
+    """
     from datetime import datetime, timezone
 
     from proactive_v2.memory_optimizer import MemoryOptimizer
 
-    workspace = tmp_path / "ws"
     store = stores.resolve(TENANT_A)
     await store.append_entry(
         "pending",
@@ -154,10 +135,7 @@ async def test_optimizer_without_tenant_writes_nothing(
     )
     provider = consolidation_provider()
     optimizer = MemoryOptimizer(
-        MemoryStore(workspace),
-        cast(Any, provider),
-        "m",
-        profile_stores=stores.resolve,
+        cast(Any, provider), "m", profile_stores=stores.resolve
     )
 
     with caplog.at_level(logging.ERROR, logger="proactive_v2.memory_optimizer"):
@@ -166,4 +144,3 @@ async def test_optimizer_without_tenant_writes_nothing(
     assert provider.chat.await_count == 0  # type: ignore[attr-defined]
     assert "不该被谁吃掉" in await store.read_entries("pending")
     assert any("fail-closed" in r.getMessage() for r in caplog.records)
-

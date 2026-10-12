@@ -36,7 +36,7 @@ from core.memory.markdown import (
     MarkdownMemoryMaintenance,
     MemoryLifecycleBindRequest,
 )
-from agent.memory import MemoryStore
+from tests.memory.profile_write_cases import unused_profile_stores
 from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.memory_optimizer import MemoryOptimizer, MemoryOptimizerBusy
@@ -296,7 +296,8 @@ async def test_maintenance_background_worker_holds_lease() -> None:
     """MarkdownMemoryMaintenance 后台队列 worker 逐条 maintenance 取 lease。"""
     store = make_store("snap-bg")
     maintenance = MarkdownMemoryMaintenance(
-        store=cast(MemoryStore, object()),  # refresh 分支被 spy，store 不被触达
+        # refresh 分支被 spy，画像存储不被触达：给一个「真解析就失败」的解析器
+        profile_stores=cast(Any, unused_profile_stores),
         provider=MagicMock(),
         model="m",
         keep_count=20,
@@ -336,9 +337,10 @@ async def test_maintenance_background_worker_holds_lease() -> None:
 async def test_memory_optimizer_holds_lease() -> None:
     store = make_store("snap-opt")
     optimizer = MemoryOptimizer(
-        memory=MagicMock(),
-        provider=MagicMock(),
-        model="m",
+        MagicMock(),
+        "m",
+        # work-start lease 验的是 lease，不是画像：解析器给个不会被调到的桩
+        profile_stores=cast(Any, unused_profile_stores),
         runtime_snapshot_store=store,
     )
     observed: dict[str, object] = {}
@@ -360,9 +362,10 @@ async def test_memory_optimizer_holds_lease() -> None:
 async def test_memory_optimizer_busy_rejects_concurrent_run() -> None:
     store = make_store("snap-opt")
     optimizer = MemoryOptimizer(
-        memory=MagicMock(),
-        provider=MagicMock(),
-        model="m",
+        MagicMock(),
+        "m",
+        # work-start lease 验的是 lease，不是画像：解析器给个不会被调到的桩
+        profile_stores=cast(Any, unused_profile_stores),
         runtime_snapshot_store=store,
     )
     release = asyncio.Event()

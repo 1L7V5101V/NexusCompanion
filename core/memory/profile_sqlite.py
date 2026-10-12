@@ -73,9 +73,8 @@ def _now_iso() -> str:
 class SqliteMemoryProfileStore:
     """画像专表的 SQLite 实现。
 
-    底层是同步 `sqlite3`，照仓库既有先例（`core/memory/profile_writer.py` 的
-    `ProfileFileMaintainer` 包文件 store 的同步方法）用 `asyncio.to_thread` 包成 async，
-    不为两种后端在协议层分叉出同步与异步两套签名。
+    底层是同步 `sqlite3`，照仓库既有先例（`infra/control/stdio.py` 用 `asyncio.to_thread`
+    包同步 IO）包成 async，不为两种后端在协议层分叉出同步与异步两套签名。
     """
 
     def __init__(self, db_path: str | Path, tenant_id: str = DEFAULT_TENANT) -> None:

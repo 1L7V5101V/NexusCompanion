@@ -32,9 +32,9 @@ from tests.memory.profile_write_cases import (
     TENANT_A,
     TENANT_B,
     TenantStores,
+    build_maintenance,
     consolidation_provider,
     consolidation_session,
-    file_backed_maintenance,
 )
 
 
@@ -50,19 +50,16 @@ def stores(tmp_path: Path) -> Iterator[TenantStores]:
 
 
 def _maintenance(
-    workspace: Path, stores: TenantStores, provider: Any = None
+    stores: TenantStores, provider: Any = None
 ) -> MarkdownMemoryMaintenance:
-    provider = provider or consolidation_provider()
-    maintenance = file_backed_maintenance(workspace, provider)
-    maintenance.bind_profile_stores(stores.resolve)
-    return maintenance
+    return build_maintenance(stores.resolve, provider or consolidation_provider())
 
 
 async def test_consolidation_writes_the_four_profile_categories(
     tmp_path: Path, stores: TenantStores
 ) -> None:
     workspace = tmp_path / "ws"
-    maintenance = _maintenance(workspace, stores)
+    maintenance = _maintenance(stores)
 
     result = await maintenance.consolidate(
         ConsolidateRequest(session=consolidation_session(), archive_all=True, tenant_id=TENANT_A)
@@ -80,8 +77,10 @@ async def test_consolidation_writes_the_four_profile_categories(
     assert not (memory_dir / "HISTORY.md").exists()
     assert not (memory_dir / "RECENT_CONTEXT.md").exists()
     assert not (memory_dir / "MEMORY.bak.md").exists()
+    assert not (memory_dir / "PENDING.md").exists()
     assert not (memory_dir / "journal" / "2026-03-15.md").exists()
-    assert (memory_dir / "PENDING.md").read_text(encoding="utf-8") == ""
+    # 整理不再需要一个工作目录来落脚：整个共享目录都不该被创建
+    assert not memory_dir.exists()
 
     assert stores.count_rows(TENANT_B, "tenant_memory_profile_entries") == 0
     assert stores.count_rows(TENANT_B, "tenant_memory_profile_sections") == 0
@@ -96,7 +95,7 @@ async def test_consolidation_reads_the_tenant_long_term(
     MemoryStore(workspace).write_long_term("文件里的旧画像")
     provider = consolidation_provider()
 
-    await _maintenance(workspace, stores, provider).consolidate(
+    await _maintenance(stores, provider).consolidate(
         ConsolidateRequest(
             session=consolidation_session(), archive_all=True, tenant_id=TENANT_A
         )
@@ -112,7 +111,7 @@ async def test_replaying_the_same_window_does_not_double_rows(
 ) -> None:
     """同一窗口跑两次（重启后重放）不产生第二行：幂等键是 (tenant_id, dedup_key)。"""
     workspace = tmp_path / "ws"
-    maintenance = _maintenance(workspace, stores)
+    maintenance = _maintenance(stores)
     session = consolidation_session()
 
     await maintenance.consolidate(
@@ -136,7 +135,7 @@ async def test_refresh_recent_turns_writes_the_tenant_section(
 ) -> None:
     """压缩路径（refresh recent turns）也走同一扇门：写的是该租户的 `recent_context` 行。"""
     workspace = tmp_path / "ws"
-    maintenance = _maintenance(workspace, stores)
+    maintenance = _maintenance(stores)
     await stores.resolve(TENANT_A).write_section(
         "recent_context", "topics:\n- 旧话题\n"
     )

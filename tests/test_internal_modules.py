@@ -17,7 +17,6 @@ from core.memory.markdown import (
     _parse_consolidation_payload,
     _select_consolidation_window,
 )
-from core.memory.profile_writer import ProfileFileMaintainer
 from memory2.post_response_worker import PostResponseMemoryWorker
 
 
@@ -29,17 +28,16 @@ class _Resp:
 class _ConsolidationHarness:
     def __init__(self, payload: str) -> None:
         self._memory_port = SimpleNamespace(
-            read_long_term=MagicMock(return_value="MEM"),
-            read_history=MagicMock(return_value=""),
-            read_recent_context=MagicMock(return_value=""),
-            append_history_once=MagicMock(return_value=True),
-            append_pending_once=MagicMock(return_value=True),
+            read_long_term=AsyncMock(return_value="MEM"),
+            read_history=AsyncMock(return_value=""),
+            read_recent_context=AsyncMock(return_value=""),
+            append_history_once=AsyncMock(return_value=True),
+            append_pending_once=AsyncMock(return_value=True),
             save_from_consolidation=AsyncMock(),
         )
         self.last_draft = None
         self.provider = SimpleNamespace(chat=AsyncMock(return_value=_Resp(payload)))
         self._consolidation = ConsolidationWorker(
-            profile_maint=ProfileFileMaintainer(cast(Any, self._memory_port)),
             provider=cast(Any, self.provider),
             model="lm",
             keep_count=2,
@@ -50,9 +48,11 @@ class _ConsolidationHarness:
         session,
         archive_all: bool = False,
     ) -> None:
+        # task 6.10：worker 不持有共享画像对象，本轮的门面由调用方交出
         self.last_draft = await self._consolidation.prepare_consolidation(
             session,
             archive_all=archive_all,
+            profile=cast(Any, self._memory_port),
         )
 
 @pytest.mark.asyncio

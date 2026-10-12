@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agent.config_models import Config
 from bootstrap.memory import build_memory_admin_runtime
-from bootstrap.profile_access import build_profile_access
+from bootstrap.persona import SqliteRelationshipIO
 from infra.storage.tenancy import DEFAULT_TENANT
 from bootstrap.providers import build_providers
 from core.memory.markdown import ConsolidateRequest
@@ -118,12 +118,10 @@ async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
         light_provider=light_provider,
         http_resources=http_resources,
     )
-    # c18 task 6.12/6.11：整理与优化器读写的是该租户的画像专表，脚本按生产形状接解析器。
-    access = build_profile_access(
-        config, memory_db_path=workspace / "memory" / "memory2.db"
-    )
-    memory_runtime.markdown.maintenance.bind_profile_stores(access.resolve)
-    file_store = memory_runtime.markdown.store
+    # c18 task 6.12/6.11/6.10：整理与优化器读写的是该租户的画像专表；解析器由 memory
+    # runtime 自己建并持有，探针取同一个实例，避免另开一条连接。
+    access = memory_runtime.profile_access
+    assert access is not None, "画像解析器未装配"
     store = access.resolve(tenant_id)
 
     print("=== pending（before consolidation）===")
@@ -152,10 +150,10 @@ async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
     print()
     print(">>> optimizer 开始...")
     optimizer = MemoryOptimizer(
-        memory=file_store,
         provider=provider,
         model=config.model,
         max_tokens=8192,
+        relationship_io=SqliteRelationshipIO(store),
         profile_stores=access.resolve,
     )
     await optimizer.optimize(tenant_id)
@@ -167,10 +165,9 @@ async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
     print("=== pending（after optimizer，被合并的行应已取走）===")
     print(await store.read_entries("pending") or "(empty)")
     print()
-    print("=== SELF.md（after optimizer，仍是文件那一路）===")
-    print(file_store.read_self())
+    print("=== relationship_state（after optimizer，经 persona 缝）===")
+    print(await store.read_section("relationship_state") or "(empty)")
 
-    access.close()
     await memory_runtime.aclose()
 
 

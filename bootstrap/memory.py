@@ -10,7 +10,8 @@ from agent.tools.registry import ToolRegistry
 from bus.events_lifecycle import TurnCommitted
 from core.memory.engine import MemoryEngine
 from core.memory.events import ConsolidationCommitted
-from core.memory.markdown import build_markdown_memory_runtime
+from core.memory.markdown import build_memory_maintenance
+from bootstrap.profile_access import build_profile_access
 from core.memory.plugin import (
     DisabledMemoryEngine,
     MemoryPluginBuildDeps,
@@ -166,9 +167,12 @@ def build_memory_runtime(
     storage_runtime: "StorageRuntime | None" = None,
     engine_ingest_gate: "EngineIngestGate | None" = None,
 ) -> MemoryRuntime:
-    # 1. markdown 是默认记忆层，任何 engine 都共用。
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
+    # 1. 画像层：按租户解析的画像存储 + maintenance（c18 task 6.10，文件后端已退出运行时）。
+    profile_access = build_profile_access(
+        config, memory_db_path=workspace / "memory" / "memory2.db"
+    )
+    markdown = build_memory_maintenance(
+        profile_stores=profile_access.resolve,
         provider=provider,
         model=config.model,
         keep_count=_memory_keep_count(config.memory_window),
@@ -178,7 +182,7 @@ def build_memory_runtime(
         global_maintenance_limit=config.admission.global_maintenance_queue,
     )
 
-    closeables: list[object] = []
+    closeables: list[object] = [profile_access]
     engines: dict[str, MemoryEngine] = {}
     primary_engine: MemoryEngine | None = None
 
@@ -230,6 +234,7 @@ def build_memory_runtime(
         engine=primary_engine or DisabledMemoryEngine(),
         engines=engines,
         closeables=closeables,
+        profile_access=profile_access,
     )
 
 
@@ -243,8 +248,11 @@ def build_memory_admin_runtime(
     storage_runtime: "StorageRuntime | None" = None,
 ) -> MemoryRuntime:
     # dashboard 不注册工具，只需要 engine admin 能力和关闭生命周期。
-    markdown = build_markdown_memory_runtime(
-        workspace=workspace,
+    profile_access = build_profile_access(
+        config, memory_db_path=workspace / "memory" / "memory2.db"
+    )
+    markdown = build_memory_maintenance(
+        profile_stores=profile_access.resolve,
         provider=provider,
         model=config.model,
         keep_count=_memory_keep_count(config.memory_window),
@@ -253,7 +261,7 @@ def build_memory_admin_runtime(
         recent_context_model=config.light_model or config.model,
         global_maintenance_limit=config.admission.global_maintenance_queue,
     )
-    closeables: list[object] = [http_resources]
+    closeables: list[object] = [profile_access, http_resources]
     engines: dict[str, MemoryEngine] = {}
     primary_engine: MemoryEngine | None = None
 
@@ -281,6 +289,7 @@ def build_memory_admin_runtime(
         engine=primary_engine or DisabledMemoryEngine(),
         engines=engines,
         closeables=closeables,
+        profile_access=profile_access,
     )
 
 

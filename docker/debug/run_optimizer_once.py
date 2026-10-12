@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agent.config_models import Config
-from agent.memory import MemoryStore
+from bootstrap.persona import SqliteRelationshipIO
 from bootstrap.profile_access import build_profile_access
 from bootstrap.providers import build_providers
 from infra.storage.tenancy import DEFAULT_TENANT
@@ -42,13 +42,13 @@ async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
     print(await store.read_entries("pending") or "(empty)")
     print("\n>>> 开始 optimize...\n")
 
-    # SELF 这一路今天仍走文件（relationship_io 未注入时），所以文件 store 还要交一个。
-    file_store = MemoryStore(workspace)
+    # SELF 这一路走 persona 的 RelationshipState 写缝（c18 ADR-10：单机也有）。
+    relationship_io = SqliteRelationshipIO(store)
     optimizer = MemoryOptimizer(
-        memory=file_store,
         provider=provider,
         model=config.model,
         max_tokens=8192,
+        relationship_io=relationship_io,
         profile_stores=access.resolve,
     )
     await optimizer.optimize(tenant_id)
@@ -57,8 +57,8 @@ async def main(config_path: str, workspace_str: str, tenant_id: str) -> None:
     print(await store.read_section("long_term") or "(empty)")
     print("\n=== pending（after，合并吃进去的行应已被取走）===")
     print(await store.read_entries("pending") or "(empty)")
-    print("\n=== SELF.md（after，仍是文件那一路）===")
-    print(file_store.read_self())
+    print("\n=== relationship_state（after，经 persona 缝）===")
+    print(await store.read_section("relationship_state") or "(empty)")
 
     access.close()
 

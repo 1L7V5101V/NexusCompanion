@@ -9,11 +9,12 @@ from typing import Any, cast
 import pytest
 
 from core.memory.markdown import MarkdownMemoryMaintenance
+from tests.memory.profile_write_cases import unused_profile_stores
 
 
 def _make_maintenance() -> MarkdownMemoryMaintenance:
     maintenance = MarkdownMemoryMaintenance(
-        store=cast(Any, object()),
+        profile_stores=cast(Any, unused_profile_stores),
         provider=cast(Any, object()),
         model="test-model",
         keep_count=20,
@@ -58,7 +59,7 @@ def test_global_maintenance_limit_is_injectable() -> None:
     """[agent.admission].global_maintenance_queue 必须能覆盖模块常量默认值。"""
     assert _make_maintenance()._maintenance_global_limit == 64
     tuned = MarkdownMemoryMaintenance(
-        store=cast(Any, object()),
+        profile_stores=cast(Any, unused_profile_stores),
         provider=cast(Any, object()),
         model="test-model",
         keep_count=20,
@@ -68,7 +69,7 @@ def test_global_maintenance_limit_is_injectable() -> None:
     assert tuned._maintenance_global_limit == 3
     with pytest.raises(ValueError):
         MarkdownMemoryMaintenance(
-            store=cast(Any, object()),
+            profile_stores=cast(Any, unused_profile_stores),
             provider=cast(Any, object()),
             model="test-model",
             keep_count=20,

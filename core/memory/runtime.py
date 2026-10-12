@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         MemoryQuery,
         MemoryQueryResult,
     )
+    from bootstrap.profile_access import ProfileAccess
     from core.memory.markdown import MarkdownMemoryRuntime
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class _Closeable(Protocol):
 
 @dataclass
 class MemoryRuntime:
-    """记忆运行时：检索引擎 + 文件后端的装配容器。
+    """记忆运行时：检索引擎 + 画像层 maintenance 的装配容器。
 
     画像读写不在这里。`read_long_term` / `read_self` / `read_recent_context` /
     `read_recent_history` / `get_memory_context` / `has_long_term_memory` 这六个无租户代理
@@ -42,6 +43,9 @@ class MemoryRuntime:
     engine: "MemoryEngine"
     closeables: list[object] = field(default_factory=list[object])
     engines: dict[str, "MemoryEngine"] = field(default_factory=dict)
+    # c18 ADR-3/6.10：画像存储的解析器与它的关闭都由本容器持有，装配根不必各建一份
+    # （两条 SQLite 连接打同一个 memory2.db 是浪费，PG 侧多一个 engine 同理）。
+    profile_access: "ProfileAccess | None" = None
 
     async def query(
         self,
