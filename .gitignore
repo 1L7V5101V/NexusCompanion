@@ -22,6 +22,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 .venv/
+# pymanager 以仓库根为工作目录运行时搭出的脚手架；必须锚到根部——core.ignorecase=true
+# 且不带前导斜杠的模式在任意深度都匹配，裸写 Python/ 会连带命中 sdk/python/
+/Python/
 
 # Node.js
 node_modules/
