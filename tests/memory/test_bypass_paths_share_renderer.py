@@ -17,10 +17,14 @@ push tool、kernel、snapshot store…），全仓库今天没有那样的夹具
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
+
+import pytest
 
 from agent.looping.core import AgentLoop
+from proactive_v2.config import ProactiveConfig
 from proactive_v2.loop import ProactiveLoop
 from proactive_v2.runtime_scope import ProactiveRuntimeScope
 
@@ -81,3 +85,61 @@ def test_build_runtime_scope_forwards_the_renderer() -> None:
 
     assert scope.profile_renderer is builder
     assert scope.persona_resolver is resolver
+
+
+def test_both_bypass_paths_reuse_one_static_block_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """4.4 的验证文本里那半条「其中一条组装后另一条的 static 段 cache_hit 为真」。
+
+    它必须等 4.6 落地才可能成立——之前只有主动推送那条路真的调渲染器。两条路径的本体都要
+    构造十几种依赖，所以这里各自调它们那个只读 `profile_renderer` 的方法（未绑定 + 替身
+    self）：被验的命题是「两次渲染落在同一个 `ContextBuilder` 的同一份 `SectionCache` 上」，
+    不是渲染结果长什么样。一次渲染里每个块只渲染一次，所以第二次出现的命中只能来自第一次。
+    """
+    from agent.context import ContextBuilder
+    from plugins.drift_flow.runtime import DriftTurnPipeline
+    from plugins.drift_flow.tools import DriftToolDeps
+    from plugins.proactive_flow.prompt import ProactivePromptBuilder
+    from tests.memory.test_no_coroutine_in_prompt import _tick_with_snapshots
+    from tests.memory.test_render_sections_parity import _Memory, _Skills
+
+    monkeypatch.setattr("agent.context.SkillsLoader", _Skills)
+    monkeypatch.setattr(
+        "agent.context.build_agent_static_identity_prompt", lambda **_: "identity"
+    )
+    builder = ContextBuilder(tmp_path, _Memory())  # type: ignore[arg-type]
+    ctx = _tick_with_snapshots()
+
+    proactive = ProactivePromptBuilder(
+        cfg=cast(ProactiveConfig, None),
+        workspace_context_fn=lambda: "",
+        profile_renderer=builder,
+    )
+    rendered = proactive._render_profile_sections(ctx)  # noqa: SLF001
+    assert [name for name, content in rendered if content], "主动推送没渲染出画像段"
+
+    drift_deps = DriftToolDeps(
+        drift_dir=tmp_path / "drift",
+        store=object(),  # type: ignore[arg-type]  # 本方法不碰 store
+        profile_renderer=builder,
+    )
+    drift_self = SimpleNamespace(_tool_deps=drift_deps)
+    long_term = DriftTurnPipeline._render_long_term_text(  # noqa: SLF001
+        drift_self,  # type: ignore[arg-type]  # 替身 self：本方法只读 _tool_deps
+        ctx,
+    )
+    assert long_term == "## Long-term Memory\n该租户的长期画像正文", (
+        "取回的应当是渲染器那一段的原文（含块自己的标题），旁路不再剥它的标题——"
+        "去重规则在共用的帧组装器里"
+    )
+
+    hits = {
+        str(meta.name)
+        for meta in builder.last_debug_breakdown
+        if meta.cache_hit
+    }
+    assert hits, (
+        "drift 这次渲染没有任何 static 段命中缓存——说明两条路径没有共用同一个 "
+        "ContextBuilder 的 SectionCache"
+    )

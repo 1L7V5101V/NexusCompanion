@@ -199,3 +199,30 @@ def test_frame_placement_comes_from_one_declaration(builder: ContextBuilder) -> 
     assert frame_names <= CONTEXT_FRAME_SECTIONS
     assert not (system_names & CONTEXT_FRAME_SECTIONS)
     assert "RETRIEVED" not in sections.system_prompt
+
+
+def test_frame_builder_does_not_double_a_block_heading() -> None:
+    """段内容自带 `## ` 标题时不再叠段名标题（c18 4.5/4.6 撞出来的形状）。
+
+    画像块是给系统提示那条路渲染的，那条路是正文拼接、标题由块自己给；旁路把它们放进上下文
+    帧，而帧按段名加标题，两边一撞就是两个标题。规则放在共用的帧组装器里，所以四条路都不
+    必自己剥标题——自己剥就是各处再实现一遍。
+    """
+    from agent.prompting import PromptSectionRender, build_context_frame_content
+
+    body = build_context_frame_content(
+        [
+            PromptSectionRender(
+                name="long_term_memory",
+                content="## Long-term Memory\n正文",
+                is_static=False,
+            ),
+            PromptSectionRender(
+                name="recent_context", content="裸正文", is_static=False
+            ),
+        ]
+    )
+
+    assert "## long_term_memory" not in body
+    assert "## Long-term Memory\n正文" in body
+    assert "## recent_context\n裸正文" in body

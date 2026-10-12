@@ -111,10 +111,11 @@ def build_drift_pipeline(
                 drift_dir=drift_dir,
                 store=store,
                 workspace_dir=workspace,
-                memory=scope.memory,
                 recent_chat_fn=recent_chat_fn,
                 shared_tools=scope.shared_tools,
                 event_bus=scope.event_bus,
+                # c18 ADR-15：与主动推送、主对话同一个渲染器（同一个租户维度 SectionCache）。
+                profile_renderer=scope.profile_renderer,
             ),
             max_steps=scope.cfg.drift_max_steps,
             tool_hooks=scope.tool_hooks,

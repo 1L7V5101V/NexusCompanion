@@ -246,25 +246,30 @@ class ProactiveFlowRuntime:
         """按本轮所服务的租户解析一次画像快照（c18 ADR-1 / ADR-3）。
 
         主动链路从 prepare 往下三层都是同步方法，所以预取只能落在这一层的 async 入口
-        （`plugins/proactive_flow/modules.py` 的 `run`）。快照一旦到手就是普通对象，同步
-        调用方拿不到未 await 的协程——这正是 task 2.5 那条靶要防的形状。
+        （`plugins/proactive_flow/modules.py` 与 `plugins/drift_flow/modules.py` 的 `run`）。
+        快照一旦到手就是普通对象，同步调用方拿不到未 await 的协程——这正是 task 2.5 那条
+        靶要防的形状。drift 模块跑在 prepare 之前，两条路都调这个方法，靠
+        `ctx.profile_prefetched` 保证一轮只解析一次。
 
         没装解析器或本轮没有目标租户时什么都不做：画像段于是缺席，而不是回退去读共享
         workspace 目录（spec「画像缺失不回退共享位置」）。
         """
+        ctx = state.ctx
+        if ctx.profile_prefetched:
+            return
         if self._persona_resolver is None or self._target_tenant_fn is None:
             return
         tenant_id = str(self._target_tenant_fn() or "")
         if not tenant_id:
             return
-        ctx = state.ctx
         ctx.tenant_id = tenant_id
+        ctx.profile_prefetched = True
         try:
             resolved = await self._persona_resolver(tenant_id)
         except Exception:
             # 与主对话那条同一个处理（`agent/core/passive_turn.py` 解析失败 → 记日志、
             # 本轮无快照）：读库失败不该让一条本来能发的推送整轮崩掉。
-            logger.exception("主动推送解析租户快照失败（本轮不注入画像段）")
+            logger.exception("主动链路解析租户快照失败（本轮不注入画像段）")
             return
         if resolved is not None:
             ctx.persona_snapshot, ctx.profile_snapshot = resolved

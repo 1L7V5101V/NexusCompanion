@@ -31,10 +31,11 @@ class DriftToolDeps:
     store: DriftStateStore
     workspace_dir: Path | None = None
     builtin_skills_dir: Path | None = None
-    memory: Any = None
     recent_chat_fn: Any = None
     shared_tools: ToolRegistry | None = None
     event_bus: Any = None
+    # c18 ADR-15：主对话那个段渲染器。drift 的画像段经它渲染，不再自己读画像存储。
+    profile_renderer: Any = None
 
 
 class SendMessageTool(Tool):

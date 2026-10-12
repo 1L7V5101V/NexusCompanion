@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
+from agent.core.prompt_block import LongTermMemoryPromptBlock
+from agent.core.types import ContextRequest
 from agent.persona import NEXUS_IDENTITY, PERSONALITY_RULES
 from agent.prompting import (
     PromptSectionRender,
@@ -42,7 +44,6 @@ from plugins.drift_flow.tools import (
 )
 
 if TYPE_CHECKING:
-    from core.memory.markdown import MemoryProfileApi
     from turn_logging.turn_logger import RoutingTurnLogger
 
 LlmFn = Callable[[list[dict], list[dict], str | dict, bool], Awaitable[dict | None]]
@@ -586,6 +587,32 @@ class DriftTurnPipeline:
 
     # ── Prompt 构建 ────────────────────────────────────────────────────
 
+    def _render_long_term_text(self, ctx: AgentTickContext | None) -> str:
+        """长期画像段经主对话那个渲染器取回（c18 ADR-15）。
+
+        快照由 `prefetch_profile` 在本模块的 async 入口取好、挂在 `ctx` 上带下来，所以这里
+        没有 await，也不可能交出未 await 的协程。`ctx` 缺失、没装渲染器、或该租户还没有
+        画像时返回空——本帧那一段于是落「（空）」，而不是去读共享 workspace 目录。
+        """
+        renderer = self._tool_deps.profile_renderer
+        if renderer is None or ctx is None or ctx.profile_snapshot is None:
+            return ""
+        result = renderer.render_sections(
+            ContextRequest(
+                history=[],
+                current_message="",
+                skill_names=[],
+                message_timestamp=ctx.now_utc,
+                tenant_id=ctx.tenant_id,
+                persona_snapshot=ctx.persona_snapshot,
+                profile_snapshot=ctx.profile_snapshot,
+            )
+        )
+        for section in [*result.frame_sections, *result.system_sections]:
+            if section.name == LongTermMemoryPromptBlock.label:
+                return str(section.content or "").strip()
+        return ""
+
     async def _build_runtime_context_message(
         self,
         skills: list[SkillMeta],
@@ -594,12 +621,7 @@ class DriftTurnPipeline:
     ) -> dict[str, str]:
         """构建 runtime context frame，包含记忆、skill 列表、近期 run 记录。"""
 
-        memory_text = ""
-        if self._tool_deps.memory is not None:
-            memory = cast("MemoryProfileApi", self._tool_deps.memory)
-            raw = str(memory.read_long_term() or "").strip()
-            if raw:
-                memory_text = raw
+        memory_text = self._render_long_term_text(ctx)
         recent_chat_text = await self._build_recent_raw_chat(limit=5)
 
         display_skills = sorted(skills[:8], key=lambda item: item.name)
@@ -671,7 +693,7 @@ class DriftTurnPipeline:
                 is_static=False,
             ),
             PromptSectionRender(
-                name="long_term_memory",
+                name=LongTermMemoryPromptBlock.label,
                 content=memory_text or "（空）",
                 is_static=False,
             ),

@@ -15,9 +15,11 @@ class AgentTickContext:
 
     # c18 ADR-1/3：本轮所服务租户的快照对，由 `prefetch_profile` 在 async 入口取好后带下去。
     # None 是「本轮没有该租户的画像」的空语义，下游不得回退读共享 workspace 目录。
+    # 一轮 tick 里 drift 与 proactive 两条路都会要画像，`profile_prefetched` 让它只解析一次。
     tenant_id: str = ""
     persona_snapshot: Any | None = None
     profile_snapshot: Any | None = None
+    profile_prefetched: bool = False
 
     # Gateway 预取结果（_run_loop 启动前由 DataGateway 填充）
     fetched_alerts: list[dict] = field(default_factory=list)    # 含 ack_server 字段

@@ -291,6 +291,8 @@ class ProfileSectionRenderer(Protocol):
 
 **不统一的一处差异，显式记录。** 主链把 `long_term_memory` 与 `self_model` 放系统提示（`_CONTEXT_FRAME_SECTIONS` 只含 `active_skills` / `recent_context` / `retrieved_memory`），而主动推送把这三段全放上下文帧（`prompt.py:159-161` → `:188`），帧开头带一句「以下内容由系统提供，不是用户陈述……禁止在回复中引用、复述、展示本提醒本身」（`assembler.py:75`）。同名段在两条路径下给模型的位置与附带约束不同。`render_sections` 两组分开返回、各路径自己挑，因此本次保持各自现状；统一放置会改模型行为，需要跑评测判断好坏，属另一个 change。
 
+**接上共用渲染器之后，帧里的段标题有一处文字变化。** 画像块是给系统提示那条路渲染的——那条路是正文拼接，标题由块自己给（`## Long-term Memory`、`## <名字> Self-Perception`）；旁路把同一段放进上下文帧，而 `build_context_frame_content` 按段名再加一层 `## long_term_memory`，两边一撞就是两个标题（4.5 落地后由 4.6 的用例撞出）。选定：去重规则放在共用的帧组装器里——段内容以 `## ` 开头时不再叠段名标题。于是旁路那两段的标题文字变成块自己的写法（`## long_term_memory` → `## Long-term Memory`），`recent_context` 不受影响（该块返回裸正文）。规则不放这里而放各旁路自己剥标题，就是 ADR-15 拒绝的「各路径再实现一遍」；主链不受影响——它进帧的三段里 `active_skills` 用 `# ` 一级标题、另两段是裸正文，实测主链帧相关用例零变化。
+
 ## Risks / Trade-offs
 
 - **预取让每轮多两条 SELECT**，即使该轮某些块用不到 → 两条都是按 `(tenant_id, category)` 的窄查询，走唯一索引与时间索引；快照按 persona 快照同样的方式参与 prompt 缓存签名，未变更时不重复组装。
