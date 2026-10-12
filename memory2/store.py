@@ -119,6 +119,57 @@ CREATE TABLE IF NOT EXISTS memory_query_log (
     preview       TEXT,
     created_at    TEXT NOT NULL
 );
+
+-- c18-tenant-scoped-memory ADR-13/ADR-10：画像层两张专表 + persona 缝两张表。
+-- 与 PG 侧 alembic b7d3f5a9c1e4 同形（列名 / NOT NULL / CHECK 取值一致，时间戳在本
+-- 后端按本文件既有约定存 ISO 文本）。画像不落 memory_items：召回的类型过滤不是结构性
+-- 的（默认意图不加 memory_type 过滤，该列也无 CHECK），共表时一次普通召回就能把长期
+-- 画像整段返回。这四张表都带 tenant_id，所以跨租户隔离断言在 SQLite 上也能跑——
+-- memory_items 没有该列，单机的「隔离」只等于「只有一个租户」。
+-- persona_templates 不建：单机没有模板面。
+CREATE TABLE IF NOT EXISTS tenant_memory_profile_sections (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    category    TEXT NOT NULL CHECK (category IN ('long_term', 'recent_context', 'relationship_state')),
+    content     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_memory_profile_sections_tenant_category
+    ON tenant_memory_profile_sections (tenant_id, category);
+CREATE TABLE IF NOT EXISTS tenant_memory_profile_entries (
+    id          TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL,
+    category    TEXT NOT NULL CHECK (category IN ('pending', 'history', 'journal')),
+    content     TEXT NOT NULL,
+    happened_at TEXT NOT NULL,
+    dedup_key   TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_memory_profile_entries_dedup
+    ON tenant_memory_profile_entries (tenant_id, dedup_key);
+CREATE INDEX IF NOT EXISTS ix_tenant_memory_profile_entries_time
+    ON tenant_memory_profile_entries (tenant_id, category, happened_at DESC);
+CREATE TABLE IF NOT EXISTS tenant_persona_profiles (
+    tenant_id         TEXT PRIMARY KEY,
+    source            TEXT NOT NULL CHECK (source IN ('template', 'custom')),
+    template_id       TEXT,
+    identity          TEXT NOT NULL,
+    personality_rules TEXT NOT NULL,
+    self_model        TEXT NOT NULL,
+    created_at        TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS persona_audit_events (
+    id         TEXT PRIMARY KEY,
+    tenant_id  TEXT NOT NULL,
+    actor      TEXT NOT NULL CHECK (actor IN ('user', 'optimizer', 'admin')),
+    action     TEXT NOT NULL CHECK (action IN ('onboarding_submit', 'relationship_update', 'template_create', 'template_update', 'template_disable')),
+    turn_id    TEXT,
+    detail     TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_persona_audit_tenant_created
+    ON persona_audit_events (tenant_id, created_at);
 """
 
 # VEC_SCHEMA 在 MemoryStore2.__init__ 中按 vec_dim 动态生成

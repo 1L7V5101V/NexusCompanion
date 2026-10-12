@@ -26,6 +26,8 @@
 | F12 测试断言数量低估 | 已修 | proposal — Impact 重写 |
 | F13 spec 的单机判据与实现不一致 | 已修 | spec 里写明判据并与实现对齐 |
 
+**F14（apply 阶段新发现，不在上面那张表里）——唤醒插件从未成功加载，且缺陷被静默吞掉。严重度中、影响面是「装了但没跑」。** `plugins/wake_proactive/runtime.py:48` 无条件 `from session.embedding_store import MessageEmbeddingStore`；`session/embedding_store.py` 在本仓库任何分支上都不存在（`git log --all -- session/embedding_store.py` 零提交），该 import 自 `168fed4a3`「feat: 事件驱动唤醒与插件包系统」起就是坏的，且 `:115` 真实使用这个类（`close()`、`list_until(model=, cutoff=)`、一个 None 分支），不是多余 import。`agent/plugins/manager.py:1598-1607` 把 `ImportError` 吞成 `logger.warning` + failed gate + `return None`，后端照常启动。`plugin_packages/wake-proactive/package.toml` 声明 `provides = ["proactive.runtime"]`、`dashboard = true`。全仓库没有任何测试导入过该模块（改动前 grep 零命中）。处置：owner 决定把 C18 的组装路径范围定回三条可加载路径，唤醒的接入与导入缺陷另开 change；2.4 的静态扫描保留对 `plugins/wake_proactive/` 的覆盖作为看守。**本评审正文里的 F2 曾把唤醒列为三条旁路之一并按「可加载」处理，这一处判断是错的**——当时只读了源码形状，没跑过导入。遗留问题：failed gate 在 admin 控制台是否可见、要不要给「安装后长期加载失败」加一条启动期告警，属另一个 change。
+
 修订中新查出、正文里没有的两条：`PgMemoryMarkdownStore` 不满足 `MemoryProfileApi`（协议 10 个方法实现 6 个，接上就在 `core/memory/runtime.py:46` 抛 AttributeError）已记进 design — Context 与 ADR-14；tasks.md「六处装配点」重复计数并漏列 `plugins/wake_proactive/runtime.py:127` 已记进 ADR-4。
 
 不在本 change 处理、由 owner 另开 change 的两条：主动推送与 drift 注入进程级全局身份常量（`agent/persona.py:8/14`），以及 `tenant_persona_profiles.self_model` 作为 admin 读取出口端的是 onboarding 固定值而非当前值。前者在 proposal — Non-Goals 记了一行边界。

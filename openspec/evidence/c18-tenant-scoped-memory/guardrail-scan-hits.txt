@@ -1,0 +1,54 @@
+c18-tenant-scoped-memory task 2.4 / 2.5 evidence — 静态扫描扩范围 + 协程进提示的行为断言
+生成: 2026-10-12 16:40  分支: feature/c18-tenant-scoped-memory
+
+四条测试按设计为红（靶测试）。红转绿点：2.4 → 6.10 与 4.5-4.7；2.5 → 4.5。
+pyright 两配置各 0 errors（与 1.1 基线相同）。
+
+==============================================================
+2.4 tests/memory/test_no_shared_profile_io.py
+==============================================================
+全局规则 FORBIDDEN：命中 12 处，与 task 2.2 记录的初版一致——
+扩 BYPASS_DIRS 没有引入新的全局命中（四个插件目录里不含 markdown 单例取用）。
+
+新增 BYPASS 规则（ADR-15：旁路不得自己读画像存储）：命中 5 处，全部落在 4.5-4.7 清单内
+  plugins/proactive_flow/prompt.py:152   read_recent_context       -> 4.5
+  plugins/proactive_flow/prompt.py:250   read_long_term            -> 4.5
+  plugins/proactive_flow/prompt.py:256   read_self                 -> 4.5（ADR-9 删该方法）
+  plugins/drift_flow/runtime.py:600      read_long_term            -> 4.6
+  plugins/wake_proactive/runtime.py:1025 getattr 'read_long_term'   -> 4.7
+
+裸标识符模式是必要的：wake 那处写的是 getattr(self._scope.memory, "read_long_term", None)，
+带调用括号的模式抓不到第二种形态。
+
+==============================================================
+2.5 tests/memory/test_no_coroutine_in_prompt.py
+==============================================================
+2 failed（预期红）/ 1 passed（前提自检：假存储的方法确实是协程，否则全在测空气）
+
+真调 build_runtime_context_message 得到的帧正文片段——这不是「写法不好看」，是垃圾进提示：
+  ## self_model
+  <coroutine object AsyncProfileStore.read_self at 0x...>
+  ## long_term_memory
+  <coroutine object AsyncProfileStore.read_long_term at 0x...>
+  ## recent_context
+  <coroutine object AsyncProfileStore.read_recent_context at 0x...>
+
+同一次调用发出 3 条 RuntimeWarning: coroutine ... was never awaited。该告警在协程对象
+被回收时才发出，不在调用点，所以测试里必须显式 gc.collect()——单靠 -W error 抓不到。
+
+根因链：协程对象是真值，所以 str(x() or "") 里的 or "" 兜不住；且全程不抛异常。
+
+drift 与唤醒两条今天只能静态覆盖，理由写在测试文件 docstring 里。
+
+==============================================================
+暂停项（须变更作者决定）
+==============================================================
+唤醒组装路径今天不可导入：
+  plugins/wake_proactive/runtime.py:48  无条件 from session.embedding_store import MessageEmbeddingStore
+  session/embedding_store.py            本仓库任何分支上都不存在（git log --all -- 该路径 零提交）
+  该 import 自 168fed4a3「feat: 事件驱动唤醒与插件包系统」起就是坏的
+  MessageEmbeddingStore 在 :115 被真实使用（不是多余 import）
+  plugin_packages/wake-proactive/package.toml 声明 provides = ["proactive.runtime"]
+  agent/plugins/manager.py:1598-1607 把 ImportError 吞成 logger.warning + failed gate + return None
+影响：task 4.7 没有落脚点；spec「prompt 组装只读当前租户画像」里「四条组装路径」的第四条
+      与刚加的 Scenario「四条组装路径同源」今天无法验证。

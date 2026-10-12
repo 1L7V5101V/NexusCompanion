@@ -1,0 +1,78 @@
+c18-tenant-scoped-memory task 6.1 evidence — PG 画像专表结构
+生成时间: 2026-10-12 16:23
+目标库: postgresql://nexus@localhost:5433/nexus  （便携版 PG，非 Docker）
+alembic: e8b4c2a6d9f1 (head before) -> b7d3f5a9c1e4 (head after)
+
+========================================================================
+A. 升降级实跑
+========================================================================
+alembic upgrade head    : OK
+alembic downgrade -1    : OK —— 两张新表 drop，memory_items /
+                          tenant_persona_profiles / persona_audit_events 均在
+再次 alembic upgrade head: OK，current = b7d3f5a9c1e4 (head)
+
+========================================================================
+tenant_memory_profile_sections
+========================================================================
+-- columns --
+   id           uuid                       NOT NULL
+   tenant_id    character varying(64)      NOT NULL
+   category     character varying(32)      NOT NULL
+   content      text                       NOT NULL
+   created_at   timestamp with time zone   NOT NULL
+   updated_at   timestamp with time zone   NOT NULL
+-- constraints --
+   ck_tenant_memory_profile_sections_category
+      CHECK (((category)::text = ANY ((ARRAY['long_term'::character varying, 'recent_context'::character varying, 'relationship_state'::character varying])::text[])))
+   tenant_memory_profile_sections_pkey
+      PRIMARY KEY (id)
+   uq_tenant_memory_profile_sections_tenant_category
+      UNIQUE (tenant_id, category)
+-- indexes --
+   CREATE UNIQUE INDEX tenant_memory_profile_sections_pkey ON public.tenant_memory_profile_sections USING btree (id)
+   CREATE UNIQUE INDEX uq_tenant_memory_profile_sections_tenant_category ON public.tenant_memory_profile_sections USING btree (tenant_id, category)
+
+========================================================================
+tenant_memory_profile_entries
+========================================================================
+-- columns --
+   id           uuid                       NOT NULL
+   tenant_id    character varying(64)      NOT NULL
+   category     character varying(32)      NOT NULL
+   content      text                       NOT NULL
+   happened_at  timestamp with time zone   NOT NULL
+   dedup_key    text                       NULL
+   created_at   timestamp with time zone   NOT NULL
+-- constraints --
+   ck_tenant_memory_profile_entries_category
+      CHECK (((category)::text = ANY ((ARRAY['pending'::character varying, 'history'::character varying, 'journal'::character varying])::text[])))
+   tenant_memory_profile_entries_pkey
+      PRIMARY KEY (id)
+   uq_tenant_memory_profile_entries_dedup
+      UNIQUE (tenant_id, dedup_key)
+-- indexes --
+   CREATE INDEX ix_tenant_memory_profile_entries_time ON public.tenant_memory_profile_entries USING btree (tenant_id, category, happened_at DESC)
+   CREATE UNIQUE INDEX tenant_memory_profile_entries_pkey ON public.tenant_memory_profile_entries USING btree (id)
+   CREATE UNIQUE INDEX uq_tenant_memory_profile_entries_dedup ON public.tenant_memory_profile_entries USING btree (tenant_id, dedup_key)
+
+========================================================================
+B. 约束行为实测（每条独立事务/探针行，跑完已清理，表内零残留）
+========================================================================
+ sections:
+   ✓ UNIQUE(tenant_id, category) 拦住同租户同类第二行        -> 23505 UniqueViolation
+   ✓ 不同租户写同一 category 不受影响                        -> OK
+   ✓ CHECK 拦住白名单外的 category（'self'）                 -> 23514 CheckViolation
+   ✓ CHECK 拦住整块表里的日志类 category                     -> 23514 CheckViolation
+   ✓ content 为 NULL 被拒                                    -> 23502 NotNullViolation
+   ✓ 'relationship_state' 在白名单内可写                     -> OK
+ entries:
+   ✓ UNIQUE(tenant_id, dedup_key) 拦住同租户重放              -> 23505 UniqueViolation
+   ✓ 租户 B 使用与租户 A 相同的 dedup_key 插入成功             -> OK
+       （F3：原计划借 app_configs 时键跨租户全局，B 会被 A 静默判重）
+   ✓ dedup_key 为 NULL 可重复插入（不参与去重）               -> 2 行
+   ✓ happened_at 缺省被拒                                    -> 23502 NotNullViolation
+ pending 消费（取走即删，同一事务内）:
+   插 2 行 -> DELETE ... RETURNING content 拿到 ['f1','f2'] -> 剩余 0 行
+   该事务 ROLLBACK 后整体不残留 —— 即 ADR-14 说的「回滚就是事务中止」
+
+验证后残留行数: sections 0, entries 0

@@ -19,6 +19,8 @@
 
 其中两条已经在用组装器的段词汇，等于组装器的段渲染被分叉了一份：`plugins/proactive_flow/prompt.py:135` 建的就是 `list[PromptSectionRender]`，`:159-161` 写死 `self_model` / `long_term_memory` / `recent_context` 三个段名（与 `agent/core/prompt_block.py:157/182/218` 三个块的 label 一字不差），`:188` 收尾调 `build_context_frame_message(build_context_frame_content(sections))`，这两个函数主链在 `agent/prompting/assembler.py:154` 与 `agent/context.py:103` 用；`plugins/drift_flow/runtime.py:673-677` 同样在建 `PromptSectionRender(name="long_term_memory", ...)`。
 
+**唤醒那条今天不可加载。** `plugins/wake_proactive/runtime.py:48` 无条件 `from session.embedding_store import MessageEmbeddingStore`，而 `session/embedding_store.py` 在本仓库任何分支上都不存在（`git log --all -- 该路径` 零提交；该 import 自 `168fed4a3`「事件驱动唤醒与插件包系统」起就是坏的，`MessageEmbeddingStore` 在 `:115` 被真实使用，不是多余 import）。插件加载器把它吞成一条 warning + failed gate（`agent/plugins/manager.py:1598-1607`）并 `return None`，所以后端照常启动，wake-proactive 从未加载过。全仓库没有任何测试导入过该模块。因此本 change 的组装路径范围是**三条可加载路径**，唤醒的接入归另一个 change（design ADR-15、Risks 同名条目）。
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -27,7 +29,7 @@
 - 画像与记忆召回分表：画像行不出现在任何召回 SQL 里，召回结果也不含画像内容。
 - 同步的 prompt 块协议不被改成 async，改动不外溢到会话内容与召回面。
 - 单机与多租户共用同一套按租户解析的画像接口，单机归到固定租户；不再维护第二份文件实现。
-- 四条组装路径（主对话、主动推送、drift、唤醒）经同一个段渲染器取画像段，画像段的渲染只有一份实现（见 ADR-15）。
+- 三条可加载组装路径（主对话、主动推送、drift）经同一个段渲染器取画像段，画像段的渲染只有一份实现；尚不可加载的唤醒插件由静态扫描看守（见 ADR-15）。
 - `ContextBuilder` 不做 I/O：租户数据全部从传入的快照走，它不再持有画像存储。
 
 **Non-Goals:**
@@ -83,12 +85,12 @@
 | `bootstrap/app.py:775`（proactive） | 独立根。传 `memory_store=self.memory_runtime` 进 `build_proactive_runtime`，经 `proactive_v2/loop.py:74` → `:105` → `:170` 成为 `scope.memory` |
 | `bootstrap/tools.py:597`（maintenance 绑会话生命周期） | 独立根 |
 | `plugins/drift_flow/factory.py:114` | 不是根，是上面第三个根的下游消费者（读 `scope.memory`） |
-| `plugins/wake_proactive/runtime.py:127` | 同上，**原计划漏列** |
+| `plugins/wake_proactive/runtime.py:127` | 同上，**原计划漏列**；但该插件今天不可加载，这处消费者是休眠的（见 ADR-15 与 Context 段），随唤醒 change 一起处理 |
 | `bootstrap/tools.py:577-579`（ContextBuilder 注入） | ADR-15 删掉 `ContextBuilder` 的 `memory` 参数后，这处引用消失 |
 
 改法：根上改为持有「租户 → 画像读写入口」的解析器，在真正处理某个租户数据的时刻解析。optimizer 与 proactive 本来就按会话逐个处理，租户上下文在手上，改动是把它传下去。
 
-`scope.memory` 不会整个消失：唤醒侧还要用它的 `embedding_api`（`plugins/wake_proactive/runtime.py:553`、`:594`），消失的只是它的画像职责。ADR-15 之后三条旁路都不再经它读画像。
+`scope.memory` 不会整个消失：唤醒侧声明还要用它的 `embedding_api`（`plugins/wake_proactive/runtime.py:553`、`:594`，该路径今天不可加载），消失的只是它的画像职责。ADR-15 之后主动推送与 drift 两条旁路都不再经它读画像。
 
 ### ADR-5 抽公共 `tenant_category_root` helper，同时给 blob_store 去重
 
@@ -245,7 +247,7 @@
 
 **不选：按原协议在两张新表上重写一遍。** 同样的接口会把文件语义带进表里，`backup_long_term` 与 `snapshot_pending` 只能再写一遍空实现。
 
-### ADR-15 四条组装路径共用段渲染器，`ContextBuilder` 不再持有画像存储
+### ADR-15 三条可加载组装路径共用段渲染器，`ContextBuilder` 不再持有画像存储
 
 `ContextBuilder._build_system_prompt_result`（`agent/context.py:332-360`）已经是「收快照、返回段、不碰消息封装」那个函数，返回 `SystemPromptBuildResult`（`agent/core/prompt_block.py:279-283`，公开数据类）。主链自己就在用：`PromptAssembler.assemble` 在 `assembler.py:108` 调它，再在 `:155` 加消息封装。它是私有的，唯一调用方是 `assemble`。
 
@@ -256,21 +258,22 @@ class ProfileSectionRenderer(Protocol):
     def render_sections(self, request: ContextRequest) -> SystemPromptBuildResult: ...
 ```
 
-三条旁路改为调它，删掉各自的画像读取：`plugins/proactive_flow/prompt.py:149-155` 的三次同步读、`:248-257` 的两个读取器、`:159-161` 三个重复段名；`plugins/drift_flow/runtime.py:597-602` 的同步读与 `:673-677` 的重复段。唤醒侧本来就是「先把文本取好再当参数传」（`build_messages(ctx=..., memory_text=...)`），改为传渲染结果。
+两条在范围内的旁路改为调它，删掉各自的画像读取：`plugins/proactive_flow/prompt.py:149-155` 的三次同步读、`:248-257` 的两个读取器、`:159-161` 三个重复段名；`plugins/drift_flow/runtime.py:597-602` 的同步读与 `:673-677` 的重复段。
 
-这样做的直接收益是把一类失效从结构上消掉：同步调用方拿到未 await 的协程对象时，协程是真值，`str(x() or "")` 会把 `<coroutine object ...>` 送进提示，而不报错也不留空。共用渲染器之后插件侧根本不存在对存储的读取调用，协程无从产生。
+这样做的直接收益是把一类失效从结构上消掉：同步调用方拿到未 await 的协程对象时，协程是真值，`str(x() or "")` 会把 `<coroutine object ...>` 送进提示，而不报错也不留空。task 2.5 已经实测到实物——真调 `build_runtime_context_message` 得到的帧正文里，`## self_model` / `## long_term_memory` / `## recent_context` 三段全是 `<coroutine object ...>`。共用渲染器之后插件侧根本不存在对存储的读取调用，协程无从产生。
 
 **预取落点各一条，都在已有的 async 入口，不需要把同步方法翻成 async：**
 
 - drift：`_build_runtime_context_message` 已是 `async def`（`plugins/drift_flow/runtime.py:589`）。
-- 唤醒：`decide()` 是 `async def`（`plugins/wake_proactive/runtime.py:342`），三个 `_read_memory()` 调用点（`:353`、`:391`、`:685`）都在它下游，预取一次挂在 `WakeContext` 上往下带。
 - 主动推送：三层同步（`plugins/proactive_flow/modules.py:21` → `plugins/default_proactive/runtime.py:530` → `plugins/proactive_flow/prompt.py:149`），在 `modules.py:19` 的 `async def run` 预取，挂 `AgentTickContext` 新字段往下带。
 
-**装配**：三条旁路共用生产环境唯一的那个 `ContextBuilder` 实例（`bootstrap/tools.py:577-579` 建，`agent/looping/core.py:178` 用 `deps.context`），因此共用同一份 `SectionCache`；该缓存的 scope 已带租户维度（ADR-11），共用是安全的，且省掉重复渲染静态段。给 `ProactiveRuntimeScope`（`proactive_v2/runtime_scope.py:25` 旁）加一个渲染器字段，在 `proactive_v2/loop.py:163-170` 填充。
+**唤醒不在本 change 范围内，因为它今天不可加载。** `plugins/wake_proactive/runtime.py:48` 无条件执行 `from session.embedding_store import MessageEmbeddingStore`，而 `session/embedding_store.py` 在本仓库任何分支上都不存在（`git log --all -- session/embedding_store.py` 零提交，该 import 自 `168fed4a3` 起就是坏的）。`agent/plugins/manager.py:1598-1607` 把由此产生的 `ImportError` 吞成一条 `logger.warning` + failed gate + `return None`，所以后端照常启动，wake-proactive 从未加载过。它的接入方式已经确定——`decide()`（`:342`）已是 `async def`，三个读取点（`:353`、`:391`、`:685`）都在其下游，预取一次挂 `WakeContext` 即可，无需翻 async；该结构本来就是「先取好文本再当参数传」（`build_messages(ctx=..., memory_text=...)`）——但补齐导入本身是另一件事，归另一个 change。**本 change 保留 2.4 静态扫描对 `plugins/wake_proactive/` 的覆盖**：静态规则读源码不需要该模块能导入，而它恰好是唤醒恢复加载能力时的看守，防止第四条带着自己的画像读取上线。
+
+**装配**：主动推送与 drift 共用生产环境唯一的那个 `ContextBuilder` 实例（`bootstrap/tools.py:577-579` 建，`agent/looping/core.py:178` 用 `deps.context`），因此共用同一份 `SectionCache`；该缓存的 scope 已带租户维度（ADR-11），共用是安全的，且省掉重复渲染静态段。给 `ProactiveRuntimeScope`（`proactive_v2/runtime_scope.py:25` 旁）加一个渲染器字段，在 `proactive_v2/loop.py:163-170` 填充。唤醒将来恢复加载后走同一个字段，不需要另开装配口。
 
 **连带：`ContextBuilder` 的 `memory` 参数删除。** `ctx.memory` 在全部九个块里只被读一次，在 `agent/core/prompt_block.py:171`，即 `SelfModelPromptBlock` 无快照时的回退分支。ADR-9 删 `read_self`、task 6.8 让单机也装配 resolver（快照恒非 None），这一行随之消失。于是 `bootstrap/tools.py:577-579` 不再传 `memory_runtime.markdown.store`，`bootstrap/wiring.py:42` 的工厂签名少一个参数，`agent/looping/core.py:169-178` 那段「有 markdown 就用它的 store、否则退回 memory_engine」的三元选择整段删除。`ContextBuilder` 从此不做 I/O。
 
-**不选：三条旁路改调公开的 `ContextBuilder.render`。** `render`（`:294-330`）在段之外强制加消息封装，而封装是对话轮次形状：`[system, *history, context_frame?, user(current_message)]`（`agent/context.py:99-114`），`history` 与 `current_message` 都是 `ContextRequest` 必填字段。唤醒只要系统提示（它在 `plugins/wake_proactive/runtime.py:403-429` 把拿到的消息拆开重组），主动推送的开场消息不是用户说的话，当 `current_message` 喂进去会被盖上用户消息时间戳并可能触发渠道策略改写（`agent/context.py:94-97`）。三条都要传 `history=[]` 加一句假消息，然后把封装扔掉。
+**不选：旁路改调公开的 `ContextBuilder.render`。** `render`（`:294-330`）在段之外强制加消息封装，而封装是对话轮次形状：`[system, *history, context_frame?, user(current_message)]`（`agent/context.py:99-114`），`history` 与 `current_message` 都是 `ContextRequest` 必填字段。主动推送的开场消息不是用户说的话，当 `current_message` 喂进去会被盖上用户消息时间戳并可能触发渠道策略改写（`agent/context.py:94-97`）；唤醒只要系统提示，它在 `plugins/wake_proactive/runtime.py:403-429` 把拿到的消息拆开重组。两条都得传 `history=[]` 加一句假消息，然后把封装扔掉。
 
 **不选：只抽一个「画像段」helper 函数。** 共用渲染但不共用顺序、缓存与 breakdown，两条组装管线并存，段名仍在两处声明。
 
@@ -283,7 +286,8 @@ class ProfileSectionRenderer(Protocol):
 - **漏改某条旁路会把内容写回共享文件**，而写回后不会再被读到，故障表现为「记忆静默丢失」而不是报错 → 用 spec 中「多租户路径无共享目录读写」那条静态扫描 Scenario 做成可执行测试。扫描范围 SHALL 覆盖 ADR-4 的 4 个独立根所在模块，**并覆盖三条旁路**：`plugins/proactive_flow/`、`plugins/drift_flow/`、`plugins/wake_proactive/`。原计划的扫描清单只有 `plugins/drift_flow/`，另两条不在内，而它们恰恰是同步调用 async 存储、最容易把协程对象塞进提示的地方。
 - **测试断言面大**：断言 `workspace/memory/` 路径或 markdown 单例语义的用例，加上三条旁路与 `ContextBuilder` 构造签名的用例（清单见 proposal.md — Impact）→ 先改 `tests/memory_fakes.py:25` 这个共用替身，让其余用例跟着替身收敛，避免逐文件手改。
 - **`content_hash` 跨进程不稳定**：全仓库 6 处 `str(hash(正文))`——`agent/memory_pg.py:232/252/295`、`bootstrap/persona.py:113/131`、`bootstrap/db/repository/persona_repo.py:153`——而 Python 的字符串 hash 按进程随机化、仓库未固定 `PYTHONHASHSEED`，所以任何靠它去重的路径在重放时都失效。**这 6 处在本 change 之后全部消失**，不是被修好而是被删掉：新表用 `(tenant_id, category)` 与 `(tenant_id, dedup_key)` 做键，不需要正文哈希（ADR-13、ADR-14）。原计划「迁移一律走 `_append_once_with_index`、禁止 `_append_entry`」那条强制令随之作废——`_append_once_with_index` 依赖的 `app_configs` 键有 128 字符上限且跨租户全局，两个缺陷见 ADR-13。
-- **共用段渲染器会同时改变四条路径的提示内容** → 缓解有两条：`render_sections` 把系统提示段与上下文帧段分开返回，各路径保持现状放置，主动推送那三段的落点不变；主链只改调用名，`assemble` 的输入输出与顺序不动。验证方式是断言四条路径拿到的画像段内容一致，而不是断言提示全文一致。
+- **共用段渲染器会同时改变三条路径的提示内容** → 缓解有两条：`render_sections` 把系统提示段与上下文帧段分开返回，各路径保持现状放置，主动推送那三段的落点不变；主链只改调用名，`assemble` 的输入输出与顺序不动。验证方式是断言三条路径拿到的画像段内容一致，而不是断言提示全文一致。
+- **唤醒插件从未成功加载，而缺陷被静默吞掉**：`agent/plugins/manager.py:1598-1607` 把插件 `ImportError` 降级成一条 `logger.warning` + failed gate + `return None`，后端照常起得来。这条错误处理本身是有意的（单个坏插件不该拖垮启动），但它的代价是「装了却从没跑过」的功能可以长期无人察觉——`plugin_packages/wake-proactive/package.toml` 声明 `provides = ["proactive.runtime"]`，而 `MessageEmbeddingStore` 的缺失自 `168fed4a3` 起就存在，主 spec、两份 roadmap 与全部测试都没有覆盖过该插件。本 change 只把它从组装路径范围里如实移出并保留静态扫描看守，不在修隔离的 change 里顺手激活一条从未运行过的推送路径。**failed gate 是否在 admin 控制台可见、要不要给「安装后长期加载失败」加一条启动期告警，属另一个 change。**
 - **`ContextFactory` 的签名变化**：`bootstrap/wiring.py:22` 现在是 `Callable[[Path, Any], Any]`，删掉 `ContextBuilder` 的 `memory` 参数后变 `Callable[[Path], Any]`。`_CONTEXT_WIRING` 只有一个条目（`:41-43`），所以爆炸半径小，但这是一个公开类型别名的破坏性改动，配置里写了自定义 context wiring 的部署会在启动时报错而不是静默降级。
 - **回滚**：多租户模式下画像层无 feature 开关可退回全局文件——退回即重新引入泄漏。回滚策略是代码回滚加一个 alembic downgrade：两张画像表是纯新增，`memory_items` 与 persona 三表都不动，downgrade 只 drop 新表，已迁入的画像数据丢弃但不影响旧行为。共享目录原文件按 spec 要求从未被改写，因此回滚后旧行为立即可用。
 
