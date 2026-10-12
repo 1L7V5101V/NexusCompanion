@@ -236,14 +236,18 @@
 
 **pending 的两阶段提交在表存储下塌缩。** 文件后端要靠原子重命名把待合并内容先藏起来才能做到崩溃可恢复：`agent/memory.py:204-218` 重命名、`:228-244` 合并回来、`:246-250` 处理崩溃残留。表存储下消费就是一条 `DELETE FROM tenant_memory_profile_entries WHERE tenant_id=:t AND category='pending' RETURNING content`，取走与删除同事务，回滚就是事务中止，崩溃残留无从产生。`MemoryOptimizer._optimize`（`proactive_v2/memory_optimizer.py:261-298`）那个 try / `except BaseException` / 双分支 commit-rollback 的骨架随之简化成一次事务。
 
-留下的接口按两张表分两组，约 9 个方法：
+**取走必须落在调用方的事务里**，否则上面那段塌陷不成立。`take_pending` 的会话参数因此是必填而不是可选：让它自己提交，删除就在合并之前落库，合并失败时 pending 已经没了——比它要取代的重命名方案更糟（重命名至少还能被 `_recover_pending_snapshot` 捡回来）。两侧各有一条用例把「中止后行仍在」钉住。代价写在这里：这笔事务横跨一次 LLM 调用，PG 侧那条连接在等待期间处于 idle-in-transaction，6.11 落地时按这个前提定超时与重试，别顺手把 `take_pending` 改成自提交。
+
+留下的接口按两张表分两组，实测是 **六个方法**（少于原先估的「约 9 个」：`relationship_state` 复用整块组的读写，`take_pending` 一步取代原来的三步）：
 
 - **整块组**：读一类、写一类。`long_term` 与 `recent_context` 由画像层直接读写；`relationship_state` 的读写由 persona 缝独占（ADR-9），画像层的存储实现提供方法但不暴露给组装侧。
 - **日志组**：追加一行（带 `dedup_key`）、按时间读若干行、`pending` 取走即删。
 
+两个写入方法（`write_section` / `append_entry`）收一个**可选** `session`：给了就写进调用方的事务且不提交，没给就自开一次借用并提交。「提交与否」在每个实现里只决定一次，所以不会出现某个写方法忘了提交、或某个本该并入调用方事务的写把别人的事务一起提交掉——6.6 的「画像行与 `persona_audit_events` 同事务」靠的就是这个参数。
+
 存储实现只做 async。ADR-15 之后同步侧不再有画像读取调用点，因此不需要 ADR-1 之外的同步门面。SQLite 侧的 `memory2/store.py` 是同步 `sqlite3`，照仓库既有先例用 `asyncio.to_thread` 包（`core/memory/markdown.py:783-785` 对 `read_history` 就是这么做的），不在协议层为两种后端分叉出同步与异步两套签名。
 
-**组装期的批量读收一个外部会话参数。** ADR-1 要求 persona 与画像出自同一次会话借用（两次借用之间有时间缝，并发 optimizer 写入会让同一轮拿到两个瞬间的拼贴），而 ADR-14 又要求 SQL 只有一份——两条叠在一起，只能让存储提供「在你借好的会话上跑」的方法，而不是自己再开一个。PG 侧传 `AsyncSession`，SQLite 侧传 `sqlite3.Connection`：这两种类型没有共同接口（`AsyncSession.execute` 是协程、`sqlite3.Connection.execute` 是同步并返回 Cursor），所以该参数在协议层只能收成较泛的类型，契约写在文档字符串里。**这是本 ADR 明确接受的一处代价**：类型检查帮不了「传错后端会话」这种情况，靠 6.5 那条两侧共用一份参数化清单的用例兜住。
+**外部会话参数在协议层收成较泛的类型。** ADR-1 要求 persona 与画像出自同一次会话借用（两次借用之间有时间缝，并发 optimizer 写入会让同一轮拿到两个瞬间的拼贴），而 ADR-14 又要求 SQL 只有一份——两条叠在一起，只能让存储提供「在你借好的会话上跑」的方法，而不是自己再开一个。PG 侧传 `AsyncSession`，SQLite 侧传 `sqlite3.Connection`：这两种类型没有共同接口（`AsyncSession.execute` 是协程、`sqlite3.Connection.execute` 是同步并返回 Cursor），所以该参数在协议层只能收成较泛的类型，契约写在文档字符串里。**这是本 ADR 明确接受的一处代价**：类型检查帮不了「传错后端会话」这种情况，靠 6.5 那条两侧共用一份参数化清单的用例兜住。
 
 **不选：把批量读拆成「存储只出 SQL 文本、解析器自己执行」。** 类型确实干净（`Text` 两种后端通用），但整块类与日志类的读取带字符预算与截断语义（文件版的 `read_history(max_chars)` 是取尾部），这些逻辑得留在存储里，只出 SQL 文本会把它们推到调用方。
 

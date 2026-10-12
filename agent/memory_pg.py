@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -30,13 +33,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from bootstrap.db.models.memory import MemoryItemModel
 from bootstrap.db.models.extras import AppConfigModel
 from core.memory.profile_store import (
-    ENTRY_CATEGORIES,
+    ENTRY_APPEND_SQL,
     ENTRY_ASSEMBLY_READ_SQL,
     ENTRY_CATEGORY_READ_SQL,
-    SECTION_CATEGORIES,
+    PENDING_TAKE_SQL,
     SECTION_READ_SQL,
+    SECTION_UPSERT_SQL,
     ProfileAssembly,
+    build_assembly,
+    pick_section,
     render_entry_rows,
+    render_taken_rows,
+    require_entry,
+    require_section,
 )
 
 if TYPE_CHECKING:
@@ -326,42 +335,38 @@ class PgMemoryProfileStore:
         self._sf = session_factory
         self.tenant_id = tenant_id
 
-    @staticmethod
-    def _require_section(category: str) -> None:
-        if category not in SECTION_CATEGORIES:
-            raise ValueError(f"不是整块类画像：{category!r}（可用：{SECTION_CATEGORIES}）")
+    @asynccontextmanager
+    async def _borrow(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
+        """给了会话就用它、且不提交；没给就自开一次借用，正常退出时提交。
 
-    @staticmethod
-    def _require_entry(category: str) -> None:
-        if category not in ENTRY_CATEGORIES:
-            raise ValueError(f"不是日志类画像：{category!r}（可用：{ENTRY_CATEGORIES}）")
+        「提交与否」只在这里决定一次，所以不会出现某个写方法忘了提交、或某个本该加入调用方
+        事务的写把别人的事务一起提交掉。
+        """
+        if session is not None:
+            yield session
+            return
+        async with self._sf() as sess:
+            yield sess
+            await sess.commit()
 
     async def read_section(self, category: str) -> str:
-        self._require_section(category)
+        require_section(category)
         async with self._sf() as sess:
             rows = (
                 await sess.execute(text(SECTION_READ_SQL), {"tenant_id": self.tenant_id})
             ).all()
-        # 一个租户最多三行，取回后挑一类：宁可多读两行，也让 sections 表的读取语句全仓库
-        # 只有一条正文。
-        for name, content in rows:
-            if str(name) == category:
-                return str(content or "")
-        return ""
+        return pick_section(rows, category)
 
-    async def write_section(self, category: str, content: str) -> None:
-        self._require_section(category)
+    async def write_section(
+        self, category: str, content: str, *, session: AsyncSession | None = None
+    ) -> None:
+        require_section(category)
         now = datetime.now(timezone.utc)
-        async with self._sf() as sess:
+        async with self._borrow(session) as sess:
             await sess.execute(
-                text(
-                    "INSERT INTO tenant_memory_profile_sections "
-                    "(tenant_id, category, content, created_at, updated_at) "
-                    "VALUES (:tenant_id, :category, :content, :created_at, :updated_at) "
-                    "ON CONFLICT (tenant_id, category) DO UPDATE SET "
-                    "content = EXCLUDED.content, updated_at = EXCLUDED.updated_at"
-                ),
+                text(SECTION_UPSERT_SQL),
                 {
+                    "id": uuid.uuid4(),
                     "tenant_id": self.tenant_id,
                     "category": category,
                     "content": content,
@@ -369,7 +374,6 @@ class PgMemoryProfileStore:
                     "updated_at": now,
                 },
             )
-            await sess.commit()
 
     async def append_entry(
         self,
@@ -378,17 +382,14 @@ class PgMemoryProfileStore:
         *,
         happened_at: datetime,
         dedup_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> bool:
-        self._require_entry(category)
-        async with self._sf() as sess:
+        require_entry(category)
+        async with self._borrow(session) as sess:
             result = await sess.execute(
-                text(
-                    "INSERT INTO tenant_memory_profile_entries "
-                    "(tenant_id, category, content, happened_at, dedup_key, created_at) "
-                    "VALUES (:tenant_id, :category, :content, :happened_at, :dedup_key, :created_at) "
-                    "ON CONFLICT (tenant_id, dedup_key) DO NOTHING"
-                ),
+                text(ENTRY_APPEND_SQL),
                 {
+                    "id": uuid.uuid4(),
                     "tenant_id": self.tenant_id,
                     "category": category,
                     "content": content,
@@ -397,12 +398,11 @@ class PgMemoryProfileStore:
                     "created_at": datetime.now(timezone.utc),
                 },
             )
-            await sess.commit()
         # dedup_key 为 NULL 时 PG 视各行互不相等，永远不会冲突，所以恒为 True。
         return bool(result.rowcount and result.rowcount > 0)
 
     async def read_entries(self, category: str, *, max_chars: int = 0) -> str:
-        self._require_entry(category)
+        require_entry(category)
         async with self._sf() as sess:
             rows = (
                 await sess.execute(
@@ -412,55 +412,32 @@ class PgMemoryProfileStore:
             ).scalars().all()
         return render_entry_rows([str(item) for item in rows], max_chars=max_chars)
 
-    async def take_pending(self) -> str:
+    async def take_pending(self, session: AsyncSession) -> str:
         """DELETE ... RETURNING 而不是「先查再删」：两条语句之间的窗口会让并发消费者
-        把同一批 pending 各取一次。RETURNING 让取走与删除成为同一个原子动作。"""
-        async with self._sf() as sess:
-            rows = (
-                await sess.execute(
-                    text(
-                        "DELETE FROM tenant_memory_profile_entries "
-                        "WHERE tenant_id = :tenant_id AND category = 'pending' "
-                        "RETURNING content, happened_at"
-                    ),
-                    {"tenant_id": self.tenant_id},
-                )
-            ).all()
-            await sess.commit()
-        ordered = sorted(rows, key=lambda row: (row[1], str(row[0])))
-        return render_entry_rows([str(row[0]) for row in ordered])
+        把同一批 pending 各取一次。RETURNING 让取走与删除成为同一个原子动作。
+
+        会话由调用方交出、这里不提交：6.11 那笔事务要在合并失败时把 pending 原样退回去。
+        """
+        rows = (
+            await session.execute(
+                text(PENDING_TAKE_SQL), {"tenant_id": self.tenant_id}
+            )
+        ).all()
+        return render_taken_rows(rows)
 
     async def read_assembly(
         self, session: AsyncSession, *, history_max_chars: int = 0
     ) -> ProfileAssembly:
-        sections = {
-            str(name): str(content or "")
-            for name, content in (
-                await session.execute(
-                    text(SECTION_READ_SQL), {"tenant_id": self.tenant_id}
-                )
-            ).all()
-        }
-        entries = [
-            (str(name), str(content or ""))
-            for name, content in (
-                await session.execute(
-                    text(ENTRY_ASSEMBLY_READ_SQL), {"tenant_id": self.tenant_id}
-                )
-            ).all()
-        ]
-        history = render_entry_rows(
-            [content for name, content in entries if name == "history"],
-            max_chars=history_max_chars,
-        )
-        pending = render_entry_rows(
-            [content for name, content in entries if name == "pending"]
-        )
-        return ProfileAssembly(
-            tenant_id=self.tenant_id,
-            long_term=sections.get("long_term", ""),
-            recent_context=sections.get("recent_context", ""),
-            relationship_state=sections.get("relationship_state", ""),
-            pending=pending,
-            history=history,
+        sections = (
+            await session.execute(
+                text(SECTION_READ_SQL), {"tenant_id": self.tenant_id}
+            )
+        ).all()
+        entries = (
+            await session.execute(
+                text(ENTRY_ASSEMBLY_READ_SQL), {"tenant_id": self.tenant_id}
+            )
+        ).all()
+        return build_assembly(
+            self.tenant_id, sections, entries, history_max_chars=history_max_chars
         )

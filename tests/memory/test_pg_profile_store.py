@@ -4,36 +4,36 @@
 不污染共享 `nexus` 库），空库执行 `alembic upgrade head` 拿到 b7d3f5a9c1e4 建的两张表。
 本地 PG 不可用时整组 skip。
 
-侧重点不是「能不能存进去」，而是 ADR-13 / ADR-14 换来的三条语义：整块类覆写不增行、
-日志类靠 `(tenant_id, dedup_key)` 幂等且该键按租户隔离、pending 的取走与删除是一个原子
-动作。最后一条取代的是文件版那套「原子重命名 + 提交/回滚」三步。
+用例正文在 `tests/memory/profile_store_cases.py`，与 `test_sqlite_profile_store.py` 共用
+同一份清单——本文件只负责 PG 特有的那几件事：借会话、提交与中止它、按租户再开一个实例、
+跑裸 SQL。
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import psycopg
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from alembic.config import Config
 
 from agent.memory_pg import PgMemoryProfileStore
-from core.memory.profile_store import MemoryProfileStoreApi
 from scripts.migrate.alembic_util import upgrade_head
+from tests.memory.profile_store_cases import CLEANUP_PREFIX, TENANT_A, CASES
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.postgres
 
 ADMIN_URL = "postgresql://nexus:nexus_dev@localhost:5433/nexus"
 SCRATCH_DB = "nexus_c18test"
-TENANT_A = "c18-pg-store-a"
-TENANT_B = "c18-pg-store-b"
+_PROFILE_TABLES = ("tenant_memory_profile_sections", "tenant_memory_profile_entries")
 
 
 def _pg_alive() -> bool:
@@ -90,144 +90,85 @@ def _psycopg_dsn(url: str) -> str:
 def _cleanup(url: str) -> None:
     conn = psycopg.connect(_psycopg_dsn(url), autocommit=True)
     try:
-        for table in (
-            "tenant_memory_profile_sections",
-            "tenant_memory_profile_entries",
-        ):
-            conn.execute(f"DELETE FROM {table} WHERE tenant_id LIKE 'c18-pg-store-%'")
+        for table in _PROFILE_TABLES:
+            conn.execute(
+                f"DELETE FROM {table} WHERE tenant_id LIKE %s", (f"{CLEANUP_PREFIX}%",)
+            )
     finally:
         conn.close()
 
 
 @pytest.fixture()
-def factory(c18_pg_url) -> Iterator[async_sessionmaker]:
+def factory(c18_pg_url: str) -> Iterator[async_sessionmaker]:
     """每用例独立 engine：NullPool，不留跨 loop 的连接。"""
-    engine = create_async_engine(_as_pool_url(c18_pg_url, psycopg=False), poolclass=NullPool)
+    engine = create_async_engine(
+        _as_pool_url(c18_pg_url, psycopg=False), poolclass=NullPool
+    )
     yield async_sessionmaker(engine, expire_on_commit=False)
     engine.sync_engine.dispose()
 
 
 @pytest.fixture()
-def store(factory, c18_pg_url) -> Iterator[PgMemoryProfileStore]:
+def store(factory: async_sessionmaker, c18_pg_url: str) -> Iterator[PgMemoryProfileStore]:
     _cleanup(c18_pg_url)
     instance = PgMemoryProfileStore(factory, TENANT_A)
     yield instance
     _cleanup(c18_pg_url)
 
 
-def _ts(day: int) -> datetime:
-    return datetime(2026, 10, day, 8, 0, 0, tzinfo=timezone.utc)
+class _PgHarness:
+    """`ProfileStoreHarness` 的 PG 侧实现。"""
 
+    def __init__(self, session_factory: async_sessionmaker) -> None:
+        self._sf = session_factory
 
-def test_satisfies_the_protocol(store: PgMemoryProfileStore) -> None:
-    assert isinstance(store, MemoryProfileStoreApi)
+    def borrow(self, store: Any) -> Any:
+        return self._sf()
 
+    def store_for(self, tenant_id: str) -> PgMemoryProfileStore:
+        return PgMemoryProfileStore(self._sf, tenant_id)
 
-async def test_section_is_one_row_per_category(store: PgMemoryProfileStore) -> None:
-    await store.write_section("long_term", "第一版")
-    assert await store.read_section("long_term") == "第一版"
-    await store.write_section("long_term", "第二版")
-    assert await store.read_section("long_term") == "第二版", "整块类必须覆写而不是追加"
-    # 覆写没有留下第二行。
-    async with store._sf() as sess:  # noqa: SLF001
-        from sqlalchemy import text as _text
-
-        count = (
-            await sess.execute(
-                _text(
-                    "SELECT count(*) FROM tenant_memory_profile_sections "
-                    "WHERE tenant_id = :t AND category = 'long_term'"
-                ),
-                {"t": TENANT_A},
+    async def count_rows(self, store: Any, table: str, category: str) -> int:
+        if table not in _PROFILE_TABLES:
+            raise AssertionError(f"不是画像专表：{table}")
+        async with self._sf() as sess:
+            return int(
+                (
+                    await sess.execute(
+                        text(
+                            f"SELECT count(*) FROM {table} "
+                            "WHERE tenant_id = :t AND category = :c"
+                        ),
+                        {"t": store.tenant_id, "c": category},
+                    )
+                ).scalar_one()
             )
-        ).scalar_one()
-    assert count == 1
 
-
-async def test_missing_section_is_empty_not_a_fallback(store: PgMemoryProfileStore) -> None:
-    assert await store.read_section("recent_context") == ""
-
-
-async def test_category_groups_are_enforced(store: PgMemoryProfileStore) -> None:
-    with pytest.raises(ValueError):
-        await store.write_section("self", "不在整块组里")
-    with pytest.raises(ValueError):
-        await store.append_entry("long_term", "整块类不能当日志追加", happened_at=_ts(1))
-
-
-async def test_entries_read_in_event_order_and_tail_to_budget(
-    store: PgMemoryProfileStore,
-) -> None:
-    for day in (3, 1, 2):
-        await store.append_entry("history", f"E{day}", happened_at=_ts(day))
-    assert await store.read_entries("history") == "E1\n\nE2\n\nE3"
-    assert await store.read_entries("history", max_chars=5) == "2\n\nE3"[-5:]
-
-
-async def test_dedup_key_is_per_tenant(store: PgMemoryProfileStore) -> None:
-    key = "consolidation:" + "m" * 400  # 远超原 app_configs.key String(128) 的长度
-    assert await store.append_entry("history", "一", happened_at=_ts(1), dedup_key=key)
-    assert not await store.append_entry("history", "二", happened_at=_ts(1), dedup_key=key)
-    assert await store.read_entries("history") == "一"
-    other = PgMemoryProfileStore(store._sf, TENANT_B)  # noqa: SLF001
-    assert await other.append_entry(
-        "history", "三", happened_at=_ts(1), dedup_key=key
-    ), "F3：租户 B 不该被租户 A 留下的同名键静默判重"
-    assert await other.read_entries("history") == "三"
-
-
-async def test_null_dedup_key_always_appends(store: PgMemoryProfileStore) -> None:
-    assert await store.append_entry("pending", "a", happened_at=_ts(1))
-    assert await store.append_entry("pending", "b", happened_at=_ts(2))
-    assert await store.read_entries("pending") == "a\n\nb"
-
-
-async def test_take_pending_returns_and_empties(store: PgMemoryProfileStore) -> None:
-    await store.append_entry("pending", "事实一", happened_at=_ts(1))
-    await store.append_entry("pending", "事实二", happened_at=_ts(2))
-    assert await store.take_pending() == "事实一\n\n事实二"
-    assert await store.take_pending() == ""
-    assert await store.read_entries("history") == "", "只该带走 pending"
-
-
-async def test_read_assembly_uses_the_borrowed_session(
-    store: PgMemoryProfileStore,
-) -> None:
-    await store.write_section("long_term", "长期")
-    await store.write_section("recent_context", "近期")
-    await store.write_section("relationship_state", "关系状态")
-    await store.append_entry("pending", "待合并", happened_at=_ts(1))
-    await store.append_entry("history", "历史", happened_at=_ts(1))
-    await store.append_entry("journal", "不该进组装期", happened_at=_ts(1))
-
-    async with store._sf() as sess:  # noqa: SLF001
-        assembly = await store.read_assembly(sess, history_max_chars=50)
-
-    assert assembly.tenant_id == TENANT_A
-    assert assembly.long_term == "长期"
-    assert assembly.recent_context == "近期"
-    assert assembly.relationship_state == "关系状态", "ADR-1：与四类画像出自同一条 SELECT"
-    assert assembly.pending == "待合并"
-    assert assembly.history == "历史"
-    assert "不该进组装期" not in (assembly.pending + assembly.history)
-
-
-async def test_happened_at_is_required_by_the_schema(
-    store: PgMemoryProfileStore, c18_pg_url
-) -> None:
-    """ADR-8 的日期占列靠建表约束，不靠实现记得填——原缺口就是这么产生的。"""
-    from sqlalchemy import text as _text
-
-    async with store._sf() as sess:  # noqa: SLF001
-        with pytest.raises(Exception):
+    async def insert_without_happened_at(self, store: Any) -> None:
+        async with self._sf() as sess:
             await sess.execute(
-                _text(
+                text(
                     "INSERT INTO tenant_memory_profile_entries "
                     "(tenant_id, category, content) VALUES (:t, 'journal', 'x')"
                 ),
-                {"t": TENANT_A},
+                {"t": store.tenant_id},
             )
-        await sess.rollback()
-    assert (
-        await store.read_entries("journal") == ""
-    ), "上面的插入必须真的没落库"
+            await sess.commit()
+
+    async def commit(self, session: Any) -> None:
+        await session.commit()
+
+    async def abort(self, session: Any) -> None:
+        await session.rollback()
+
+
+@pytest.fixture()
+def harness(factory: async_sessionmaker) -> _PgHarness:
+    return _PgHarness(factory)
+
+
+@pytest.mark.parametrize("case", CASES, ids=[case.__name__ for case in CASES])
+async def test_pg_profile_store(
+    case: Any, store: PgMemoryProfileStore, harness: _PgHarness
+) -> None:
+    await case(store, harness)
