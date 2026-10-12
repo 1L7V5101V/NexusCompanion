@@ -1,0 +1,32 @@
+c18-tenant-scoped-memory task 9.1 evidence — 全量测试（类型门禁见 pyright.txt）
+生成: 2026-10-12 22:00  分支: feature/c18-tenant-scoped-memory（未推送）
+
+==============================================================
+9.1  pytest -q -W error tests/  =  2110 passed / 0 failed（773.50s）
+==============================================================
+命令与口径：`.venv/Scripts/python.exe -m pytest -q -W error tests/ -p no:randomly`
+（关随机序是为了这份数字可复述；默认序下同样通过）。本地 PG 在跑（便携版 5433），
+所以 PG 集成组没有整组 skip。
+
+与基线的差值可解释：1.1 基线 2004 passed / 2082 collected → 本轮 2110 passed。
+新增的都来自本 change：`tests/memory/` 下画像专表、两个后端用例清单、跨后端结构比对、
+装配播种、租户快照隔离、共用渲染器、静态扫描、整理写入侧、fail-closed、journal 行形状、
+预热归属、跨租户隔离共 12 个新文件；`tests/persona/test_repository.py` 加 1 条。
+
+**两个原本设计为红的靶测试本轮转绿**（转绿点就是 6.10）：
+- `test_runtime_paths_do_not_read_or_write_shared_memory_dir` —— 装配根已不产出文件 store，
+  `MemoryStore(` 在 bootstrap/ agent/ core/ proactive_v2/ plugins/ 零命中。
+- `test_assembly_paths_do_not_read_profile_store_directly` —— 三条可加载路径都吃共用渲染器，
+  剩下的唤醒插件那一处按 6.10 原文改成 `WAKE_BASELINE` 白名单登记（判据从「必须为零」
+  换成「不得出现登记之外的命中」），它属于移出本 change 的那个 change。
+
+9.1 清单里点名的四处同步，逐处对账：
+- `tests/memory_fakes.py` 的三个协议方法 → 删掉九个已无实现/无调用方的代理方法。
+- `tests/test_memory_optimizer.py` 的两阶段骨架 → 整个文件重写为专表断言（11 passed）。
+- `tests/test_support_modules.py:753` → 显式交出 `tenant_id` + `profile_snapshot`。
+- `docker/debug/runtime_race_probe.py:117-126` → 删掉三个已不存在的 stub 方法；另两个探针
+  改为读该租户的表并接上 relationship_io（不接会静默 fail-closed，探针就白跑）。
+
+顺带在 3.7 落地时暴露出的三处假消息也补了真 tenant（`tests/test_agent_core_p5_agent_core.py`
+一条、`tests/test_agent_core_p7_commit.py` 一条、`tests/test_lifecycle_phases.py` 的
+`_inbound()`）：必填生效前这些都是「静默按无租户渲染」，生效后才暴露出来。

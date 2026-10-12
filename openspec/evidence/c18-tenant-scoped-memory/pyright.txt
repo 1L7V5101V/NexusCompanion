@@ -1,0 +1,11 @@
+c18-tenant-scoped-memory task 9.2 evidence — 类型门禁（全量测试见 pytest-full.txt）
+生成: 2026-10-12 22:00  分支: feature/c18-tenant-scoped-memory（未推送）
+
+==============================================================
+  pyrightconfig.json            0 errors, 6301 warnings, 0 informations
+  pyrightconfig.tests.json      0 errors, 9645 warnings, 0 informations
+  scripts/migrate_profile_to_tenant.py   0 errors, 4 warnings
+
+错误数与 1.1 基线一致（各 0）。覆盖范围如实记在这里：`scripts/` 与 `alembic/` 都不在
+两个 pyright 配置的 include 里，所以本 change 新增的迁移脚本单独跑一次（第三行），
+不能以为闸门覆盖了它。
