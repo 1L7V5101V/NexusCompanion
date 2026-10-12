@@ -245,6 +245,7 @@ class AppRuntime:
         self.plugin_watcher: PluginWatcher | None = None
         self.plugin_watcher_task: asyncio.Task[None] | None = None
         self.workspace_mcp_watcher_task: asyncio.Task[None] | None = None
+        self._persona_profile_store: Any | None = None
         self.tasks: list[Awaitable[None]] = []
         self._memory_optimizer = None
         self._telegram_binding_service: Any = None
@@ -646,20 +647,44 @@ class AppRuntime:
                         revocation_gate=getattr(self.core, "revocation_gate", None),
                     )
                     self.tasks.append(self.plugin_job_runtime.run())
-            # c9-persona-relationship ADR-4：PG durable 模式装配 persona 快照
-            # 解析器（prompt 组装 tenant 化）+ RelationshipState PG 写缝。
+            # c9-persona-relationship ADR-4：装配 persona 快照解析器（prompt 组装
+            # tenant 化）+ RelationshipState 写缝。c18 ADR-10 把条件放宽到两种后端：
+            # PG durable 用 session_factory，SQLite 用画像专表 + 固定 DEFAULT_TENANT，
+            # 两侧同语义，差别只在借用入口。单机还要播种一次（幂等）。
+            self._persona_profile_store = None
+            _persona_relationship_io: Any | None = None
+            _persona_resolver: Any | None = None
             if self.webchat_durable is not None:
                 from bootstrap.persona import build_persona_wiring
 
                 _persona_resolver, _persona_relationship_io = build_persona_wiring(
                     self.webchat_durable.session_factory
                 )
-                loop_ref = getattr(self.core, "loop", None) or getattr(
-                    self.core, "agent_loop", None
+            elif self.config.storage.backend != "postgres":
+                from bootstrap.persona import (
+                    SqlitePersonaResolver,
+                    SqliteRelationshipIO,
+                    ensure_single_user_persona_rows,
                 )
-                binder = getattr(loop_ref, "bind_persona_resolver", None)
-                if callable(binder):
-                    binder(_persona_resolver)
+                from core.memory.profile_sqlite import SqliteMemoryProfileStore
+
+                # 条件按存储后端判，不按 webchat_durable 判：PG 部署就算没开 durable
+                # webchat，也不该在这里去开一个 memory2.db——那个后端根本不建这个文件，
+                # 播种会在「no such table」上把启动打断。
+                memory_db = self.workspace / "memory" / "memory2.db"
+                ensure_single_user_persona_rows(memory_db, self.config.persona)
+                # 解析器与写缝共用一个 store：一条连接、一把锁，两侧看到的才是同一份内容。
+                self._persona_profile_store = SqliteMemoryProfileStore(memory_db)
+                _persona_resolver = SqlitePersonaResolver(self._persona_profile_store)
+                _persona_relationship_io = SqliteRelationshipIO(
+                    self._persona_profile_store
+                )
+            loop_ref = getattr(self.core, "loop", None) or getattr(
+                self.core, "agent_loop", None
+            )
+            binder = getattr(loop_ref, "bind_persona_resolver", None)
+            if callable(binder) and _persona_resolver is not None:
+                binder(_persona_resolver)
             optimizer_tasks, self._memory_optimizer = build_memory_optimizer_task(
                 self.config,
                 provider=self.provider,
@@ -670,13 +695,9 @@ class AppRuntime:
                     if plugin_manager is not None
                     else None
                 ),
-                # c9-persona-relationship ADR-5：PG durable 模式下 RelationshipState
-                # 读写走 tenant PG seam（单事务 + 审计）；dev/SQLite 为 None。
-                relationship_io=(
-                    _persona_relationship_io
-                    if self.webchat_durable is not None
-                    else None
-                ),
+                # c9-persona-relationship ADR-5 / c18 ADR-10：RelationshipState 读写
+                # 走租户写缝（单事务 + 审计），两种后端各一个实现。
+                relationship_io=_persona_relationship_io,
             )
             self.tasks.extend(optimizer_tasks)
             auth_runtime = await self._maybe_build_auth_runtime()
@@ -1035,6 +1056,14 @@ class AppRuntime:
         except Exception:
             logger.exception("attachment lifecycle 停止时异常")
 
+    async def _close_persona_profile_store(self) -> None:
+        """释放单机画像存储那条连接。PG durable 模式下没有它（那边用 session_factory）。"""
+        store = self._persona_profile_store
+        if store is None:
+            return
+        self._persona_profile_store = None
+        store.close()
+
     async def _stop_webchat_durable(self) -> None:
         """停止 delivery 循环并释放 webchat durable 网关的 engine（pg-durable-sot-cutover）。
 
@@ -1098,6 +1127,7 @@ class AppRuntime:
                 # 执行中直接取消它。
                 ("work_queue.drain_and_stop", self._stop_work_queue),
                 ("webchat_durable.close", self._stop_webchat_durable),
+                ("persona_profile_store.close", self._close_persona_profile_store),
                 ("attachments_lifecycle.stop", self._stop_attachment_lifecycle),
                 ("retention.stop", self._stop_retention_runtime),
                 ("runtime_tasks.cancel", self._cancel_runtime_tasks),

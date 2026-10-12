@@ -71,6 +71,13 @@ PENDING_TAKE_SQL = (
     "WHERE tenant_id = :tenant_id AND category = 'pending' "
     "RETURNING content, happened_at"
 )
+# 播种用的存在性探针：只问「这一类有没有行」，不问内容。用它而不是
+# `read_section(...) == ""`——空串既可能是没有行，也可能是被合法清空过，后者不该被
+# 播种重新填回 config 值。
+SECTION_EXISTS_SQL = (
+    "SELECT 1 FROM tenant_memory_profile_sections "
+    "WHERE tenant_id = :tenant_id AND category = :category"
+)
 
 _ENTRY_JOIN = "\n\n"
 

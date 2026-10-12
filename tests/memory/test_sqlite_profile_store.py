@@ -35,13 +35,21 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-@pytest.fixture()
-def db_path(tmp_path: Path) -> Path:
-    path = tmp_path / "memory2.db"
+def create_sqlite_memory_db(path: Path) -> None:
+    """按 `memory2/store.py` 的 `SCHEMA` 建出单机库，与进程真正会拿到的 DDL 同源。
+
+    画像播种与快照解析两组用例都要一个「表已就绪的空库」，这里只有一份建表动作。
+    """
     conn = _connect(path)
     conn.executescript(SCHEMA)
     conn.commit()
     conn.close()
+
+
+@pytest.fixture()
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "memory2.db"
+    create_sqlite_memory_db(path)
     return path
 
 

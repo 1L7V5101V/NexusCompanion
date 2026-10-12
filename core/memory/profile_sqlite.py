@@ -205,19 +205,23 @@ class SqliteMemoryProfileStore:
             ).fetchall()
         return render_taken_rows(rows)
 
+    def read_assembly_sync(
+        self, db: sqlite3.Connection, history_max_chars: int = 0
+    ) -> ProfileAssembly:
+        """在调用方连接上跑两条 SELECT，供同一个同步事务里组合多次读取。"""
+        sections = db.execute(SECTION_READ_SQL, {"tenant_id": self.tenant_id}).fetchall()
+        entries = db.execute(
+            ENTRY_ASSEMBLY_READ_SQL, {"tenant_id": self.tenant_id}
+        ).fetchall()
+        return build_assembly(
+            self.tenant_id, sections, entries, history_max_chars=history_max_chars
+        )
+
     def _read_assembly_sync(
         self, session: sqlite3.Connection, history_max_chars: int
     ) -> ProfileAssembly:
         with self._cursor(session) as db:
-            sections = db.execute(
-                SECTION_READ_SQL, {"tenant_id": self.tenant_id}
-            ).fetchall()
-            entries = db.execute(
-                ENTRY_ASSEMBLY_READ_SQL, {"tenant_id": self.tenant_id}
-            ).fetchall()
-        return build_assembly(
-            self.tenant_id, sections, entries, history_max_chars=history_max_chars
-        )
+            return self.read_assembly_sync(db, history_max_chars)
 
     # ------------------------------------------------------------------
     # MemoryProfileStoreApi

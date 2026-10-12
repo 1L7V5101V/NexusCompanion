@@ -18,7 +18,8 @@ import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -26,38 +27,26 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from agent.core.types import MemoryProfileSnapshot, PersonaSnapshot
 from agent.memory_pg import PgMemoryProfileStore
 from core.memory.profile_sqlite import SqliteMemoryProfileStore
+from core.memory.profile_store import SECTION_EXISTS_SQL
+from infra.storage.tenancy import DEFAULT_TENANT
+
+if TYPE_CHECKING:
+    from agent.config_models import PersonaConfig
 
 
-async def resolve_persona_snapshot(
-    session_factory: async_sessionmaker, tenant_id: str
-) -> tuple[PersonaSnapshot, MemoryProfileSnapshot] | None:
-    """解析 tenant 的 (persona 快照, 记忆画像快照)；无 profile 行返回 None。
+PERSONA_SNAPSHOT_SELECT_SQL = (
+    "SELECT source, identity, personality_rules FROM tenant_persona_profiles "
+    "WHERE tenant_id = :tenant_id"
+)
 
-    失败-open 到单体回退语义，不阻断 turn。
 
-    两个快照出自**同一次会话借用**（ADR-1）：两次借用之间有时间缝，并发 optimizer 写入
-    会让同一轮拿到两个瞬间的拼贴。画像那两条 SELECT 的正文与「行→字段」映射都在存储层，
-    这里只借会话并把会话交出去（ADR-14 末段）。
+def _snapshot_pair(
+    profile: Any, assembly: Any, tenant_id: str
+) -> tuple[PersonaSnapshot, MemoryProfileSnapshot]:
+    """把 persona 行 + 画像装配结果拼成一对快照，两个后端共用这一份映射。
+
+    分开写两份迟早分叉，而分叉的表现是同一轮对话在单机与多租户下注入不同内容。
     """
-    async with session_factory() as sess:
-        profile = (
-            await sess.execute(
-                text("""
-                    SELECT source, identity, personality_rules
-                    FROM tenant_persona_profiles
-                    WHERE tenant_id = :tenant_id
-                    """),
-                {"tenant_id": tenant_id},
-            )
-        ).first()
-        if profile is None:
-            return None
-        # `history_max_chars` 传 0（不截断）：`MemoryProfileSnapshot` 的 pending 与
-        # history 今天没有任何组装期消费者（3.4 只接了 long_term 与 recent_context 两块），
-        # 预算等出现消费者时按那一处定，现在不编数字。
-        assembly = await PgMemoryProfileStore(
-            session_factory, tenant_id
-        ).read_assembly(sess, history_max_chars=0)
     return (
         PersonaSnapshot(
             tenant_id=tenant_id,
@@ -74,6 +63,34 @@ async def resolve_persona_snapshot(
             history=assembly.history,
         ),
     )
+
+
+async def resolve_persona_snapshot(
+    session_factory: async_sessionmaker, tenant_id: str
+) -> tuple[PersonaSnapshot, MemoryProfileSnapshot] | None:
+    """解析 tenant 的 (persona 快照, 记忆画像快照)；无 profile 行返回 None。
+
+    失败-open 到单体回退语义，不阻断 turn。
+
+    两个快照出自**同一次会话借用**（ADR-1）：两次借用之间有时间缝，并发 optimizer 写入
+    会让同一轮拿到两个瞬间的拼贴。画像那两条 SELECT 的正文与「行→字段」映射都在存储层，
+    这里只借会话并把会话交出去（ADR-14 末段）。
+    """
+    async with session_factory() as sess:
+        profile = (
+            await sess.execute(
+                text(PERSONA_SNAPSHOT_SELECT_SQL), {"tenant_id": tenant_id}
+            )
+        ).first()
+        if profile is None:
+            return None
+        # `history_max_chars` 传 0（不截断）：`MemoryProfileSnapshot` 的 pending 与
+        # history 今天没有任何组装期消费者（3.4 只接了 long_term 与 recent_context 两块），
+        # 预算等出现消费者时按那一处定，现在不编数字。
+        assembly = await PgMemoryProfileStore(
+            session_factory, tenant_id
+        ).read_assembly(sess, history_max_chars=0)
+    return _snapshot_pair(profile, assembly, tenant_id)
 
 
 class PgRelationshipIO:
@@ -174,6 +191,97 @@ class SqliteRelationshipIO:
             )
 
 
+class SqlitePersonaResolver:
+    """单机后端的快照解析器，返回形状与 `resolve_persona_snapshot` 一致。
+
+    所以 `bind_persona_resolver` 不必区分后端。与 PG 侧同一条要求：persona 行与画像两条
+    SELECT 出自同一次借用（ADR-1），这里的一次借用就是 store 的一个同步事务。
+    """
+
+    def __init__(self, profile_store: SqliteMemoryProfileStore) -> None:
+        self._store = profile_store
+
+    async def __call__(
+        self, tenant_id: str
+    ) -> tuple[PersonaSnapshot, MemoryProfileSnapshot] | None:
+        if tenant_id != self._store.tenant_id:
+            raise ValueError(
+                f"SQLite 画像存储按租户单例（当前 {self._store.tenant_id!r}），"
+                f"收到 {tenant_id!r}：上游租户归属没接上"
+            )
+        return await asyncio.to_thread(self._resolve_sync, tenant_id)
+
+    def _resolve_sync(
+        self, tenant_id: str
+    ) -> tuple[PersonaSnapshot, MemoryProfileSnapshot] | None:
+        with self._store.transaction() as db:
+            profile = db.execute(
+                PERSONA_SNAPSHOT_SELECT_SQL, {"tenant_id": tenant_id}
+            ).fetchone()
+            if profile is None:
+                return None
+            assembly = self._store.read_assembly_sync(db, 0)
+        return _snapshot_pair(profile, assembly, tenant_id)
+
+
+def ensure_single_user_persona_rows(
+    db_path: str | Path,
+    persona: PersonaConfig,
+    tenant_id: str = DEFAULT_TENANT,
+) -> None:
+    """单机启动播种，两处都只在行不存在时写入（design ADR-10）。
+
+    - `tenant_persona_profiles` 一行：`identity` / `personality_rules` / `self_model` 取
+      `[agent.persona]`，`source` 取 `custom`（该列 CHECK 只允许 template/custom）。
+    - 画像专表的 `relationship_state` 一行：内容同样取 `self_model`，对应文件后端里播种
+      `memory/SELF.md` 那一步。
+
+    播种之后 config 不再参与当前值：写缝演进的是那一行，重启不会把它盖回 config。用存在性
+    探针而不是「读出来是空串」判断要不要播种——空串也可能是被合法清空过。
+
+    两行在同一笔事务里，中途失败不留「有身份没关系状态」的半个租户。
+    """
+    now = datetime.now(UTC).isoformat(timespec="microseconds")
+    store = SqliteMemoryProfileStore(db_path, tenant_id)
+    try:
+        with store.transaction() as db:
+            if (
+                db.execute(
+                    PERSONA_SNAPSHOT_SELECT_SQL, {"tenant_id": tenant_id}
+                ).fetchone()
+                is None
+            ):
+                db.execute(
+                    """
+                    INSERT INTO tenant_persona_profiles
+                        (tenant_id, source, template_id, identity,
+                         personality_rules, self_model, created_at)
+                    VALUES (:tenant_id, 'custom', NULL, :identity,
+                            :personality_rules, :self_model, :created_at)
+                    """,
+                    {
+                        "tenant_id": tenant_id,
+                        "identity": persona.identity,
+                        "personality_rules": persona.personality_rules,
+                        "self_model": persona.self_model,
+                        "created_at": now,
+                    },
+                )
+            seeded = (
+                db.execute(
+                    SECTION_EXISTS_SQL,
+                    {"tenant_id": tenant_id, "category": "relationship_state"},
+                ).fetchone()
+                is None
+            )
+            if seeded:
+                store.write_section_sync(
+                    db, "relationship_state", persona.self_model
+                )
+    finally:
+        store.close()
+
+
 def build_persona_wiring(
     session_factory: async_sessionmaker,
 ) -> tuple[Any, PgRelationshipIO]:
@@ -186,7 +294,9 @@ def build_persona_wiring(
 
 __all__ = [
     "PgRelationshipIO",
+    "SqlitePersonaResolver",
     "SqliteRelationshipIO",
     "build_persona_wiring",
+    "ensure_single_user_persona_rows",
     "resolve_persona_snapshot",
 ]
