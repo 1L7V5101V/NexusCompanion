@@ -35,7 +35,6 @@ def _ctx(
 
     return TurnContext(
         workspace=tmp_path,
-        memory=cast("MemoryProfileApi", _Mem()),
         skills=cast("SkillsLoader", Any),
         skill_names=[],
         channel="chat",

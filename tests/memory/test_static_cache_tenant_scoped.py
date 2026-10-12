@@ -42,7 +42,6 @@ class _CountingStaticBlock:
 def _ctx(workspace: Path, tenant_id: str) -> TurnContext:
     return TurnContext(
         workspace=workspace,
-        memory=cast("MemoryProfileApi", Any),
         skills=cast("SkillsLoader", Any),
         skill_names=[],
         channel=None,

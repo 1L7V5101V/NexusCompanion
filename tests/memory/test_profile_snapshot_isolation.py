@@ -57,7 +57,6 @@ def _ctx(tmp_path: Path, profile: MemoryProfileSnapshot) -> TurnContext:
 
     return TurnContext(
         workspace=tmp_path,
-        memory=cast("MemoryProfileApi", _Mem()),
         skills=cast("SkillsLoader", Any),
         skill_names=[],
         channel="chat",
@@ -112,7 +111,6 @@ def test_turn_context_requires_tenant_id(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         _TC(  # pyright: ignore[reportCallIssue] 本用例断言的就是缺 tenant_id 时构造失败
             workspace=tmp_path,
-            memory=cast("MemoryProfileApi", Any),
             skills=cast("SkillsLoader", Any),
             skill_names=[],
             channel="chat",
